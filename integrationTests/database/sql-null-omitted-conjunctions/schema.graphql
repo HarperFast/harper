@@ -1,0 +1,8 @@
+type Item @table @export {
+	id: ID @primaryKey
+	c: String @indexed
+	a: Int @indexed
+	b: Int @indexed
+	u: Int
+	flag: String
+}

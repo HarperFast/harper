@@ -1,14 +1,17 @@
-import { setupTestDBPath } from '../testUtils.js';
-import { fileURLToPath } from 'url';
+import { setupTestDBPath, ensureSystemTables } from '../testUtils.js';
+import { fileURLToPath } from 'node:url';
 import hdbTerms from '#src/utility/hdbTerms';
-import { join } from 'path';
+import { join } from 'node:path';
 import axios from 'axios';
 import { encode } from 'cbor-x';
 import analytics from '#src/resources/analytics/write';
 import { bypassAuth } from '#src/security/auth';
 import { bypassAuth as bypassAuthMQTT } from '#src/server/mqtt';
 import environmentManager from '#src/utility/environment/environmentManager';
-import { getDatabases } from '#src/resources/databases';
+import {
+	getNextAvailableLoopbackAddress,
+	releaseAllLoopbackAddressesForCurrentProcess,
+} from '@harperfast/integration-testing';
 const { setProperty } = environmentManager;
 const config = {};
 
@@ -17,6 +20,16 @@ const headers = {
 	'content-type': 'application/cbor',
 	'accept': 'application/cbor',
 };
+
+// Exported URL variables — updated by setupTestApp() before the server starts.
+// Test files should import these rather than hard-coding localhost URLs so that
+// concurrent agent runs each get their own isolated loopback address.
+export let baseUrl = 'http://localhost:9926';
+export let wsBaseUrl = 'ws://localhost:9926';
+export let operationsUrl = 'http://localhost:9925';
+export let mqttUrl = 'mqtt://localhost:1883';
+export let mqttsUrl = 'mqtts://localhost:8883';
+export let testHost = 'localhost';
 
 let seed = 0;
 export function random() {
@@ -35,6 +48,12 @@ function makeString() {
 let createdRecords;
 let serverStarted;
 export async function setupTestApp() {
+	// Run production startup hooks before applying the API-test auth overrides.
+	if (typeof process !== 'undefined' && !serverStarted) {
+		const { runStartup } = await import('#src/utility/lifecycle');
+		await runStartup();
+	}
+
 	analytics.setAnalyticsEnabled(false);
 	bypassAuth();
 	bypassAuthMQTT();
@@ -61,15 +80,36 @@ export async function setupTestApp() {
 
 	// exit if it is already setup or we are running in the browser
 	if (typeof process === 'undefined') return createdRecords;
-	// Ensure the system database (hdb_role, hdb_user, etc.) is loaded from the
-	// installed Harper path before setupTestDBPath() overrides HDB_ROOT_KEY to the
-	// test PID dir. Without this, the system path preservation logic in
-	// setupTestDBPath() has nothing to preserve and setUp() later can't find hdb_role.
-	getDatabases();
 	let path = setupTestDBPath();
+	await ensureSystemTables();
+
+	if (!serverStarted) {
+		// Acquire a unique loopback address (127.0.0.x) for this process so
+		// concurrent test runs don't collide on the same ports.
+		const address = await getNextAvailableLoopbackAddress();
+		testHost = address;
+		baseUrl = `http://${address}:9926`;
+		wsBaseUrl = `ws://${address}:9926`;
+		operationsUrl = `http://${address}:9925`;
+		mqttUrl = `mqtt://${address}:1883`;
+		mqttsUrl = `mqtts://${address}:8883`;
+		// Expose host to CJS helpers (e.g. utility.js) that can't use ES live bindings.
+		process.env.HARPER_TEST_HOST = address;
+		process.env.HARPER_TEST_OPS_PORT = '9925';
+		process.on('beforeExit', () => releaseAllLoopbackAddressesForCurrentProcess().catch(() => {}));
+	}
+
 	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
+	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, `${testHost}:9925`);
+	// The operations API is always plain HTTP in this harness (matching OPERATIONSAPI_NETWORK_PORT
+	// above); an ambient install whose securePort is also set (e.g. operationsApi.network.securePort:
+	// 9925) would otherwise leave that stale TLS port in the effective config alongside our plain-port
+	// override, so operations-API clients intermittently hit the wrong listener.
+	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
 	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
-	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, 9926);
+	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, `${testHost}:9926`);
+	setProperty(hdbTerms.CONFIG_PARAMS.MQTT_NETWORK_PORT, `${testHost}:1883`);
+	setProperty(hdbTerms.CONFIG_PARAMS.MQTT_NETWORK_SECUREPORT, `${testHost}:8883`);
 	setProperty(hdbTerms.CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, true);
 	process.env.SCHEMAS_DATA_PATH = path;
 	// make it easy to see what is going on when unit testing
@@ -81,14 +121,21 @@ export async function setupTestApp() {
 	createdRecords = [];
 
 	if (serverStarted) {
-		// if already started, clear out any previous records and recreate them
-		tables.VariedProps.clear();
-		tables.FourProp.clear();
-		tables.Related.clear();
-		tables.SubObject.clear();
+		// if already started, clear out any previous records and recreate them. Table.clear() resolves
+		// asynchronously (on RocksDB it's an unsynchronized native range-delete with no coordination
+		// with in-flight commits), so it must be awaited — otherwise a clear can land after the records
+		// below have been written and silently wipe them out from under them.
+		await Promise.all([
+			tables.VariedProps.clear(),
+			tables.FourProp.clear(),
+			tables.Related.clear(),
+			tables.SubObject.clear(),
+		]);
 	} else {
 		const { startHTTPThreads } = await import('#src/server/threads/socketRouter');
 		serverStarted = await startHTTPThreads(config.threads || 0);
+		const { whenComponentsLoaded } = await import('#src/server/threads/threadServer');
+		await whenComponentsLoaded;
 	}
 	try {
 		seed = 0; // reset the seed to make sure we are deterministic here
@@ -109,7 +156,7 @@ export async function setupTestApp() {
 				}
 			}
 
-			await axios.put('http://localhost:9926/VariedProps/' + object.id, encode(object), {
+			await axios.put(`${baseUrl}/VariedProps/` + object.id, encode(object), {
 				method: 'PUT',
 				responseType: 'arraybuffer',
 				headers,
@@ -127,14 +174,14 @@ export async function setupTestApp() {
 				birthday,
 				title: 'title' + i,
 			};
-			await axios.put('http://localhost:9926/FourProp/' + object.id, encode(object), {
+			await axios.put(`${baseUrl}/FourProp/` + object.id, encode(object), {
 				method: 'PUT',
 				responseType: 'arraybuffer',
 				headers,
 			});
 			if (i >= 10) {
 				// make sure deletion works properly for searches as well
-				await axios.delete('http://localhost:9926/FourProp/' + object.id);
+				await axios.delete(`${baseUrl}/FourProp/` + object.id);
 			}
 		}
 	} catch (error) {

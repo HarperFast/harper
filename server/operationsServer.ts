@@ -1,20 +1,31 @@
 // @ts-nocheck
-import cluster from 'cluster';
+import cluster from 'node:cluster';
 import zlib from 'node:zlib';
 import * as env from '../utility/environment/environmentManager.ts';
-env.initSync();
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import fastify, { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
+import { realExit } from './threads/workerProcessGuard.ts';
+import fastify, {
+	type FastifyInstance,
+	type FastifyReply,
+	type FastifyRequest,
+	type FastifyServerOptions,
+} from 'fastify';
 import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
-import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
-import guidePath from 'path';
+import requestTimePlugin from './serverHelpers/requestTimePlugin.ts';
+import guidePath from 'node:path';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as globalSchema from '../utility/globalSchema.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 import * as userSchema from '../security/user.ts';
+import { authentication } from '../security/auth.ts';
 import { server as serverRegistration, type ServerOptions } from '../server/Server.ts';
 import {
 	authHandler,
@@ -22,18 +33,19 @@ import {
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-} from './serverHelpers/serverHandlers.js';
-import { registerBunFastifyInstance } from './http.ts';
+} from './serverHelpers/serverHandlers.ts';
+import { registerFastifyInstance } from './http.ts';
 import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
-import { getConfigObj } from '../config/configUtils.js';
+import { getConfigObj } from '../config/configUtils.ts';
 import { registerMcpProfile } from '../components/mcp/index.ts';
 import type { OperationFunctionName } from './serverHelpers/serverUtilities.ts';
 type ParsedSqlObject = any;
 import { generateJsonApi } from '../resources/openApi.ts';
 import { Resources } from '../resources/Resources.ts';
 import { ServerError } from '../utility/errors/hdbError.ts';
-import { sendItcEvent } from './threads/itc.js';
-import { onMessageByType } from './threads/manageThreads.js';
+import { sendItcEvent } from './threads/itc.ts';
+import { onMessageByType } from './threads/manageThreads.ts';
+import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE) ?? 1024 * 1024 * 1024; //this defaults to 1GB in bytes
@@ -48,7 +60,7 @@ export { operationsServer as startOnMainThread };
 /**
  * Builds a Harper server.
  */
-async function operationsServer(options: ServerOptions & { resources?: Resources }) {
+async function operationsServer(options: ServerOptions & { resources?: Resources } = {}) {
 	try {
 		harperLogger.debug('In Fastify server' + process.cwd());
 		harperLogger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
@@ -57,7 +69,7 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 		global.clustering_on = false;
 		global.isMaster = cluster.isMaster;
 
-		await setUp();
+		setUp();
 		// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
 		const isHttps = options.securePort > 0;
 
@@ -73,10 +85,28 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
 			serverRegistration.http(server.server, options);
+			// The operations API runs only on the main thread, where auth's worker-only
+			// handleApplication never registers the authentication middleware. Register it here
+			// (after the node server, so its port already exists) so operations requests get
+			// `request.login`/`session`/`user` set up — without it the `login` operation that
+			// Studio uses to bootstrap a new instance fails with "No session for login".
+			// Node only: on Bun the ops API is served by delegating to Fastify via inject(), and
+			// auth is applied through fastifyAuth's Bun shim (there is no `_nodeRequest` for the
+			// auth middleware to attach the resolved user to). Register per port because `http()`
+			// tags each responder entry with `options.port || port`, so passing both ports in one
+			// call would mis-tag the secure entry with the plain port and leave the secure
+			// listener's chain without authentication.
+			if (typeof globalThis.Bun === 'undefined') {
+				if (options.port) serverRegistration.http(authentication, { port: options.port, name: 'authentication' });
+				if (options.securePort)
+					serverRegistration.http(authentication, { securePort: options.securePort, name: 'authentication' });
+				if (!options.port && !options.securePort)
+					serverRegistration.http(authentication, { port: 'all', name: 'authentication' });
+			}
 			// On Bun, register the Fastify instance so requests can be delegated via inject()
 			if (typeof globalThis.Bun !== 'undefined') {
 				const port = options.port || options.securePort || env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
-				if (port) registerBunFastifyInstance(port, server);
+				if (port) registerFastifyInstance(port, server);
 			}
 			if (!server.server.closeIdleConnections) {
 				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
@@ -92,17 +122,18 @@ async function operationsServer(options: ServerOptions & { resources?: Resources
 	} catch (err) {
 		console.error(`Failed to build server on ${process.pid}`, err);
 		harperLogger.fatal(err);
-		process.exit(1);
+		// Use realExit so this fatal worker bootstrap failure still terminates
+		// the worker even with the worker process guard installed.
+		realExit(1);
 	}
 }
 
 /**
  * Makes sure global values are set and that clustering connections are set/ready before server starts.
  */
-async function setUp() {
+function setUp() {
 	harperLogger.trace('Configuring Harper process.');
 	globalSchema.setSchemaDataToGlobal();
-	return userSchema.setUsersWithRolesCache();
 }
 
 export interface ImpersonatePayload {
@@ -115,10 +146,8 @@ export interface ImpersonatePayload {
 
 interface BaseOperationRequestBody {
 	operation: OperationFunctionName;
-	bypassAuth: boolean;
 	hdb_user?: userSchema.User;
 	hdbAuthHeader?: unknown;
-	bypass_auth?: boolean;
 	impersonate?: ImpersonatePayload;
 	password?: string;
 	payload?: string;
@@ -186,7 +215,7 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 	registerContentHandlers(app);
 
 	// Presence-based enablement (matches Harper's `replication` convention):
-	// register iff `mcp.operations` is present in the merged config. The
+	// register iff `mcp.operations` is present and not `enabled: false`. The
 	// nested config tree from `getConfigObj()` is used directly here because
 	// Joi defaults under `mcp` are not propagated to env.get's flat map —
 	// only six hardcoded defaults are re-applied in configUtils.validateConfig.
@@ -196,7 +225,10 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 			profile: 'operations',
 			host: app,
 			config: fullConfig,
-			routeOptions: { preValidation: [authHandler] },
+			// Use authAndEnsureUserOnRequest (sets `req.hdb_user`) instead of
+			// authHandler (which mutates `req.body.hdb_user` — that would
+			// contaminate the JSON-RPC envelope the MCP handler reads).
+			routeOptions: { preValidation: [authAndEnsureUserOnRequest] },
 		});
 	}
 
@@ -367,7 +399,7 @@ function getCORSOpts(): FastifyCorsOptions {
 			propsCorsAccesslist[0] !== '*'
 		) {
 			corsOptions.origin = (origin, callback) => {
-				return callback(null, propsCorsAccesslist.indexOf(origin) !== -1);
+				return callback(null, corsAccessListAllows(propsCorsAccesslist, origin));
 			};
 		}
 	}

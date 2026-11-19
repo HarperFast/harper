@@ -1,0 +1,8 @@
+# Misconfig fixture for QA-516 PROBE 4: static fallthrough:false WITHOUT after:'rest'.
+# This should trigger the logged warning at server/static.ts#warnIfBlockingRest.
+static:
+  files: 'web/**'
+  fallthrough: false
+  notFound:
+    file: 'web/index.html'
+    statusCode: 200

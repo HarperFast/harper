@@ -4,8 +4,29 @@
 	"type": "object",
 	"properties": {
 		"rest": {
-			"type": "boolean",
-			"description": "Enable REST API endpoints."
+			"description": "Enable REST API endpoints and configure request handling.",
+			"oneOf": [
+				{ "type": "boolean" },
+				{
+					"type": "object",
+					"properties": {
+						"preconditions": {
+							"type": "boolean",
+							"default": true,
+							"description": "Handle HTTP request preconditions. Set false for applications that implement their own conditional request handling."
+						},
+						"preconditionLocks": {
+							"type": "boolean",
+							"default": true,
+							"description": "Acquire default-scope record locks for conditional single-record PUT, PATCH and DELETE on RocksDB before evaluating the precondition once against the locked record: conditional requests are checked one at a time, cluster-wide when cluster record locks are enabled (within the freshness the record lock guarantees) and node-local on a node with no replication configured; on harper-pro without replication.recordLocks enabled, a replicated table gets the best-effort pre-check described below instead. Unconditional writes are not gated and still resolve last-write-wins. Set false to opt out into a best-effort single pre-check without locking (also used on LMDB, which has no record lock). Preconditions are never re-evaluated on commit retries."
+						},
+						"lastModified": {
+							"type": "boolean",
+							"description": "Include Last-Modified response headers for versioned records."
+						}
+					}
+				}
+			]
 		},
 		"graphqlSchema": {
 			"type": "object",
@@ -51,6 +72,157 @@
 			},
 			"required": ["files"]
 		},
+		"static": {
+			"type": "object",
+			"description": "Static file serving configuration.",
+			"additionalProperties": false,
+			"properties": {
+				"files": {
+					"description": "Glob(s) or path(s) to the files to serve.",
+					"oneOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							}
+						}
+					]
+				},
+				"urlPath": {
+					"type": "string",
+					"description": "URL path prefix the files are served under."
+				},
+				"index": {
+					"type": "boolean",
+					"description": "Serve index.html files for directory requests.",
+					"default": true
+				},
+				"extensions": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "File extensions to try appending when a requested path is not found (e.g. ['html'] serves /page.html for /page)."
+				},
+				"fallthrough": {
+					"type": "boolean",
+					"description": "Pass unmatched requests to the next handler. When false, this handler answers unmatched GETs itself — note it runs before the REST handler by default, so also set `after: 'rest'` if the application serves an API.",
+					"default": true
+				},
+				"notFound": {
+					"description": "File to serve when a path is not found (requires `fallthrough: false`). Either a path, or an object with `file` and `statusCode` (e.g. index.html with 200 for history-mode SPAs — combine with `after: 'rest'`).",
+					"oneOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "object",
+							"additionalProperties": false,
+							"properties": {
+								"file": {
+									"type": "string"
+								},
+								"statusCode": {
+									"type": "number"
+								}
+							},
+							"required": ["file", "statusCode"]
+						}
+					]
+				},
+				"before": {
+					"description": "Run this handler before the named handler (the config key as registered, e.g. 'rest'). Defaults to 'authentication' so file requests skip credential parsing; false clears the default so registration order applies.",
+					"oneOf": [
+						{
+							"type": "string",
+							"minLength": 1
+						},
+						{
+							"const": false
+						}
+					]
+				},
+				"after": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Run this handler after the named handler (the config key as registered, e.g. 'rest' to let API routes match before static fallbacks). Overrides the default `before: 'authentication'` hoist."
+				}
+			},
+			"required": ["files"]
+		},
+		"scheduler": {
+			"type": "object",
+			"description": "Recurring job scheduling. Jobs run once per cluster (leader-elected) and invoke a designated export from this component. Handlers should be idempotent: leadership failover and DST fall-back can occasionally deliver the same occurrence twice.",
+			"additionalProperties": false,
+			"properties": {
+				"jobs": {
+					"type": "array",
+					"description": "The jobs to run on a schedule.",
+					"items": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {
+							"name": {
+								"type": "string",
+								"minLength": 1,
+								"description": "Unique (within this component) name for the job."
+							},
+							"cron": {
+								"type": "string",
+								"description": "Five-field cron expression (minute hour day-of-month month day-of-week), e.g. '0 2 * * *'. Supports lists, ranges, steps, month/day names, and @daily-style macros. Always QUOTE the expression: YAML treats a leading '*' as an alias and '@' as reserved. Exactly one of cron or interval is required."
+							},
+							"interval": {
+								"description": "Simple cadence instead of cron: a duration like 90s, 5m, 1h, 1d (or a number of seconds). Between 1 second and 365 days.",
+								"oneOf": [
+									{
+										"type": "string",
+										"pattern": "^\\d+(\\.\\d+)?[smhd]?$"
+									},
+									{
+										"type": "number",
+										"minimum": 1
+									}
+								]
+							},
+							"timezone": {
+								"type": "string",
+								"description": "IANA timezone the cron expression is evaluated in (e.g. America/New_York). Defaults to the server timezone. Only valid with cron."
+							},
+							"handler": {
+								"type": "string",
+								"description": "Module path and named export to invoke, relative to the component directory: './jobs.ts#myExport' (omit '#...' to use the default export). Do not put a space before '#' — YAML would treat the rest as a comment."
+							}
+						},
+						"required": ["name", "handler"],
+						"oneOf": [
+							{
+								"required": ["cron"],
+								"not": {
+									"required": ["interval"]
+								}
+							},
+							{
+								"required": ["interval"],
+								"not": {
+									"anyOf": [
+										{
+											"required": ["cron"]
+										},
+										{
+											"required": ["timezone"]
+										}
+									]
+								}
+							}
+						]
+					}
+				}
+			},
+			"required": ["jobs"]
+		},
 		"package": {
 			"type": "string",
 			"description": "Package identifier for the application (npm-compatible or git URL)."
@@ -60,6 +232,81 @@
 			"description": "Conditional package loading option.",
 			"enum": ["always", "if-installed", "dev-only"],
 			"default": "always"
+		},
+		"studio": {
+			"type": "object",
+			"description": "What this component adds to Harper Studio for the cluster it is deployed to, returned to every authenticated role by get_studio_configuration. An invalid page is dropped with a logged warning; the component still loads.",
+			"properties": {
+				"navigation": {
+					"type": "object",
+					"description": "How Studio shows built-in tabs and the pages of the plugins this component loads. A bare key is a built-in tab; a dotted key is relative to this component, <key>.<pageId> for a plugin's page. The root config beats an application, an application beats its plugins, and between peers the most visible state wins.",
+					"propertyNames": {
+						"maxLength": 128,
+						"pattern": "^(?:[a-z0-9-]+|[A-Za-z0-9_@-][A-Za-z0-9_@/.-]*\\.[a-z0-9-]{1,64})$"
+					},
+					"additionalProperties": { "enum": ["visible", "tucked", "hidden"] }
+				},
+				"pages": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"required": ["id", "name", "placement"],
+						"properties": {
+							"id": {
+								"type": "string",
+								"pattern": "^[a-z0-9-]{1,64}$",
+								"description": "Unique within the component; Studio addresses the page as <component>.<id>, for a plugin's page <application>.<key>.<id>."
+							},
+							"name": { "type": "string", "minLength": 1 },
+							"icon": { "type": "string", "description": "A Lucide icon name." },
+							"placement": {
+								"enum": ["tab", "config"],
+								"description": "tab: a top Studio tab; config: an entry in the Config page menu."
+							},
+							"description": { "type": "string" },
+							"navigation": {
+								"enum": ["visible", "tucked", "hidden"],
+								"description": "How Studio shows this page unless the studio.navigation of a component that loads this one, or the root config, names it."
+							},
+							"access": {
+								"type": "object",
+								"description": "Who Studio shows the page to, evaluated by Studio against the viewer's role. Not a server permission. Like content, Harper returns it unvalidated to every signed-in role.",
+								"properties": {
+									"role": { "enum": ["super_user", "structure_user"] },
+									"tables": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"properties": {
+												"database": { "type": "string" },
+												"table": { "type": "string" },
+												"actions": { "type": "array", "items": { "type": "string" } }
+											}
+										}
+									},
+									"operations": { "type": "array", "items": { "type": "string" } },
+									"optional": {
+										"type": "object",
+										"description": "Declared but not required to see the page: controls that need one appear only for roles that hold it.",
+										"properties": {
+											"tables": {
+												"$ref": "#/properties/studio/properties/pages/items/properties/access/properties/tables"
+											},
+											"operations": {
+												"$ref": "#/properties/studio/properties/pages/items/properties/access/properties/operations"
+											}
+										}
+									}
+								}
+							},
+							"content": {
+								"type": "object",
+								"description": "The page's content, rendered and validated by Studio. Harper never validates or strips content or access; future markers such as capability requirements (content.requires: string[], absent means the 5.4 baseline), app context and placement refinements go inside content, not as new page-level keys (5.4 strips unknown page keys). Declarations are returned to every signed-in role, so they must hold no secrets or option values."
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"additionalProperties": true,

@@ -1,0 +1,17 @@
+# YCSB record table: a string primary key plus 10 unindexed string fields
+# (the YCSB default record shape). Only the primary key is indexed, so reads,
+# updates and key-range scans all go through the primary index — matching the
+# YCSB access model.
+type usertable @table @export {
+	id: ID @primaryKey
+	field0: String
+	field1: String
+	field2: String
+	field3: String
+	field4: String
+	field5: String
+	field6: String
+	field7: String
+	field8: String
+	field9: String
+}

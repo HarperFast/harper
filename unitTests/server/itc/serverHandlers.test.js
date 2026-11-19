@@ -7,9 +7,10 @@ const { expect } = chai;
 const sinon_chai = require('sinon-chai').default;
 chai.use(sinon_chai);
 const harper_logger = require('#src/utility/logging/harper_logger');
-const user_schema = require('#src/security/user');
-const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
-// Note: rewire is used to access private functions (schemaHandler, userHandler, componentStatusRequestHandler)
+// The handlers require components/status lazily, and its first load replaces global `threads`; load it
+// before the tests stub `threads.sendToThread`
+require('#src/components/status/index');
+// Note: rewire is used to access private functions (schemaHandler, componentStatusRequestHandler)
 // for testing validation logic, not for replacing dependencies with mocks
 const server_itc_handlers = rewire('#js/server/itc/serverHandlers');
 const { resetResources } = require('#src/resources/Resources');
@@ -36,79 +37,6 @@ describe('Test hdbChildIpcHandler module', () => {
 		sandbox.resetHistory();
 	});
 
-	describe('Test user event handler function', () => {
-		let user_handler;
-
-		before(() => {
-			user_handler = server_itc_handlers.__get__('userHandler');
-		});
-
-		// Tests error handling: verifies errors from setUsersWithRolesCache are caught and logged
-		it('Test User Handler log error upon setUsersWithRolesCache failure', async () => {
-			const setUserStub = sandbox.stub(user_schema, 'setUsersWithRolesCache').throws({ name: TEST_ERR });
-			const test_event = {
-				type: 'user',
-				message: { originator: 12345 },
-			};
-			await user_handler(test_event);
-			// Verify the specific error was logged (not just any error)
-			expect(log_error_stub.args[0][0].name).to.equal(TEST_ERR);
-			setUserStub.restore();
-		});
-
-		// Tests validation: verifies valid events pass validation and reach the cache update
-		it('Test User Handler calls setUsersWithRolesCache on valid event', async () => {
-			const setUserStub = sandbox.stub(user_schema, 'setUsersWithRolesCache').resolves();
-			const resetReadTxnStub = sandbox.stub(harperBridge, 'resetReadTxn');
-			const test_event = {
-				type: 'user',
-				message: { originator: 12345 },
-			};
-			await user_handler(test_event);
-			// Verifies validation passed and handler proceeded to update cache
-			expect(setUserStub).to.have.been.calledOnce;
-			setUserStub.restore();
-			resetReadTxnStub.restore();
-		});
-
-		// Tests validation: invalid events should be rejected and logged
-		it('Test User Handler logs error on invalid event (missing type)', async () => {
-			const test_event = {
-				message: { originator: 12345 },
-			};
-			await user_handler(test_event);
-			expect(log_error_stub).to.have.been.called;
-		});
-
-		// Tests validation: invalid events should be rejected and logged
-		it('Test User Handler logs error on invalid event (missing message)', async () => {
-			const test_event = {
-				type: 'user',
-			};
-			await user_handler(test_event);
-			expect(log_error_stub).to.have.been.called;
-		});
-
-		// Tests listener registration: verifies addListener actually registers callbacks
-		it('Test User Handler addListener functionality', async () => {
-			const setUserStub = sandbox.stub(user_schema, 'setUsersWithRolesCache').resolves();
-			const resetReadTxnStub = sandbox.stub(harperBridge, 'resetReadTxn');
-			let listenerCalled = false;
-			user_handler.addListener(() => {
-				listenerCalled = true;
-			});
-			const test_event = {
-				type: 'user',
-				message: { originator: 12345 },
-			};
-			await user_handler(test_event);
-			// Verifies registered listener was actually invoked
-			expect(listenerCalled).to.be.true;
-			setUserStub.restore();
-			resetReadTxnStub.restore();
-		});
-	});
-
 	describe('Test schema event handler function', () => {
 		let schema_handler;
 
@@ -132,6 +60,56 @@ describe('Test hdbChildIpcHandler module', () => {
 			};
 			await schema_handler(test_event);
 			expect(log_error_stub).to.have.been.called;
+		});
+
+		it('waits for the blob-save barrier before closing a database for restore', async () => {
+			const calls = [];
+			let releaseDrain;
+			const draining = new Promise((resolve) => {
+				releaseDrain = resolve;
+			});
+			const restore = server_itc_handlers.__set__({
+				blockBlobSavesForRestore: async (databaseName) => {
+					calls.push(`block:${databaseName}`);
+					await draining;
+				},
+				resumeBlobSavesForRestore: (restoreToken) => calls.push(`resume:${restoreToken}`),
+				restoreCloseTargets: (databaseName) => ({
+					databaseNames: [databaseName],
+					blobDatabaseNames: [databaseName],
+				}),
+				closeDatabase: (databaseName) => calls.push(`close:${databaseName}`),
+				cleanLmdbMap: async () => {},
+				syncSchemaMetadata: async (message) => {
+					if (message.restorePhase === 'reload') calls.push('rescan');
+				},
+			});
+			try {
+				const closing = schema_handler({
+					type: 'schema',
+					message: { originator: 12345, operation: 'restore_backup', schema: 'orders', restorePhase: 'close' },
+				});
+				await Promise.resolve();
+				expect(calls).to.deep.equal(['block:orders']);
+				releaseDrain();
+				await closing;
+				expect(calls).to.deep.equal(['block:orders', 'close:orders']);
+
+				await schema_handler({
+					type: 'schema',
+					message: {
+						originator: 12345,
+						operation: 'restore_backup',
+						schema: 'orders',
+						restorePhase: 'reload',
+						restoreToken: 'orders-restore',
+					},
+				});
+				// the rescan opens the restored generation and replays its log, which saves blobs
+				expect(calls).to.deep.equal(['block:orders', 'close:orders', 'resume:orders-restore', 'rescan']);
+			} finally {
+				restore();
+			}
 		});
 	});
 
@@ -199,6 +177,7 @@ describe('Test hdbChildIpcHandler module', () => {
 			const responseMessage = sendToThreadStub.firstCall.args[1];
 			expect(responseMessage.type).to.equal('component_status_response');
 			expect(responseMessage.message.requestId).to.equal('req-789');
+			expect(responseMessage.message.threadId).to.be.a('number');
 			// Should have a trace confirming direct send (no error/debug fallback)
 			expect(log_error_stub).to.not.have.been.called;
 			sendToThreadStub.restore();
@@ -221,6 +200,58 @@ describe('Test hdbChildIpcHandler module', () => {
 			expect(traceCalls.some((msg) => msg.includes('Dropping component status response'))).to.be.true;
 			sendToThreadStub.restore();
 		});
+
+		it('Test componentStatusRequestHandler pre-serializes custom Error classes on the reporting thread', async () => {
+			sandbox.resetHistory();
+			const { internal } = require('#src/components/status/index');
+			const { ServerError } = require('#src/utility/errors/hdbError');
+			internal.componentStatusRegistry.markFailed(
+				'itc-plugin',
+				new ServerError('worker failure: https://admin:pw@internal.host/api'),
+				"Could not load component 'itc-plugin'"
+			);
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			try {
+				await component_status_handler({
+					type: 'component_status_request',
+					message: { originator: 7, requestId: 'req-err' },
+				});
+
+				expect(sendToThreadStub).to.have.been.calledOnce;
+				const statuses = new Map(sendToThreadStub.firstCall.args[1].message.statuses);
+				expect(statuses.get('itc-plugin').error).to.equal(
+					'ServerError: worker failure: https://[REDACTED]@internal.host/api'
+				);
+			} finally {
+				sendToThreadStub.restore();
+				internal.componentStatusRegistry.reset();
+			}
+		});
+
+		it('Test componentStatusRequestHandler reports isMainThread: true when threads.count is 0 (setMainIsWorker)', async () => {
+			sandbox.resetHistory();
+			const { setMainIsWorker, getWorkerIndex } = require('#js/server/threads/manageThreads');
+			const wasMainWorker = getWorkerIndex() === 0;
+			setMainIsWorker(true);
+			const sendToThreadStub = sandbox.stub(global.threads, 'sendToThread').returns(true);
+
+			try {
+				expect(getWorkerIndex()).to.equal(0);
+				await component_status_handler({
+					type: 'component_status_request',
+					message: { originator: 7, requestId: 'req-zero-workers' },
+				});
+
+				expect(sendToThreadStub).to.have.been.calledOnce;
+				const responseMessage = sendToThreadStub.firstCall.args[1];
+				expect(responseMessage.message.isMainThread).to.equal(true);
+				expect(responseMessage.message.workerIndex).to.equal(undefined);
+			} finally {
+				setMainIsWorker(wasMainWorker);
+				sendToThreadStub.restore();
+			}
+		});
 	});
 
 	describe('Test resourceOpenApiRequestHandler function', () => {
@@ -233,7 +264,7 @@ describe('Test hdbChildIpcHandler module', () => {
 		});
 
 		afterEach(() => {
-			resources_instance.clear();
+			resources_instance?.clear();
 		});
 
 		// Tests validation: invalid events should be rejected and logged
@@ -320,6 +351,34 @@ describe('Test hdbChildIpcHandler module', () => {
 			const traceCalls = log_trace_stub.getCalls().map((call) => String(call.args[0]));
 			expect(traceCalls.some((msg) => msg.includes('Dropping resource OpenAPI response'))).to.be.true;
 			sendToThreadStub.restore();
+		});
+	});
+
+	describe('Test resource-registration handler function (#1448)', () => {
+		const resource_handler = server_itc_handlers.resourceHandler;
+
+		// Listeners live on a module-global array; clear between cases so fakes don't leak forward.
+		afterEach(() => resource_handler._resetListenersForTest());
+
+		it('invokes every registered listener when fired', () => {
+			const a = sinon.fake();
+			const b = sinon.fake();
+			resource_handler.addListener(a);
+			resource_handler.addListener(b);
+			resource_handler();
+			expect(a).to.have.been.calledOnce;
+			expect(b).to.have.been.calledOnce;
+		});
+
+		it('isolates a throwing listener so siblings still run, and logs the error', () => {
+			sandbox.resetHistory();
+			const boom = sinon.fake.throws(new Error(TEST_ERR));
+			const after = sinon.fake();
+			resource_handler.addListener(boom);
+			resource_handler.addListener(after);
+			expect(() => resource_handler()).to.not.throw();
+			expect(after).to.have.been.calledOnce;
+			expect(log_error_stub).to.have.been.called;
 		});
 	});
 });

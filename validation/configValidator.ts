@@ -1,29 +1,149 @@
 'use strict';
 
-import * as fs from 'fs-extra';
+import fs from 'fs-extra';
 import Joi from 'joi';
-import * as os from 'os';
+import { resolveFullTextSearchLimits, resolveFullTextQueryLimits } from '../resources/indexes/fullTextSearchLimits.ts';
+import { validateHeaderValue } from 'node:http';
+import { isValidChallengeUrl } from '../security/challengeUrl.ts';
+import * as os from 'node:os';
 const { boolean, string, number, array } = Joi.types();
-import { totalmem } from 'os';
-import * as path from 'path';
+const v8Flag = string.trim().allow('').pattern(/^--/, 'V8 flag starting with --');
+import { totalmem } from 'node:os';
+import * as path from 'node:path';
 import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
+import { getDomainSocketPathMaxBytes } from '../utility/domainSocket.ts';
+import { bareHostViolation } from '../utility/nodeIdentity.ts';
+import { parseMaxSize } from '../utility/logging/logRotation.ts';
 import * as validator from './validationWrapper.ts';
+import { MAX_RECORD_CACHE_SIZE, MIN_RECORD_CACHE_SIZE } from '../utility/rocksMemoryConfig.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_COMPONENTS_FOLDER = 'components';
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
-const INVALID_INTERVAL_UNIT_MSG = 'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)';
+const INVALID_INTERVAL_UNIT_MSG =
+	'Invalid logging.rotation.interval unit. Available units are D (days), H (hours), M (months) or m (minutes)';
 const INVALID_MAX_SIZE_VALUE_MSG =
-	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
+	"Invalid logging.rotation.maxSize value. Value should be a positive number followed by unit e.g. '10M'";
 const INVALID_INTERVAL_VALUE_MSG =
 	"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'";
+const INVALID_RETENTION_UNIT_MSG =
+	'Invalid logging.rotation.retention unit. Available units are D (days), H (hours), M (months) or m (minutes)';
+const INVALID_RETENTION_VALUE_MSG =
+	"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'";
+// Units accepted for rotation durations, matching convertToMS: note capital M (months) vs lowercase m (minutes).
+const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
+
+/**
+ * Root config keys configSchema marks `.required()`. An install template that omits one of these gets it
+ * from defaultConfig.yaml; any other omitted root key stays omitted, since a root key's presence is what
+ * turns its component or capability on (componentLoader iterates the root keys).
+ */
+export const REQUIRED_ROOT_CONFIG_KEYS = new Set([
+	'http',
+	'localStudio',
+	'logging',
+	'operationsApi',
+	'rootPath',
+	'storage',
+]);
+
+/**
+ * What `deploy_component` writes into a root-config entry, plus the deployment-level keys
+ * componentLoader reads off it — the shape of a `sql` application deployed before the name was
+ * reserved. Closed to new keys: nothing new may take this shape.
+ */
+export const LEGACY_SQL_APPLICATION_KEYS = [
+	'package',
+	'files',
+	'path',
+	'install',
+	'credentials',
+	'loadComponent',
+	'urlPath',
+	'host',
+	'branchedDatabases',
+	'network',
+	'port',
+	'securePort',
+];
+
+export function isLegacySqlApplicationEntry(value: unknown): boolean {
+	if (typeof value !== 'object' || value === null) return false;
+	return LEGACY_SQL_APPLICATION_KEYS.some((key) => Object.hasOwn(value, key));
+}
+
+// Directory-path validation. The previous `([...]+)+$` nested quantifier
+// backtracked catastrophically (ReDoS), hanging the CLI at 100% CPU on any
+// value with a character outside its allow-list after a run of valid ones — a
+// dotted rootPath such as `/Users/john.doe/hdb` is enough (#1779). An allow-list
+// is also the wrong model for file paths: they legitimately contain spaces, `~`,
+// parens (`C:\\Program Files (x86)`), apostrophes, and any Unicode
+// (`/Users/café/hdb`), so any fixed class rejects real, previously-valid
+// configs. These paths only ever reach `fs`/`path` (never a shell), so the
+// character check is just a friendly "reject obvious garbage" gate — the real
+// validation is the existence check in `validatePath`. So this is a denylist:
+// reject only control characters — C0 (`\x00-\x1f`), DEL, and C1 (`\x80-\x9f`,
+// which includes NEL U+0085) — plus the Unicode line/paragraph separators
+// U+2028/U+2029, since paths get logged and any of these could forge log lines,
+// via a single anchored quantifier — linear time, no backtracking. The
+// `(?!\s*$)` guard rejects empty/whitespace-only values, which on Windows
+// silently strip to a valid-but-wrong directory and would pass the existence
+// check; `.`/`..` are allowed since they resolve honestly to real directories.
+// eslint-disable-next-line no-control-regex -- deliberate: reject control characters
+const DIRECTORY_PATH_PATTERN = /^(?!\s*$)[^\x00-\x1f\x7f\x80-\x9f\u2028\u2029]+$/;
 
 const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
 	.empty(null);
+// node.hostname / replication.hostname must be a bare host, not a URL (utility/nodeIdentity.ts).
+// `Joi.any` (not `string`) so validateBareHost reports a non-string with its own reason.
+const bareHostConstraints = Joi.any().custom(validateBareHost).optional().empty(null);
+const nodeUrlConstraints = string.custom(validateNodeUrl).optional().empty(null);
+// Peers identify a TLS dialer by its certificate; a plain-ws dialer by its source address, which a private
+// network changes. The URL reaches hdb_nodes and cluster_status, so it must not carry credentials (userinfo or a query).
+const privateUrlConstraints = array
+	.items(
+		Joi.object({
+			url: string.custom(validatePrivateUrl).required(),
+			network: string.required(),
+		})
+	)
+	.optional()
+	.empty(null);
+// Controlled-flow ("directional") replication fields. A route's `replicates` is either a boolean
+// (full replication on/off) or an object describing per-direction flow; `sends`/`receives` and
+// `sendsTo`/`receivesFrom` are also accepted as top-level route keys (iterateRoutes normalizes both
+// forms). Entries in sendsTo/receivesFrom are a peer name (string) or an object scoping the edge by
+// target/source + database, with an optional per-table excludeTables list. harper-pro#498 — these
+// were previously unvalidated (allowUnknown), so typos/wrong types passed silently.
+const routeEntryConstraints = Joi.alternatives([
+	string,
+	{
+		target: string,
+		source: string,
+		database: string,
+		excludeTables: array.items(string),
+	},
+]);
+const replicatesConstraints = Joi.alternatives([
+	boolean,
+	{
+		sends: boolean,
+		sendsTo: array.items(routeEntryConstraints),
+		receives: boolean,
+		receivesFrom: array.items(routeEntryConstraints),
+	},
+]);
+const directionalRouteFields = {
+	replicates: replicatesConstraints,
+	sends: boolean,
+	receives: boolean,
+	sendsTo: array.items(routeEntryConstraints),
+	receivesFrom: array.items(routeEntryConstraints),
+};
 export const routeConstraints = Joi.alternatives([
 	array
 		.items(
@@ -31,19 +151,215 @@ export const routeConstraints = Joi.alternatives([
 			{
 				host: string.required(),
 				port: portConstraints,
+				...directionalRouteFields,
 			},
 			{
 				hostname: string.required(),
 				port: portConstraints,
+				...directionalRouteFields,
 			}
 		)
 		.empty(null),
 	array.items(string),
 ]);
 
+// Models — `models:` block opts a deployment into the per-backend registry.
+// Per-backend shape is validated by a discriminated alternative on the
+// `backend` field. Phase 2 (#629) lands ollama; Phase 3 (#630) lands openai.
+//
+// `.unknown(false)` on each known backend's schema turns field-name typos
+// (`bakend: ollama`, `hsot: ...`) into boot-blocking validation errors.
+// Without it, Joi's top-level `allowUnknown: true` propagates and typos
+// silently survive into bootstrap. Unknown backend types (anything not in
+// the `switch` list) fall through to a permissive schema so future Harper
+// versions or third-party components can register their own backends
+// without core schema edits — `bootstrapModels` logs+skips at runtime.
+//
+// `requestTimeoutMs: min(1)` (not `min(0)`) so the meaning is unambiguous:
+// omit the field for "no timeout". `0` would validate but `composeSignal`
+// treats it as "no timeout" via `if (!timeoutMs)`, surprising a test that
+// sets 0 to mean "fail immediately".
+const commonEntryFields = {
+	model: string.optional(),
+	requestTimeoutMs: number.min(1).optional(),
+	// Ordered fallback group — other logical names tried, in order, after this one (#1326).
+	fallback: Joi.array().items(string).optional(),
+	// Operator-set source identity for calibration: change it when the same settings reach a different deployment.
+	revision: string.optional(),
+};
+const ollamaEntrySchema = Joi.object({
+	backend: string.valid('ollama').required(),
+	host: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const openaiEntrySchema = Joi.object({
+	backend: string.valid('openai').required(),
+	// `apiKey` may be a literal secret or a `${ENV_VAR}` placeholder; both
+	// are syntactically strings. `bootstrap.ts` runs `expandEnvVarsDeep`
+	// before construction; the backend rejects unresolved placeholders
+	// with an explicit error pointing at the env-var name.
+	apiKey: string.required(),
+	baseUrl: string.optional(),
+	organization: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const anthropicEntrySchema = Joi.object({
+	backend: string.valid('anthropic').required(),
+	// Same secret-handling posture as openai's `apiKey`.
+	apiKey: string.required(),
+	baseUrl: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const bedrockEntrySchema = Joi.object({
+	backend: string.valid('bedrock').required(),
+	// AWS credentials resolve via the SDK chain (env / shared file / IAM
+	// roles for service accounts) — no apiKey field. `region` is
+	// effectively required (Bedrock is regional) but the backend can
+	// fall back to AWS_REGION env, so we leave it optional here.
+	region: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+// No `model` field: the adapter names a generative logical name, not a provider model.
+const generativeDecisionEntrySchema = Joi.object({
+	backend: string.valid('generative').required(),
+	generative: string.optional(),
+	samples: number.integer().min(1).max(25).optional(),
+	concurrency: number.integer().min(1).max(25).optional(),
+	temperature: number.min(0).optional(),
+	requestTimeoutMs: number.min(1).optional(),
+	scoring: string.valid('auto', 'vote', 'score').optional(),
+	requireStructuredOutput: Joi.boolean().optional(),
+	fallback: Joi.array().items(string).optional(),
+	revision: string.optional(),
+}).unknown(false);
+const unknownBackendEntrySchema = Joi.object({
+	backend: string.required(),
+}).unknown(true);
+// USD per million tokens. Only generative calls are priced, so every other kind refuses the field
+// rather than accepting a price nothing reads.
+const pricingSchema = Joi.object({
+	inputPerMtok: number.min(0).required(),
+	outputPerMtok: number.min(0).required(),
+}).unknown(false);
+const withPricingFor = (kind, schema) =>
+	schema.keys({ pricing: kind === 'generative' ? pricingSchema.optional() : Joi.forbidden() });
+const inputPrefixesSchema = Joi.object({
+	document: string.allow('').optional(),
+	query: string.allow('').optional(),
+}).unknown(false);
+// A built-in that cannot serve the kind it is listed under fails here, with the kind named, rather
+// than passing as a module specifier and failing at boot.
+function rejectWrongKind(kind) {
+	return (value, helpers) => helpers.message(`backend '${value.backend}' cannot serve models.${kind} entries`);
+}
+const wrongKindEntrySchema = (kind) =>
+	Joi.object({ backend: string.required() }).unknown(true).custom(rejectWrongKind(kind));
+const providerEntrySchema = (kind) =>
+	Joi.alternatives().conditional('.backend', {
+		switch: [
+			{ is: 'ollama', then: withPricingFor(kind, ollamaEntrySchema) },
+			{
+				is: 'openai',
+				then: withPricingFor(
+					kind,
+					openaiEntrySchema.keys({
+						inputPrefixes: kind === 'embedding' ? inputPrefixesSchema.optional() : Joi.forbidden(),
+						truncation: kind === 'embedding' ? string.valid('vllm').optional() : Joi.forbidden(),
+					})
+				),
+			},
+			{ is: 'anthropic', then: withPricingFor(kind, anthropicEntrySchema) },
+			{ is: 'bedrock', then: withPricingFor(kind, bedrockEntrySchema) },
+			{ is: 'generative', then: wrongKindEntrySchema(kind) },
+		],
+		otherwise: withPricingFor(kind, unknownBackendEntrySchema),
+	});
+const decisionEntrySchema = Joi.alternatives().conditional('.backend', {
+	switch: [
+		{ is: 'generative', then: generativeDecisionEntrySchema },
+		{ is: Joi.valid('ollama', 'openai', 'anthropic', 'bedrock'), then: wrongKindEntrySchema('decision') },
+	],
+	otherwise: withPricingFor('decision', unknownBackendEntrySchema),
+});
+const modelsSchema = Joi.object({
+	embedding: Joi.object().pattern(Joi.string(), providerEntrySchema('embedding')).optional(),
+	generative: Joi.object().pattern(Joi.string(), providerEntrySchema('generative')).optional(),
+	decision: Joi.object().pattern(Joi.string(), decisionEntrySchema).optional(),
+	calibration: Joi.object({
+		interval: Joi.number().integer().min(3_600_000),
+		maxDecisions: Joi.number().integer().min(1),
+		maxPopulations: Joi.number().integer().min(1),
+		maxExamplesPerKey: Joi.number().integer().min(10),
+		maxBytes: Joi.number().integer().min(1_000_000),
+		maxLoads: Joi.number().integer().min(1),
+		maxRunMs: Joi.number().integer().min(1000),
+		minReport: Joi.number().integer().min(1),
+		minTrain: Joi.number().integer().min(10),
+		minHeldOut: Joi.number().integer().min(10),
+		heldOutShare: Joi.number().greater(0).less(1),
+		eceMargin: Joi.number().min(0).less(1),
+		maxAgeMs: Joi.number().integer().min(60_000),
+	})
+		.unknown(false)
+		.custom((block: { maxDecisions?: number; maxExamplesPerKey?: number }, helpers: any) => {
+			// Half of maxDecisions is left for fitting, and a population is fitted from up to maxExamplesPerKey decisions.
+			const decisions = block.maxDecisions ?? 100_000;
+			const examples = block.maxExamplesPerKey ?? 5_000;
+			if (decisions < 2 * examples + 2)
+				return helpers.message(
+					`models.calibration.maxDecisions (${decisions}) must be at least twice maxExamplesPerKey (${examples}) plus 2, so a full sample can be fitted`
+				);
+			return block;
+		})
+		.allow(null)
+		.optional(),
+});
+
+/**
+ * Validate a `models:` block on its own — the hot-reload path applies a watched file's block
+ * without the full boot validation, and must enforce the same schema boot does.
+ */
+export function validateModelsBlock(models) {
+	// `allowUnknown: true` mirrors the boot path, whose top-level option propagates into this
+	// subtree: a sibling of embedding/generative that boots must not block a reload. Entry-level
+	// strictness is preserved by each backend schema's `.unknown(false)`.
+	return modelsSchema.validate(models, { abortEarly: false, allowUnknown: true, errors: { wrap: { label: "'" } } });
+}
+
 let hdbRoot;
 let skipFsVal = false;
 
+const healthThresholds = (warningDefault: number, errorDefault: number) =>
+	Joi.object({ warning: number.min(0).max(100).optional(), error: number.min(0).max(100).optional() })
+		.unknown(false)
+		.custom((value, helpers) =>
+			(value.warning ?? warningDefault) <= (value.error ?? errorDefault) ? value : helpers.error('any.invalid')
+		);
+
+const corsAllowHeadersConstraints = Joi.custom((value, helpers) => {
+	try {
+		for (const header of Array.isArray(value) ? value : [value])
+			validateHeaderValue('Access-Control-Allow-Headers', typeof header === 'string' ? header : '' + header);
+		return value;
+	} catch {
+		return helpers.error('any.invalid');
+	}
+})
+	.allow(null)
+	.optional();
+const readRequestQueueLimitConstraints = Joi.alternatives([number.integer().min(0).allow(null), boolean.valid(false)])
+	.prefs({ convert: false })
+	.optional();
+
+export function effectiveHttpConfigValidator(flatConfig) {
+	return Joi.object({
+		http_readrequestqueuelimit: readRequestQueueLimitConstraints,
+		http_corsaccesscontrolallowheaders: corsAllowHeadersConstraints,
+	}).validate({
+		http_readrequestqueuelimit: flatConfig.http_readrequestqueuelimit,
+		http_corsaccesscontrolallowheaders: flatConfig.http_corsaccesscontrolallowheaders,
+	});
+}
 export function configValidator(configJson, skipFsValidation = false) {
 	skipFsVal = skipFsValidation;
 	hdbRoot = configJson.rootPath;
@@ -53,10 +369,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 
 	const enabledConstraints = boolean.optional();
 	const threadsConstraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
-	const rootConstraints = string
-		.pattern(/^[\\/]$|([\\/a-zA-Z_0-9:-]+)+$/, 'directory path')
-		.empty(null)
-		.default(setDefaultRoot);
+	const rootConstraints = string.pattern(DIRECTORY_PATH_PATTERN, 'directory path').empty(null).default(setDefaultRoot);
 	const pemFileConstraints = string.optional().empty(null);
 
 	const storagePathConstraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
@@ -64,18 +377,28 @@ export function configValidator(configJson, skipFsValidation = false) {
 		certificate: pemFileConstraints,
 		certificateAuthority: pemFileConstraints,
 		privateKey: pemFileConstraints,
+		// Periodic re-read interval (ms) for the cert-file watcher's polling safety net.
+		// 0 disables polling, leaving only the inotify-based chokidar watcher. Honored on the
+		// top-level tls block (a single global setting); see getCertificateWatchInterval in security/keys.ts.
+		certificateWatchInterval: number.min(0).optional().empty(null),
 	});
 
 	// MCP — sub-issue #613 lands the config surface ahead of the transport (#614).
-	// Presence-based enablement: a profile is on iff its sub-block exists in
-	// config (same convention as `replication`). No `enabled` field.
+	// A profile is on when its sub-block exists, unless it sets `enabled: false`.
+	// `enabled: true` lets env-var config (where `{}` is dropped as "no overrides")
+	// create the block.
 	const mcpRateLimitSchema = Joi.object({
 		perToolPerSecond: number.min(0).optional(),
 		perToolBurst: number.min(0).optional(),
 		sessionConcurrency: number.min(0).optional(),
 		sessionPerSecond: number.min(0).optional(),
+		initializePerSecond: number.min(0).optional(),
+		initializeBurst: number.min(1).optional(),
 	});
 	const mcpOperationsSchema = Joi.object({
+		// `convert: false` — validateConfig() doesn't write coerced mcp values back, so a quoted
+		// "false" would pass here and still leave the profile on.
+		enabled: boolean.optional().prefs({ convert: false }),
 		mountPath: string.optional().default('/mcp'),
 		allow: array.items(string).optional(),
 		deny: array.items(string).optional(),
@@ -84,6 +407,19 @@ export function configValidator(configJson, skipFsValidation = false) {
 	});
 	const mcpApplicationSchema = mcpOperationsSchema.keys({
 		searchMaxResults: number.min(1).optional(),
+		generatedTools: boolean.optional().prefs({ convert: false }),
+		authentication: Joi.object({
+			required: boolean.optional().prefs({ convert: false }),
+			resourceMetadata: string
+				.custom((value, helpers) => (isValidChallengeUrl(value) ? value : helpers.error('string.challengeUrl')))
+				.messages({
+					'string.challengeUrl': '{#label} must be an https URL (http only for a loopback host) with no fragment',
+				})
+				.optional(),
+		})
+			// a misspelled key would otherwise leave the mount anonymous with no error
+			.unknown(false)
+			.optional(),
 	});
 	const mcpSessionSchema = Joi.object({
 		idleTimeoutSeconds: number.min(1).optional(),
@@ -95,74 +431,42 @@ export function configValidator(configJson, skipFsValidation = false) {
 		session: mcpSessionSchema.optional(),
 	});
 
-	// Models — `models:` block opts a deployment into the per-backend registry.
-	// Per-backend shape is validated by a discriminated alternative on the
-	// `backend` field. Phase 2 (#629) lands ollama; Phase 3 (#630) lands openai.
-	//
-	// `.unknown(false)` on each known backend's schema turns field-name typos
-	// (`bakend: ollama`, `hsot: ...`) into boot-blocking validation errors.
-	// Without it, Joi's top-level `allowUnknown: true` propagates and typos
-	// silently survive into bootstrap. Unknown backend types (anything not in
-	// the `switch` list) fall through to a permissive schema so future Harper
-	// versions or third-party components can register their own backends
-	// without core schema edits — `bootstrapModels` logs+skips at runtime.
-	//
-	// `requestTimeoutMs: min(1)` (not `min(0)`) so the meaning is unambiguous:
-	// omit the field for "no timeout". `0` would validate but `composeSignal`
-	// treats it as "no timeout" via `if (!timeoutMs)`, surprising a test that
-	// sets 0 to mean "fail immediately".
-	const commonEntryFields = {
-		model: string.optional(),
-		requestTimeoutMs: number.min(1).optional(),
-	};
-	const ollamaEntrySchema = Joi.object({
-		backend: string.valid('ollama').required(),
-		host: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const openaiEntrySchema = Joi.object({
-		backend: string.valid('openai').required(),
-		// `apiKey` may be a literal secret or a `${ENV_VAR}` placeholder; both
-		// are syntactically strings. `bootstrap.ts` runs `expandEnvVarsDeep`
-		// before construction; the backend rejects unresolved placeholders
-		// with an explicit error pointing at the env-var name.
-		apiKey: string.required(),
-		baseUrl: string.optional(),
-		organization: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const anthropicEntrySchema = Joi.object({
-		backend: string.valid('anthropic').required(),
-		// Same secret-handling posture as openai's `apiKey`.
-		apiKey: string.required(),
-		baseUrl: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const bedrockEntrySchema = Joi.object({
-		backend: string.valid('bedrock').required(),
-		// AWS credentials resolve via the SDK chain (env / shared file / IAM
-		// roles for service accounts) — no apiKey field. `region` is
-		// effectively required (Bedrock is regional) but the backend can
-		// fall back to AWS_REGION env, so we leave it optional here.
-		region: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const unknownBackendEntrySchema = Joi.object({
-		backend: string.required(),
-	}).unknown(true);
-	const modelEntrySchema = Joi.alternatives().conditional('.backend', {
-		switch: [
-			{ is: 'ollama', then: ollamaEntrySchema },
-			{ is: 'openai', then: openaiEntrySchema },
-			{ is: 'anthropic', then: anthropicEntrySchema },
-			{ is: 'bedrock', then: bedrockEntrySchema },
-		],
-		otherwise: unknownBackendEntrySchema,
-	});
-	const modelsSchema = Joi.object({
-		embedding: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
-		generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
-	});
+	// `convert: false` — validateConfig() only writes the coerced value back into configDoc for
+	// threads/componentsRoot/logging/storage/operationsApi, not sql, so leaving Joi's default
+	// convert:true on here would accept a quoted `allowFullScan: "true"` and then silently drop
+	// it (getSqlEngineConfig()'s typeof guard rejects the still-unconverted string).
+	const sqlSettingsSchema = Joi.object({
+		engine: string.valid('legacy', 'new', 'auto').optional(),
+		allowFullScan: boolean.optional(),
+		maxSortRows: number.integer().min(1).optional(),
+		maxHashRows: number.integer().min(1).optional(),
+	})
+		.unknown(false)
+		.prefs({ convert: false });
+
+	// An application deployed under the name before it was reserved still boots; validateConfig()
+	// warns to rename it. Selected positively so a typo'd setting is still held to the settings
+	// schema instead of passing as an application.
+	const legacySqlApplicationSchema = Joi.object({
+		engine: Joi.any().forbidden(),
+		allowFullScan: Joi.any().forbidden(),
+		maxSortRows: Joi.any().forbidden(),
+		maxHashRows: Joi.any().forbidden(),
+	})
+		.unknown(true)
+		.messages({
+			'any.unknown': `{#label} cannot be set while 'sql' names a deployed application; redeploy that application under a different name`,
+		});
+	const sqlSchema = Joi.alternatives()
+		.conditional(
+			Joi.object()
+				.or(...LEGACY_SQL_APPLICATION_KEYS)
+				.unknown(true),
+			{ then: legacySqlApplicationSchema, otherwise: sqlSettingsSchema }
+		)
+		// `false`/null is how componentLoader spells a disabled entry, so an operator who had already
+		// turned a pre-reservation `sql` application off keeps booting.
+		.allow(false, null);
 
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(
@@ -181,16 +485,43 @@ export function configValidator(configJson, skipFsValidation = false) {
 		analytics: Joi.object({
 			aggregatePeriod: number,
 			replicate: boolean.optional(),
+			fullText: Joi.object({
+				enabled: boolean.optional(),
+				intervalMilliseconds: number.integer().min(1000).max(2147483647).optional(),
+				histograms: boolean.optional(),
+				snapshotBytes: boolean.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
 		}),
 		replication: Joi.object({
-			hostname: Joi.alternatives(string, number).optional().empty(null),
-			url: string.optional().empty(null),
+			hostname: bareHostConstraints,
+			url: nodeUrlConstraints,
 			port: portConstraints,
 			securePort: portConstraints,
+			threads: number.integer().min(0).optional().empty(null),
 			routes: array.optional().empty(null),
+			network: string.optional().empty(null),
+			privateUrls: privateUrlConstraints,
 			databases: Joi.alternatives(string, array),
 			enableRootCAs: boolean.optional(),
 			copyTablesToCatchUp: boolean.optional(),
+			pingInterval: number.min(1).optional().empty(null),
+			pingTimeout: number.min(1).optional().empty(null),
+			copyTimeout: number.min(1).optional().empty(null),
+			blobGapReconnectMs: number.min(1000).optional().empty(null),
+			blobGapEscalationCycles: number.integer().min(0).optional().empty(null),
+			blobGapEscalationMs: number.integer().min(0).optional().empty(null),
+			copyCursorFlushBytes: number.min(1).optional().empty(null),
+			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
+			replayTimeout: number.min(1).optional().empty(null),
+			confirmation: number.integer().min(0).max(Number.MAX_SAFE_INTEGER).optional().empty(null),
+			recordLockConfirmation: number.integer().min(0).max(Number.MAX_SAFE_INTEGER).optional().empty(null),
+		}).optional(),
+		node: Joi.object({
+			hostname: bareHostConstraints,
+			url: string.optional().empty(null),
 		}).optional(),
 		componentsRoot: rootConstraints.optional(),
 		localStudio: Joi.object({
@@ -208,6 +539,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				compress: boolean.optional(),
 				interval: string.custom(validateRotationInterval).optional().empty(null),
 				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
+				retention: string.custom(validateRotationRetention).optional().empty(null),
 				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
 			root: rootConstraints,
@@ -225,9 +557,17 @@ export function configValidator(configJson, skipFsValidation = false) {
 				securePort: portConstraints,
 				timeout: number.min(1).optional(),
 			}).optional(),
+			encryptedOperation: Joi.object({
+				maxAge: number.integer().min(1000).max(600000).optional(),
+				maxSize: number
+					.integer()
+					.min(1024)
+					.max(64 * 1024 * 1024)
+					.optional(),
+			}).optional(),
 			tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 		}).required(),
-		rootPath: string.pattern(/^[\\/]$|([\\/a-zA-Z_0-9:-]+)+$/, 'directory path').required(),
+		rootPath: string.pattern(DIRECTORY_PATH_PATTERN, 'directory path').required(),
 		mqtt: Joi.object({
 			network: Joi.object({
 				port: portConstraints,
@@ -245,6 +585,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
+			corsAccessControlAllowHeaders: corsAllowHeadersConstraints,
+			readRequestQueueLimit: readRequestQueueLimitConstraints,
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
@@ -261,7 +603,26 @@ export function configValidator(configJson, skipFsValidation = false) {
 				}),
 			]),
 			threadRange: Joi.alternatives([array.optional(), string.optional()]),
+			securityHeaders: Joi.object()
+				.pattern(string, Joi.alternatives([string, number, boolean]))
+				.optional(),
 		}).required(),
+		status: Joi.object({
+			healthChecks: Joi.object({
+				enabled: boolean.optional(),
+				intervalSeconds: number.min(1).max(2147483).optional(),
+				thresholds: Joi.object({
+					disk: healthThresholds(80, 95),
+					memory: healthThresholds(80, 95),
+					cpu: healthThresholds(85, 95),
+				})
+					.unknown(false)
+					.optional(),
+			})
+				.unknown(false)
+				.strict()
+				.optional(),
+		}).optional(),
 		threads: Joi.alternatives(
 			threadsConstraints.optional(),
 			Joi.object({
@@ -275,18 +636,82 @@ export function configValidator(configJson, skipFsValidation = false) {
 					})
 				),
 				maxHeapMemory: number.min(0).optional(),
+				maxIsolated: number.integer().min(0).optional(),
+				preload: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
+				preloadRequire: Joi.alternatives([string, array.items(string)])
+					.allow(null)
+					.optional(),
+				shutdownTimeout: number.min(0).optional().empty(null),
+				v8Flags: Joi.alternatives([v8Flag, array.items(v8Flag)])
+					.allow(null)
+					.optional(),
 			})
 		),
 		storage: Joi.object({
+			fullText: Joi.object()
+				.custom((value, helpers) => {
+					try {
+						resolveFullTextSearchLimits(value);
+						resolveFullTextQueryLimits(value?.query);
+						return value;
+					} catch (error) {
+						return helpers.message({ custom: error instanceof Error ? error.message : String(error) });
+					}
+				})
+				.optional(),
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
+			// `convert: false` — validateConfig() does not write this converted value back, so a quoted
+			// "65536" would pass here and the record cache would silently keep its default size.
+			recordCacheSize: number
+				.integer()
+				.min(MIN_RECORD_CACHE_SIZE)
+				.max(MAX_RECORD_CACHE_SIZE)
+				.optional()
+				.prefs({ convert: false }),
+			blobs: Joi.object({
+				compression: Joi.object()
+					.pattern(
+						// exact content type, 'type/*' wildcard, or the 'default' entry
+						/^([\w.+-]+\/(\*|[\w.+-]+)|default)$/,
+						Joi.alternatives([
+							Joi.valid(false),
+							// .unknown(false) so a typo'd nested field (e.g. `treshold`) is rejected instead of
+							// silently inheriting the top-level validate() allowUnknown:true and falling back to
+							// the default threshold — matching config-root.schema.json.
+							Joi.object({ codec: Joi.valid('deflate').optional(), threshold: number.min(0).optional() }).unknown(
+								false
+							),
+						])
+					)
+					// fail on keys that are not a content type, a 'type/*' wildcard, or 'default' —
+					// a typo'd key would otherwise silently never match anything
+					.unknown(false)
+					.optional(),
+			})
+				// reject a misspelled property directly under storage.blobs (e.g. `compresion:`), which the
+				// top-level validate()'s allowUnknown:true would otherwise accept and silently leave off
+				.unknown(false)
+				.optional(),
 			compression: Joi.alternatives([
 				boolean.optional(),
 				Joi.object({ dictionary: string.optional(), threshold: number.optional() }),
 			]),
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
+			maxLockClockSkew: Joi.alternatives([
+				number
+					.min(0)
+					.custom((value, helpers) =>
+						Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+					),
+				string.custom((value, helpers) =>
+					Number.isFinite(hdbUtils.parseDurationMs(value)) ? value : helpers.error('any.invalid')
+				),
+			]).optional(),
 			noReadAhead: boolean.optional(),
 			path: storagePathConstraints,
 			prefetchWrites: boolean.optional(),
@@ -295,6 +720,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 		}).required(),
 		mcp: mcpSchema.optional(),
 		models: modelsSchema.optional(),
+		sql: sqlSchema.optional(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 	});
@@ -319,8 +745,54 @@ function doesPathExist(pathToCheck) {
 	return `Specified path ${pathToCheck} does not exist.`;
 }
 
+function validateBareHost(value, helpers) {
+	const violation = bareHostViolation(value);
+	if (violation) {
+		return helpers.message(
+			`{{#label}} ${violation}; it must be a bare hostname or IP literal (no scheme, port, or path) because it is this node's identity`
+		);
+	}
+	return value;
+}
+
+// A node URL supplies this node's identity via its host (server/nodeName.ts urlToNodeName), so it
+// must have an authority. A hostless scheme ("mailto:", "data:", "file:") parses but has no host.
+// A node URL supplies this node's identity via its host (server/nodeName.ts urlToNodeName). Only
+// reject the unambiguous mistake: a value written as a real URL (with a "//" authority) that still
+// parses to no host. Everything else is deliberately tolerated, because urlToNodeName skips a value
+// it cannot take a host from and identity falls through to another source — a scheme-less
+// "node1.example.com:9933" even parses as a *scheme*, so it is indistinguishable from "mailto:" here,
+// and rejecting that shape would turn a previously harmless config into a boot failure.
+function validateNodeUrl(value, helpers) {
+	if (!value.includes('//')) return value;
+	let host;
+	try {
+		host = new URL(value).hostname;
+	} catch {
+		return value; // unparseable — skipped at runtime, not worth failing the boot over
+	}
+	if (!host) return helpers.message('{{#label}} must be a URL with a host (e.g. "wss://node1.example.com:9933")');
+	return value;
+}
+
+function validatePrivateUrl(value, helpers) {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return helpers.message('{{#label}} must be a URL (e.g. "wss://10.0.0.5:9933")');
+	}
+	// Pro uses only a literal `wss://` prefix; the URL parser also accepts `wss:host`
+	if (url.protocol !== 'wss:' || !/^wss:\/\//i.test(value.trim()) || !url.hostname)
+		return helpers.message('{{#label}} must be a wss:// URL with a host');
+	if (url.username || url.password || url.search)
+		return helpers.message('{{#label}} must not include credentials or a query');
+	if (url.hash) return helpers.message('{{#label}} must not include a fragment');
+	return value;
+}
+
 function validatePath(value, helpers) {
-	Joi.assert(value, string.pattern(/^[\\/~]$|([\\/~a-zA-Z_0-9:-]+)+$/, 'directory path'));
+	Joi.assert(value, string.pattern(DIRECTORY_PATH_PATTERN, 'directory path'));
 
 	let resolvedValue;
 	if (value.startsWith('~/')) {
@@ -336,14 +808,52 @@ function validatePath(value, helpers) {
 	}
 }
 
+// A Unix domain socket path is stored in a fixed-size `sockaddr_un.sun_path` buffer that must
+// also fit a trailing NUL — 108 bytes on Linux (107 usable), 104 on macOS (103 usable). A path
+// beyond that limit can fail at listen() time or be silently truncated, depending on the supported
+// Node version. threadServer.js therefore skips only this known-overlong listener before calling
+// listen(). This remains a warning rather than a schema error so configured TCP endpoints can start.
+export const UDS_PATH_MAX_BYTES = getDomainSocketPathMaxBytes();
+
+/**
+ * Returns a warning message if `domainSocket` (resolved against `hdbRootPath`) would exceed the
+ * platform's Unix domain socket path limit, or null if it fits (or domainSocket is falsy/non-string,
+ * i.e. disabled). Called from configUtils.ts's validateConfig, after the Joi schema (which resolves
+ * the default) has already run — non-blocking, so it's a plain function rather than a Joi custom rule.
+ * `platform` defaults to `process.platform` but is accepted as a parameter so the path-resolution
+ * logic for every platform can be unit tested from any CI host.
+ */
+export function getDomainSocketPathLengthWarning(hdbRootPath, domainSocket, platform = process.platform) {
+	if (!domainSocket || typeof domainSocket !== 'string') return null;
+
+	const platformPath = platform === 'win32' ? path.win32 : path.posix;
+	let resolvedValue;
+	if (domainSocket.startsWith('~/')) {
+		resolvedValue = platformPath.join(os.homedir(), domainSocket.slice(1));
+	} else if (platformPath.isAbsolute(domainSocket)) {
+		resolvedValue = domainSocket;
+	} else {
+		// getConfigPath() (configUtils.ts) resolves this same value at runtime with
+		// `path.resolve(rootPath, value)`, not `.join()` — when rootPath is itself relative (the
+		// `rootPath` config value has no absolute-path requirement), resolve() folds in the process's
+		// cwd while join() would leave the result relative, undercounting its real byte length.
+		resolvedValue = platformPath.resolve(hdbRootPath, domainSocket);
+	}
+	const byteLength = Buffer.byteLength(resolvedValue);
+	const limit = getDomainSocketPathMaxBytes(platform);
+	if (byteLength <= limit) return null;
+	return `operationsApi.network.domainSocket resolves to "${resolvedValue}" (${byteLength} bytes), which exceeds the ${limit}-byte Unix domain socket path limit on ${platform}. The domain socket may be unavailable or truncated; any configured TCP endpoint is unaffected — use a shorter rootPath, set operationsApi.network.domainSocket to a short absolute path outside rootPath, or set it to false to silence this warning.`;
+}
+
 function validateRotationMaxSize(value, helpers) {
 	const unit = value.slice(-1);
 	if (unit !== 'G' && unit !== 'M' && unit !== 'K') {
 		return helpers.message(INVALID_SIZE_UNIT_MSG);
 	}
 
-	const size = value.slice(0, -1);
-	if (isNaN(parseInt(size))) {
+	// The same parser the write-path size check uses, so a value accepted here can never become a
+	// zero, negative or NaN byte limit downstream. `parseInt` alone accepted '0K', '-1K' and '1xK'.
+	if (!parseMaxSize(value)) {
 		return helpers.message(INVALID_MAX_SIZE_VALUE_MSG);
 	}
 
@@ -352,7 +862,7 @@ function validateRotationMaxSize(value, helpers) {
 
 function validateRotationInterval(value, helpers) {
 	const unit = value.slice(-1);
-	if (unit !== 'D' && unit !== 'H' && unit !== 'M') {
+	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
 		return helpers.message(INVALID_INTERVAL_UNIT_MSG);
 	}
 
@@ -363,9 +873,38 @@ function validateRotationInterval(value, helpers) {
 
 	return value;
 }
+function validateRotationRetention(value, helpers) {
+	if (typeof value !== 'string' || !value.trim()) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
+	}
+
+	const unit = value.slice(-1);
+	if (!VALID_ROTATION_DURATION_UNITS.includes(unit)) {
+		return helpers.message(INVALID_RETENTION_UNIT_MSG);
+	}
+
+	// parseFloat + strictly-positive check: convertToMS accepts fractional intervals, and a zero or
+	// negative retention makes every rotated log older than the (<=0) window, deleting them immediately.
+	const age = parseFloat(value.slice(0, -1));
+	if (isNaN(age) || age <= 0) {
+		return helpers.message(INVALID_RETENTION_VALUE_MSG);
+	}
+
+	return value;
+}
 
 function setDefaultThreads(parent, helpers) {
 	const configParam = helpers.state.path.join('.');
+	// Without SO_REUSEPORT (macOS is unreliable, Windows lacks it) worker threads cannot share the
+	// HTTP/socket ports — the main thread binds them all first and serves alone, so extra HTTP
+	// workers never receive direct TCP traffic. Default to a single worker there; an explicit
+	// threads.count still overrides.
+	if (process.platform === 'darwin' || process.platform === 'win32') {
+		hdbLogger.info(
+			`Defaulting ${configParam} to 1 on ${process.platform}: without SO_REUSEPORT, additional HTTP workers cannot share the server ports`
+		);
+		return 1;
+	}
 	let processors = os.cpus().length;
 
 	// default to one less than the number of logical CPU/processors so we can have good concurrency with the

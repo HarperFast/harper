@@ -1,0 +1,1080 @@
+const assert = require('node:assert');
+const {
+	listResources,
+	listResourceTemplates,
+	readResource,
+	completeResourceArgument,
+	_setResourcesForTest,
+	_setOpenApiGeneratorForTest,
+	_setHttpUrlPrefixForTest,
+} = require('#src/components/mcp/resources');
+// listResources now takes a decoded offset; the transport decodes the opaque
+// cursor (rejecting invalid ones with -32602). Tests decode nextCursor to page.
+const { decodeCursor } = require('#src/components/mcp/pagination');
+
+function makeFakeResources(entries) {
+	// Mirrors the shape of resources/Resources.ts — a Map with .getMatch(path).
+	const map = new Map();
+	for (const [path, ResourceClass] of entries) {
+		map.set(path, {
+			Resource: ResourceClass,
+			path,
+			exportTypes: {},
+			hasSubPaths: false,
+			relativeURL: '',
+		});
+	}
+	map.getMatch = (url) => {
+		// crude longest-prefix match for tests
+		let best;
+		for (const [p, entry] of map) {
+			if (url === p || url.startsWith(p + '/')) {
+				if (!best || p.length > best.path.length) best = entry;
+			}
+		}
+		return best;
+	};
+	return map;
+}
+
+// Returns a class with REST verbs on its prototype (so the hasRestVerbs filter
+// matches the way Harper's TableResource auto-binds verbs for table-backed
+// Resources). `verbs: []` makes a fixture that has no REST surface — useful
+// for testing the verb-presence filter.
+function makeTableResource({
+	databaseName,
+	tableName,
+	primaryKey = 'id',
+	attributes = [],
+	verbs = ['get', 'put', 'patch', 'delete'],
+} = {}) {
+	class Cls {}
+	Cls.databaseName = databaseName;
+	Cls.tableName = tableName;
+	Cls.primaryKey = primaryKey;
+	Cls.attributes = attributes;
+	for (const v of verbs) {
+		Cls.prototype[v] = function () {};
+	}
+	return Cls;
+}
+
+const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
+const ALICE_READ_ONLY = {
+	username: 'alice',
+	role: { permission: { data: { tables: { product: { read: true, describe: true } } } } },
+};
+const NOBODY = { username: 'nobody', role: { permission: {} } };
+
+describe('mcp/resources', () => {
+	beforeEach(() => {
+		_setResourcesForTest(
+			makeFakeResources([
+				[
+					'Product',
+					makeTableResource({
+						databaseName: 'data',
+						tableName: 'product',
+						attributes: [{ name: 'id' }, { name: 'name' }, { name: 'price' }],
+					}),
+				],
+				[
+					'Customer',
+					makeTableResource({
+						databaseName: 'data',
+						tableName: 'customer',
+						attributes: [{ name: 'id' }, { name: 'ssn' }],
+					}),
+				],
+			])
+		);
+		_setOpenApiGeneratorForTest(() => ({ openapi: '3.0.3', info: { title: 'fake' }, paths: {} }));
+	});
+	afterEach(() => {
+		_setResourcesForTest(undefined);
+		_setOpenApiGeneratorForTest(undefined);
+	});
+
+	describe('listResources — synthetic harper:// URIs', () => {
+		it('always includes harper://about on both profiles', () => {
+			const opsResult = listResources({ user: SUPER, profile: 'operations' });
+			const appResult = listResources({ user: SUPER, profile: 'application' });
+			assert.ok(opsResult.resources.some((r) => r.uri === 'harper://about'));
+			assert.ok(appResult.resources.some((r) => r.uri === 'harper://about'));
+		});
+
+		it('includes harper://operations only on the operations profile', () => {
+			const opsResult = listResources({ user: SUPER, profile: 'operations' });
+			const appResult = listResources({ user: SUPER, profile: 'application' });
+			assert.ok(opsResult.resources.some((r) => r.uri === 'harper://operations'));
+			assert.ok(!appResult.resources.some((r) => r.uri === 'harper://operations'));
+		});
+
+		it('includes harper://openapi only on the application profile', () => {
+			const opsResult = listResources({ user: SUPER, profile: 'operations' });
+			const appResult = listResources({ user: SUPER, profile: 'application' });
+			assert.ok(!opsResult.resources.some((r) => r.uri === 'harper://openapi'));
+			assert.ok(appResult.resources.some((r) => r.uri === 'harper://openapi'));
+		});
+	});
+
+	describe('listResources — table schemas (harper://schema/...)', () => {
+		it('lists every table backed by a Resource, regardless of caller perms', () => {
+			// List-time RBAC walks are misleading — Resource access is
+			// programmatic, so the list is everything and the read predicate
+			// enforces. Verified for both an unprivileged user and super_user —
+			// same list.
+			const alice = listResources({ user: ALICE_READ_ONLY, profile: 'application' });
+			const nobody = listResources({ user: NOBODY, profile: 'application' });
+			const aliceUris = alice.resources.filter((r) => r.uri.startsWith('harper://schema/')).map((r) => r.uri);
+			const nobodyUris = nobody.resources.filter((r) => r.uri.startsWith('harper://schema/')).map((r) => r.uri);
+			assert.deepEqual(aliceUris.sort(), ['harper://schema/data/customer', 'harper://schema/data/product']);
+			assert.deepEqual(nobodyUris, aliceUris);
+		});
+
+		it('produces deterministic order via URI sort', () => {
+			const result = listResources({ user: SUPER, profile: 'application' });
+			const uris = result.resources.map((r) => r.uri);
+			const sorted = [...uris].sort();
+			assert.deepEqual(uris, sorted);
+		});
+	});
+
+	describe('listResources — pagination', () => {
+		it('respects limit and returns nextCursor', () => {
+			const page1 = listResources({ user: SUPER, profile: 'application', limit: 2 });
+			assert.equal(page1.resources.length, 2);
+			assert.ok(page1.nextCursor);
+		});
+
+		it('round-trips opaquely through nextCursor', () => {
+			const all = listResources({ user: SUPER, profile: 'application', limit: 1000 }).resources;
+			let collected = [];
+			let offset;
+			for (let i = 0; i < 10; i++) {
+				const page = listResources({ user: SUPER, profile: 'application', limit: 1, offset });
+				collected = collected.concat(page.resources);
+				if (!page.nextCursor) break;
+				offset = decodeCursor(page.nextCursor);
+			}
+			assert.deepEqual(
+				collected.map((r) => r.uri),
+				all.map((r) => r.uri)
+			);
+		});
+	});
+
+	describe('listResourceTemplates', () => {
+		it('declares the harper://schema template on the application profile', () => {
+			const { resourceTemplates } = listResourceTemplates('application');
+			assert.ok(resourceTemplates.some((t) => t.uriTemplate === 'harper://schema/{database}/{table}'));
+		});
+
+		it('returns no application-only templates on the operations profile', () => {
+			const { resourceTemplates, nextCursor } = listResourceTemplates('operations');
+			assert.equal(resourceTemplates.length, 0);
+			assert.equal(nextCursor, undefined);
+		});
+
+		it('does not emit a nextCursor when all templates fit on the first page', () => {
+			const { nextCursor } = listResourceTemplates('application');
+			assert.equal(nextCursor, undefined);
+		});
+
+		it('paginates with an opaque cursor when limit is smaller than the template count', () => {
+			const all = listResourceTemplates('application').resourceTemplates;
+			// Only assert paging behavior when the profile actually has >1 template.
+			if (all.length < 2) return;
+			const page1 = listResourceTemplates('application', 0, 1);
+			assert.equal(page1.resourceTemplates.length, 1);
+			assert.ok(page1.nextCursor, 'first page hands back a nextCursor');
+			const offset = require('#src/components/mcp/pagination').decodeCursor(page1.nextCursor);
+			const page2 = listResourceTemplates('application', offset, 1);
+			assert.equal(page2.resourceTemplates.length, all.length - 1);
+			assert.equal(page2.nextCursor, undefined, 'last page has no nextCursor');
+			assert.notDeepStrictEqual(page1.resourceTemplates[0], page2.resourceTemplates[0]);
+		});
+	});
+
+	describe('completeResourceArgument (ref/resource)', () => {
+		afterEach(() => _setHttpUrlPrefixForTest(undefined));
+
+		it('completes {database} from RBAC-visible tables', () => {
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: SUPER, profile: 'application' })
+					.values,
+				['data']
+			);
+			// alice can read data.product → sees the data database
+			assert.deepEqual(
+				completeResourceArgument({
+					argument: { name: 'database', value: '' },
+					user: ALICE_READ_ONLY,
+					profile: 'application',
+				}).values,
+				['data']
+			);
+			// nobody has no table perms → no databases
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'database', value: '' }, user: NOBODY, profile: 'application' })
+					.values,
+				[]
+			);
+		});
+
+		it('completes {table} within a database, RBAC-filtered, prefix-matched', () => {
+			const superAll = completeResourceArgument({
+				argument: { name: 'table', value: '' },
+				context: { arguments: { database: 'data' } },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(superAll.values, ['customer', 'product']);
+			const alice = completeResourceArgument({
+				argument: { name: 'table', value: '' },
+				context: { arguments: { database: 'data' } },
+				user: ALICE_READ_ONLY,
+				profile: 'application',
+			});
+			assert.deepEqual(alice.values, ['product']);
+			const prefixed = completeResourceArgument({
+				argument: { name: 'table', value: 'pro' },
+				context: { arguments: { database: 'data' } },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(prefixed.values, ['product']);
+		});
+
+		it('completes {resourcePath} from mcp-exposed resource paths when an app URL is advertised', () => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			const { values } = completeResourceArgument({
+				argument: { name: 'resourcePath', value: '' },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.ok(values.includes('Product') && values.includes('Customer'));
+		});
+
+		it('returns empty {resourcePath} when no app HTTP URL template is advertised', () => {
+			_setHttpUrlPrefixForTest(''); // '' → guessAppHttpUrlPrefix() returns undefined (no template)
+			const { values } = completeResourceArgument({
+				argument: { name: 'resourcePath', value: '' },
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.deepEqual(values, [], 'no {resourcePath} template advertised → no completions');
+		});
+
+		it('returns empty on the operations profile (no resource templates there)', () => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			for (const name of ['database', 'table', 'resourcePath']) {
+				const { values } = completeResourceArgument({
+					argument: { name, value: '' },
+					context: { arguments: { database: 'data' } },
+					user: SUPER,
+					profile: 'operations',
+				});
+				assert.deepEqual(values, [], `operations profile must not complete ${name}`);
+			}
+		});
+
+		it('returns an empty completion for an unknown variable', () => {
+			assert.deepEqual(
+				completeResourceArgument({ argument: { name: 'mystery', value: '' }, user: SUPER, profile: 'application' }),
+				{ values: [], total: 0, hasMore: false }
+			);
+		});
+
+		describe('parameterised routes', () => {
+			beforeEach(() => {
+				_setHttpUrlPrefixForTest('https://app.test:9926');
+			});
+			afterEach(() => {
+				_setHttpUrlPrefixForTest(undefined);
+			});
+
+			it('lists parameterised routes as URI templates with {param} placeholders', () => {
+				const map = makeFakeResources([]);
+				map.paramRoutes = [
+					{
+						pattern: 'widget/:id/action/:action',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined },
+					},
+					{
+						pattern: 'files/*rest',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined },
+					},
+				];
+				_setResourcesForTest(map);
+
+				const uris = listResourceTemplates('application').resourceTemplates.map((t) => t.uriTemplate);
+				assert.ok(uris.includes('harper+rest://app.test:9926/widget/{id}/action/{action}'));
+				assert.ok(uris.includes('harper+rest://app.test:9926/files/{rest}'));
+			});
+
+			it('honors exportTypes.mcp === false, @hidden, and verb presence', () => {
+				const Hidden = makeTableResource({ verbs: ['get'] });
+				Hidden.hidden = true;
+				const map = makeFakeResources([]);
+				map.paramRoutes = [
+					{
+						pattern: 'mcpoff/:id',
+						entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: { mcp: false } },
+					},
+					{ pattern: 'hidden/:id', entry: { Resource: Hidden, exportTypes: undefined } },
+					{ pattern: 'noverbs/:id', entry: { Resource: makeTableResource({ verbs: [] }), exportTypes: undefined } },
+					{ pattern: 'ok/:id', entry: { Resource: makeTableResource({ verbs: ['get'] }), exportTypes: undefined } },
+				];
+				_setResourcesForTest(map);
+
+				const uris = listResourceTemplates('application').resourceTemplates.map((t) => t.uriTemplate);
+				assert.ok(uris.includes('harper+rest://app.test:9926/ok/{id}'));
+				assert.ok(!uris.some((u) => u.includes('/mcpoff/')));
+				assert.ok(!uris.some((u) => u.includes('/hidden/')));
+				assert.ok(!uris.some((u) => u.includes('/noverbs/')));
+			});
+		});
+	});
+
+	describe('readResource — harper://about', () => {
+		it('returns server metadata for both profiles', async () => {
+			const opsRes = await readResource({ uri: 'harper://about', user: SUPER, profile: 'operations' });
+			assert.equal(opsRes.ok, true);
+			const body = JSON.parse(opsRes.contents[0].text);
+			assert.equal(body.serverInfo.name, 'harper-mcp');
+			assert.equal(body.profile, 'operations');
+			assert.deepEqual(body.protocolVersions, ['2025-06-18', '2025-03-26']);
+
+			const appRes = await readResource({ uri: 'harper://about', user: SUPER, profile: 'application' });
+			assert.equal(appRes.ok, true);
+			assert.equal(JSON.parse(appRes.contents[0].text).profile, 'application');
+		});
+	});
+
+	describe('readResource — harper://openapi', () => {
+		it('returns the generated openapi doc on the application profile', async () => {
+			const res = await readResource({ uri: 'harper://openapi', user: SUPER, profile: 'application' });
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.equal(body.openapi, '3.0.3');
+		});
+
+		it('refuses on the operations profile', async () => {
+			const res = await readResource({ uri: 'harper://openapi', user: SUPER, profile: 'operations' });
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /application profile/);
+		});
+
+		it('returns ok:false when the generator throws', async () => {
+			_setOpenApiGeneratorForTest(() => {
+				throw new Error('boom');
+			});
+			const res = await readResource({ uri: 'harper://openapi', user: SUPER, profile: 'application' });
+			assert.equal(res.ok, false);
+		});
+	});
+
+	describe('readResource — harper://schema/{db}/{table}', () => {
+		it('returns Table.attributes for a user with read/describe perms', async () => {
+			const res = await readResource({
+				uri: 'harper://schema/data/product',
+				user: ALICE_READ_ONLY,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.equal(body.database, 'data');
+			assert.equal(body.table, 'product');
+			assert.deepEqual(
+				body.attributes.map((a) => a.name),
+				['id', 'name', 'price']
+			);
+		});
+
+		it('rejects when the user has no read/describe permission', async () => {
+			const res = await readResource({
+				uri: 'harper://schema/data/customer',
+				user: ALICE_READ_ONLY,
+				profile: 'application',
+			});
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /permission denied/);
+		});
+
+		it('filters out attributes the user cannot read (attribute_permissions)', async () => {
+			const ALICE_FILTERED = {
+				username: 'alice',
+				role: {
+					permission: {
+						data: {
+							tables: {
+								customer: {
+									read: true,
+									describe: true,
+									attribute_permissions: [{ attribute_name: 'ssn', read: false }],
+								},
+							},
+						},
+					},
+				},
+			};
+			const res = await readResource({
+				uri: 'harper://schema/data/customer',
+				user: ALICE_FILTERED,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.deepEqual(
+				body.attributes.map((a) => a.name),
+				['id']
+			);
+		});
+
+		it('returns ok:false when the table is unknown', async () => {
+			const res = await readResource({
+				uri: 'harper://schema/data/ghost',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /table not found/);
+		});
+
+		it('contains a malformed static-properties schema without exposing field details', async () => {
+			const cyclic = { type: 'object', properties: {} };
+			cyclic.properties.self = cyclic;
+			class Broken {}
+			Broken.databaseName = 'data';
+			Broken.tableName = 'broken';
+			Broken.properties = { cyclic };
+			_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/broken',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, false);
+			assert.strictEqual(res.reason, 'invalid schema for data.broken');
+		});
+
+		it('contains sensitive, null and unprintable metadata getter failures', async () => {
+			for (const error of [
+				new Error('config not found: /private/secret sk-schema-sentinel'),
+				null,
+				{
+					toString() {
+						throw null;
+					},
+				},
+			]) {
+				class Broken {
+					static databaseName = 'data';
+					static tableName = 'broken';
+					static get properties() {
+						throw error;
+					}
+				}
+				_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+				const res = await readResource({ uri: 'harper://schema/data/broken', user: SUPER, profile: 'application' });
+				assert.equal(res.ok, false);
+				assert.strictEqual(res.reason, 'invalid schema for data.broken');
+			}
+		});
+
+		it('does not expose malformed hidden field names', async () => {
+			class Broken {
+				static databaseName = 'data';
+				static tableName = 'broken';
+				static properties = { secretSchemaSentinel: { type: 'string', hidden: true, enum: [] } };
+			}
+			_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+			const res = await readResource({ uri: 'harper://schema/data/broken', user: SUPER, profile: 'application' });
+			assert.deepStrictEqual(res, { ok: false, reason: 'invalid schema for data.broken' });
+		});
+
+		it('does not publish hidden static properties through the schema resource', async () => {
+			class PrivateFields {}
+			PrivateFields.databaseName = 'data';
+			PrivateFields.tableName = 'private_fields';
+			PrivateFields.required = ['extension', 'secret'];
+			PrivateFields.properties = {
+				id: { type: 'string', primaryKey: true },
+				publicProfile: {
+					type: 'object',
+					required: ['publicName', 'secretDetail', 'nestedExtension'],
+					properties: {
+						publicName: { type: 'string' },
+						secretDetail: { type: 'string', hidden: true, description: 'internal only' },
+					},
+				},
+				secret: { type: 'string', hidden: true },
+			};
+			_setResourcesForTest(makeFakeResources([['PrivateFields', PrivateFields]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/private_fields',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.deepEqual(
+				body.attributes.map((attribute) => attribute.name),
+				['id', 'publicProfile', 'extension']
+			);
+			assert.deepEqual(
+				body.attributes
+					.find((attribute) => attribute.name === 'publicProfile')
+					.properties.map((attribute) => attribute.name),
+				['publicName']
+			);
+			assert.deepEqual(body.attributes.find((attribute) => attribute.name === 'publicProfile').required, [
+				'publicName',
+				'nestedExtension',
+			]);
+			assert.equal(body.attributes.find((attribute) => attribute.name === 'extension').requiredOnSchema, true);
+			assert.equal(JSON.stringify(body).includes('internal only'), false);
+		});
+
+		it('does not traverse non-enumerable relationship metadata', async () => {
+			const books = { name: 'books', type: 'array', elements: { name: '', type: 'Book' } };
+			const author = { name: 'author', type: 'Author' };
+			Object.defineProperty(books.elements, 'properties', { value: [author] });
+			Object.defineProperty(author, 'properties', { value: [books] });
+			const Authors = makeTableResource({
+				databaseName: 'data',
+				tableName: 'author',
+				attributes: [{ name: 'id', type: 'String' }, books],
+			});
+			_setResourcesForTest(makeFakeResources([['Authors', Authors]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/author',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true, res.reason);
+			assert.equal(JSON.stringify(JSON.parse(res.contents[0].text)).includes('"properties"'), false);
+		});
+	});
+
+	describe('readResource — harper://operations', () => {
+		it('returns the operations catalog on the operations profile for super_user', async () => {
+			const res = await readResource({ uri: 'harper://operations', user: SUPER, profile: 'operations' });
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.ok(Array.isArray(body.operations));
+			assert.ok(body.operations.length > 0);
+			assert.ok(body.operations.some((op) => op.name === 'describe_all'));
+		});
+
+		it('filters operations by role: structure_user sees structure ops only', async () => {
+			const structureUser = { role: { permission: { structure_user: true } } };
+			const res = await readResource({ uri: 'harper://operations', user: structureUser, profile: 'operations' });
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			const names = body.operations.map((o) => o.name);
+			assert.ok(names.includes('create_table'));
+			assert.ok(!names.includes('add_node'));
+		});
+
+		it('omits schema DDL when an operations allowlist excludes it', async () => {
+			// harper#2176: the allowlist gate runs ahead of the structure_user early-return in
+			// `verifyPerms`, so these ops fail closed on call and must not be listed as available.
+			const user = { role: { permission: { structure_user: ['orders_db'], operations: ['sql'] } } };
+			const res = await readResource({ uri: 'harper://operations', user, profile: 'operations' });
+			assert.equal(res.ok, true);
+			const names = JSON.parse(res.contents[0].text).operations.map((o) => o.name);
+			for (const op of [
+				'create_schema',
+				'create_database',
+				'drop_schema',
+				'drop_database',
+				'create_table',
+				'drop_table',
+				'create_attribute',
+				'drop_attribute',
+			]) {
+				assert.ok(!names.includes(op), `expected ${op} to be omitted`);
+			}
+			assert.ok(names.includes('sql'));
+		});
+
+		it('lists group-expanded operations for an allowlisted role', async () => {
+			const user = { role: { permission: { operations: ['read_only'] } } };
+			const res = await readResource({ uri: 'harper://operations', user, profile: 'operations' });
+			assert.equal(res.ok, true);
+			const names = JSON.parse(res.contents[0].text).operations.map((o) => o.name);
+			assert.ok(names.includes('sql'));
+			assert.ok(names.includes('describe_all'));
+			assert.ok(!names.includes('insert'));
+			assert.ok(!names.includes('create_table'));
+		});
+
+		it('returns an empty catalog for a user with no operations perms', async () => {
+			const res = await readResource({ uri: 'harper://operations', user: NOBODY, profile: 'operations' });
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.deepEqual(body.operations, []);
+		});
+
+		it('refuses on the application profile', async () => {
+			const res = await readResource({ uri: 'harper://operations', user: SUPER, profile: 'application' });
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /operations profile/);
+		});
+	});
+
+	describe('readResource — https://... (app profile)', () => {
+		it('returns the Resource descriptor for a matched path (metadata only)', async () => {
+			// The descriptor is a hint, not a capability — actual data fetches
+			// go through tools where each Resource's allow* predicates run
+			// per-record. Any authenticated user can resolve an existing path;
+			// unknown paths still 404.
+			const res = await readResource({
+				uri: 'https://harper.example.com:9926/Product',
+				user: NOBODY,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.equal(body.path, 'Product');
+			assert.equal(body.database, 'data');
+			assert.equal(body.table, 'product');
+		});
+
+		it('returns ok:false when no resource matches', async () => {
+			const res = await readResource({
+				uri: 'https://harper.example.com:9926/Ghost',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /no resource matches/);
+		});
+
+		it('refuses on the operations profile', async () => {
+			const res = await readResource({
+				uri: 'https://harper.example.com:9926/Product',
+				user: SUPER,
+				profile: 'operations',
+			});
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /application profile/);
+		});
+	});
+
+	describe('listResources — harper+rest:// app Resources (verb-presence gating)', () => {
+		beforeEach(() => {
+			// Override the URL prefix so enumerateAppHttpResources actually
+			// emits entries (otherwise it returns [] and the verb filter is
+			// untested in isolation).
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+			_setResourcesForTest(
+				makeFakeResources([
+					['HasVerbs', makeTableResource({ databaseName: 'data', tableName: 'product' })],
+					[
+						'NoVerbs',
+						makeTableResource({
+							databaseName: 'data',
+							tableName: 'silent',
+							verbs: [], // bare class, no REST methods
+						}),
+					],
+				])
+			);
+		});
+		afterEach(() => {
+			_setHttpUrlPrefixForTest(undefined);
+		});
+
+		it('includes Resources whose prototype defines REST verbs', () => {
+			const result = listResources({ user: SUPER, profile: 'application' });
+			const httpUris = result.resources.filter((r) => r.uri.startsWith('harper+rest://')).map((r) => r.uri);
+			assert.ok(httpUris.includes('harper+rest://app.test:9926/HasVerbs'));
+		});
+
+		it('excludes Resources with no REST verbs on the prototype', () => {
+			const result = listResources({ user: SUPER, profile: 'application' });
+			const httpUris = result.resources.filter((r) => r.uri.startsWith('harper+rest://')).map((r) => r.uri);
+			assert.ok(!httpUris.includes('harper+rest://app.test:9926/NoVerbs'));
+		});
+
+		it('uses the request base URL over the server guess (load balancer / Fabric)', async () => {
+			_setHttpUrlPrefixForTest(undefined);
+			const baseUrl = 'https://public.example.com';
+			const uris = listResources({ user: SUPER, profile: 'application', baseUrl }).resources.map((r) => r.uri);
+			assert.ok(uris.includes('harper+rest://public.example.com/HasVerbs'));
+			const templates = listResourceTemplates('application', undefined, undefined, baseUrl).resourceTemplates;
+			assert.ok(templates.some((t) => t.uriTemplate === 'harper+rest://public.example.com/{resourcePath}'));
+			let serverUrl;
+			_setOpenApiGeneratorForTest((_resources, url) => ((serverUrl = url), { openapi: '3.0.3' }));
+			try {
+				await readResource({ uri: 'harper://openapi', user: SUPER, profile: 'application', baseUrl });
+			} finally {
+				_setOpenApiGeneratorForTest(undefined);
+			}
+			assert.equal(serverUrl, baseUrl);
+		});
+
+		it('lists the same https:// surface for any caller (no list-time RBAC)', () => {
+			const sup = listResources({ user: SUPER, profile: 'application' }).resources.filter((r) =>
+				r.uri.startsWith('harper+rest://')
+			);
+			const nob = listResources({ user: NOBODY, profile: 'application' }).resources.filter((r) =>
+				r.uri.startsWith('harper+rest://')
+			);
+			assert.deepEqual(
+				sup.map((r) => r.uri),
+				nob.map((r) => r.uri)
+			);
+		});
+	});
+
+	describe('exportTypes gating', () => {
+		beforeEach(() => {
+			_setHttpUrlPrefixForTest('https://app.test:9926');
+		});
+		afterEach(() => {
+			_setHttpUrlPrefixForTest(undefined);
+		});
+
+		it('skips Resources with exportTypes.mcp === false from both harper:// schema and harper+rest:// enumeration', () => {
+			const Public = makeTableResource({ databaseName: 'data', tableName: 'public' });
+			const Hidden = makeTableResource({ databaseName: 'data', tableName: 'hidden' });
+			const map = new Map([
+				['Public', { Resource: Public, path: 'Public', exportTypes: undefined, hasSubPaths: false, relativeURL: '' }],
+				[
+					'Hidden',
+					{ Resource: Hidden, path: 'Hidden', exportTypes: { mcp: false }, hasSubPaths: false, relativeURL: '' },
+				],
+			]);
+			map.getMatch = (url, exportType) => {
+				const entry = map.get(url);
+				if (!entry) return undefined;
+				if (exportType && entry.exportTypes && entry.exportTypes[exportType] === false) return undefined;
+				return entry;
+			};
+			_setResourcesForTest(map);
+			const result = listResources({ user: SUPER, profile: 'application' });
+			const httpUris = result.resources.filter((r) => r.uri.startsWith('harper+rest://')).map((r) => r.uri);
+			const schemaUris = result.resources.filter((r) => r.uri.startsWith('harper://schema/')).map((r) => r.uri);
+			assert.ok(httpUris.includes('harper+rest://app.test:9926/Public'));
+			assert.ok(!httpUris.some((u) => u.endsWith('/Hidden')));
+			assert.ok(schemaUris.includes('harper://schema/data/public'));
+			assert.ok(!schemaUris.includes('harper://schema/data/hidden'));
+		});
+
+		it('publishes Resources with exportTypes.http === false (mcp flag is the only gate)', () => {
+			const NoHttp = makeTableResource({ databaseName: 'data', tableName: 'nohttp' });
+			const map = new Map([
+				[
+					'NoHttp',
+					{ Resource: NoHttp, path: 'NoHttp', exportTypes: { http: false }, hasSubPaths: false, relativeURL: '' },
+				],
+			]);
+			map.getMatch = (url, exportType) => {
+				const entry = map.get(url);
+				if (!entry) return undefined;
+				if (exportType && entry.exportTypes && entry.exportTypes[exportType] === false) return undefined;
+				return entry;
+			};
+			_setResourcesForTest(map);
+			const result = listResources({ user: SUPER, profile: 'application' });
+			const httpUris = result.resources.filter((r) => r.uri.startsWith('harper+rest://')).map((r) => r.uri);
+			const schemaUris = result.resources.filter((r) => r.uri.startsWith('harper://schema/')).map((r) => r.uri);
+			assert.ok(httpUris.includes('harper+rest://app.test:9926/NoHttp'));
+			assert.ok(schemaUris.includes('harper://schema/data/nohttp'));
+		});
+
+		it('a resource registered with exportTypes.mcp === false cannot be read via https://...', async () => {
+			const Hidden = makeTableResource({ databaseName: 'data', tableName: 'hidden' });
+			const map = new Map([
+				[
+					'Hidden',
+					{ Resource: Hidden, path: 'Hidden', exportTypes: { mcp: false }, hasSubPaths: false, relativeURL: '' },
+				],
+			]);
+			map.getMatch = (url, exportType) => {
+				const entry = map.get(url);
+				if (!entry) return undefined;
+				if (exportType && entry.exportTypes && entry.exportTypes[exportType] === false) return undefined;
+				return entry;
+			};
+			_setResourcesForTest(map);
+			const res = await readResource({
+				uri: 'harper+rest://app.test:9926/Hidden',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /no resource matches/);
+		});
+
+		it('a resource not in the registry never enumerates', () => {
+			// Build a class that's a *valid* Resource shape but is intentionally
+			// absent from the registry. It should not surface anywhere in the MCP
+			// list, even though it carries the right shape.
+			makeTableResource({ databaseName: 'data', tableName: 'orphan' });
+			const Visible = makeTableResource({ databaseName: 'data', tableName: 'visible' });
+			const map = new Map([
+				[
+					'Visible',
+					{ Resource: Visible, path: 'Visible', exportTypes: undefined, hasSubPaths: false, relativeURL: '' },
+				],
+			]);
+			map.getMatch = (url) => map.get(url);
+			_setResourcesForTest(map);
+			const result = listResources({ user: SUPER, profile: 'application' });
+			const allUris = result.resources.map((r) => r.uri);
+			assert.ok(!allUris.some((u) => u.includes('orphan')));
+			assert.ok(allUris.some((u) => u.includes('visible')));
+		});
+	});
+
+	describe('enumerate — description prefix + @hidden suppression', () => {
+		it('prepends ResourceClass.description to harper+rest://* resource entries', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+			Product.description = 'Product catalog — what shows up in the storefront listing.';
+			_setResourcesForTest(makeFakeResources([['Product', Product]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const product = resources.find((r) => r.uri === 'harper+rest://localhost/Product');
+			assert.ok(product, 'Product https resource present');
+			assert.match(product.description, /Product catalog/, 'prefixed with class description');
+			assert.match(product.description, /Application resource at \/Product/, 'still has the default suffix');
+		});
+
+		it('prepends ResourceClass.description to harper://schema/* entries', () => {
+			const Product = makeTableResource({ databaseName: 'data', tableName: 'product' });
+			Product.description = 'Product catalog row — one per SKU.';
+			_setResourcesForTest(makeFakeResources([['Product', Product]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const schema = resources.find((r) => r.uri === 'harper://schema/data/product');
+			assert.ok(schema, 'schema entry present');
+			assert.match(schema.description, /Product catalog row/);
+		});
+
+		it('omits @hidden Resources from both https://* and harper://schema/* enumerations', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const HiddenThing = makeTableResource({ databaseName: 'data', tableName: 'hidden_thing' });
+			HiddenThing.hidden = true;
+			HiddenThing.description = 'Should not surface.';
+			_setResourcesForTest(makeFakeResources([['HiddenThing', HiddenThing]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const uris = resources.map((r) => r.uri);
+			assert.ok(!uris.includes('harper+rest://localhost/HiddenThing'), 'https entry suppressed');
+			assert.ok(!uris.includes('harper://schema/data/hidden_thing'), 'schema entry suppressed');
+		});
+
+		it('uses the default-only description when ResourceClass has no static description', () => {
+			_setHttpUrlPrefixForTest('https://localhost');
+			const Plain = makeTableResource({ databaseName: 'data', tableName: 'plain' });
+			_setResourcesForTest(makeFakeResources([['Plain', Plain]]));
+			const { resources } = listResources({ user: SUPER, profile: 'application' });
+			const plain = resources.find((r) => r.uri === 'harper+rest://localhost/Plain');
+			assert.ok(plain);
+			assert.match(plain.description, /^Application resource at \/Plain/, 'no prefix when no class description');
+		});
+	});
+
+	describe('readResource — error cases', () => {
+		it('rejects an invalid URI', async () => {
+			const res = await readResource({ uri: 'not a uri', user: SUPER, profile: 'application' });
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /invalid uri/);
+		});
+
+		it('rejects an unknown scheme', async () => {
+			const res = await readResource({ uri: 'ftp://example.com/foo', user: SUPER, profile: 'application' });
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /unsupported uri scheme/);
+		});
+
+		it('rejects an unknown harper:// path', async () => {
+			const res = await readResource({ uri: 'harper://nope', user: SUPER, profile: 'application' });
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /unknown harper:\/\/ resource/);
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Custom mcpResources (#1609) + harper+rest:// descriptor scheme
+// ---------------------------------------------------------------------------
+
+const { addCustomResource, clearProfileCustomResources } = require('#src/components/mcp/customResourceRegistry');
+
+describe('custom content resources (#1609)', () => {
+	afterEach(() => {
+		clearProfileCustomResources('application');
+		_setHttpUrlPrefixForTest(undefined);
+		_setResourcesForTest(undefined);
+	});
+
+	it('fixed custom URIs appear in resources/list', () => {
+		addCustomResource({
+			uri: 'docs:///index',
+			name: 'docs index',
+			description: 'All documentation pages',
+			mimeType: 'text/markdown',
+			profile: 'application',
+			read: async () => 'x',
+		});
+		_setResourcesForTest(makeFakeResources([]));
+		const { resources } = listResources({ user: SUPER, profile: 'application' });
+		const entry = resources.find((r) => r.uri === 'docs:///index');
+		assert.ok(entry, 'custom fixed URI listed');
+		assert.equal(entry.mimeType, 'text/markdown');
+	});
+
+	it('custom templates appear in resources/templates/list', () => {
+		addCustomResource({
+			uriTemplate: 'docs:///{+path}',
+			name: 'docs page',
+			profile: 'application',
+			read: async () => 'x',
+		});
+		_setResourcesForTest(makeFakeResources([]));
+		const { resourceTemplates } = listResourceTemplates('application');
+		assert.ok(resourceTemplates.some((t) => t.uriTemplate === 'docs:///{+path}'));
+	});
+
+	it('readResource dispatches a template read with extracted params; string result is text', async () => {
+		let seenParams, seenContext;
+		addCustomResource({
+			uriTemplate: 'docs:///{+path}',
+			name: 'docs page',
+			mimeType: 'text/markdown',
+			profile: 'application',
+			read: async (params, context) => {
+				seenParams = params;
+				seenContext = context;
+				return `# Page ${params.path}`;
+			},
+		});
+		const res = await readResource({ uri: 'docs:///guides/install.md', user: SUPER, profile: 'application' });
+		assert.equal(res.ok, true);
+		assert.deepEqual(seenParams, { path: 'guides/install.md' });
+		assert.equal(seenContext.profile, 'application');
+		assert.equal(seenContext.user, SUPER);
+		assert.equal(res.contents[0].uri, 'docs:///guides/install.md');
+		assert.equal(res.contents[0].mimeType, 'text/markdown');
+		assert.equal(res.contents[0].text, '# Page guides/install.md');
+	});
+
+	it('blob results pass through with their mimeType', async () => {
+		addCustomResource({
+			uri: 'docs:///logo',
+			name: 'logo',
+			profile: 'application',
+			read: async () => ({ blob: 'aGVsbG8=', mimeType: 'image/png' }),
+		});
+		const res = await readResource({ uri: 'docs:///logo', user: SUPER, profile: 'application' });
+		assert.equal(res.ok, true);
+		assert.equal(res.contents[0].blob, 'aGVsbG8=');
+		assert.equal(res.contents[0].mimeType, 'image/png');
+		assert.equal(res.contents[0].text, undefined);
+	});
+
+	it('plain-object results serialize as JSON', async () => {
+		addCustomResource({
+			uri: 'docs:///toc',
+			name: 'toc',
+			profile: 'application',
+			read: async () => ({ pages: ['a', 'b'] }),
+		});
+		const res = await readResource({ uri: 'docs:///toc', user: SUPER, profile: 'application' });
+		assert.equal(res.ok, true);
+		assert.equal(res.contents[0].mimeType, 'application/json');
+		assert.deepEqual(JSON.parse(res.contents[0].text), { pages: ['a', 'b'] });
+	});
+
+	it('author read errors surface as a sanitized failure (raw error stays in the log)', async () => {
+		addCustomResource({
+			uri: 'docs:///boom',
+			name: 'boom',
+			profile: 'application',
+			read: async () => {
+				throw new Error('https://internal.svc key=sk-abc123 exploded');
+			},
+		});
+		const res = await readResource({ uri: 'docs:///boom', user: SUPER, profile: 'application' });
+		assert.equal(res.ok, false);
+		assert.ok(!/sk-abc123/.test(res.reason), 'raw error must not leak');
+		assert.match(res.reason, /failed to read/);
+	});
+
+	it('completion uses author-declared values selected by refUri', () => {
+		addCustomResource({
+			uriTemplate: 'docs:///{section}/{page}',
+			name: 'page',
+			profile: 'application',
+			completions: { section: ['guides', 'reference', 'release-notes'] },
+			read: async () => 'x',
+		});
+		const result = completeResourceArgument({
+			argument: { name: 'section', value: 're' },
+			user: SUPER,
+			profile: 'application',
+			refUri: 'docs:///{section}/{page}',
+		});
+		assert.deepEqual(result.values, ['reference', 'release-notes']);
+	});
+});
+
+describe('harper+rest:// descriptor scheme (#1609)', () => {
+	afterEach(() => {
+		_setHttpUrlPrefixForTest(undefined);
+		_setResourcesForTest(undefined);
+	});
+
+	it('exported-Resource descriptors list under harper+rest://', () => {
+		_setHttpUrlPrefixForTest('https://app.test:9926');
+		_setResourcesForTest(
+			makeFakeResources([['Product', makeTableResource({ databaseName: 'data', tableName: 'product' })]])
+		);
+		const { resources } = listResources({ user: SUPER, profile: 'application' });
+		assert.ok(resources.some((r) => r.uri === 'harper+rest://app.test:9926/Product'));
+		assert.ok(!resources.some((r) => r.uri.startsWith('https://')), 'no https:// descriptors remain');
+	});
+
+	it('templates list under harper+rest://', () => {
+		_setHttpUrlPrefixForTest('https://app.test:9926');
+		_setResourcesForTest(makeFakeResources([]));
+		const { resourceTemplates } = listResourceTemplates('application');
+		assert.ok(resourceTemplates.some((t) => t.uriTemplate === 'harper+rest://app.test:9926/{resourcePath}'));
+	});
+
+	it('reads resolve under both the new scheme and legacy http(s) URIs', async () => {
+		_setHttpUrlPrefixForTest('https://app.test:9926');
+		_setResourcesForTest(
+			makeFakeResources([['Product', makeTableResource({ databaseName: 'data', tableName: 'product' })]])
+		);
+		const viaNew = await readResource({
+			uri: 'harper+rest://app.test:9926/Product',
+			user: SUPER,
+			profile: 'application',
+		});
+		assert.equal(viaNew.ok, true);
+		assert.equal(JSON.parse(viaNew.contents[0].text).table, 'product');
+		const viaLegacy = await readResource({
+			uri: 'https://app.test:9926/Product',
+			user: SUPER,
+			profile: 'application',
+		});
+		assert.equal(viaLegacy.ok, true, 'http(s) URIs from older listings must keep reading');
+	});
+});
+
+describe('normalizePortForUrl (#1609 descriptor authority)', () => {
+	const { normalizePortForUrl } = require('#src/components/mcp/resources');
+	it('passes bare ports through and extracts the port from host:port bind forms', () => {
+		assert.equal(normalizePortForUrl(9926), '9926');
+		assert.equal(normalizePortForUrl('9926'), '9926');
+		assert.equal(normalizePortForUrl('127.0.0.9:9926'), '9926');
+		assert.equal(normalizePortForUrl('[::1]:9926'), '9926');
+		assert.equal(normalizePortForUrl(undefined), undefined);
+		assert.equal(normalizePortForUrl(''), undefined);
+	});
+});

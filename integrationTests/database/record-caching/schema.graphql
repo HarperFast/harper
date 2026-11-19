@@ -1,0 +1,5 @@
+type CacheRecord @table @export {
+	id: ID @primaryKey
+	name: String
+	counter: Int
+}

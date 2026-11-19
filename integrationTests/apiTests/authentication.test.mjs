@@ -15,7 +15,7 @@
  * Harper-on-Bun instead of a graceful 401. Tracked in issue #696.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import request from 'supertest';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
@@ -110,6 +110,84 @@ suite('Authentication', (ctx) => {
 			assert.ok(r.text.includes('Must login'), r.text);
 			assert.equal(r.status, 401, r.text);
 		}
+	});
+
+	// Skipped on Bun: the operations API on Bun is served by delegating to Fastify via
+	// inject() and auth is applied through fastifyAuth's Bun shim, which does not wire up
+	// `baseRequest.login` for the session-establishing `login` op — so this op is a known
+	// pre-existing gap on Bun (login never worked there), separate from the Node regression
+	// this test guards.
+	test('login operation establishes a session (Studio bootstrap path)', { skip: skipOnBun }, async () => {
+		// Studio calls the `login` operation to set up the admin user on a new cluster. This
+		// exercises auth's session middleware on the operations-API port; that middleware runs
+		// only on the main thread, so if it is not registered there the operation fails with
+		// "No session for login". Guards the regression from removing auth's main-thread
+		// registration.
+		const response = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.send({ operation: 'login', username: admin.username, password: admin.password })
+			.expect((r) => assert.ok(r.text.includes('Login successful'), r.text))
+			.expect(200);
+
+		// A successful login must establish a session cookie — Studio relies on it.
+		const setCookie = response.headers['set-cookie'];
+		assert.ok(
+			Array.isArray(setCookie) && setCookie.some((c) => c.includes('hdb-session=')),
+			`expected an hdb-session cookie, got ${JSON.stringify(setCookie)}`
+		);
+	});
+
+	// Fabric Connect flow (harper#1544): mint a purpose-scoped login token, then trade it for a
+	// session cookie via `login` — without ever sending username/password to this instance.
+	test('login operation exchanges a login-purpose token for a session cookie', { skip: skipOnBun }, async () => {
+		const tokenResponse = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.send({
+				operation: 'create_authentication_tokens',
+				username: admin.username,
+				password: admin.password,
+				purpose: 'login',
+			})
+			.expect(200);
+		// Same field as a regular operation-token mint — purpose: 'login' doesn't change the response shape.
+		assert.ok(tokenResponse.body.operation_token, tokenResponse.text);
+		assert.equal(tokenResponse.body.refresh_token, undefined, tokenResponse.text);
+
+		const loginResponse = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.send({ operation: 'login', token: tokenResponse.body.operation_token })
+			.expect((r) => assert.ok(r.text.includes('Login successful'), r.text))
+			.expect(200);
+
+		const setCookie = loginResponse.headers['set-cookie'];
+		assert.ok(
+			Array.isArray(setCookie) && setCookie.some((c) => c.includes('hdb-session=')),
+			`expected an hdb-session cookie, got ${JSON.stringify(setCookie)}`
+		);
+	});
+
+	test('a login-purpose token is rejected as a Bearer API credential', async () => {
+		const tokenResponse = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.send({
+				operation: 'create_authentication_tokens',
+				username: admin.username,
+				password: admin.password,
+				purpose: 'login',
+			})
+			.expect(200);
+
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${tokenResponse.body.operation_token}`)
+			.send({ operation: 'describe_all' })
+			.expect((r) => assert.ok(r.text.includes('"error":"invalid token"'), r.text))
+			.expect(401);
 	});
 
 	test('create_authentication_tokens with valid credentials returns operation token', async () => {

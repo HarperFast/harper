@@ -1,10 +1,36 @@
 'use strict';
 
 const { expect } = require('chai');
+const assert = require('node:assert/strict');
 const { describe, it } = require('mocha');
 const sinon = require('sinon');
-const { METRIC } = require('#src/resources/analytics/metadata');
-const { listMetrics, describeMetric /* collectDistinctValues */ } = require('#src/resources/analytics/read');
+const { METRIC } = require('#js/resources/analytics/metadata');
+const { getOp, listMetrics, describeMetric /* collectDistinctValues */ } = require('#src/resources/analytics/read');
+const { getThisNodeName } = require('#src/server/nodeName');
+const hostnames = require('#src/resources/analytics/hostnames');
+
+// Mimics the Harper search iterable: array-like with a lazy async `.map`, which is
+// what resources/analytics/read.ts `get()` consumes.
+function mockSearchIterable(items) {
+	return {
+		[Symbol.asyncIterator]: async function* () {
+			for (const item of items) yield item;
+		},
+		map(fn) {
+			return {
+				[Symbol.asyncIterator]: async function* () {
+					for (const item of items) yield await fn(item);
+				},
+			};
+		},
+	};
+}
+
+async function collect(result) {
+	const out = [];
+	for await (const item of result) out.push(item);
+	return out;
+}
 
 describe('listMetrics', () => {
 	let searchStub;
@@ -299,5 +325,286 @@ describe('describeMetric', () => {
 		} catch (error) {
 			expect(error.message).to.equal('Database error');
 		}
+	});
+});
+
+describe('getOp (replicated fan-out)', () => {
+	let searchStub;
+	let sendOperationStub;
+	let originalServer;
+	let originalDatabases;
+
+	beforeEach(() => {
+		// `server` and `databases` are process-wide globals established at module load;
+		// stash and restore them rather than deleting so later test files still see them.
+		originalServer = global.server;
+		originalDatabases = global.databases;
+
+		searchStub = sinon.stub().returns(mockSearchIterable([]));
+		// `replicate === false` => analytics are NOT replicated by the DB layer, so the
+		// fan-out is needed (and enabled). The skip case is covered explicitly below.
+		global.databases = { system: { hdb_analytics: { search: searchStub, replicate: false } } };
+
+		sendOperationStub = sinon.stub();
+		global.server = {
+			hostname: 'local-host',
+			nodes: [],
+			replication: { sendOperationToNode: sendOperationStub },
+		};
+	});
+
+	afterEach(() => {
+		sinon.restore();
+		global.server = originalServer;
+		global.databases = originalDatabases;
+	});
+
+	it('merges metrics from every peer node into one flat result set', async () => {
+		global.server.nodes = [{ name: 'peer-a' }, { name: 'peer-b' }];
+		sendOperationStub
+			.withArgs(sinon.match({ name: 'peer-a' }))
+			.resolves({ results: [{ id: 1, metric: 'm', node: 'peer-a' }] });
+		sendOperationStub
+			.withArgs(sinon.match({ name: 'peer-b' }))
+			.resolves({ results: [{ id: 2, metric: 'm', node: 'peer-b' }] });
+
+		const result = await collect(await getOp({ operation: 'get_analytics', metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([
+			{ id: 1, metric: 'm', node: 'peer-a' },
+			{ id: 2, metric: 'm', node: 'peer-b' },
+		]);
+		expect(sendOperationStub.calledTwice).to.be.true;
+	});
+
+	it('forwards the query to peers with `replicated` cleared (no recursive fan-out)', async () => {
+		global.server.nodes = [{ name: 'peer-a' }];
+		sendOperationStub.resolves({ results: [] });
+
+		await collect(await getOp({ operation: 'get_analytics', metric: 'm', replicated: true }));
+
+		const forwarded = sendOperationStub.firstCall.args[1];
+		expect(forwarded.replicated).to.equal(false);
+		expect(forwarded.metric).to.equal('m');
+	});
+
+	it('skips the local node when fanning out', async () => {
+		const thisNode = getThisNodeName();
+		global.server.nodes = [{ name: thisNode }, { name: 'peer-x' }];
+		sendOperationStub.resolves({ results: [] });
+
+		await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(sendOperationStub.calledOnce).to.be.true;
+		expect(sendOperationStub.firstCall.args[0]).to.deep.equal({ name: 'peer-x' });
+	});
+
+	it('omits a peer that errors and still returns the others (best-effort)', async () => {
+		global.server.nodes = [{ name: 'peer-good' }, { name: 'peer-bad' }];
+		sendOperationStub
+			.withArgs(sinon.match({ name: 'peer-good' }))
+			.resolves({ results: [{ id: 1, metric: 'm', node: 'peer-good' }] });
+		sendOperationStub.withArgs(sinon.match({ name: 'peer-bad' })).rejects(new Error('connection refused'));
+
+		const result = await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([{ id: 1, metric: 'm', node: 'peer-good' }]);
+	});
+
+	it('accepts a bare-array peer response (defensive unwrap)', async () => {
+		global.server.nodes = [{ name: 'peer-a' }];
+		sendOperationStub.resolves([{ id: 5, metric: 'm', node: 'peer-a' }]);
+
+		const result = await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([{ id: 5, metric: 'm', node: 'peer-a' }]);
+	});
+
+	it('treats a malformed peer response (non-array results) as empty', async () => {
+		global.server.nodes = [{ name: 'peer-good' }, { name: 'peer-weird' }];
+		sendOperationStub
+			.withArgs(sinon.match({ name: 'peer-good' }))
+			.resolves({ results: [{ id: 1, metric: 'm', node: 'peer-good' }] });
+		sendOperationStub.withArgs(sinon.match({ name: 'peer-weird' })).resolves({ results: 'not-an-array' });
+
+		const result = await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([{ id: 1, metric: 'm', node: 'peer-good' }]);
+	});
+
+	it('includes local node results ahead of peer results', async () => {
+		sinon
+			.stub(hostnames, 'getAnalyticsHostnameTable')
+			.returns({ get: sinon.stub().resolves({ hostname: 'local-host' }) });
+		searchStub.returns(mockSearchIterable([{ id: [10, 12345], metric: 'm', total: 1 }]));
+		global.server.nodes = [{ name: 'peer-a' }];
+		sendOperationStub.resolves({ results: [{ id: 20, metric: 'm', node: 'peer-a', total: 2 }] });
+
+		const result = await collect(await getOp({ metric: 'm', replicated: true }));
+
+		expect(result).to.deep.equal([
+			{ id: 10, metric: 'm', total: 1, node: 'local-host' },
+			{ id: 20, metric: 'm', node: 'peer-a', total: 2 },
+		]);
+	});
+
+	it('forces the `node` attribute into an explicit get_attributes list when replicated', async () => {
+		global.server.nodes = [{ name: 'peer-a' }];
+		sendOperationStub.resolves({ results: [] });
+
+		await collect(await getOp({ metric: 'm', get_attributes: ['metric', 'total'], replicated: true }));
+
+		const forwarded = sendOperationStub.firstCall.args[1];
+		expect(forwarded.get_attributes).to.include('node');
+	});
+
+	it('does not fan out when `replicated` is not set', async () => {
+		searchStub.returns(mockSearchIterable([{ id: [10, 1], metric: 'm', total: 1 }]));
+		global.server.nodes = [{ name: 'peer-a' }];
+
+		const result = await collect(await getOp({ metric: 'm', get_attributes: ['metric', 'total'] }));
+
+		expect(sendOperationStub.called).to.be.false;
+		expect(result).to.deep.equal([{ id: 10, metric: 'm', total: 1 }]);
+	});
+
+	it('does not fan out in standalone core (no server.nodes)', async () => {
+		global.server.nodes = undefined;
+		searchStub.returns(mockSearchIterable([{ id: [10, 1], metric: 'm' }]));
+
+		const result = await collect(await getOp({ metric: 'm', get_attributes: ['metric'], replicated: true }));
+
+		expect(sendOperationStub.called).to.be.false;
+		expect(result).to.deep.equal([{ id: 10, metric: 'm' }]);
+	});
+
+	it('does not fan out when the analytics table already replicates (replicate !== false)', async () => {
+		// `analytics_replicate: true` leaves the table `replicate` undefined; a local query
+		// already holds every node's rows, so fanning out would double-count.
+		delete global.databases.system.hdb_analytics.replicate;
+		global.server.nodes = [{ name: 'peer-a' }];
+		searchStub.returns(mockSearchIterable([{ id: [10, 1], metric: 'm', total: 1 }]));
+
+		const result = await collect(await getOp({ metric: 'm', get_attributes: ['metric', 'total'], replicated: true }));
+
+		expect(sendOperationStub.called).to.be.false;
+		expect(result).to.deep.equal([{ id: 10, metric: 'm', total: 1 }]);
+	});
+});
+
+describe('getOp (log filter)', () => {
+	let searchStub;
+	let originalDatabases;
+	let originalServer;
+
+	beforeEach(() => {
+		originalDatabases = global.databases;
+		originalServer = global.server;
+		searchStub = sinon.stub().returns(mockSearchIterable([]));
+		global.databases = { system: { hdb_analytics: { search: searchStub, replicate: true } } };
+		global.server = { hostname: 'local-host', nodes: [] };
+	});
+
+	afterEach(() => {
+		sinon.restore();
+		global.databases = originalDatabases;
+		global.server = originalServer;
+	});
+
+	it('adds a `log` equals condition when log is provided', async () => {
+		await collect(await getOp({ metric: 'rocksdb-txnlog-stats', log: 'audit' }));
+
+		const conditions = searchStub.firstCall.args[0].conditions;
+		expect(conditions[0]).to.deep.equal({ attribute: 'metric', comparator: 'equals', value: 'rocksdb-txnlog-stats' });
+		expect(conditions).to.deep.include({ attribute: 'log', comparator: 'equals', value: 'audit' });
+	});
+
+	it('does not add a `log` condition when log is omitted', async () => {
+		await collect(await getOp({ metric: 'rocksdb-txnlog-stats' }));
+
+		const conditions = searchStub.firstCall.args[0].conditions;
+		expect(conditions.some((c) => c.attribute === 'log')).to.be.false;
+	});
+
+	it('rejects a `log` filter on a non-txnlog metric instead of silently returning nothing', async () => {
+		let threw = false;
+		try {
+			await getOp({ metric: 'cpu-usage', log: 'audit' });
+		} catch {
+			threw = true;
+		}
+		expect(threw).to.be.true;
+		expect(searchStub.called).to.be.false;
+	});
+});
+
+describe('getOp (time-window condition order, #1796)', () => {
+	let capturedRequest;
+	let originalDatabases;
+	let originalServer;
+
+	beforeEach(() => {
+		originalDatabases = global.databases;
+		originalServer = global.server;
+		capturedRequest = undefined;
+		const search = (request) => {
+			capturedRequest = request;
+			return mockSearchIterable([]);
+		};
+		global.databases = { system: { hdb_analytics: { search, replicate: true } } };
+		global.server = { hostname: 'local-host', nodes: [] };
+	});
+
+	afterEach(() => {
+		global.databases = originalDatabases;
+		global.server = originalServer;
+	});
+
+	// The planner estimates a primary-key `between` as a flat 10% of the table, so on a large
+	// hdb_analytics table it drives iteration off the `metric` index and scans the metric's whole
+	// history. A two-sided window must lead and pin execution order so the window drives the scan.
+	// This assertion fails on the pre-fix ordering (metric first, no pin).
+	it('leads with the id-range `between` and pins execution order for a bounded window', async () => {
+		await collect(await getOp({ metric: 'utilization', start_time: 1000, end_time: 2000 }));
+
+		assert.deepEqual(capturedRequest.conditions[0], { attribute: 'id', comparator: 'between', value: [1000, 2000] });
+		assert.deepEqual(capturedRequest.conditions[1], {
+			attribute: 'metric',
+			comparator: 'equals',
+			value: 'utilization',
+		});
+		assert.equal(capturedRequest.enforceExecutionOrder, true);
+	});
+
+	// An open-ended range can span the whole table, so we don't force it to drive — leave the planner
+	// free rather than risk a full-table scan for a selective metric.
+	it('does not pin an open-ended range (start_time only) and leaves it to the planner', async () => {
+		await collect(await getOp({ metric: 'utilization', start_time: 1000 }));
+
+		assert.equal(capturedRequest.enforceExecutionOrder, undefined);
+		assert.deepEqual(capturedRequest.conditions[0], {
+			attribute: 'metric',
+			comparator: 'equals',
+			value: 'utilization',
+		});
+		assert.ok(
+			capturedRequest.conditions.some((c) => c.attribute === 'id' && c.comparator === 'greater_than_equal'),
+			'the open-ended id range is still present as a filter'
+		);
+	});
+
+	it('leaves reordering on (metric leads) when no time window is given', async () => {
+		await collect(await getOp({ metric: 'utilization' }));
+
+		assert.deepEqual(capturedRequest.conditions[0], {
+			attribute: 'metric',
+			comparator: 'equals',
+			value: 'utilization',
+		});
+		assert.equal(
+			capturedRequest.conditions.some((c) => c.attribute === 'id'),
+			false
+		);
+		assert.equal(capturedRequest.enforceExecutionOrder, undefined);
 	});
 });

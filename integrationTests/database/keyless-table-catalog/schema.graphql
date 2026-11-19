@@ -1,0 +1,16 @@
+type KeylessBareRow @table @export {
+	name: String
+}
+
+type KeylessDeclared @table @export {
+	name: String
+}
+
+type KeylessEmpty @table @export {
+	name: String
+}
+
+type Keyed @table @export {
+	id: ID @primaryKey
+	name: String
+}

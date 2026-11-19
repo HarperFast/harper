@@ -1,7 +1,7 @@
 'use strict';
 
-const semverMajor = require('semver/functions/major');
-const { packageJson } = require('../../utility/packageUtils.js');
+const semver = require('semver');
+const { packageJson, PRODUCT_NAME } = require('../../utility/packageUtils.js');
 const INSTALLED_NODE_VERSION = process.versions && process.versions.node ? process.versions.node : undefined;
 
 module.exports = checkNodeVersion;
@@ -9,9 +9,9 @@ module.exports = checkNodeVersion;
 function checkNodeVersion() {
 	// Skip Node version check when running on Bun
 	if (typeof globalThis.Bun !== 'undefined') return;
-	const minimumHdbNodeVersion = packageJson.engines['minimum-node'];
-	if (INSTALLED_NODE_VERSION && semverMajor(INSTALLED_NODE_VERSION) < semverMajor(minimumHdbNodeVersion)) {
-		const versionError = `The minimum version of Node.js Harper supports is: ${minimumHdbNodeVersion}, the currently installed Node.js version is: ${INSTALLED_NODE_VERSION}. Please install a version of Node.js that is withing the defined range.`;
+	const requiredRange = packageJson.engines.node;
+	if (INSTALLED_NODE_VERSION && !semver.satisfies(INSTALLED_NODE_VERSION, requiredRange)) {
+		const versionError = `${PRODUCT_NAME} requires Node.js ${requiredRange}, but the currently installed version is ${INSTALLED_NODE_VERSION}. Please install a compatible version.`;
 		return { error: versionError };
 	}
 }

@@ -1,0 +1,11 @@
+# Regression fixture for #1419 — per-row allowRead must filter subscription delivery.
+#
+# Vault rows are owned by a specific user (`owner` field). The allowRead override in
+# resources.js permits a read only when the record's owner matches the requesting user,
+# while still allowing the collection-level subscription to open. The test verifies that a
+# whole-table SSE subscription no longer leaks other owners' row events.
+type Vault @table @export {
+	id: ID @primaryKey
+	owner: String
+	secret: String
+}

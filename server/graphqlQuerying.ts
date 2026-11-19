@@ -3,6 +3,7 @@ import type { RequestParams } from 'graphql-http';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import { resources } from '../resources/Resources.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 // This code makes heavy use of the word "node" to refer to a node in the GraphQL AST.
 
@@ -320,7 +321,8 @@ async function processFieldNode(
 	const results = [];
 	// @ts-expect-error: `authorize` is a custom property on the request object.
 	request.authorize = true;
-	for await (const result of resource.search(query, request)) {
+	const searchResults = await resource.search(query, request);
+	for await (const result of searchResults) {
 		results.push(result);
 	}
 	return [fieldNode.name.value, results];
@@ -559,8 +561,9 @@ async function graphqlQueryingHandler(request: Request) {
 		}
 		case 'POST': {
 			const requestBodyDeserialize = getDeserializer(request.headers.get('content-type'), true);
-			// @ts-expect-error: _nodeRequest is a custom property on request and is the IncomingMessage with is a Readable
-			const requestParams = await requestBodyDeserialize(request._nodeRequest);
+			// Read the body through request.body (as REST.ts does): it is a Readable-compatible
+			// body stream on every adapter, whereas _nodeRequest is null on the Bun/uWS adapters.
+			const requestParams = await requestBodyDeserialize(request.body as any);
 			assertRequestParams(requestParams);
 			return resolver(requestParams, request);
 		}
@@ -578,11 +581,14 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				return nextLayer(request);
 			}
 
+			const settledCredentialRejection = settleDeferredCredentialRejection(request);
+			if (settledCredentialRejection) return settledCredentialRejection;
+
 			try {
 				// Await the `graphqlHandler` call here so that errors are caught.
 				return await graphqlQueryingHandler(request as any);
 			} catch (error) {
-				logger.error(error);
+				logger.error(logger.errorForLog(error));
 
 				// Error Handling
 				// Based on the GraphQL specification, a GraphQL response (non-http) are a map with a `data` field and an `errors` field.

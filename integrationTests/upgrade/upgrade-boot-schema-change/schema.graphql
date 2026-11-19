@@ -1,0 +1,10 @@
+# QA-647 (source: gh:1865) — component-defined table used across an in-place upgrade-boot.
+# v1 (pre-restart-1) shape. The test overwrites this file on disk with a v2 shape (adds
+# `category`) between restart #1's kill and start, to probe the "config change across the boot"
+# angle #1865 also implicates.
+type Widget @table(database: "qa647") @export {
+	id: ID @primaryKey
+	sku: String @indexed
+	batch: String @indexed
+	name: String
+}

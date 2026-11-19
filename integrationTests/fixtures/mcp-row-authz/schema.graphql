@@ -1,0 +1,8 @@
+# Doc rows carry an `owner`; the resources.js subclass restricts every verb to
+# the owner (super users always pass). @export auto-generates the MCP CRUD verb
+# tools (get_/search_/create_/update_/delete_Doc).
+type Doc @table @export {
+	id: ID @primaryKey
+	owner: String
+	payload: String
+}

@@ -1,11 +1,208 @@
+import { closeSync, existsSync, openSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.ts';
-import { FLOAT32_OPTIONS } from 'msgpackr';
+import { FLOAT32_OPTIONS, pack, unpack } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError, DerivedIndexLagError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
+import type { CandidateKeyPlan, CandidateKeySet } from '../search.ts';
+import {
+	DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
+	MAX_WAIT_FOR_INDEX_MILLISECONDS,
+	type DerivedNativeIndexHost,
+} from './hnswDerivedIndex.ts';
+import { derivedIndexTime, type DerivedIndexReadiness, type DerivedIndexCoverage } from '../derivedIndexRuntime.ts';
+import { SKIP } from '@harperfast/extended-iterable';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { createHash } from 'node:crypto';
+import {
+	getPlaneBinding,
+	invalidatePlaneFile as invalidateHnswPlaneFile,
+	planeFilePathFor,
+	planeStalePathFor,
+	PLANE_NO_ID,
+	type HnswPlane,
+	type PlanePredicate,
+	type PlaneSearchHits,
+} from './hnswPlaneBinding.ts';
 
 const logger = loggerWithTag('HNSW');
+
+/** Element-wise equality of the array-like projections a derived index stores; anything else that failed `===` counts as changed. */
+export function derivedValuesEqual(a: any, b: any): boolean {
+	if (a === b) return true;
+	if (a == null || b == null || typeof a.length !== 'number' || a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
+// int8 scalar quantization of stored graph nodes is ON by default. Each node holds the
+// vector as a compact int8 `bin` plus a per-vector `scale`, roughly a 5x size reduction
+// over float32 and ~10x cheaper to decode (a single typed-array view instead of decoding
+// 768 individually-tagged floats into a boxed Array). The full-precision vector still lives
+// on the record, so only graph navigation is approximate:
+//   - sort (nearest-neighbor) queries: reranked on exact distances after loading records (~0% recall loss)
+//   - lt/le threshold queries: over-fetched and re-filtered on exact distances after loading records
+// Opt out per-index with `@indexed(type: "HNSW", quantization: "none")`.
+//
+// Decode auto-detects the stored format (number[] = float, bin = int8), so indexes written
+// before this default change (float nodes) continue to work transparently.
+
+/** Symmetric int8 scalar-quantize a float vector. scale = max|component| / 127. */
+function quantizeInt8(vector: number[]): { bytes: Buffer; scale: number } {
+	let max = 0;
+	for (let i = 0; i < vector.length; i++) {
+		const a = vector[i] < 0 ? -vector[i] : vector[i];
+		if (a > max) max = a;
+	}
+	const scale = max / 127 || 1;
+	const inv = 1 / scale;
+	const q = new Int8Array(vector.length);
+	// clamp guards against a float-rounding edge landing on 128 (which Int8Array would wrap to -128)
+	for (let i = 0; i < vector.length; i++) q[i] = Math.max(-127, Math.min(127, Math.round(vector[i] * inv)));
+	return { bytes: Buffer.from(q.buffer, q.byteOffset, q.byteLength), scale };
+}
+
+/** Reconstruct an approximate float array from an int8 vector + scale. */
+function dequantizeInt8(q: Int8Array, scale: number): number[] {
+	const out = new Array(q.length);
+	for (let i = 0; i < q.length; i++) out[i] = q[i] * scale;
+	return out;
+}
+
+// Auto-scaled search ef, used only when an index does not explicitly configure efConstructionSearch
+// and a query does not pass its own ef. A fixed ef makes recall decay as the graph grows (it explores
+// a shrinking fraction of the graph), so ef grows with sqrt(node count) in two regimes, with a
+// ceiling to bound search cost. The first regime's constants come from the original recall/latency
+// sweep (5K-30K, 768-dim cosine, int8) and plateau at AUTO_EF_MAX from ~13K nodes; that plateau was
+// calibrated when layers above 0 were searched at the full ef, which made large efs cost seconds.
+// After the greedy-descent fix (#2125) ef 1024 at 5M nodes costs ~45ms, and the measured decay at a
+// pinned 512 (set-recall 0.997 -> 0.955 -> 0.935 across 1M/2M/5M on well-built graphs, #2181) is
+// recall left on the table, so past AUTO_EF_LARGE_REF nodes the scale resumes from that plateau and
+// runs to AUTO_EF_CEILING. Validated against the same sweeps: the second regime resolves 1,145 at
+// 5M, and the measured ef-1024 point there holds 0.985. Apps preferring latency pin
+// efConstructionSearch or a per-query ef; graphs past ~tens of millions of nodes should shard.
+const AUTO_EF_BASE = 100;
+// The index store holds a graph node plus a primary-key mapping per record, so a key count is twice
+// the node count. Sizes here are in nodes; this converts back for the one consumer still calibrated
+// against keys.
+const INDEX_KEYS_PER_NODE = 2;
+// Graph nodes at which ef equals AUTO_EF_BASE. Originally expressed per index-store key against a
+// reference of 1000, so 500 nodes is the same point. The node count is a high-water mark rather than
+// a live count, so the resolved ef can differ from that formula by one at a rounding boundary.
+const AUTO_EF_REF = 500;
+const AUTO_EF_MAX = 512;
+// Nodes at which the second regime starts: 512 was measured sufficient through 1M (set-recall
+// 0.997) and short from 2M up, so the resumed curve is anchored to pass through (1M, 512).
+const AUTO_EF_LARGE_REF = 1_000_000;
+const AUTO_EF_CEILING = 2048;
+function autoScaleEf(nodeCount: number): number {
+	if (nodeCount > AUTO_EF_LARGE_REF) {
+		const scaled = Math.round(AUTO_EF_MAX * Math.sqrt(nodeCount / AUTO_EF_LARGE_REF));
+		return Math.min(AUTO_EF_CEILING, scaled);
+	}
+	const scaled = Math.round(AUTO_EF_BASE * Math.sqrt(Math.max(1, nodeCount / AUTO_EF_REF)));
+	return Math.min(AUTO_EF_MAX, Math.max(AUTO_EF_BASE, scaled));
+}
+
+// Candidate-list size used when searching a layer above 0. Those layers only supply the entry point
+// for the next layer down, so a greedy walk is enough; a larger value costs work proportional to the
+// layer's population without improving the entry point it hands off.
+const ROUTING_EF = 1;
+// Ceiling on the ef a query's own `offset + limit` can ask for. `limit` is unprivileged and set on
+// every request, so this bounds what a caller can make one thread do synchronously: layer 0 holds
+// `ef` candidates in a sorted array with an O(len) insert. Kept within a small multiple of the
+// index's own auto-scaled ceiling so the worst case stays the same order. Schema and per-query ef
+// pins are authoritative cost ceilings; only an automatically scaled index widens from `limit`.
+const LIMIT_EF_MAX = 2 * AUTO_EF_CEILING;
+// Rerank candidates per row a bounded nearest-neighbor query consumes, with a floor: each
+// candidate costs a record load and an exact distance, so the rerank must not scale with ef.
+const RERANK_FACTOR = 4;
+const RERANK_MIN = 32;
+// Auto-scaled construction ef, used only when an index does not explicitly configure efConstruction.
+// At a constant efConstruction, edge quality erodes as the graph grows until true neighbours become
+// unreachable at ANY search ef; the cap bounds per-insert cost. Measurements and policy in
+// DESIGN.md ("efConstruction and the search-ef ceiling both auto-scale with the graph") and #2180.
+const AUTO_EFC_REF = 250_000;
+// Validated to 447 (the 5M point, where the resulting graph held 0.985 set-recall at ef 1024); the
+// headroom to 1024 is the same sqrt curve extrapolated, binding at ~26M nodes. Build cost grows
+// with the curve (N^1.5 total under sqrt scaling), which is why the cap stays finite: past ~tens of
+// millions of nodes, sharded medium graphs beat one huge graph on both build and query cost.
+const AUTO_EFC_MAX = 1024;
+function autoScaleEfConstruction(nodeCount: number): number {
+	const scaled = Math.round(AUTO_EF_BASE * Math.sqrt(Math.max(1, nodeCount / AUTO_EFC_REF)));
+	return Math.min(AUTO_EFC_MAX, Math.max(AUTO_EF_BASE, scaled));
+}
+// How long a resolved graph size is reused before it is looked up again (see approximateNodeCount).
+// ef moves with the square root of the count and is capped, so a slightly stale size is immaterial;
+// this only has to be short enough that a table growing from empty picks up a larger ef promptly.
+const NODE_COUNT_TTL = 10_000;
+
+// Native traversal-plane geometry (DESIGN.md § Native HNSW plane). A file-primary index builds no
+// JS graph, so the plane header carries its only layer-0 maximum. maxNodes is a fixed sparse
+// reservation — pages materialize on write — and ids at or past it are rejected by the crate,
+// which disables the plane.
+const PLANE_LAYER0_CAP = 64;
+const PLANE_LAYER0_CAP_MAX = 1024;
+// The crate's fixed connection count, which nativePlane pins the index to: a layer-0 cap below it
+// could not hold a node's own forward edges.
+const PLANE_M = 16;
+const PLANE_MAX_NODES = 1 << 24;
+// Default inline primary-key bytes per plane slot (msgpack-encoded); 40 fits UUIDs inside the slot
+// padding. `nativePlaneKeyCap` raises it for tables whose keys are longer.
+const PLANE_KEY_CAP = 40;
+const PLANE_KEY_CAP_MAX = 65535;
+// An existing plane file that cannot be opened is normally another worker mid-create (retry);
+// past this age it is a crashed create and is deleted so the audit-backed runtime can rebuild it.
+const PLANE_STALE_CREATE_MS = 60_000;
+// Retry cadence while another worker holds the create; its header lands shortly after exclusive open.
+const PLANE_ATTACH_RETRY_MS = 250;
+// Marks an error thrown by an app-supplied filter during a plane search: the caller re-raises
+// it as an ordinary query failure instead of disabling the (healthy) plane.
+const NOT_A_PLANE_FAILURE = Symbol('notAPlaneFailure');
+
+function numericOption(name: string, value: unknown): number | undefined {
+	if (value === undefined || value === null) return undefined;
+	if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && value.trim() === ''))
+		throw new ClientError(`${name} must be a finite number`);
+	const numericValue = Number(value);
+	if (!Number.isFinite(numericValue)) throw new ClientError(`${name} must be a finite number`);
+	return numericValue;
+}
+
+function normalizeOptimizeRoutingDeclaration(value: unknown): unknown {
+	if (value === true || value === 'true') return 1;
+	if (value === false || value === 'false') return 0;
+	return value;
+}
+
+function nativePlaneMaxNodes(options: any): number {
+	const maxNodes = numericOption('nativePlaneMaxNodes', options?.nativePlaneMaxNodes) ?? PLANE_MAX_NODES;
+	if (!Number.isSafeInteger(maxNodes) || maxNodes < 1 || maxNodes >= PLANE_NO_ID) {
+		throw new ClientError('nativePlaneMaxNodes must be a positive integer below 2^32-1');
+	}
+	return maxNodes;
+}
+
+function nativePlaneLayer0Cap(options: any): number {
+	const layer0Cap = numericOption('nativePlaneLayer0Cap', options?.nativePlaneLayer0Cap) ?? PLANE_LAYER0_CAP;
+	if (!Number.isSafeInteger(layer0Cap) || layer0Cap < PLANE_M || layer0Cap > PLANE_LAYER0_CAP_MAX) {
+		throw new ClientError(`nativePlaneLayer0Cap must be an integer between ${PLANE_M} and ${PLANE_LAYER0_CAP_MAX}`);
+	}
+	return layer0Cap;
+}
+
+function nativePlaneKeyCap(options: any): number {
+	const keyCap = numericOption('nativePlaneKeyCap', options?.nativePlaneKeyCap) ?? PLANE_KEY_CAP;
+	if (!Number.isSafeInteger(keyCap) || keyCap < 8 || keyCap > PLANE_KEY_CAP_MAX) {
+		throw new ClientError('nativePlaneKeyCap must be an integer between 8 and 65535');
+	}
+	return keyCap;
+}
+
+function nativePlaneDefaultDisabled(): boolean {
+	const value = process.env.HNSW_NO_NATIVE_DEFAULT;
+	return value != null && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+}
 
 class MinHeap {
 	private data: Candidate[] = [];
@@ -64,13 +261,36 @@ function bisectInsert(arr: Candidate[], distance: number): number {
  */
 const ENTRY_POINT = Symbol.for('entryPoint');
 const KEY_PREFIX = Symbol.for('key');
+/** A Map key for a primary key: composite keys by their encoding, since arrays compare by reference. */
+function pendingMappingKey(primaryKey: Id): Id {
+	return Array.isArray(primaryKey) ? `\0${pack(primaryKey).toString('latin1')}` : primaryKey;
+}
 const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
+// Visit budget for the post-delete connectivity probe (repairSeveredNeighbors, #1712). Severed
+// islands are small (bounded by the deleted node's neighborhood), so a probe that visits this many
+// nodes without reaching the entry point is treated as connected-but-far and repaired conservatively.
+const PROBE_VISIT_LIMIT = 256;
+// Candidate keys one predicate visit pays for: a key-only index-entry read against a record load
+// and decode. Measured warm at 0.37 us against 2.1 us, rounded up from that 5.7; the same load is
+// ~130 us cold, so the warm end is the regression-safe calibration — over-stating the ratio would
+// build allow-sets for broad filters the predicate already answers cheaply. See DESIGN.md.
+const KEYS_PER_PREDICATE_VISIT = 8;
+// Absolute ceiling on index entries one query may read building an allow-set, whatever the cost
+// model allows. The scan is synchronous, so this bounds both the event-loop stall and the retained
+// key set; past it the predicate path — which is incremental and budget-bounded — is the safer cost.
+const MAX_CANDIDATE_KEYS = 50_000;
+// Filling ef matches at selectivity s costs ~ef/s visits; this is the slack over that.
+const ALLOW_SET_BUDGET_SLACK = 2;
+// How far an allow-set may widen the filterExpansion visit budget. A visit got cheaper, not free:
+// the JS graph still loads a node and computes a distance for each one, synchronously.
+const ALLOW_SET_BUDGET_MAX_WIDENING = 4;
 type Connection = {
 	id: number;
 	distance: number;
 };
 type Node = {
-	vector: number[];
+	vector: number[] | Int8Array; // float nodes: number[]; quantized nodes: Int8Array (decoded from a bin)
+	scale?: number; // int8 dequantization scale; undefined on float nodes
 	invMag?: number; // cached 1/|vector| for cosine distance; undefined on legacy nodes
 	level?: number;
 	primaryKey: string;
@@ -88,6 +308,154 @@ type Node = {
  */
 export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
+	static numericOptions = new Set([
+		'M',
+		'efConstruction',
+		'efConstructionSearch',
+		'mL',
+		'optimizeRouting',
+		'filterExpansion',
+		'nativePlaneMaxNodes',
+		'nativePlaneKeyCap',
+		'nativePlaneLayer0Cap',
+		'maxLagMilliseconds',
+	]);
+	static truthyStructuralOptions = new Set(['nativePlane']);
+	static normalizeOptionValue(name: string, value: unknown): unknown {
+		if (name !== 'optimizeRouting') return value;
+		if (value === true) return 1;
+		if (value === false) return 0;
+		if (
+			typeof value === 'string' &&
+			(value === 'true' || value === 'false' || (value.trim() !== '' && Number(value) === 0))
+		)
+			// Legacy strings are truthy at runtime; keep them structurally distinct from false/0 so #1357 rebuilds.
+			return `legacy:${value}`;
+		return value;
+	}
+	static normalizeDeclarationOptions(options: any, persistedOptions?: any): void {
+		for (const name of HierarchicalNavigableSmallWorld.numericOptions) {
+			if (options[name] === undefined) continue;
+			if (persistedOptions && Object.hasOwn(persistedOptions, name) && Object.is(options[name], persistedOptions[name]))
+				continue;
+			if (
+				name === 'optimizeRouting' &&
+				typeof persistedOptions?.[name] === 'string' &&
+				options[name] !== false &&
+				options[name] !== 'false'
+			) {
+				try {
+					const declared = numericOption(name, normalizeOptimizeRoutingDeclaration(options[name]));
+					const persisted = numericOption(name, normalizeOptimizeRoutingDeclaration(persistedOptions[name]));
+					if (Object.is(declared, persisted)) {
+						options[name] = persistedOptions[name];
+						continue;
+					}
+				} catch {}
+			}
+			if (options[name] === null) {
+				delete options[name];
+				continue;
+			}
+			const value = name === 'optimizeRouting' ? normalizeOptimizeRoutingDeclaration(options[name]) : options[name];
+			options[name] = numericOption(name, value);
+		}
+		if (Object.hasOwn(options, 'nativePlaneMaxNodes')) nativePlaneMaxNodes(options);
+		if (Object.hasOwn(options, 'nativePlaneKeyCap')) nativePlaneKeyCap(options);
+		if (Object.hasOwn(options, 'nativePlaneLayer0Cap')) nativePlaneLayer0Cap(options);
+	}
+	static normalizeNativePlaneDeclaration(value: unknown): boolean | undefined {
+		if (value === undefined || value === null) return undefined;
+		if (value === true || value === 'true') return true;
+		if (value === false || value === 'false') return false;
+		throw new ClientError('nativePlane must be true or false');
+	}
+	static validateNativePlaneOptions(rootStore: unknown, options: any) {
+		if (!(rootStore instanceof RocksDatabase)) {
+			throw new ClientError(
+				'nativePlane requires the RocksDB storage engine; set nativePlane: false to use the JS index'
+			);
+		}
+		const nativeM = numericOption('M', options?.M);
+		const nativeEfConstruction = numericOption('efConstruction', options?.efConstruction);
+		const nativeML = numericOption('mL', options?.mL);
+		const nativeOptimizeRouting = numericOption(
+			'optimizeRouting',
+			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
+		);
+		if (
+			options?.M === null ||
+			options?.efConstruction === null ||
+			options?.mL === null ||
+			options?.optimizeRouting === null ||
+			(nativeM !== undefined && nativeM !== PLANE_M) ||
+			(nativeEfConstruction !== undefined && nativeEfConstruction !== 200) ||
+			(nativeML !== undefined && nativeML !== 1 / Math.log(PLANE_M)) ||
+			(nativeOptimizeRouting !== undefined && nativeOptimizeRouting !== 0.5)
+		) {
+			throw new ClientError(
+				'nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5; set nativePlane: false to use the JS index'
+			);
+		}
+		const maxNodes = nativePlaneMaxNodes(options);
+		const keyCap = nativePlaneKeyCap(options);
+		const layer0Cap = nativePlaneLayer0Cap(options);
+		if (options?.quantization === 'none' || options?.distance === 'euclidean' || options?.distance === 'dotProduct') {
+			throw new ClientError(
+				'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
+			);
+		}
+		return { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes, keyCap, layer0Cap };
+	}
+	static canRunNativePlane(rootStore: unknown, options: any, warnForMissingBinding = true): boolean {
+		nativePlaneMaxNodes(options);
+		nativePlaneKeyCap(options);
+		nativePlaneLayer0Cap(options);
+		if (!(rootStore instanceof RocksDatabase) || getPlaneBinding(warnForMissingBinding) == null) return false;
+		if (
+			options?.M === null ||
+			options?.efConstruction === null ||
+			options?.mL === null ||
+			options?.optimizeRouting === null
+		)
+			return false;
+		const configuredM = numericOption('M', options?.M);
+		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
+		const configuredML = numericOption('mL', options?.mL);
+		const configuredOptimizeRouting = numericOption(
+			'optimizeRouting',
+			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
+		);
+		const baseEligible =
+			options?.quantization !== 'none' &&
+			options?.distance !== 'euclidean' &&
+			options?.distance !== 'dotProduct' &&
+			(configuredM === undefined || configuredM === PLANE_M) &&
+			(configuredEfConstruction === undefined || configuredEfConstruction === 200) &&
+			(configuredML === undefined || configuredML === 1 / Math.log(PLANE_M)) &&
+			(configuredOptimizeRouting === undefined || configuredOptimizeRouting === 0.5);
+		if (!baseEligible) return false;
+		return true;
+	}
+	static canDefaultToNativePlane(rootStore: unknown, options: any): boolean {
+		return (
+			!nativePlaneDefaultDisabled() && HierarchicalNavigableSmallWorld.canRunNativePlane(rootStore, options, false)
+		);
+	}
+	// Index options that only affect search, not the stored graph — changing them must not trigger a
+	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
+	// search-time candidate-list size; the build uses efConstruction/M/distance, which are structural.
+	// filterExpansion is the visit-budget multiplier for predicate-aware (filtered) traversal;
+	// maxLagMilliseconds controls delivery admission rather than the graph itself.
+	static searchOnlyOptions = ['efConstructionSearch', 'filterExpansion', 'maxLagMilliseconds'];
+	// Signals to search.ts that this index accepts a per-record predicate in search() and applies it
+	// during traversal (predicate-aware / ACORN-style filtering), so companion conditions and RBAC can
+	// be pushed down instead of post-filtering an under-filled candidate set (#1241).
+	filteredSearch = true;
+	// Signals that search() also accepts a CandidateKeyPlan and admits from it directly, so an indexed
+	// companion condition costs a key-only index scan per matching record instead of a record load and
+	// decode per visited node. See DESIGN.md.
+	candidateKeyFilter = true;
 	indexStore: any;
 	M: number = 16; // max number of connections per layer
 	efConstruction: number = 100; // size of dynamic candidate list
@@ -97,9 +465,64 @@ export class HierarchicalNavigableSmallWorld {
 	// a value of 1 is extremely aggressive.
 	optimizeRouting = 0.5;
 	nodesVisitedCount = 0;
+	// Test seam: source of randomness for level assignment. Tests that assert exact result-set
+	// equality across search strategies replace this with a seeded PRNG so the graph shape is
+	// reproducible; greedy routing legitimately diverges on rare unlucky graphs otherwise.
+	random: () => number = Math.random;
+	// Visit-budget multiplier for predicate-aware traversal (#1241). Under-filled filtered searches
+	// stop after the resolved budget ef * filterExpansion visits; automatic search ef contributes at
+	// most AUTO_EF_MAX, while explicit schema/query ef remains authoritative. A filter that fills its
+	// candidate list terminates naturally before this bound. Raising the multiplier mainly trades
+	// latency for recall on selective function predicates; 24 fills to roughly 4% selectivity before
+	// the budget binds. Per-query override via the search options.
+	filterExpansion = 24;
+	// Whether the schema pinned filterExpansion. An explicit pin is an authoritative cost ceiling and
+	// keeps its exact meaning on every path; only an index that never set it gets the
+	// selectivity-derived budget an allow-set makes measurable.
+	filterExpansionConfigured = false;
 
 	idIncrementer: BigInt64Array | undefined;
 	distance: (a: number[], b: number[]) => number;
+	int8 = true; // store vectors as int8-quantized bins by default; opt out with `quantization: "none"`
+	efSearchConfigured = false; // whether the schema pins search ef directly or through efConstruction
+	efConstructionConfigured = false; // whether the schema set an explicit efConstruction; if not, it auto-scales with N
+	private lastLoggedEfConstruction = 0;
+	private idIncrementerRetryAt = 0;
+	private idIncrementerFailureLogged = false;
+	// Caches the Int8Array-converted clone of a frozen (decoded-from-disk) int8 node, keyed by the
+	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
+	// the frozen node — without it, every cache hit on a frozen node would re-slice and re-clone.
+	private convertedNodes = new WeakMap<object, any>();
+	private nodeCount = 0;
+	private nodeCountAt = 0;
+	// Native file-primary index. The RocksDB index store holds identity mappings and replay cursors;
+	// graph nodes and adjacency exist only in this file.
+	// undefined = not yet attached (may retry), null = unavailable or disabled for this process.
+	private plane: HnswPlane | null | undefined;
+	private planeEligible = false;
+	private planeRetryAt = 0;
+	private planeDisabledLogged = false;
+	private filePrimary = false;
+	private nativePlaneMaxNodes = PLANE_MAX_NODES;
+	private nativePlaneKeyCap = PLANE_KEY_CAP;
+	private nativePlaneLayer0Cap = PLANE_LAYER0_CAP;
+	// Installed by attachDerivedIndexes on every worker: shared readiness of the index and the way
+	// to ask its owner for a rebuild. Only the owning worker's runtime ever destroys native state.
+	private derivedHost?: DerivedNativeIndexHost;
+	// keyed by pendingMappingKey(pk): a composite key's arrays never compare equal by reference
+	private pendingDerivedMappings = new Map<
+		Id,
+		{
+			primaryKey: Id;
+			id?: number;
+			previousId?: number;
+			signature?: string;
+			version?: number;
+			pending?: boolean;
+			cleared?: boolean;
+		}
+	>();
+	postCommit?: true;
 	constructor(indexStore: any, options: any) {
 		this.indexStore = indexStore;
 		if (indexStore) {
@@ -107,6 +530,16 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
+		const configuredM = options?.M;
+		const configuredEfConstruction = options?.efConstruction;
+		const configuredEfConstructionSearch = options?.efConstructionSearch;
+		const configuredML = options?.mL;
+		const configuredOptimizeRouting = options?.optimizeRouting;
+		const configuredFilterExpansion = options?.filterExpansion;
+		this.int8 = options?.quantization !== 'none';
+		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.
+		this.efSearchConfigured = configuredEfConstructionSearch !== undefined || configuredEfConstruction !== undefined;
+		this.efConstructionConfigured = configuredEfConstruction !== undefined;
 		this.distance =
 			options?.distance === 'euclidean'
 				? euclideanDistance
@@ -115,18 +548,575 @@ export class HierarchicalNavigableSmallWorld {
 					: cosineDistance;
 		if (options) {
 			// allow all the HNSW parameters to be configured/tuned
-			if (options.M !== undefined) {
-				this.M = options.M;
+			if (configuredM !== undefined) {
+				this.M = configuredM;
 				this.mL = 1 / Math.log(this.M); // recalculate
 			}
-			if (options.efConstruction !== undefined)
-				this.efConstruction = this.efConstructionSearch = options.efConstruction;
-			if (options.efConstructionSearch !== undefined) this.efConstructionSearch = options.efConstructionSearch;
-			if (options.mL !== undefined) this.mL = options.mL;
-			if (options.optimizeRouting !== undefined) this.optimizeRouting = options.optimizeRouting;
+			if (configuredEfConstruction !== undefined)
+				this.efConstruction = this.efConstructionSearch = configuredEfConstruction;
+			if (configuredEfConstructionSearch !== undefined) this.efConstructionSearch = configuredEfConstructionSearch;
+			if (configuredML !== undefined) this.mL = configuredML;
+			if (configuredOptimizeRouting !== undefined) this.optimizeRouting = configuredOptimizeRouting;
+			if (configuredFilterExpansion !== undefined) {
+				this.filterExpansion = configuredFilterExpansion;
+				this.filterExpansionConfigured = true;
+			}
+		}
+		if (options?.nativePlane) {
+			const { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes, keyCap, layer0Cap } =
+				HierarchicalNavigableSmallWorld.validateNativePlaneOptions(indexStore?.rootStore, options);
+			if (nativeM !== undefined) this.M = nativeM;
+			if (nativeML !== undefined) this.mL = nativeML;
+			if (nativeOptimizeRouting !== undefined) this.optimizeRouting = nativeOptimizeRouting;
+			this.efConstruction = nativeEfConstruction ?? 200;
+			this.nativePlaneMaxNodes = maxNodes;
+			this.nativePlaneKeyCap = keyCap;
+			this.nativePlaneLayer0Cap = layer0Cap;
+			// The plane stores int8 bins and computes asymmetric cosine only, so the flag is a
+			// no-op for float (quantization: "none") and non-cosine indexes.
+			this.planeEligible = this.int8 && this.distance === cosineDistance;
+			if (!this.planeEligible) {
+				throw new ClientError(
+					'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
+				);
+			}
+			this.filePrimary = true;
+			this.postCommit = true;
 		}
 	}
+
+	/** Remove derived native state after the option is disabled. */
+	cleanupDisabledPlane(): void {
+		if (this.planeEligible) return;
+		const filePath = this.planeFilePath();
+		if (!filePath) return;
+		try {
+			if (existsSync(filePath)) this.invalidatePlaneFile(filePath, this.plane);
+			unlinkSync(filePath);
+			logger.info?.('deleted the HNSW plane file of an index no longer using nativePlane');
+		} catch (error: any) {
+			if (error?.code !== 'ENOENT') {
+				// A later re-enable must not adopt a file that missed mutations while disabled.
+				logger.warn?.('could not delete the HNSW plane file; marking it stale', error);
+				this.invalidatePlaneFile(filePath);
+			}
+		}
+	}
+
+	/** Absolute path of this index's plane file, or undefined when the store exposes no path. */
+	planeFilePath(): string | undefined {
+		const storePath = this.indexStore?.path;
+		const storeName = this.indexStore?.name;
+		if (typeof storePath !== 'string' || typeof storeName !== 'string') return undefined;
+		return planeFilePathFor(storePath, storeName);
+	}
+
+	/**
+	 * Open or lazily create the native file. An exclusive create resolves multi-worker races; the
+	 * derived-index runtime owns population, replay, and publication.
+	 */
+	private getPlane(dims?: number, dimsFromVector = false): HnswPlane | null {
+		if (this.plane !== undefined) return this.plane;
+		if (!this.planeEligible) return (this.plane = null);
+		const now = Date.now();
+		if (now < this.planeRetryAt) return null;
+		const Plane = getPlaneBinding();
+		if (!Plane) return (this.plane = null); // the loader warned once already
+		if (!('keyCap' in Plane.prototype)) {
+			if (!this.planeDisabledLogged) {
+				this.planeDisabledLogged = true;
+				logger.error?.('the installed @harperfast/hnsw predates 0.3.0; the native HNSW index needs 0.3.0 or later');
+			}
+			return (this.plane = null);
+		}
+		const filePath = this.planeFilePath();
+		if (!filePath) {
+			this.disablePlane(new Error('the index store exposes no path to place the plane file next to'));
+			return null;
+		}
+		try {
+			// a tombstone marks a plane a previous unlink could not remove (Windows EBUSY while
+			// mapped): the file is stale and must never be opened over a fresh graph
+			const stalePath = planeStalePathFor(filePath);
+			if (existsSync(stalePath)) {
+				try {
+					// force: either artifact may already be gone (the documented rollback deletes the
+					// plane file by hand), and an ENOENT here disables the plane on every later attach
+					rmSync(filePath, { force: true });
+					rmSync(stalePath, { force: true });
+				} catch {
+					this.planeRetryAt = now + NODE_COUNT_TTL;
+					return null;
+				}
+			}
+			if (existsSync(filePath)) {
+				try {
+					// Crash recovery is per-slot inside the crate. The clean flag is advisory;
+					// another worker may still be constructing this shared file.
+					const opened = Plane.open(filePath);
+					// A header that disagrees with the declaration is a different graph, not a
+					// repairable file, and only the owner may destroy it: invalidating through this
+					// handle would write a path-based tombstone that could name a replacement the
+					// owner had already created.
+					const geometryMismatch =
+						opened.keyCap !== this.nativePlaneKeyCap
+							? `keyCap ${opened.keyCap} differs from the configured ${this.nativePlaneKeyCap}`
+							: opened.layer0Cap !== this.nativePlaneLayer0Cap
+								? `layer0Cap ${opened.layer0Cap} differs from the configured ${this.nativePlaneLayer0Cap}`
+								: undefined;
+					if (geometryMismatch) {
+						this.disablePlane(new Error(`plane ${geometryMismatch}`));
+						return null;
+					}
+					return (this.plane = opened);
+				} catch (openError) {
+					if (now - statSync(filePath).mtimeMs <= PLANE_STALE_CREATE_MS) {
+						// another worker is between its exclusive create and the header write
+						this.planeRetryAt = now + PLANE_ATTACH_RETRY_MS;
+						return null;
+					}
+					logger.warn?.('deleting an unopenable HNSW plane file left by an interrupted create', openError);
+					unlinkSync(filePath);
+				}
+			}
+			if (!dims) return null; // open-only call and no file: nothing to attach yet
+			// A search target must not pin an empty index's dimensionality: creation is deferred to
+			// the first committed vector or to the rebuild scan. Return before the exclusive create
+			// rather than creating and unlinking — a concurrent insert that saw the empty file would
+			// read it as another worker's in-progress create and 503 for PLANE_STALE_CREATE_MS.
+			if (!dimsFromVector) return null;
+			// Surviving mappings name node ids of a file that is gone (a restore, an unopenable file
+			// removed above, a hand deletion). A fresh plane would reuse those ids and hide every one of
+			// their vectors from search; only reconstruction, which clears the mappings first, may create.
+			if (this.filePrimary && this.hasNodeMappings()) {
+				logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
+				return null;
+			}
+			let fd: number;
+			try {
+				fd = openSync(filePath, 'wx');
+			} catch {
+				// another worker won the create race; its header lands within moments
+				this.planeRetryAt = now + PLANE_ATTACH_RETRY_MS;
+				return null;
+			}
+			closeSync(fd);
+			try {
+				return (this.plane = Plane.create(
+					filePath,
+					dims,
+					this.nativePlaneLayer0Cap,
+					this.nativePlaneMaxNodes,
+					this.nativePlaneKeyCap
+				));
+			} catch (createError) {
+				// Never leave a partial file that a later process could trust as current.
+				try {
+					unlinkSync(filePath);
+				} catch {
+					// the disable below already forces the JS path for this process
+				}
+				this.disablePlane(createError);
+				return null;
+			}
+		} catch (error) {
+			this.planeRetryAt = now + NODE_COUNT_TTL;
+			logger.warn?.('could not attach the HNSW plane file; will retry', error);
+			return null;
+		}
+	}
+
+	/** True only while the owning runtime publishes the index as ready, on whichever worker owns it. */
+	private planeSearchReady(plane: HnswPlane): boolean {
+		if (plane.invalidated()) {
+			this.plane = undefined;
+			return false;
+		}
+		return this.derivedReadiness() === 'ready';
+	}
+
+	private derivedReadiness(): DerivedIndexReadiness['state'] {
+		return this.derivedHost?.readiness().state ?? 'unknown';
+	}
+
+	/**
+	 * Detach this process from the plane after a failure and ask the index's owner for a rebuild.
+	 * Only the owner destroys native state (`resetDerivedStorage` under its epoch), so a failure
+	 * observed here after a peer has already replaced the file cannot take out the replacement.
+	 */
+	private disablePlane(error: unknown): void {
+		this.plane = undefined;
+		this.planeRetryAt = Date.now() + PLANE_ATTACH_RETRY_MS;
+		if (!this.planeDisabledLogged) {
+			this.planeDisabledLogged = true;
+			logger.error?.('the HNSW native index failed; requesting a rebuild from its owner', error);
+		}
+		this.derivedHost?.requestRebuild();
+	}
+
+	/** Storage cleared outside the transaction log (`Table.clear()`) leaves the owner nothing to replay. */
+	requestDerivedRebuild(): void {
+		this.derivedHost?.requestRebuild();
+	}
+
+	/**
+	 * Delete the derived plane state before an audit-backed reconstruction. Path invalidation
+	 * makes peers stop using an old mapping even when unlink leaves their mmap inode alive.
+	 */
+	resetDerivedStorage(): void {
+		this.pendingDerivedMappings.clear();
+		const attached = this.plane;
+		this.plane = undefined;
+		this.planeRetryAt = 0;
+		const filePath = this.planeFilePath();
+		if (!filePath) return;
+		if (this.filePrimary && existsSync(filePath)) this.invalidatePlaneFile(filePath, attached);
+		try {
+			unlinkSync(filePath);
+		} catch (error: any) {
+			if (error?.code !== 'ENOENT') {
+				// a stale file that cannot be deleted (e.g. Windows EBUSY while mapped) must not
+				// be reopened as if current — mark it so no process ever adopts it
+				this.plane = null;
+				logger.warn?.('could not delete the HNSW plane file; marking it stale', error);
+				this.invalidatePlaneFile(filePath, attached);
+			}
+		}
+	}
+
+	derivedStorageLost(): boolean {
+		const filePath = this.planeFilePath();
+		return filePath !== undefined && !existsSync(filePath) && this.hasNodeMappings();
+	}
+
+	/** True while any primary-key mapping survives, which is the only proof this index holds nodes. */
+	private hasNodeMappings(): boolean {
+		for (const { value } of this.indexStore.getRange({})) {
+			if (value && typeof value === 'object' && typeof value.id === 'number') return true;
+		}
+		return false;
+	}
+
+	/** Make an undeletable plane unadoptable before this process releases it. */
+	private invalidatePlaneFile(filePath: string, attached?: HnswPlane | null): void {
+		try {
+			invalidateHnswPlaneFile(filePath, attached);
+		} catch (error) {
+			logger.warn?.('could not invalidate the stale HNSW plane file', error);
+		}
+	}
+
+	/**
+	 * Native search over the plane: one NAPI crossing, traversal on the libuv pool, every hit
+	 * carrying its primary key out of the slot. The predicate adapter runs on this thread's event
+	 * loop (batched over a ThreadsafeFunction), so this promise must never be awaited by code the
+	 * predicate itself blocks on; the normal request path awaits it safely.
+	 */
+	private searchPlane(
+		plane: HnswPlane,
+		target: number[],
+		k: number,
+		ef: number,
+		filter: ((primaryKey: Id) => boolean) | undefined,
+		filterState: FilterState | undefined
+	): Promise<any[]> {
+		const query = Float32Array.from(target);
+		let resultPromise: Promise<PlaneSearchHits>;
+		let predicateError: unknown;
+		let planeError: unknown;
+		if (filter && filterState) {
+			const predicate: PlanePredicate = (ids, keys, keyEnds) => {
+				const verdicts = new Uint8Array(ids.length);
+				if (predicateError !== undefined || planeError !== undefined) return verdicts;
+				for (let i = 0; i < ids.length; i++) {
+					const start = i === 0 ? 0 : keyEnds[i - 1];
+					const end = keyEnds[i];
+					if (end === start) continue;
+					let primaryKey: Id;
+					try {
+						primaryKey = unpack(keys.subarray(start, end));
+					} catch (error) {
+						planeError = error;
+						break;
+					}
+					try {
+						if (this.admit(filter, filterState, primaryKey)) verdicts[i] = 1;
+					} catch (error) {
+						predicateError = error;
+						break;
+					}
+				}
+				return verdicts;
+			};
+			resultPromise = plane.searchWithPredicate(query, k, ef, predicate, undefined, filterState.maxVisits);
+		} else {
+			resultPromise = plane.search(query, k, ef);
+		}
+		return resultPromise.then((hits) => {
+			if (planeError !== undefined) throw planeError;
+			if (predicateError !== undefined) {
+				// the plane itself is healthy; mark the failure as the application's so the caller
+				// re-raises it rather than disabling the plane and retrying
+				try {
+					(predicateError as any)[NOT_A_PLANE_FAILURE] = true;
+				} catch {
+					// a frozen/primitive throw still propagates, it just also disables the plane
+				}
+				throw predicateError;
+			}
+			const entries: any[] = [];
+			const { distances, keys, keyEnds } = hits;
+			// a key appears twice only after a crash (see applyDerivedValue); keep the nearer hit
+			const seen = new Set<string>();
+			for (let i = 0; i < keyEnds.length; i++) {
+				const start = i === 0 ? 0 : keyEnds[i - 1];
+				const end = keyEnds[i];
+				if (end === start) continue;
+				const encoded = keys.toString('latin1', start, end);
+				if (seen.has(encoded)) continue;
+				seen.add(encoded);
+				entries.push({ key: unpack(keys.subarray(start, end)), distance: distances[i] });
+			}
+			// nodesVisited stays 0 here: layer-0 visits happen inside the native traversal
+			// (filterEvaluations is still counted by the predicate adapter)
+			return withStats(entries, filterState);
+		});
+	}
+
+	/**
+	 * Run a candidate-key plan when its scans are cheaper than the predicate visits they replace, and
+	 * return the matching primary keys with whether they alone decide admission. Undefined means
+	 * "take the predicate path": the plan was too broad, its narrowest term overran the scan budget,
+	 * or the scan failed — none of which is a fault of the graph.
+	 */
+	private collectCandidateKeys(
+		plan: CandidateKeyPlan,
+		ef: number,
+		predicateMaxVisits: number
+	): { keys: CandidateKeySet; complete: boolean } | undefined {
+		const nodeCount = this.approximateNodeCount();
+		const estimated = Math.max(1, plan.estimatedCount);
+		// Filling ef matches at selectivity s costs ~ef/s visits, and s is estimated/nodeCount, so a
+		// broad filter needs few predicate visits however cheap the test that would replace them.
+		const predicateVisits = Math.min(predicateMaxVisits, (ef * nodeCount) / estimated);
+		let maxKeys = Math.min(Math.ceil(predicateVisits * KEYS_PER_PREDICATE_VISIT), MAX_CANDIDATE_KEYS);
+		// An allow-set over a large fraction of the graph is not a filter worth building.
+		if (nodeCount > 0) maxKeys = Math.min(maxKeys, Math.max(1, nodeCount >> 1));
+		if (estimated > maxKeys) return undefined;
+		try {
+			return plan.collect(maxKeys) ?? undefined;
+		} catch (error) {
+			// A sibling index that started rebuilding or closed between planning and the scan is a
+			// reason to filter the other way, not to fail — and not to reach the caller's handler,
+			// which reads an unclassified search error as plane corruption and requests a rebuild.
+			logger.warn?.('could not build the HNSW candidate-key allow-set; using the predicate path', error);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Visit budget for a traversal an allow-set decides, derived from the selectivity the set makes
+	 * measurable rather than from filterExpansion — which exists to bound an admission test expensive
+	 * enough to be worth bounding, and this one is a set lookup. It only ever widens the
+	 * filterExpansion budget, never narrows it: a cheaper visit makes a tighter budget buy nothing
+	 * and cost recall. An empty set keeps that budget, so a zero-match filter returns empty after a
+	 * bounded descent rather than crawling the graph.
+	 */
+	private allowSetVisitBudget(allowed: number, predicateMaxVisits: number, budgetEf: number): number {
+		if (allowed <= 0) return predicateMaxVisits;
+		const selectivity = Math.min(1, allowed / Math.max(1, this.approximateNodeCount()));
+		const derived = budgetEf * Math.ceil(ALLOW_SET_BUDGET_SLACK / selectivity);
+		return Math.min(Math.max(predicateMaxVisits, derived), predicateMaxVisits * ALLOW_SET_BUDGET_MAX_WIDENING);
+	}
+
+	attachDerivedHost(host: DerivedNativeIndexHost): void {
+		this.derivedHost = host;
+	}
+
+	private queryCoverage(maxLagMilliseconds: number) {
+		const coverage = this.derivedHost?.coverage(maxLagMilliseconds);
+		if (!coverage || coverage.state === 'unknown') {
+			const age = coverage?.lagUpperBoundMilliseconds;
+			throw new DerivedIndexLagError(
+				`Cannot certify native HNSW index coverage within ${maxLagMilliseconds} ms` +
+					(age === undefined ? '; freshness is unknown' : `; last certified ${Math.ceil(age)} ms ago`) +
+					'; retry this query'
+			);
+		}
+		return coverage;
+	}
+
+	/**
+	 * The commit path only validates: a malformed vector is the client's 400 here rather than an
+	 * unindexable record later. The shared derived-index runtime reads the committed log; nothing
+	 * is staged on the transaction.
+	 */
+	prepareCommitted(primaryKey: Id, vector: number[], existingVector: number[]): void {
+		// O(dims) on every write to the table, so skip it when the projection did not change — an
+		// unchanged vector was validated when it was first written.
+		if (derivedValuesEqual(vector, existingVector)) return;
+		this.validateVector(primaryKey, vector);
+	}
+
+	/** The runtime's projection guard: what fails here is delivered as unindexable, not applied. */
+	assertDerivedValue(vector: unknown, label: string): void {
+		this.assertPlaneVector(vector as number[], label);
+	}
+
+	private validateVector(primaryKey: Id, vector?: number[]): void {
+		if (!vector) return;
+		this.assertPlaneVector(vector, `Vector for attribute "${String(primaryKey)}"`);
+	}
+
+	/**
+	 * Everything reaching the plane — a committed record's projection or a query target — has to
+	 * convert to the f32 it stores, and to a representable magnitude. What fails here would instead
+	 * throw out of `Float32Array.from` or out of the crate, as an error neither the search path nor
+	 * reconstruction can attribute to the record: a query would unlink a healthy file, and a record
+	 * would abort every rebuild attempt at the same entry.
+	 */
+	private assertPlaneVector(vector: number[], label: string): void {
+		// A positive integer length, not merely a numeric one: a negative or fractional length skips
+		// the component loop and the emptiness check, and reaches Plane.create with it.
+		const length = (vector as any)?.length;
+		if (!Number.isInteger(length) || length < 1) {
+			throw new ClientError(`${label} must be an array of at least one number.`);
+		}
+		let sumOfSquares = 0;
+		for (let i = 0; i < vector.length; i++) {
+			const component = vector[i];
+			// The type check precedes Math.fround, which throws a TypeError on the BigInt a msgpackr
+			// or cbor-x decode produces for a large int64.
+			if (typeof component !== 'number' || !Number.isFinite(Math.fround(component))) {
+				throw new ClientError(
+					`${label} has a component at index ${i} that is not a finite 32-bit float: ${String(component)}.`
+				);
+			}
+			const asFloat32 = Math.fround(component);
+			sumOfSquares += asFloat32 * asFloat32;
+		}
+		// Components can each be f32-finite while their squares are not, which stores invMag 0 and
+		// makes every distance involving that node NaN.
+		if (!Number.isFinite(Math.fround(sumOfSquares))) {
+			throw new ClientError(`${label} has a magnitude too large to represent in 32-bit floats.`);
+		}
+		// The plane's dimensionality is fixed at create time by the first committed vector.
+		const dims = this.plane?.dims;
+		if (dims !== undefined && vector.length !== dims) {
+			throw new ClientError(`${label} has ${vector.length} components, but this index stores ${dims}.`);
+		}
+	}
+
+	applyDerivedValue(primaryKey: Id, vector: number[], version?: number): void {
+		this.validateVector(primaryKey, vector);
+		const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
+		const pendingKey = pendingMappingKey(primaryKey);
+		const pendingMapping = this.pendingDerivedMappings.get(pendingKey);
+		const storedMapping = pendingMapping ?? this.indexStore.getSync(safeKey);
+		const oldNodeId = typeof storedMapping === 'number' ? storedMapping : storedMapping?.id;
+		// Neither a plane removal nor an insert is durable before the barrier, so a pending
+		// mapping keeps naming the last published node (previousId) for replay to remove.
+		const displacedNodeId: number | undefined = storedMapping?.previousId;
+		const durableNodeId = storedMapping?.pending ? displacedNodeId : oldNodeId;
+		if (storedMapping?.version != null && version != null && storedMapping.version > version) return;
+		const nativeVector = vector ? Float32Array.from(vector) : undefined;
+		const signature = nativeVector
+			? createHash('sha256')
+					.update(Buffer.from(nativeVector.buffer, nativeVector.byteOffset, nativeVector.byteLength))
+					.digest('base64url')
+			: undefined;
+		if (oldNodeId != null && signature && storedMapping.signature === signature) {
+			if (!storedMapping.pending) {
+				if (storedMapping.version !== version) this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
+				return;
+			}
+			// Replacing would tombstone a node the plane does not re-link around. Only an in-memory pending
+			// mapping proves its node is in this plane; one read back from storage may predate a crash.
+			if (pendingMapping) {
+				if (pendingMapping.version !== version) {
+					const mapping = { id: oldNodeId, previousId: durableNodeId, signature, version, pending: true };
+					this.indexStore.putSync(safeKey, mapping);
+					this.pendingDerivedMappings.set(pendingKey, { ...mapping, primaryKey });
+				}
+				return;
+			}
+		}
+		let plane = vector ? this.getPlane(vector.length, true) : this.getPlane();
+		if (plane?.invalidated()) {
+			this.plane = undefined;
+			plane = vector ? this.getPlane(vector.length, true) : this.getPlane();
+		}
+		// The pre-commit check above ran before this worker had a plane to compare against, so it
+		// cannot have caught a mismatch. Reject before the removal below, or the record loses its
+		// old node on the way to failing.
+		if (vector && plane && vector.length !== plane.dims) {
+			throw new ClientError(
+				`Vector for attribute "${String(primaryKey)}" has ${vector.length} components, but this index stores ${plane.dims}.`
+			);
+		}
+		// in process a pending mapping's removals already happened and their ids may be reused
+		const removeDisplaced = displacedNodeId != null && !pendingMapping && displacedNodeId !== oldNodeId;
+		const removeOld = oldNodeId != null && !(pendingMapping && storedMapping.cleared);
+		if (removeDisplaced) plane?.remove(displacedNodeId);
+		if (removeOld) plane?.remove(oldNodeId);
+		if (!vector) {
+			const cleared = { id: oldNodeId, previousId: durableNodeId, version, pending: true, cleared: true };
+			if (oldNodeId != null || durableNodeId != null) this.indexStore.putSync(safeKey, cleared);
+			else this.indexStore.removeSync(safeKey);
+			this.pendingDerivedMappings.set(pendingKey, { ...cleared, primaryKey });
+			return;
+		}
+		if (!plane) throw new ServerError('The native HNSW module is unavailable for a file-primary index', 503);
+		const nodeId = plane.insert(nativeVector!, pack(primaryKey));
+		const mapping = { id: nodeId, previousId: durableNodeId, signature, version, pending: true };
+		this.indexStore.putSync(safeKey, mapping);
+		this.pendingDerivedMappings.set(pendingKey, { ...mapping, primaryKey });
+	}
+
+	async flushDerived(watermark?: number): Promise<void> {
+		const plane = this.getPlane();
+		if (!plane) {
+			if (!getPlaneBinding()) throw new ServerError('The native HNSW module is unavailable', 503);
+			return this.publishDerivedMappings();
+		}
+		await plane.flushAsync(watermark);
+		this.publishDerivedMappings();
+	}
+
+	private publishDerivedMappings(): void {
+		for (const { primaryKey, ...mapping } of this.pendingDerivedMappings.values()) {
+			const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
+			if (mapping.cleared || mapping.id === undefined) {
+				this.indexStore.removeSync(safeKey);
+			} else {
+				const published = { id: mapping.id, signature: mapping.signature, version: mapping.version };
+				this.indexStore.putSync(safeKey, published);
+			}
+		}
+		this.pendingDerivedMappings.clear();
+	}
+
 	index(primaryKey: Id, vector: number[], existingVector?: number[], options: any = {}) {
+		if (this.filePrimary) {
+			if (options.transaction) return this.prepareCommitted(primaryKey, vector, existingVector);
+			// runIndexing invokes custom indexes without a transaction. The shared runtime owns the
+			// primary-record rebuild and the log replay; populating here would duplicate native
+			// construction and race the owner's generation reset.
+			return;
+		}
+		// Reject non-finite components before touching the graph. NaN in particular poisons
+		// bisectInsert (arr[mid].distance <= NaN is always false → returns 0, pinning the
+		// candidate to rank 1 of every future search). Infinity causes analogous ordering
+		// anomalies. embedHook.ts intentionally passes NaN through and expects HNSW to guard.
+		if (vector) {
+			for (let i = 0; i < vector.length; i++) {
+				if (!Number.isFinite(vector[i])) {
+					throw new ClientError(
+						`Vector for attribute "${String(primaryKey)}" contains non-finite component at index ${i}: ${vector[i]}. Ensure the embedding produces only finite values.`
+					);
+				}
+			}
+		}
 		// first get the node id for the primary key; we use internal node ids for better efficiency,
 		// but we must use a safe key that won't collide with the node ids
 		const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
@@ -137,24 +1127,8 @@ export class HierarchicalNavigableSmallWorld {
 		// that won't collide with the node ids, so we can't have a collision with internal
 		if (!nodeId) {
 			if (!vector) return; // didn't exist before, doesn't exist now, nothing to do
-			if (!this.idIncrementer) {
-				let largestNodeId = 0;
-				for (const key of this.indexStore.getKeys({
-					reverse: true,
-					limit: 1,
-					start: Infinity,
-					end: 0,
-					transaction: options.transaction,
-				})) {
-					if (typeof key === 'number') largestNodeId = key;
-				}
-
-				this.idIncrementer = new BigInt64Array([BigInt(largestNodeId) + 1n]);
-				this.idIncrementer = new BigInt64Array(
-					this.indexStore.getUserSharedBuffer('next-id', this.idIncrementer.buffer)
-				);
-			}
-			nodeId = Number(Atomics.add(this.idIncrementer, 0, 1n));
+			this.ensureIdIncrementer(options);
+			nodeId = Number(Atomics.add(this.idIncrementer!, 0, 1n));
 			this.indexStore.put(safeKey, nodeId, options);
 		}
 		const updatedNodes = new Map<number, Node>();
@@ -165,7 +1139,30 @@ export class HierarchicalNavigableSmallWorld {
 			// If we are updating an existing entry, we need to update the entry point
 			// if the new entry is closer to the entry point than the old one
 			oldNode = { ...this.safeGetSync(nodeId, options) };
-		} else oldNode = {} as Node;
+		} else {
+			// If this key already has a graph node — which happens when runIndexing re-feeds an
+			// already-indexed record after a crash/restart, or when the caller cannot know the old
+			// vector (a computed vector over a residency stub) — load it and treat the call as an
+			// update or removal of that node. Without this, the absent existingVector causes
+			// oldNode = {} → a new random level, connections overwritten, and old-connection cleanup
+			// skipped, leaving dangling reverse edges and wrong levels.
+			const storedNode = nodeId ? this.safeGetSync(nodeId, options) : undefined;
+			if (storedNode && storedNode.level !== undefined) {
+				// Treat as an update: carry forward the stored graph state so cleanup and level
+				// assignment below use the real existing connections instead of starting fresh.
+				oldNode = { ...storedNode };
+				// Reconstruct the existingVector from the stored node so distance computations
+				// in the cleanup pass use the right baseline (dequantize if int8).
+				if (!existingVector) {
+					existingVector =
+						storedNode.scale !== undefined
+							? dequantizeInt8(storedNode.vector as Int8Array, storedNode.scale)
+							: (storedNode.vector as number[]);
+				}
+			} else {
+				oldNode = {} as Node;
+			}
+		}
 		if (vector) {
 			// Pre-compute 1/|vector| for cosine distance so searchLayer can skip sqrt per neighbor
 			let invMag: number | undefined;
@@ -174,11 +1171,18 @@ export class HierarchicalNavigableSmallWorld {
 				for (const v of vector) magSq += v * v;
 				invMag = 1 / (Math.sqrt(magSq) || 1);
 			}
+			// Quantized storage form. The float `vector` is still used as the query for every
+			// searchLayer call below (asymmetric distance: float query x int8 stored); only what
+			// we PUT to the store is quantized.
+			const q = this.int8 ? quantizeInt8(vector) : undefined;
+			const storedVector: number[] | Buffer = q ? q.bytes : vector;
+			const storedScale = q ? q.scale : undefined;
 			let entryPoint = entryPointId && this.safeGetSync(entryPointId, options);
 			if (entryPoint == null) {
-				const level = Math.floor(-Math.log(Math.random()) * this.mL);
+				const level = Math.min(Math.floor(-Math.log(this.random()) * this.mL), MAX_LEVEL);
 				const node = {
-					vector,
+					vector: storedVector,
+					scale: storedScale,
 					invMag,
 					level,
 					primaryKey,
@@ -196,7 +1200,7 @@ export class HierarchicalNavigableSmallWorld {
 			}
 
 			// Generate random level for this new element
-			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
+			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(this.random()) * this.mL), MAX_LEVEL);
 			let currentLevel = entryPoint.level;
 			if (level > currentLevel) {
 				// if we are at a higher level, make this the new entry point
@@ -207,17 +1211,12 @@ export class HierarchicalNavigableSmallWorld {
 				this.indexStore.put(ENTRY_POINT, nodeId, options);
 			}
 
-			// For each level from top to bottom
+			// Pure descent — only neighbors[0] is used — so it runs greedily for the same reason
+			// search() does. The connection-building pass below keeps efConstruction: it selects the
+			// edges that get stored.
 			while (currentLevel > level) {
 				// Search for closest neighbors at current level
-				const neighbors = this.searchLayer(
-					vector,
-					entryPointId,
-					entryPoint,
-					this.efConstruction,
-					currentLevel,
-					options
-				);
+				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, ROUTING_EF, currentLevel, options);
 
 				if (neighbors.length > 0) {
 					entryPointId = neighbors[0].id; // closest neighbor becomes new entry point
@@ -230,9 +1229,25 @@ export class HierarchicalNavigableSmallWorld {
 				connections[i] = [];
 			}
 
-			// Connect the new element to neighbors at its level and below
+			// An update-only worker may not have attached the id counter yet. The healthy path is one
+			// atomic load; a failed attach falls back to the memoized seek and retries after its TTL.
+			let efConstruction = this.efConstruction;
+			if (!this.efConstructionConfigured) {
+				// Graph size only tunes a heuristic; a write must never fail because it could not be resolved.
+				try {
+					efConstruction = autoScaleEfConstruction(this.resolveConstructionNodeCount(options));
+				} catch (error) {
+					logger.debug?.('could not resolve the HNSW construction node count; using the base ef', error);
+				}
+				if (efConstruction > this.efConstruction && this.lastLoggedEfConstruction !== efConstruction) {
+					// once per resolved value per process: makes replica-divergent build quality and the
+					// build-cost ramp diagnosable (the resolved value is otherwise surfaced nowhere)
+					this.lastLoggedEfConstruction = efConstruction;
+					logger.debug?.(`HNSW construction ef auto-scaled to ${efConstruction}`);
+				}
+			}
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, options);
+				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, efConstruction, l, options);
 				neighbors = neighbors.slice(0, this.M << 1) as SearchResults;
 
 				if (neighbors.length === 0 && l === 0) {
@@ -331,17 +1346,15 @@ export class HierarchicalNavigableSmallWorld {
 			}
 
 			// Store the new element
-			this.indexStore.put(
-				nodeId,
-				{
-					vector,
-					invMag,
-					level,
-					primaryKey,
-					...connections,
-				},
-				options
-			);
+			const storedNode = {
+				vector: storedVector,
+				scale: storedScale,
+				invMag,
+				level,
+				primaryKey,
+				...connections,
+			};
+			this.indexStore.put(nodeId, storedNode, options);
 		} else {
 			// removal of this node, but first make sure we have a valid entry point
 			if (entryPointId === nodeId) {
@@ -352,15 +1365,22 @@ export class HierarchicalNavigableSmallWorld {
 					if (entryPointId !== undefined) break;
 				}
 				if (entryPointId === undefined) {
-					// scan through all nodes to find one with highest level
+					// Fallback scan: pass transaction so it sees the same write-set (not stale committed state),
+					// skip the node being deleted (it is typically the highest-level node and would be
+					// re-elected), and verify each candidate actually resolves before committing it.
 					let highestLevel = -1;
 					for (const { key, value } of this.indexStore.getRange({
 						start: 0,
 						end: Infinity,
+						transaction: options.transaction,
 					})) {
+						// skip the node being removed (safeKey mappings can't appear here: symbol-array
+						// and string keys sort outside the numeric 0..Infinity range)
+						if (key === nodeId) continue;
+						if (!value || value.level === undefined) continue;
 						if (value.level > highestLevel) {
 							entryPointId = key;
-							if (value.level === lastLevel) break; // if we found a node at the same level as the last entry point, we can stop
+							if (value.level === lastLevel) break; // found a node at the same level as the old entry point
 							highestLevel = value.level;
 						}
 					}
@@ -378,8 +1398,14 @@ export class HierarchicalNavigableSmallWorld {
 				}
 			}
 			this.indexStore.remove(nodeId, options);
+			// A re-insert of this primary key must get a fresh node rather than the deleted node's id.
+			this.indexStore.remove(safeKey, options);
 		}
 		const needsReindexing = new Map();
+		// On DELETE, track every neighbor that loses an edge: the empty-list check below only
+		// catches fully-orphaned nodes, but a cluster can stay internally connected while losing
+		// its only bridges to the entry point — see repairSeveredNeighbors (#1712).
+		const edgeLosingNeighborIds = vector ? undefined : new Set<number>();
 		// remove connections to this node that are no longer valid
 		if (oldNode.level !== undefined) {
 			for (let l = 0; l <= oldNode.level; l++) {
@@ -388,14 +1414,28 @@ export class HierarchicalNavigableSmallWorld {
 					// get and copy the neighbor node so we can modify it
 					const neighborNode = updateNode(neighborId, this.safeGetSync(neighborId, options));
 					if (!neighborNode) continue;
-					for (let l2 = 0; l2 <= l; l2++) {
+					edgeLosingNeighborIds?.add(neighborId);
+					// On an UPDATE (vector != null), only remove the reverse edge at
+					// the exact level l where the old connection existed. Sweeping 0..l would destroy reverse
+					// edges at lower levels that were just re-added by addConnection or preserved by the
+					// splice logic above — causing asymmetry that accumulates with every re-embed.
+					// On DELETE (vector == null), the full 0..l sweep is correct: we want to remove every
+					// occurrence of nodeId from all levels of each neighbor.
+					const levelStart = vector ? l : 0;
+					for (let l2 = levelStart; l2 <= l; l2++) {
 						// remove the connection to this node from the neighbor node
 						neighborNode[l2] = neighborNode[l2]?.filter(({ id: nid }) => {
 							return nid !== nodeId;
 						});
 						if (neighborNode[l2]?.length === 0) {
 							logger.trace?.('node was left orphaned, will reindex', neighborId);
-							needsReindexing.set(neighborNode.primaryKey, neighborNode.vector);
+							// reindex re-feeds this vector into index() as a float query, so dequantize int8 back to float
+							needsReindexing.set(
+								neighborNode.primaryKey,
+								neighborNode.scale !== undefined
+									? dequantizeInt8(neighborNode.vector as Int8Array, neighborNode.scale)
+									: neighborNode.vector
+							);
 						}
 					}
 				}
@@ -414,15 +1454,247 @@ export class HierarchicalNavigableSmallWorld {
 		for (const [id, updatedNode] of updatedNodes) {
 			this.indexStore.put(id, updatedNode, options);
 		}
-		for (const [key, vector] of needsReindexing) {
-			this.index(key, vector, vector, options);
+		for (const [key, orphanVector] of needsReindexing) {
+			// If the orphan IS the current entry point, re-running
+			// index() from it would find no other nodes to connect to (the entry point search returns
+			// itself), leaving it permanently isolated. Elect a surviving neighbor as entry point first
+			// so the orphan can reconnect to the live graph.
+			const currentEP = this.indexStore.getSync(ENTRY_POINT, options);
+			const orphanNodeId = this.indexStore.getSync(typeof key === 'number' ? [KEY_PREFIX, key] : key, options);
+			if (currentEP !== undefined && currentEP === orphanNodeId) {
+				// The orphan's own connection lists are empty, so look for a surviving node to elect:
+				// first among the nodes updated in this pass, then a full scan as fallback.
+				let replacementEP: number | undefined;
+				for (const [candidateId, candidateNode] of updatedNodes) {
+					if (candidateId !== orphanNodeId && candidateNode[0]?.length > 0) {
+						replacementEP = candidateId;
+						break;
+					}
+				}
+				if (replacementEP === undefined) {
+					for (const { key: candidateKey, value: candidateNode } of this.indexStore.getRange({
+						start: 0,
+						end: Infinity,
+						transaction: options.transaction,
+					})) {
+						if (candidateKey === orphanNodeId) continue;
+						if (candidateNode?.level !== undefined) {
+							replacementEP = candidateKey;
+							break;
+						}
+					}
+				}
+				if (replacementEP !== undefined) {
+					this.indexStore.put(ENTRY_POINT, replacementEP, options);
+				}
+			}
+			this.index(key, orphanVector, orphanVector, options);
 		}
+		if (edgeLosingNeighborIds?.size) this.repairSeveredNeighbors(edgeLosingNeighborIds, options);
 		this.checkSymmetry(nodeId, this.safeGetSync(nodeId, options), options);
+	}
+
+	/**
+	 * After a delete, a neighbor that lost an edge can be severed from the entry point even with
+	 * non-empty connection lists: a locally-connected cluster whose only bridges ran through the
+	 * deleted node becomes a disconnected island, unreachable by search at any ef (#1712). The
+	 * empty-list orphan check in index() can't see this, so probe each edge-losing neighbor's
+	 * connectivity and reindex the ones that are cut off.
+	 *
+	 * The probe is a level-prioritized best-first traversal (hubs first, since the entry point is
+	 * a high-level node), treating edges as undirected — the same assumption validateConnectivity
+	 * makes. Note the direction difference: the probe walks source→entry-point over stored
+	 * (outgoing) edges while search walks entry-point→outward, so an asymmetric edge could make
+	 * the probe claim connectivity that search doesn't have. Edges are bidirectional by
+	 * construction (checkSymmetry logs violations), and reverse-reachability from the entry point
+	 * would be O(N) per delete, so this is a deliberate residual. In a connected component the
+	 * probe reaches the known-connected set within a few hops; in an island it exhausts the
+	 * island quickly. If it exceeds PROBE_VISIT_LIMIT without an answer (pathologically distant
+	 * entry point — or an island larger than the budget), reinsert just the probe source: a
+	 * wasted reinsert in the connected case, and in the oversized-island case a partial repair
+	 * (the source relinks to the live graph, the rest of the island stays severed — reindexing
+	 * replaces the source's edges rather than bridging through them, and reindexing all 256+
+	 * probed nodes on what is usually just a distant entry point would be far too expensive).
+	 */
+	private repairSeveredNeighbors(neighborIds: Set<number>, options: any) {
+		const entryPointId = this.indexStore.getSync(ENTRY_POINT, options);
+		if (entryPointId === undefined) return;
+		const knownConnected = new Set<number>([entryPointId]);
+		for (const sourceId of neighborIds) {
+			if (knownConnected.has(sourceId)) continue;
+			const sourceNode = this.safeGetSync(sourceId, options);
+			if (!sourceNode || sourceNode.level === undefined) continue; // already removed or stale reference
+			const visited = new Map<number, Node>([[sourceId, sourceNode]]);
+			const frontier = new MinHeap();
+			frontier.push({ id: sourceId, distance: -sourceNode.level, node: sourceNode });
+			let verdict: 'connected' | 'island' | 'inconclusive' = 'island';
+			probe: for (;;) {
+				const current = frontier.pop();
+				if (!current) break; // exhausted the reachable set without touching the connected component
+				for (let l = 0; l <= current.node.level; l++) {
+					for (const { id: neighborId } of current.node[l] || []) {
+						if (neighborId === undefined) continue;
+						if (knownConnected.has(neighborId)) {
+							verdict = 'connected';
+							break probe;
+						}
+						if (visited.has(neighborId)) continue;
+						const node = this.safeGetSync(neighborId, options);
+						if (!node || node.level === undefined) continue; // stale reference
+						visited.set(neighborId, node);
+						frontier.push({ id: neighborId, distance: -node.level, node });
+					}
+				}
+				if (visited.size > PROBE_VISIT_LIMIT) {
+					verdict = 'inconclusive';
+					break;
+				}
+			}
+			if (verdict === 'connected') {
+				// every visited node connects to the source, which reaches the connected component
+				for (const id of visited.keys()) knownConnected.add(id);
+			} else {
+				// island: reinsert every member so the whole cluster relinks to the live graph;
+				// inconclusive: reinsert only the source (partial repair — see docstring)
+				if (verdict === 'inconclusive') {
+					logger.warn?.('connectivity probe exceeded visit budget after a delete, reinserting only', sourceId);
+				}
+				const toReindex = verdict === 'island' ? visited.values() : [sourceNode];
+				logger.debug?.('reindexing nodes severed from the entry point by a delete', sourceId);
+				for (const node of toReindex) {
+					const nodeVector =
+						node.scale !== undefined ? dequantizeInt8(node.vector as Int8Array, node.scale) : (node.vector as number[]);
+					this.index(node.primaryKey, nodeVector, nodeVector, options);
+				}
+				if (verdict === 'island') {
+					// the whole reindexed island is now relinked; skip re-probing its members
+					for (const id of visited.keys()) knownConnected.add(id);
+				} else {
+					knownConnected.add(sourceId);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Number of nodes in the graph, for the ef auto-scale. Must stay O(1): it runs per query, and an
+	 * exact count is a full key scan. RocksDB's `estimate-num-keys` is not a usable substitute — it
+	 * counts unreconciled overwrites, which graph construction produces in bulk. See DESIGN.md for the
+	 * measurements behind both. The memo is the only gate on how often the size is resolved; nothing on
+	 * the query path may bypass it, or the O(1) lookup becomes per-query work again.
+	 */
+	private approximateNodeCount(options?: any): number {
+		const now = Date.now();
+		if (this.nodeCountAt > 0 && now - this.nodeCountAt < NODE_COUNT_TTL) return this.nodeCount;
+		this.nodeCount = this.resolveNodeCount(options);
+		this.nodeCountAt = now;
+		return this.nodeCount;
+	}
+
+	private resolveConstructionNodeCount(options?: any): number {
+		if (this.idIncrementer) return this.resolveNodeCount();
+		const now = Date.now();
+		if (now >= this.idIncrementerRetryAt) {
+			try {
+				this.ensureIdIncrementer(options);
+				this.idIncrementerRetryAt = 0;
+				this.idIncrementerFailureLogged = false;
+				return this.resolveNodeCount();
+			} catch (error) {
+				this.idIncrementerRetryAt = now + NODE_COUNT_TTL;
+				if (!this.idIncrementerFailureLogged) {
+					this.idIncrementerFailureLogged = true;
+					logger.warn?.('could not attach the shared HNSW id counter; using a memoized node count', error);
+				}
+			}
+		}
+		return this.approximateNodeCount(options);
+	}
+
+	/**
+	 * Create-or-attach the shared id counter, seeded from a one-time reverse seek to the largest node
+	 * id. getUserSharedBuffer returns the existing shared buffer when another worker created it
+	 * first, so the seed only matters for whoever wins the race.
+	 */
+	private ensureIdIncrementer(options?: any): void {
+		if (this.idIncrementer) return;
+		let largestNodeId = 0;
+		for (const key of this.indexStore.getKeys({
+			reverse: true,
+			limit: 1,
+			start: Infinity,
+			end: 0,
+			transaction: options?.transaction,
+		})) {
+			if (typeof key === 'number') largestNodeId = key;
+		}
+		// Never install the counter until the shared attach succeeds: assigning the private seed
+		// array first would, on an attach failure, leave THIS process allocating ids nobody else can
+		// see — cross-worker id collisions. Left unset, the next write simply retries the ensure.
+		const seed = new BigInt64Array([BigInt(largestNodeId) + 1n]);
+		try {
+			const sharedBuffer = this.indexStore.getUserSharedBuffer('next-id', seed.buffer);
+			if (
+				!sharedBuffer ||
+				sharedBuffer.byteLength < BigInt64Array.BYTES_PER_ELEMENT ||
+				sharedBuffer.byteLength % BigInt64Array.BYTES_PER_ELEMENT !== 0
+			) {
+				throw new Error('Shared HNSW id counter buffer is unusable');
+			}
+			this.idIncrementer = new BigInt64Array(sharedBuffer);
+		} catch (error) {
+			// Reuse the transactional seed seek as the degraded count instead of seeking a second time.
+			this.nodeCount = largestNodeId + 1;
+			this.nodeCountAt = Date.now();
+			throw error;
+		}
+	}
+
+	/** O(1) node count: the plane's id high-water, the shared id counter, or one reverse seek. */
+	private resolveNodeCount(options?: any): number {
+		if (this.filePrimary) return this.getPlane()?.idHighWater() ?? 0;
+		if (this.idIncrementer) return Number(Atomics.load(this.idIncrementer, 0));
+		try {
+			for (const key of this.indexStore.getKeys({
+				reverse: true,
+				limit: 1,
+				start: Infinity,
+				end: 0,
+				transaction: options?.transaction,
+			})) {
+				if (typeof key === 'number') return key + 1;
+			}
+		} catch (error) {
+			logger.debug?.('could not resolve node count from the largest node id', error);
+		}
+		return 0; // empty (or unreadable) graph — autoScaleEf falls back to its floor
 	}
 
 	private safeGetSync(key: any, options?: any): any {
 		try {
-			return this.indexStore.getSync(key, options);
+			let node = this.indexStore.getSync(key, options);
+			// A quantized vector decodes as a bin (Uint8Array/Buffer) that is a view into the
+			// store's read buffer, which may be reused on the next getSync — so copy the bytes
+			// into a retained Int8Array (raw two's-complement reinterpret). The Int8Array guard
+			// skips re-conversion when the object store (useObjectStore) hands back an
+			// already-converted cached node. Float nodes (vector is a number[]) pass through.
+			if (node && node.vector && !Array.isArray(node.vector) && !(node.vector instanceof Int8Array)) {
+				// A node decoded from disk (a cache miss, common once the table outgrows the object
+				// cache) is frozen — the index store sets freezeData — so assigning node.vector would
+				// throw and the catch below would silently drop the node, fragmenting the graph (#1161).
+				// Clone the frozen node, memoizing the clone against the frozen node so repeated cache
+				// hits skip re-slicing/re-cloning. Mutate in place only the writable just-written object.
+				const cached = this.convertedNodes.get(node);
+				if (cached) return cached;
+				const u8 = node.vector as Uint8Array;
+				const vector = new Int8Array(u8.buffer, u8.byteOffset, u8.byteLength).slice();
+				if (Object.isFrozen(node)) {
+					const converted = { ...node, vector };
+					this.convertedNodes.set(node, converted);
+					node = converted;
+				} else node.vector = vector;
+			}
+			return node;
 		} catch {
 			logger.warn?.('Failed to decode HNSW node, skipping', key);
 			return undefined;
@@ -458,42 +1730,122 @@ export class HierarchicalNavigableSmallWorld {
 		ef: number,
 		level: number,
 		options: { transaction?: any } = {},
-		distanceFunction = this.distance
+		distanceFunction = this.distance,
+		// Predicate-aware traversal (#1241, layer 0 only). `filter` decides result admission by primary
+		// key; non-matching nodes still route (they stay in the candidate/visited sets) so the graph
+		// remains navigable under selective filters (ACORN). `filterState` carries the visit budget and
+		// per-query counters. Both are undefined for routing layers and for unfiltered searches.
+		filter?: (primaryKey: Id) => boolean,
+		filterState?: FilterState
 	): SearchResults {
-		// Pre-compute query magnitude for cosine; use cached invMag on stored nodes to skip sqrt per neighbor
-		let computeDistance: (b: number[], invMagB?: number) => number;
+		// Pre-compute query magnitude for cosine; use cached invMag on stored nodes to skip sqrt per neighbor.
+		// Asymmetric distance: the query stays full-precision float; a stored neighbor may be int8
+		// (with per-vector `scaleB`) or float (`scaleB` undefined).
+		let computeDistance: (b: number[] | Int8Array, invMagB?: number, scaleB?: number) => number;
 		if (distanceFunction === cosineDistance) {
 			let magASq = 0;
 			for (const v of queryVector) magASq += v * v;
 			const invMagA = 1 / (Math.sqrt(magASq) || 1);
-			computeDistance = (b: number[], invMagB?: number) => {
+			computeDistance = (b: number[] | Int8Array, invMagB?: number, scaleB?: number) => {
 				let dot = 0;
-				for (let i = 0; i < b.length; i++) dot += queryVector[i] * b[i];
+				for (let i = 0; i < b.length; i++) dot += queryVector[i] * (b[i] as number);
+				if (scaleB !== undefined) dot *= scaleB; // dequantize the int8 dot product
 				if (invMagB !== undefined) return 1 - dot * invMagA * invMagB;
+				// Fallback when the stored node has no cached invMag (a non-cosine index queried as
+				// cosine). Compute the stored magnitude and dequantize it by scaleB so it matches the
+				// already-dequantized dot product.
 				let magBSq = 0;
-				for (let i = 0; i < b.length; i++) magBSq += b[i] * b[i];
-				return 1 - (dot * invMagA) / (Math.sqrt(magBSq) || 1);
+				for (let i = 0; i < b.length; i++) magBSq += (b[i] as number) * (b[i] as number);
+				let magB = Math.sqrt(magBSq) || 1;
+				if (scaleB !== undefined) magB *= scaleB;
+				return 1 - (dot * invMagA) / magB;
+			};
+		} else if (distanceFunction === euclideanDistance) {
+			// Asymmetric squared-euclidean, dequantizing each int8 component inline (no allocation).
+			computeDistance = (b: number[] | Int8Array, _invMagB?: number, scaleB?: number) => {
+				if (scaleB === undefined) return distanceFunction(queryVector, b as number[]);
+				let distanceSquared = 0;
+				for (let i = 0; i < b.length; i++) {
+					const diff = queryVector[i] - (b[i] as number) * scaleB;
+					distanceSquared += diff * diff;
+				}
+				return distanceSquared;
 			};
 		} else {
-			computeDistance = (b: number[]) => distanceFunction(queryVector, b);
+			// Negated inner product, dequantizing the int8 dot product inline (no allocation).
+			computeDistance = (b: number[] | Int8Array, _invMagB?: number, scaleB?: number) => {
+				if (scaleB === undefined) return distanceFunction(queryVector, b as number[]);
+				let dot = 0;
+				for (let i = 0; i < b.length; i++) dot += queryVector[i] * (b[i] as number);
+				return -(dot * scaleB);
+			};
 		}
 
 		const visited = new Set([entryPointId]);
 		const initialCandidate: Candidate = {
 			id: entryPointId,
-			distance: computeDistance(entryPoint.vector, entryPoint.invMag),
+			distance: computeDistance(entryPoint.vector, entryPoint.invMag, entryPoint.scale),
 			node: entryPoint,
 		};
 
 		const candidates = new MinHeap();
 		candidates.push(initialCandidate);
-		const results = [initialCandidate] as SearchResults;
 
+		if (!filter) {
+			// Unfiltered path (unchanged): results are seeded with the entry point and every visited
+			// node is admitted; the stop rule is "closest remaining candidate worse than worst result".
+			const results = [initialCandidate] as SearchResults;
+			while (candidates.size > 0) {
+				const current = candidates.pop()!;
+				const furthestDistance = results[results.length - 1].distance;
+
+				if (current.distance > furthestDistance) break;
+
+				for (const { id: neighborId } of current.node[level] || []) {
+					if (visited.has(neighborId) || neighborId === undefined) continue;
+					visited.add(neighborId);
+
+					const neighbor = this.safeGetSync(neighborId, options);
+					if (!neighbor) continue;
+					this.nodesVisitedCount++;
+					const distance = computeDistance(neighbor.vector, neighbor.invMag, neighbor.scale);
+
+					if (distance < furthestDistance || results.length < ef) {
+						const candidate: Candidate = { id: neighborId, distance, node: neighbor };
+						candidates.push(candidate);
+						results.splice(bisectInsert(results, distance), 0, candidate);
+						if (results.length > ef) results.pop();
+					}
+				}
+			}
+			results.visited = visited.size;
+			return results;
+		}
+
+		// Predicate-aware path (#1241). `results` holds only nodes the filter admits, but every visited
+		// node still routes: it enters the candidate heap and can be expanded, preserving connectivity
+		// through non-matching regions. Because matches accrue slower than visits, the distance stop rule
+		// only applies once `ef` matches are in hand; until then we keep expanding.
+		//
+		// maxVisits = ef * filterExpansion is a hard ceiling on layer-0 node visits. It has to be
+		// generous enough NOT to truncate a non-selective filter before it fills `ef` (filling at
+		// selectivity `s` costs ~ef/s visits) — that is why the default filterExpansion is larger than a
+		// standard-HNSW rule of thumb, since this index visits a large fraction of the graph per query.
+		// It matters as a genuine bound in two cases: a selective filter that can never fill `ef` (where
+		// the alternative is crawling the whole graph — the same regime the planner diverts to the exact
+		// brute-force path for condition filters, leaving function predicates the real beneficiary), and
+		// a filter that fills `ef` with distant matches (a loose worst-match bound would otherwise let
+		// the distance rule explore almost everything).
+		// search() always supplies filterState alongside filter; default one for any direct caller that doesn't.
+		if (!filterState) filterState = { maxVisits: Infinity, nodesVisited: 0, filterEvaluations: 0 };
+		const results = [] as unknown as SearchResults;
+		if (this.admit(filter, filterState, entryPoint.primaryKey)) results.push(initialCandidate);
+		let budgetExhausted = false;
 		while (candidates.size > 0) {
 			const current = candidates.pop()!;
-			const furthestDistance = results[results.length - 1].distance;
-
-			if (current.distance > furthestDistance) break;
+			// Once we have ef matches, the worst of them bounds useful exploration; before that, keep going.
+			const furthestDistance = results.length >= ef ? results[results.length - 1].distance : Infinity;
+			if (results.length >= ef && current.distance > furthestDistance) break;
 
 			for (const { id: neighborId } of current.node[level] || []) {
 				if (visited.has(neighborId) || neighborId === undefined) continue;
@@ -502,30 +1854,55 @@ export class HierarchicalNavigableSmallWorld {
 				const neighbor = this.safeGetSync(neighborId, options);
 				if (!neighbor) continue;
 				this.nodesVisitedCount++;
-				const distance = computeDistance(neighbor.vector, neighbor.invMag);
+				filterState.nodesVisited++;
+				const distance = computeDistance(neighbor.vector, neighbor.invMag, neighbor.scale);
 
+				// Route through any node that could still improve the result set (under-filled or nearer
+				// than the current worst match) — filtering does not prune the graph, only admission.
 				if (distance < furthestDistance || results.length < ef) {
 					const candidate: Candidate = { id: neighborId, distance, node: neighbor };
 					candidates.push(candidate);
-					results.splice(bisectInsert(results, distance), 0, candidate);
-					if (results.length > ef) results.pop();
+					if (this.admit(filter, filterState, neighbor.primaryKey)) {
+						results.splice(bisectInsert(results, distance), 0, candidate);
+						if (results.length > ef) results.pop();
+					}
+				}
+				if (filterState.nodesVisited >= filterState.maxVisits) {
+					budgetExhausted = true;
+					break;
 				}
 			}
+			if (budgetExhausted) break;
 		}
 		results.visited = visited.size;
 		return results;
 	}
 
 	/**
+	 * Evaluate the traversal predicate for one node, counting the evaluation for `explain`. Kept as a
+	 * tiny helper so both the entry-point seed and the neighbor loop share the counting path. The filter
+	 * itself memoizes verdicts per query (a node can be reached from multiple neighbors), so this stays
+	 * cheap even when the predicate loads a record.
+	 */
+	private admit(filter: (primaryKey: Id) => boolean, filterState: FilterState | undefined, primaryKey: Id): boolean {
+		// A filter fronted by an allow-set counts its own evaluations: the counter reports how much of
+		// the graph a filtered query had to LOAD, and a membership test loads nothing.
+		if (filterState && !filterState.countsOwnEvaluations) filterState.filterEvaluations++;
+		return filter(primaryKey);
+	}
+
+	/**
 	 * This the main entry from Harper's query functionality, where we actually search for an ordered list of nearest
 	 * neighbors, using the provided sort/order definition object and performing the multi-layer skip-list search.
 	 * This returns an iterable of the nearest neighbors to the provided target vector, with nearest ordered first.
-	 * @param target
-	 * @param value
-	 * @param descending
-	 * @param distance
-	 * @param comparator
-	 * @param context
+	 *
+	 * This is also the contract an index implemented outside this repo has to satisfy, so everything
+	 * optional is named: a future capability (a paging cursor, a deadline, a recall target) is a new
+	 * field on `options` rather than a positional argument that breaks every existing implementation.
+	 * @param searchCondition the vector query: `target`, `comparator`, and the optional `value`,
+	 *   `descending`, `distance`, `ef` and `filterExpansion` tuning knobs
+	 * @param context the query context; its `transaction` is the nested RocksDB transaction reads use
+	 * @param options optional, named: `filter` (predicate-aware traversal) and `minResults`
 	 */
 	search(
 		{
@@ -534,19 +1911,49 @@ export class HierarchicalNavigableSmallWorld {
 			descending,
 			distance,
 			comparator,
+			ef,
+			filterExpansion,
+			maxIndexLagMilliseconds = DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
+			waitForIndexMilliseconds = 0,
 		}: {
 			target: number[];
 			value: number;
 			descending: boolean;
 			distance: string;
 			comparator: string;
+			ef?: number;
+			filterExpansion?: number;
+			maxIndexLagMilliseconds?: number;
+			waitForIndexMilliseconds?: number;
 		},
-		context: any
+		context: any,
+		{
+			filter,
+			minResults,
+			candidateKeys,
+		}: {
+			// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
+			// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
+			// search.ts from companion AND conditions and caller-supplied vector/row filters. Must be
+			// synchronous and side-effect free. JS-API only (never from a REST query string).
+			filter?: (primaryKey: Id) => boolean;
+			// offset + limit for a bounded query. A layer-0 search returns at most `ef` candidates, so a
+			// query asking for more rows than that used to come back short with no error — capped at 512
+			// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
+			// meaningful; the caller pays for what it asked for.
+			minResults?: number;
+			// Always optional: the predicate path is the fallback for every plan this declines.
+			candidateKeys?: CandidateKeyPlan;
+		} = {}
 	) {
-		let limit = 0; // zero is ignored, only used if set below
+		const waiting = this.filePrimary && waitForIndexMilliseconds > 0;
+		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
+		let limitInclusive = false; // true for `le`, false for `lt`
 		switch (comparator) {
-			case 'lt':
 			case 'le':
+				limitInclusive = true;
+			// fallthrough
+			case 'lt':
 				limit = value;
 			// fallthrough
 			case 'sort':
@@ -554,6 +1961,9 @@ export class HierarchicalNavigableSmallWorld {
 			default:
 				throw new ClientError(`Can not use "${comparator}" comparator with HNSW`);
 		}
+		// For quantized (int8) threshold queries, suppress the distance limit so the full candidate
+		// set is returned; rescoreResults() re-filters on exact full-precision distances post-load.
+		if (this.int8 && limit !== undefined) limit = undefined;
 		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
 		let distanceFunction: (a: number[], b: number[]) => number;
 		if (distance === 'cosine') distanceFunction = cosineDistance;
@@ -563,23 +1973,227 @@ export class HierarchicalNavigableSmallWorld {
 		else distanceFunction = this.distance;
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
+		if (
+			this.filePrimary &&
+			(typeof maxIndexLagMilliseconds !== 'number' ||
+				!Number.isFinite(maxIndexLagMilliseconds) ||
+				maxIndexLagMilliseconds < 0)
+		)
+			throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
+		if (
+			this.filePrimary &&
+			(typeof waitForIndexMilliseconds !== 'number' ||
+				!Number.isFinite(waitForIndexMilliseconds) ||
+				waitForIndexMilliseconds < 0 ||
+				waitForIndexMilliseconds > MAX_WAIT_FOR_INDEX_MILLISECONDS)
+		)
+			throw new ClientError(
+				`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`
+			);
 
-		const options = context.transaction; // should have a nested RocksDB transaction
-		let entryPoint = this.getEntryPoint(options);
-		if (!entryPoint) return [];
+		const txnOptions = context.transaction; // should have a nested RocksDB transaction
+		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
+		// otherwise auto-scale with the graph size so recall holds as the table grows.
+		let effectiveEf = this.efConstructionSearch;
+		const explicitEf = ef !== undefined && ef > 0;
+		if (explicitEf) effectiveEf = ef;
+		else if (!this.efSearchConfigured) effectiveEf = autoScaleEf(this.approximateNodeCount());
+		// The ef the index chose for itself, before any limit-derived widening. The filter budget below
+		// stays calibrated against this rather than against what a caller's `limit` asked for.
+		const resolvedEf = effectiveEf;
+		// A bounded query must be able to come back full: layer 0 keeps at most `ef` candidates, so a
+		// limit above the resolved ef truncated the result set with no error. Widen the candidate list
+		// to cover the request, up to LIMIT_EF_MAX — `ef` sizes a synchronous traversal that holds every
+		// admitted candidate in a sorted array with an O(len) insert, so an unbounded one lets a plain
+		// `limit` stall the thread. Past the ceiling the result set is still short, as it was before.
+		// Schema and per-query `ef` pins are authoritative cost ceilings. Only an automatically scaled
+		// index widens toward LIMIT_EF_MAX to cover a larger bounded request.
+		// The ceiling is the only bound: clamping to the graph size as well would need a count exact as
+		// of this query — the memo reads low while a table grows, truncating the very limit this
+		// honours — and an ef above the node count is free, the traversal ending at the graph, not ef.
+		if (minResults !== undefined && !explicitEf && !this.efSearchConfigured && minResults > effectiveEf) {
+			effectiveEf = Math.max(effectiveEf, Math.min(minResults, LIMIT_EF_MAX));
+		}
+		// Predicate-aware traversal budget (#1241): matches accrue slower than visits under a selective
+		// filter, so bound layer-0 work at ef * filterExpansion nodes. Only built when a filter is active.
+		// Deliberately `resolvedEf`, not the limit-widened ef: this budget is what stops a selective
+		// filter crawling the whole graph, and multiplying it by a caller's limit would turn a filtered
+		// vector query into a record-loading scan. When the ef came from the auto-scale (neither a
+		// per-query ef nor a schema-configured one), its budget contribution is additionally capped at
+		// AUTO_EF_MAX: every budgeted visit is a synchronous record load + predicate evaluation, so the
+		// second-regime search ef (up to AUTO_EF_CEILING) must not silently quadruple the filtered
+		// worst case — the recall decision and the filtered-scan budget are separate decisions. Callers
+		// wanting a deeper filtered search set an explicit ef or filterExpansion, and own the cost.
+		const budgetEf = explicitEf || this.efSearchConfigured ? resolvedEf : Math.min(resolvedEf, AUTO_EF_MAX);
+		const predicateMaxVisits =
+			budgetEf * (filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion);
+		const allowedKeys =
+			filter && candidateKeys ? this.collectCandidateKeys(candidateKeys, resolvedEf, predicateMaxVisits) : undefined;
+		const allowDecides = Boolean(allowedKeys?.complete);
+		const filterState: FilterState | undefined = filter
+			? {
+					maxVisits: predicateMaxVisits,
+					nodesVisited: 0,
+					filterEvaluations: 0,
+					candidateKeys: allowedKeys?.keys.size,
+				}
+			: undefined;
+		if (allowedKeys && filter && filterState) {
+			// Both traversals admit by primary key — the plane hands its predicate the key of every
+			// candidate — so the set is a membership test in front of the record load, and a complete
+			// plan removes the load entirely.
+			const allowed = allowedKeys.keys;
+			const admits = (primaryKey: Id) => allowed.has(primaryKey);
+			const residual = filter;
+			const state = filterState;
+			state.countsOwnEvaluations = true;
+			filter = allowDecides
+				? admits
+				: (primaryKey: Id) => {
+						if (!admits(primaryKey)) return false;
+						state.filterEvaluations++;
+						return residual(primaryKey);
+					};
+			// Only a filter the set DECIDES gets the derived budget: an admitted visit on the residual
+			// path still costs a record decode, so that path keeps today's ceiling. A positive per-query
+			// or any schema-configured filterExpansion is an authoritative cost ceiling and is used
+			// exactly as given; a per-query 0 still means unset.
+			if (allowDecides) {
+				const configured =
+					filterExpansion && filterExpansion > 0
+						? filterExpansion
+						: this.filterExpansionConfigured
+							? this.filterExpansion
+							: undefined;
+				state.maxVisits =
+					configured === undefined
+						? this.allowSetVisitBudget(allowedKeys.keys.size, predicateMaxVisits, budgetEf)
+						: budgetEf * configured;
+			}
+		}
+		const rerankK =
+			comparator === 'sort' && minResults !== undefined
+				? Math.min(effectiveEf, Math.max(RERANK_MIN, minResults * RERANK_FACTOR))
+				: effectiveEf;
+		if (this.filePrimary && distanceFunction !== this.distance) {
+			throw new ClientError('A nativePlane index only supports its configured cosine distance');
+		}
+		const searchNative = (certified?: DerivedIndexCoverage) => {
+			if (this.filePrimary && this.derivedReadiness() !== 'ready') {
+				throw new ServerError(
+					`The native HNSW index is ${this.derivedReadiness() === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
+			}
+			// The plane traverses the index's own metric (cosine — the eligibility requirement), so a
+			// query overriding `distance` has to take the JS path: rescoreResults only corrects the
+			// reported distances of whatever candidates came back, not which candidates the beam kept.
+			if (this.planeEligible && distanceFunction === this.distance) {
+				const plane = this.getPlane(target.length, false);
+				// A file-primary index has no JS path to fall through to, so a target the plane cannot
+				// accept has to fail as the client error it is. Otherwise it throws out of
+				// Float32Array.from or the traversal, is read as plane corruption, and unlinks a healthy
+				// file — one malformed query costing a full reconstruction.
+				if (this.filePrimary && plane) this.assertPlaneVector(target, 'Search target');
+				// a non-file-primary query whose dimensionality differs from the graph's takes the JS
+				// path, which tolerates the mismatch, rather than disabling the healthy plane
+				if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
+					const coverage = certified ?? (this.filePrimary ? this.queryCoverage(maxIndexLagMilliseconds) : undefined);
+					try {
+						const searched = this.searchPlane(plane, target, rerankK, effectiveEf, filter, filterState)
+							.catch((error) => {
+								if (error?.[NOT_A_PLANE_FAILURE]) throw error;
+								// There is no JS graph behind a file-primary index: it stays unavailable until
+								// its audit-backed rebuild succeeds.
+								this.disablePlane(error);
+								throw new ServerError('The native HNSW index is rebuilding', 503);
+							})
+							.then((entries) => {
+								if (coverage) Object.defineProperty(entries, 'indexCoverage', { value: coverage });
+								return entries;
+							});
+						if (coverage) Object.defineProperty(searched, 'indexCoverage', { value: coverage });
+						return searched;
+					} catch (error) {
+						// Handle a throw raised before the asynchronous native search returns its promise.
+						this.disablePlane(error);
+						throw new ServerError('The native HNSW index is rebuilding', 503);
+					}
+				}
+			}
+			if (this.filePrimary) {
+				const state = this.derivedReadiness();
+				if (state === 'unavailable') throw new ServerError('The native HNSW index is unavailable', 503);
+				const planePath = this.planeFilePath();
+				if (state !== 'ready' || (planePath && existsSync(planePath))) {
+					throw new ServerError('The native HNSW index is rebuilding', 503);
+				}
+				// The absence of a file is not proof of an empty index — it is also the state just after
+				// any process removes an unopenable one. Only the surviving node mappings prove it.
+				if (this.hasNodeMappings()) {
+					// A table taking no further writes never drains, so a query is the only thing left
+					// that can notice the graph is gone and ask for it back.
+					logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
+					this.derivedHost?.requestRebuild();
+					throw new ServerError('The native HNSW index is rebuilding', 503);
+				}
+				const entries = withStats([], filterState);
+				Object.defineProperty(entries, 'indexCoverage', {
+					value: certified ?? this.queryCoverage(maxIndexLagMilliseconds),
+				});
+				return entries;
+			}
+		};
+		if (waiting) {
+			context.signal?.throwIfAborted();
+			const host = this.derivedHost;
+			const state = host?.readiness().state;
+			if (state !== 'ready') {
+				throw new ServerError(
+					`The native HNSW index is ${state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
+			}
+			const searched = Promise.resolve(context.indexSearchStart).then(async () => {
+				context.signal?.throwIfAborted();
+				if (minResults === 0) return [];
+				const started = derivedIndexTime(this.indexStore.rootStore);
+				if (host.coverage(0)?.state !== 'current')
+					await host.waitForCoverage(started, waitForIndexMilliseconds, context.signal);
+				context.signal?.throwIfAborted();
+				return searchNative({
+					state: 'current',
+					maxLagMilliseconds: maxIndexLagMilliseconds,
+					lagUpperBoundMilliseconds: 0,
+				});
+			});
+			searched.catch(() => {});
+			return searched;
+		}
+		const native = searchNative();
+		if (native) return native;
+		let entryPoint = this.getEntryPoint(txnOptions);
+		if (!entryPoint) return withStats([], filterState);
 		let entryPointId = entryPoint.id;
 		let results: Candidate[] = [];
-		// For each level from top to bottom
+		// For each level from top to bottom. The filter applies only at layer 0 (result admission);
+		// upper layers route unfiltered so non-matching hubs still guide the descent.
+		//
+		// Only layer 0 gets the full candidate list; the layers above it just hand down an entry point,
+		// so searching them at the full ef costs work proportional to the layer's population (~N/M
+		// nodes) rather than to ef. See DESIGN.md.
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
 			results = this.searchLayer(
 				target,
 				entryPointId,
 				entryPoint,
-				this.efConstructionSearch,
+				l === 0 ? effectiveEf : ROUTING_EF,
 				l,
-				options,
-				distanceFunction
+				txnOptions,
+				distanceFunction,
+				l === 0 ? filter : undefined,
+				l === 0 ? filterState : undefined
 			);
 
 			if (results.length > 0) {
@@ -588,12 +2202,119 @@ export class HierarchicalNavigableSmallWorld {
 				entryPointId = neighbor.id;
 			}
 		}
-		if (limit) results = results.filter((candidate) => candidate.distance < limit);
-		return results.map((candidate) => ({
-			// we return the result as an entry so we can provide distance as metadata
-			key: candidate.node.primaryKey, // return value
-			distance: candidate.distance,
-		}));
+		if (limit !== undefined)
+			results = results.filter((candidate) =>
+				limitInclusive ? candidate.distance <= limit : candidate.distance < limit
+			);
+		if (results.length > rerankK) results = results.slice(0, rerankK);
+		return withStats(
+			results.map((candidate) => ({
+				// we return the result as an entry so we can provide distance as metadata
+				key: candidate.node.primaryKey, // return value
+				distance: candidate.distance,
+			})),
+			filterState
+		);
+	}
+	/**
+	 * Exact distance between a query and a record's FULL-precision vector, mirroring search()'s metric
+	 * selection. Used to rerank quantized (int8) results: graph traversal navigates on approximate
+	 * (quantized) distances, but the caller has the exact record vector and can restore exact ordering
+	 * and $distance.
+	 */
+	exactDistance(searchCondition: { target: number[]; distance?: string }, recordVector: number[] | Int8Array): number {
+		const fn = this.queryDistance(searchCondition);
+		if (recordVector == null) return Infinity; // missing vector sorts last
+		// distance fns require a plain Array (they guard on Array.isArray); records normally store a
+		// float[] vector, but convert defensively in case a typed array slips through.
+		const vec = Array.isArray(recordVector) ? recordVector : Array.from(recordVector);
+		return fn(searchCondition.target, vec);
+	}
+	private queryDistance(searchCondition: {
+		target: number[];
+		distance?: string;
+	}): (a: number[], b: number[]) => number {
+		if (!searchCondition.target) throw new ClientError('A target vector must be provided for an HNSW query');
+		if (!Array.isArray(searchCondition.target)) throw new ClientError('The target vector must be an array');
+		const fn =
+			searchCondition.distance === 'euclidean'
+				? euclideanDistance
+				: searchCondition.distance === 'dotProduct'
+					? dotProductDistance
+					: searchCondition.distance === 'cosine'
+						? cosineDistance
+						: searchCondition.distance
+							? null
+							: this.distance;
+		if (!fn) throw new ClientError('Unknown distance function');
+		return fn;
+	}
+	/**
+	 * A threshold's predicate on a record's vector, for when another condition leads (search.ts filterByType):
+	 * exact distance, after the checks search() makes.
+	 */
+	thresholdFilter(
+		searchCondition: { attribute?: any; target: number[]; distance?: string; comparator?: string },
+		comparator: string,
+		value: number
+	): ((recordVector: number[] | Int8Array) => boolean) | undefined {
+		if (comparator === 'sort') return;
+		if (comparator !== 'lt' && comparator !== 'le' && searchCondition.target === undefined) return;
+		if (searchCondition.comparator !== 'lt' && searchCondition.comparator !== 'le')
+			throw new ClientError(`Can not use "${searchCondition.comparator}" comparator with HNSW`);
+		if (value === undefined)
+			throw new ClientError(`Search condition for ${searchCondition.attribute} must have a value`);
+		const fn = this.queryDistance(searchCondition);
+		const { target } = searchCondition;
+		if (this.filePrimary) {
+			if (fn !== this.distance)
+				throw new ClientError('A nativePlane index only supports its configured cosine distance');
+			// attached first, as search() does, so a cold worker checks the target's dimensions too
+			this.getPlane(target.length, false);
+			this.assertPlaneVector(target, 'Search target');
+		}
+		const inclusive = comparator === 'le';
+		return (recordVector) => {
+			if (recordVector == null) return false;
+			const distance = fn(target, Array.isArray(recordVector) ? recordVector : Array.from(recordVector));
+			return inclusive ? distance <= value : distance < value;
+		};
+	}
+	/**
+	 * Post-load rescoring hook called by search.ts after full records have been loaded.
+	 * Handles two quantized (int8) cases:
+	 *   - 'sort': recompute exact distances and re-sort for correct nearest-neighbor ordering.
+	 *   - 'lt'/'le': recompute exact distances and re-filter by the threshold value (over-fetch
+	 *     was applied before the search to ensure enough candidates).
+	 * Returns null when rescoring doesn't apply so the caller uses the loaded iterable as-is.
+	 */
+	rescoreResults(
+		loaded: any[],
+		searchCondition: { target: number[]; distance?: string; value?: any },
+		comparator: string,
+		attributeName: string
+	): any[] | null {
+		if (!this.int8 || !searchCondition.target || typeof attributeName !== 'string') return null;
+		if (comparator === 'sort') {
+			const rescored = loaded.filter((e) => e !== SKIP && e && e.value);
+			for (const e of rescored) {
+				const d = this.exactDistance(searchCondition, e.value[attributeName]);
+				// Non-finite exact distances (NaN from a corrupt record vector, Infinity from a
+				// missing vector) sort last — consistent with the missing-vector sentinel in exactDistance.
+				e.distance = Number.isFinite(d) ? d : Infinity;
+			}
+			// comparison-based (not subtraction) so Infinity sentinels for missing vectors
+			// sort last without producing NaN (Infinity - Infinity).
+			rescored.sort((a, b) => (a.distance === b.distance ? 0 : a.distance < b.distance ? -1 : 1));
+			return rescored;
+		}
+		if (comparator === 'lt' || comparator === 'le') {
+			const thresholdValue = searchCondition.value;
+			const rescored = loaded.filter((e) => e !== SKIP && e && e.value);
+			for (const e of rescored) e.distance = this.exactDistance(searchCondition, e.value[attributeName]);
+			return rescored.filter((e) => (comparator === 'le' ? e.distance <= thresholdValue : e.distance < thresholdValue));
+		}
+		return null;
 	}
 	private checkSymmetry(id, node, options) {
 		if (!node) return;
@@ -681,20 +2402,24 @@ export class HierarchicalNavigableSmallWorld {
 		if (!entryPoint) return;
 		const visited = new Set<number>();
 
-		// BFS from entry point to ensure all nodes are reachable
-		const queue = [entryPoint.id];
-		visited.add(entryPoint.id);
+		// BFS from entry point to ensure all nodes are reachable. Asymmetric stale neighbor
+		// references can survive deletes, so a referenced node may not actually exist anymore;
+		// only count a node as visited once we confirm the underlying record is present.
+		const queue: number[] = [entryPoint.id];
+		const enqueued = new Set<number>([entryPoint.id]);
 		let connections = 0;
 
 		while (queue.length > 0) {
 			const currentId = queue.shift()!;
-			const current = this.indexStore.getSync(currentId);
+			const current = this.safeGetSync(currentId);
+			if (!current) continue;
+			visited.add(currentId);
 
 			for (let level = startLevel; level <= current.level; level++) {
 				for (const { id: neighborId } of current[level] || []) {
 					connections++;
-					if (!visited.has(neighborId)) {
-						visited.add(neighborId);
+					if (!enqueued.has(neighborId)) {
+						enqueued.add(neighborId);
 						queue.push(neighborId);
 					}
 				}
@@ -724,9 +2449,11 @@ export class HierarchicalNavigableSmallWorld {
 	 * @returns
 	 */
 	estimateCountAsSort() {
-		const count =
-			this.indexStore instanceof RocksDatabase ? this.indexStore.getKeysCount() : this.indexStore.getStats().entryCount;
-		return Math.sqrt(count * this.efConstructionSearch);
+		// Same O(1) source search() uses — this runs per query whenever a vector sort is planned
+		// alongside another condition, where an exact getKeysCount() is a second full key scan on the
+		// query path. Scaled back to the index-store key count it used to be given, so the planner's
+		// condition ordering is unchanged by the switch to a node count.
+		return Math.sqrt(this.approximateNodeCount() * INDEX_KEYS_PER_NODE * this.efConstructionSearch);
 	}
 
 	/**
@@ -735,27 +2462,24 @@ export class HierarchicalNavigableSmallWorld {
 	 * @param vector
 	 * @param context
 	 * @param entry
+	 * @param sortDefinition
 	 */
-	propertyResolver(vector: number[], context: any, entry: any) {
-		const sortDefinition = context?.sort;
+	propertyResolver(vector: number[], context: any, entry: any, sortDefinition?: any) {
 		if (sortDefinition) {
+			if (!context) return this.exactDistance(sortDefinition, vector);
 			// set up a cache for these so they can be accessed by $distance and not be recalculated during a sort
-			let vectorDistances = sortDefinition.vectorDistances;
-			if (vectorDistances) {
-				const difference = vectorDistances.get(entry);
-				if (difference) return difference;
-			} else vectorDistances = context.vectorDistances = sortDefinition.vectorDistances = new Map();
+			let vectorDistanceCaches = context.vectorDistanceCaches;
+			if (!vectorDistanceCaches) vectorDistanceCaches = context.vectorDistanceCaches = new WeakMap();
+			let vectorDistances = vectorDistanceCaches.get(sortDefinition);
+			const cacheKey =
+				entry && typeof entry === 'object' ? entry : vector && typeof vector === 'object' ? vector : null;
+			if (vectorDistances && cacheKey) {
+				const difference = vectorDistances.get(cacheKey);
+				if (difference !== undefined) return difference;
+			} else if (!vectorDistances) vectorDistanceCaches.set(sortDefinition, (vectorDistances = new WeakMap()));
 
-			let distanceFunction = this.distance;
-			if (sortDefinition.type)
-				distanceFunction =
-					sortDefinition.distance === 'euclidean'
-						? euclideanDistance
-						: sortDefinition.distance === 'dotProduct'
-							? dotProductDistance
-							: cosineDistance;
-			const distance = distanceFunction(sortDefinition.target, vector);
-			vectorDistances.set(entry, distance);
+			const distance = this.exactDistance(sortDefinition, vector);
+			if (cacheKey) vectorDistances.set(cacheKey, distance);
 			return distance;
 		}
 		return vector;
@@ -768,3 +2492,27 @@ type Candidate = {
 	node: Node;
 };
 type SearchResults = Candidate[] & { visited: number };
+// Per-query state for predicate-aware traversal (#1241): the visit budget plus counters surfaced for
+// tuning (nodesVisited / filterEvaluations). One instance per search(), threaded to the layer-0 searchLayer.
+type FilterState = {
+	maxVisits: number;
+	nodesVisited: number;
+	filterEvaluations: number;
+	candidateKeys?: number;
+	// The filter counts its own record-loading evaluations, so admit() must not count again.
+	countsOwnEvaluations?: boolean;
+};
+/**
+ * Attach filtered-traversal counters to the returned entries array so callers (search.ts / explain) can
+ * report how much of the graph a filtered query touched. No-op for unfiltered searches. Non-enumerable so
+ * the stats don't leak into iteration/serialization of the result entries.
+ */
+function withStats<T extends any[]>(entries: T, filterState: FilterState | undefined): T {
+	if (filterState) {
+		Object.defineProperty(entries, 'nodesVisited', { value: filterState.nodesVisited, enumerable: false });
+		Object.defineProperty(entries, 'filterEvaluations', { value: filterState.filterEvaluations, enumerable: false });
+		if (filterState.candidateKeys !== undefined)
+			Object.defineProperty(entries, 'candidateKeys', { value: filterState.candidateKeys, enumerable: false });
+	}
+	return entries;
+}

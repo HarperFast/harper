@@ -7,7 +7,7 @@
  * hermetic, and safe to run concurrently with other test files.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 
@@ -27,7 +27,7 @@ suite('System Information', (ctx) => {
 		const response = await client.req().send({ operation: 'system_information' }).expect(200);
 		const attributes = ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size'];
 		for (const attribute of attributes) {
-			assert.notEqual(response.body[attribute], undefined, `missing attribute "${attribute}": ${response.text}`);
+			assert.notStrictEqual(response.body[attribute], undefined, `missing attribute "${attribute}": ${response.text}`);
 		}
 	});
 

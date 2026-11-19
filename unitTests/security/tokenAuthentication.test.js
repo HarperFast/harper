@@ -9,11 +9,21 @@ const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
-const password_function = require('#src/utility/password');
-let token_auth = rewire('#src/security/tokenAuthentication');
+const password_function = require('#js/utility/password');
+let token_auth = rewire('#js/security/tokenAuthentication');
 const user = require('#src/security/user');
 const insert = require('#src/dataLayer/insert');
-const signalling = require('#src/utility/signalling');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+
+function setTokenTimeout(param, value) {
+	const original = env.get(param);
+	env.setProperty(param, value);
+	return () => env.setProperty(param, original);
+}
+
+// a resolved user also carries the record versions it was built from, under a symbol key
+const recordFields = (resolved) => Object.fromEntries(Object.entries(resolved));
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -244,17 +254,99 @@ describe('test getJWTRSAKeys function', () => {
 
 		assert.deepStrictEqual(results, new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
-		assert(path_join_spy.callCount === 0);
+		// Cache hit: no key files are read, so no path is built either.
 		assert(fs_readfile_spy.callCount === 0);
 
 		rw_rsa_keys();
 	});
 });
 
+describe('test clearJWTRSAKeysCache function', () => {
+	let get_jwt_keys_func;
+	let clear_cache_func;
+
+	before(() => {
+		const testPath = testUtils.getMockTestPath();
+		keysPath = path.join(testPath, 'keys');
+		passphrasePath = path.join(keysPath, '.jwtPass');
+		privateKeyPath = path.join(keysPath, '.jwtPrivate.key');
+		publicKeyPath = path.join(keysPath, '.jwtPublic.key');
+		get_jwt_keys_func = token_auth.__get__('getJWTRSAKeys');
+		clear_cache_func = token_auth.__get__('clearJWTRSAKeysCache');
+	});
+
+	beforeEach(() => {
+		fs.mkdirpSync(keysPath);
+		fs.writeFileSync(passphrasePath, PASSPHRASE_VALUE);
+		fs.writeFileSync(privateKeyPath, PRIVATE_KEY_VALUE);
+		fs.writeFileSync(publicKeyPath, PUBLIC_KEY_VALUE);
+	});
+
+	afterEach(() => {
+		fs.removeSync(keysPath);
+		token_auth.__set__('rsaKeys', undefined);
+	});
+
+	// Models the node-clone race: an early Bearer-auth request caches the install-generated keys, then
+	// the clone overwrites the key files on disk. Without invalidation, getJWTRSAKeys keeps returning the
+	// stale cached set. clearJWTRSAKeysCache must drop the cache so the next read picks up the new files.
+	it('forces the next getJWTRSAKeys to re-read replaced key files from disk', async () => {
+		const stale = { publicKey: 'stale-public', privateKey: 'stale-private', passphrase: 'stale-pass' };
+		token_auth.__set__('rsaKeys', stale);
+
+		// Sanity: while cached, the stale set is returned regardless of what is on disk.
+		assert.deepStrictEqual(await get_jwt_keys_func(), stale);
+
+		clear_cache_func();
+
+		const reloaded = await get_jwt_keys_func();
+		assert.deepStrictEqual(reloaded, {
+			publicKey: PUBLIC_KEY_VALUE,
+			privateKey: PRIVATE_KEY_VALUE,
+			passphrase: PASSPHRASE_VALUE,
+		});
+	});
+
+	it('is a no-op when the cache is already empty', async () => {
+		token_auth.__set__('rsaKeys', undefined);
+		assert.doesNotThrow(() => clear_cache_func());
+		// Still reads cleanly from disk afterward.
+		const reloaded = await get_jwt_keys_func();
+		assert.deepStrictEqual(reloaded.passphrase, PASSPHRASE_VALUE);
+	});
+
+	// A clear that lands while a getJWTRSAKeys() read is in flight must not let that read repopulate the
+	// cache with the pre-clear keys — otherwise the very clone race we are fixing could resurrect the stale
+	// set. The in-flight read still returns its own result, but the cache is left empty so the next read
+	// picks up the replaced files.
+	it('does not let a read in flight when the cache is cleared repopulate it', async () => {
+		token_auth.__set__('rsaKeys', undefined);
+		const readFileStub = sandbox.stub(fs, 'readFile');
+		try {
+			let cleared = false;
+			readFileStub.callsFake(async (...args) => {
+				// Simulate the clone overwriting the files + clearing the cache partway through this read.
+				if (!cleared) {
+					cleared = true;
+					clear_cache_func();
+				}
+				return readFileStub.wrappedMethod.apply(fs, args);
+			});
+
+			const result = await get_jwt_keys_func();
+			// The in-flight call still resolves with what it read...
+			assert.deepStrictEqual(result.passphrase, PASSPHRASE_VALUE);
+			// ...but it must not have committed to the cache, since a clear happened mid-read.
+			assert.deepStrictEqual(token_auth.__get__('rsaKeys'), undefined);
+		} finally {
+			readFileStub.restore();
+		}
+	});
+});
+
 describe('test createTokens', () => {
 	let validate_user_stub;
 	let update_stub;
-	let signalling_stub;
 	beforeEach(() => {
 		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => {
 			return { username: u, role: { permission: { super_user: true } } };
@@ -262,13 +354,11 @@ describe('test createTokens', () => {
 		update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-		signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
 	});
 
 	afterEach(() => {
 		validate_user_stub.restore();
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 
 	it('test validation', async () => {
@@ -399,6 +489,24 @@ describe('test createTokens', () => {
 		assert.deepStrictEqual(result, undefined);
 		assert.deepStrictEqual(error.message, 'unable to store refresh_token');
 	});
+
+	it("test purpose: 'login' mints a login-only token and skips refresh-token bookkeeping", async () => {
+		let rw_get_tokens = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+		let result = await token_auth.createTokens({ username: 'HDB_USER', password: 'pass', purpose: 'login' });
+		rw_get_tokens();
+
+		assert.notDeepStrictEqual(result.operation_token, undefined);
+		assert.deepStrictEqual(result.refresh_token, undefined);
+
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.username, 'HDB_USER');
+		assert.deepStrictEqual(payload.sub, 'login');
+		// no operation-token side effects: nothing persisted
+		assert(update_stub.called === false);
+	});
 });
 
 describe('test validateOperationToken function', () => {
@@ -420,17 +528,16 @@ describe('test validateOperationToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
 		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
-		await user.setUsersWithRolesCache(
+		await testUtils.seedUsers(
 			new Map([
 				['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
 				['old_user', { username: 'old_user', active: false }],
 			])
 		);
 
-		token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
+		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		token_timeout();
 
@@ -442,7 +549,6 @@ describe('test validateOperationToken function', () => {
 		validate_user_stub = sandbox.spy(user, 'findAndValidateUser');
 
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 	let token_timeout;
 	let expired_user_tokens;
@@ -452,9 +558,10 @@ describe('test validateOperationToken function', () => {
 		validate_user_stub.resetHistory();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test hdb_admin token', async () => {
@@ -467,7 +574,7 @@ describe('test validateOperationToken function', () => {
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user, { active: true, username: 'HDB_ADMIN' });
+		assert.deepStrictEqual(recordFields(user), { active: true, username: 'HDB_ADMIN' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
@@ -504,7 +611,7 @@ describe('test validateOperationToken function', () => {
 			user = await token_auth.validateOperationToken(non_user_tokens.operation_token);
 		} catch {}
 
-		assert.deepStrictEqual(user, { username: 'non_user' });
+		assert.deepStrictEqual(recordFields(user), { username: 'non_user' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
@@ -545,6 +652,431 @@ describe('test validateOperationToken function', () => {
 	});
 });
 
+describe('test scoped tokens (inline role object)', () => {
+	const token_auth_plain = require('#src/security/tokenAuthentication');
+	const SU_MINTER = {
+		username: 'admin_minter',
+		active: true,
+		role: { role: 'super_user', id: 'su-id', permission: { super_user: true } },
+	};
+	const NON_SU_MINTER = {
+		username: 'basic_minter',
+		active: true,
+		role: { role: 'basic', id: 'basic-id', permission: { super_user: false } },
+	};
+	let scopedKeysPath;
+
+	before(async () => {
+		scopedKeysPath = path.join(testUtils.getMockTestPath(), 'keys');
+		fs.mkdirpSync(scopedKeysPath);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPass'), PASSPHRASE_VALUE);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPrivate.key'), PRIVATE_KEY_VALUE);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPublic.key'), PUBLIC_KEY_VALUE);
+		token_auth_plain.clearJWTRSAKeysCache();
+		await testUtils.seedUsers(new Map([['existing_user', { username: 'existing_user', active: true }]]));
+	});
+
+	after(async () => {
+		fs.removeSync(scopedKeysPath);
+		token_auth_plain.clearJWTRSAKeysCache();
+		await testUtils.seedUsers();
+	});
+
+	function mint(overrides = {}) {
+		return token_auth_plain.createTokens({
+			hdb_user: SU_MINTER,
+			role: { permission: { operations: ['read_only'] } },
+			...overrides,
+		});
+	}
+
+	it('non-super_user minter is rejected with 403', async () => {
+		let error;
+		try {
+			await mint({ hdb_user: NON_SU_MINTER });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /super_user/);
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('unauthenticated mint is rejected with 403', async () => {
+		let error;
+		try {
+			await mint({ hdb_user: undefined });
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('happy path: single token, no refresh token, scoped-prefixed default attribution', async () => {
+		const result = await mint();
+		assert.notDeepStrictEqual(result.operation_token, undefined);
+		assert.deepStrictEqual(result.refresh_token, undefined);
+
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.sub, 'scoped-operation');
+		assert.deepStrictEqual(payload.username, 'scoped:admin_minter');
+		assert.deepStrictEqual(payload.minted_by, 'admin_minter');
+		assert.deepStrictEqual(payload.super_user, false);
+		assert.deepStrictEqual(payload.role.permission.operations, ['read_only']);
+	});
+
+	it('username is arbitrary attribution and need not exist', async () => {
+		const result = await mint({ username: 'reporting-service' });
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.username, 'reporting-service');
+		assert.deepStrictEqual(payload.minted_by, 'admin_minter');
+	});
+
+	it('an attribution username naming an existing user is rejected', async () => {
+		let error;
+		try {
+			await mint({ username: 'existing_user' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /must not name an existing user/);
+	});
+
+	it('embedded super_user/cluster_user are downgraded at mint', async () => {
+		const result = await mint({
+			role: { permission: { super_user: true, cluster_user: true, operations: ['read_only'] } },
+		});
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.role.permission.super_user, false);
+		assert.deepStrictEqual(payload.role.permission.cluster_user, false);
+	});
+
+	it('password cannot be combined with an inline role', async () => {
+		let error;
+		try {
+			await mint({ password: 'pass' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /password/);
+	});
+
+	it('purpose cannot be combined with an inline role', async () => {
+		let error;
+		try {
+			await mint({ purpose: 'login' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /purpose/);
+	});
+
+	it('unknown operation names are rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: { operations: ['totally_fake_op'] } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /totally_fake_op/);
+	});
+
+	it('array permission is rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: ['not-an-object'] } });
+		} catch (e) {
+			error = e;
+		}
+		assert.notDeepStrictEqual(error, undefined);
+	});
+
+	it('malformed structure_user type is rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: { structure_user: 'yes' } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.notDeepStrictEqual(error, undefined);
+	});
+
+	it('a permission object producing an oversized token is rejected at mint', async () => {
+		let error;
+		try {
+			// valid but huge: duplicate operation entries are legal, so only the size gate rejects this
+			await mint({ role: { permission: { operations: new Array(800).fill('search_by_value') } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /exceeds/);
+	});
+
+	it('validateOperationToken accepts a scoped token and builds a synthetic user', async () => {
+		const { operation_token } = await mint({ username: 'svc' });
+		const scopedUser = await token_auth_plain.validateOperationToken(operation_token);
+		assert.deepStrictEqual(scopedUser.username, 'svc');
+		assert.deepStrictEqual(scopedUser.active, true);
+		assert.deepStrictEqual(scopedUser._scopedToken, true);
+		assert.deepStrictEqual(scopedUser._mintedBy, 'admin_minter');
+		assert.match(scopedUser.role.role, /^_scoped_token_[0-9a-f]{24}$/);
+		assert.deepStrictEqual(scopedUser.role.permission.super_user, false);
+		assert.deepStrictEqual(scopedUser.role.permission.cluster_user, false);
+		assert(scopedUser.role.permission._expandedOperations instanceof Set);
+		assert(scopedUser.role.permission._expandedOperations.has('search_by_hash'));
+		assert(!scopedUser.role.permission._expandedOperations.has('insert'));
+	});
+
+	it('rejects system grants when minting a new scoped token', async () => {
+		await assert.rejects(
+			mint({ role: { permission: { system: { tables: { hdb_user: { read: true } } } } } }),
+			(error) => error.statusCode === 400
+		);
+	});
+
+	it('legacy scoped tokens cannot retain declared system grants', async () => {
+		const permission = {
+			operations: ['read_only'],
+			system: { tables: { hdb_user: { read: true, insert: true, attribute_permissions: [] } } },
+		};
+		const sign = (permission) =>
+			jwt.sign(
+				{ username: 'legacy_scoped', role: { permission }, minted_by: 'admin_minter' },
+				{ key: PRIVATE_KEY_VALUE, passphrase: PASSPHRASE_VALUE },
+				{ algorithm: 'RS256', subject: 'scoped-operation', expiresIn: '1d' }
+			);
+		const legacyUser = await token_auth_plain.validateOperationToken(sign(permission));
+		const ordinaryUser = await token_auth_plain.validateOperationToken(sign({ operations: ['read_only'] }));
+		assert.strictEqual(legacyUser.role.permission.system, undefined);
+		const denial = require('#src/utility/operation_authorization').verifyPerms(
+			{
+				hdb_user: legacyUser,
+				operation: 'search_by_value',
+				schema: 'system',
+				table: 'hdb_user',
+				search_attribute: 'username',
+				search_value: 'admin',
+				get_attributes: ['*'],
+			},
+			'searchByValue'
+		);
+		assert.ok(denial, 'legacy scoped system access must be denied');
+		assert.strictEqual(legacyUser.role.role, ordinaryUser.role.role);
+	});
+
+	it('distinct permission sets get distinct synthetic role identities; identical sets share', async () => {
+		const tokenA = (await mint({ role: { permission: { operations: ['read_only'] } } })).operation_token;
+		const tokenB = (await mint({ role: { permission: { operations: ['standard_user'] } } })).operation_token;
+		const tokenC = (await mint({ role: { permission: { operations: ['read_only'] } }, username: 'other' }))
+			.operation_token;
+		const userA = await token_auth_plain.validateOperationToken(tokenA);
+		const userB = await token_auth_plain.validateOperationToken(tokenB);
+		const userC = await token_auth_plain.validateOperationToken(tokenC);
+		assert.notDeepStrictEqual(userA.role.role, userB.role.role);
+		assert.deepStrictEqual(userA.role.role, userC.role.role);
+	});
+
+	it('expired scoped token is rejected with 403', async () => {
+		const { operation_token } = await mint({ expires_in: '-1' });
+		let error;
+		try {
+			await token_auth_plain.validateOperationToken(operation_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'token expired');
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('tampered scoped token is rejected', async () => {
+		const { operation_token } = await mint();
+		const parts = operation_token.split('.');
+		const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+		payload.role.permission.operations = ['standard_user'];
+		parts[1] = Buffer.from(JSON.stringify(payload)).toString('base64url');
+		let error;
+		try {
+			await token_auth_plain.validateOperationToken(parts.join('.'));
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
+
+	it('scoped token is not accepted as a refresh or login token', async () => {
+		const { operation_token } = await mint();
+		for (const validator of [token_auth_plain.validateRefreshToken, token_auth_plain.validateLoginToken]) {
+			let error;
+			try {
+				await validator(operation_token);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error.statusCode, 401);
+		}
+	});
+
+	it('legacy string-role tokens are still rejected by validateOperationToken', async () => {
+		const legacyToken = jwt.sign(
+			{ username: 'existing_user', role: 'component_role' },
+			{ key: PRIVATE_KEY_VALUE, passphrase: PASSPHRASE_VALUE },
+			{ algorithm: 'RS256', subject: 'operation', expiresIn: '1d' }
+		);
+		let error;
+		try {
+			await token_auth_plain.validateOperationToken(legacyToken);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
+
+	it('a scoped-token bearer cannot self-mint standing tokens for its attribution name', async () => {
+		// the escalation this guards: attribution 'existing_user' does not exist at mint, a real
+		// user with that name is created later, and the passwordless self-mint path would otherwise
+		// resolve to that real user and hand out full operation/refresh tokens.
+		const scopedBearer = {
+			username: 'existing_user',
+			active: true,
+			_scopedToken: true,
+			role: { role: '_scoped_token_x', id: '_scoped_token_x', permission: { operations: ['read_only'] } },
+		};
+		let error;
+		try {
+			await token_auth_plain.createTokens({ hdb_user: scopedBearer });
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
+});
+
+describe('test validateLoginToken function', () => {
+	let rw_get_tokens;
+	let jwt_spy;
+	let validate_user_stub;
+	let hdb_admin_login_token;
+	let old_user_login_token;
+	let non_user_login_token;
+	let expired_login_token;
+	let hdb_admin_operation_token;
+
+	before(async () => {
+		sandbox.restore();
+
+		rw_get_tokens = token_auth.__set__(
+			'getJWTRSAKeys',
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+		);
+
+		let update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
+			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
+		});
+		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
+
+		await testUtils.seedUsers(
+			new Map([
+				['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
+				['old_user', { username: 'old_user', active: false }],
+			])
+		);
+
+		const expiry_timeout = token_auth.__set__('LOGIN_TOKEN_TIMEOUT', '-1');
+		expired_login_token = (await token_auth.createTokens({ username: 'EXPIRED', password: 'cool', purpose: 'login' }))
+			.operation_token;
+		expiry_timeout();
+
+		hdb_admin_login_token = (
+			await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool', purpose: 'login' })
+		).operation_token;
+		old_user_login_token = (
+			await token_auth.createTokens({ username: 'old_user', password: 'notcool', purpose: 'login' })
+		).operation_token;
+		non_user_login_token = (
+			await token_auth.createTokens({ username: 'non_user', password: 'notcool', purpose: 'login' })
+		).operation_token;
+		hdb_admin_operation_token = (await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' }))
+			.operation_token;
+
+		validate_user_stub.restore();
+		jwt_spy = sandbox.spy(jwt, 'verify');
+		validate_user_stub = sandbox.spy(user, 'findAndValidateUser');
+
+		update_stub.restore();
+	});
+
+	afterEach(() => {
+		jwt_spy.resetHistory();
+		validate_user_stub.resetHistory();
+	});
+
+	after(async () => {
+		rw_get_tokens();
+		sandbox.restore();
+		await testUtils.seedUsers();
+	});
+
+	it('test hdb_admin login token', async () => {
+		const result_user = await token_auth.validateLoginToken(hdb_admin_login_token);
+		assert.deepStrictEqual(recordFields(result_user), { active: true, username: 'HDB_ADMIN' });
+	});
+
+	it('test old_user login token', async () => {
+		let error;
+		try {
+			await token_auth.validateLoginToken(old_user_login_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'invalid token');
+	});
+
+	it('test non-existent user login token', async () => {
+		const result_user = await token_auth.validateLoginToken(non_user_login_token);
+		assert.deepStrictEqual(recordFields(result_user), { username: 'non_user' });
+	});
+
+	it('test bad login token', async () => {
+		let error;
+		try {
+			await token_auth.validateLoginToken('BAD_TOKEN');
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'invalid token');
+	});
+
+	it('test expired login token', async () => {
+		let error;
+		try {
+			await token_auth.validateLoginToken(expired_login_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'token expired');
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('rejects an operation token — a login token is not a substitute Bearer credential', async () => {
+		let error;
+		try {
+			await token_auth.validateLoginToken(hdb_admin_operation_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'invalid token');
+	});
+
+	it('validateOperationToken rejects a login token — cannot be replayed as a Bearer credential', async () => {
+		let error;
+		try {
+			await token_auth.validateOperationToken(hdb_admin_login_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'invalid token');
+	});
+});
+
 describe('test validateRefreshToken function', () => {
 	let rw_get_tokens;
 	let jwt_spy;
@@ -567,11 +1099,9 @@ describe('test validateRefreshToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
-
 		const validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
-		token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
+		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
 		token_timeout();
 
@@ -589,13 +1119,12 @@ describe('test validateRefreshToken function', () => {
 			],
 			['old_user', { username: 'old_user', active: false }],
 		]);
-		await user.setUsersWithRolesCache(user_map);
+		await testUtils.seedUsers(user_map);
 
 		validate_user_stub.restore();
 		jwt_spy = sandbox.spy(jwt, 'verify');
 		validate_user_spy = sandbox.spy(user, 'findAndValidateUser');
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 
 	afterEach(() => {
@@ -603,9 +1132,10 @@ describe('test validateRefreshToken function', () => {
 		validate_user_spy.resetHistory();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test hdb_admin token', async () => {
@@ -618,10 +1148,10 @@ describe('test validateRefreshToken function', () => {
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user_data, {
+		assert.deepStrictEqual(recordFields(user_data), {
 			active: true,
 			username: 'HDB_ADMIN',
-			refresh_token: (await user.getUsersWithRolesCache()).get('HDB_ADMIN').refresh_token,
+			refresh_token: user.getUserWithRole('HDB_ADMIN').refresh_token,
 		});
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
@@ -723,8 +1253,6 @@ describe('test refreshOperationToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((_obj) => {});
-
 		let validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
 
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
@@ -732,7 +1260,7 @@ describe('test refreshOperationToken function', () => {
 		non_user_tokens = await token_auth.createTokens({ username: 'non_user', password: 'notcool' });
 		validate_user_stub.restore();
 
-		await user.setUsersWithRolesCache(
+		await testUtils.seedUsers(
 			new Map([
 				[
 					'HDB_ADMIN',
@@ -754,7 +1282,6 @@ describe('test refreshOperationToken function', () => {
 		validate_user_spy = sandbox.spy(user, 'findAndValidateUser');
 
 		update_stub.restore();
-		signalling_stub.restore();
 	});
 
 	afterEach(() => {
@@ -762,9 +1289,10 @@ describe('test refreshOperationToken function', () => {
 		validate_user_spy.resetHistory();
 	});
 
-	after(() => {
+	after(async () => {
 		rw_get_tokens();
 		sandbox.restore();
+		await testUtils.seedUsers();
 	});
 
 	it('test no body', async () => {

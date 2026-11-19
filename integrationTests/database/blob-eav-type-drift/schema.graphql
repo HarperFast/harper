@@ -1,0 +1,23 @@
+# QA-597 — EAV substrate x Blob-valued attribute x type-drift on the same value slot.
+#
+# Product-catalog EAV: one row per (entity, attribute-name), keyed directly by a
+# caller-supplied composite id. `value` is the generic slot — typed `Any` so the SAME
+# slot can legally hold a scalar (price, title) on one write and a large Blob (spec
+# sheet, hero image) on the next, and drift back. `valueKind` is a test-only
+# discriminator column mirroring what a real EAV catalog often keeps alongside `value`
+# for query planning; it is NOT used to decide blob lifecycle — that's entirely up to
+# Harper's encoder based on the actual runtime type of `value`.
+#
+# audit: false — isolates the type-drift/blob-lifecycle seam from audit-trail retention.
+# With audit ON (the default), cleanup_orphan_blobs correctly treats a superseded
+# version's blob file as still-referenced as long as the audit log retains that version
+# (by design, for time-travel) — a real and separate behavior, but a confound for THIS
+# scenario, which is about the CURRENT value slot's type drift, not history retention.
+type Attribute @table(audit: false) @sealed @export {
+	id: ID @primaryKey
+	entityId: String @indexed
+	name: String
+	value: Any
+	valueKind: String
+	gen: Int
+}

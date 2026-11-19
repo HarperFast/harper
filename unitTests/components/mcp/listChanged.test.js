@@ -1,0 +1,417 @@
+const assert = require('node:assert');
+const {
+	initListChanged,
+	seedSessionSnapshot,
+	_setItcHandlersForTest,
+	_setUserResolverForTest,
+	_resetListChangedForTest,
+} = require('#src/components/mcp/listChanged');
+const { registerSession, _resetSessionRegistryForTest } = require('#src/components/mcp/sessionRegistry');
+const { addTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const userModule = require('#src/security/user');
+const { databases } = require('#src/resources/databases');
+const testUtils = require('../../testUtils.js');
+const { waitFor } = require('../../waitFor');
+
+const { certificateAdmission, certificatePrincipal, isCertificatePrincipal, localPrincipal } = userModule;
+
+const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
+const ALICE = {
+	username: 'alice',
+	role: { permission: { data: { tables: { product: { read: true, describe: true } } } } },
+};
+
+function makeFakeItcHandlers() {
+	const userListeners = [];
+	const schemaListeners = [];
+	const resourceListeners = [];
+	return {
+		userHandler: { addListener: (fn) => userListeners.push(fn) },
+		schemaHandler: { addListener: (fn) => schemaListeners.push(fn) },
+		resourceHandler: { addListener: (fn) => resourceListeners.push(fn) },
+		_fireUser: () => {
+			for (const fn of userListeners) fn();
+		},
+		_fireSchema: () => {
+			for (const fn of schemaListeners) fn();
+		},
+		_fireResources: () => {
+			for (const fn of resourceListeners) fn();
+		},
+	};
+}
+
+async function readNextEvent(queue, timeoutMs = 100) {
+	return new Promise((resolve, reject) => {
+		const t = setTimeout(() => reject(new Error('timed out waiting for SSE event')), timeoutMs);
+		const iter = queue[Symbol.asyncIterator]();
+		Promise.resolve(iter.next()).then(({ value }) => {
+			clearTimeout(t);
+			resolve(value);
+		}, reject);
+	});
+}
+
+describe('mcp/listChanged', () => {
+	let fakeItc;
+
+	beforeEach(() => {
+		_resetSessionRegistryForTest();
+		_resetRegistryForTest();
+		_resetListChangedForTest();
+		fakeItc = makeFakeItcHandlers();
+		_setItcHandlersForTest(fakeItc);
+	});
+
+	afterEach(() => {
+		_resetSessionRegistryForTest();
+		_resetRegistryForTest();
+		_resetListChangedForTest();
+		_setItcHandlersForTest(undefined);
+		_setUserResolverForTest(undefined);
+	});
+
+	it('subscribes to both userHandler and schemaHandler on init', () => {
+		assert.equal(initListChanged(), true);
+		// Second init is a no-op.
+		assert.equal(initListChanged(), true);
+	});
+
+	it('emits notifications/tools/list_changed when the tool surface changes', async () => {
+		initListChanged();
+		const rec = registerSession('sid', 'operations', SUPER);
+		seedSessionSnapshot('sid');
+		assert.deepEqual(rec.lastTools, []);
+
+		// Register a tool — this changes what the session would see.
+		addTool({
+			name: 'new_tool',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'operations',
+			visibleTo: () => true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+
+		fakeItc._fireUser();
+		const evt = await readNextEvent(rec.queue);
+		assert.equal(evt.event, 'message');
+		assert.equal(evt.data.method, 'notifications/tools/list_changed');
+	});
+
+	it('suppresses notifications when the visible set is unchanged', async () => {
+		initListChanged();
+		addTool({
+			name: 'stable_tool',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'operations',
+			visibleTo: () => true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		const rec = registerSession('sid', 'operations', SUPER);
+		seedSessionSnapshot('sid');
+		assert.deepEqual(rec.lastTools, [{ name: 'stable_tool' }]);
+
+		fakeItc._fireUser();
+		// No mutation between fires — no event should arrive.
+		await assert.rejects(readNextEvent(rec.queue, 50), /timed out/);
+	});
+
+	it('does not notify users whose visible set is unaffected', async () => {
+		initListChanged();
+		// A tool only super_user can see.
+		addTool({
+			name: 'admin_only',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'operations',
+			visibleTo: (u) => u?.role?.permission?.super_user === true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		const superRec = registerSession('s-super', 'operations', SUPER);
+		const aliceRec = registerSession('s-alice', 'operations', ALICE);
+		seedSessionSnapshot('s-super');
+		seedSessionSnapshot('s-alice');
+
+		// Add another admin_only tool — super sees a diff, alice does not.
+		addTool({
+			name: 'admin_only_two',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'operations',
+			visibleTo: (u) => u?.role?.permission?.super_user === true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		fakeItc._fireUser();
+
+		const superEvt = await readNextEvent(superRec.queue);
+		assert.equal(superEvt.data.method, 'notifications/tools/list_changed');
+		await assert.rejects(readNextEvent(aliceRec.queue, 50), /timed out/);
+	});
+
+	it('init returns false when ITC handlers are unavailable', () => {
+		_setItcHandlersForTest({}); // empty — no addListener methods
+		assert.equal(initListChanged(), false);
+	});
+
+	it('re-resolves the user inside the handler so a role-perm grant fires the notification', async () => {
+		// The scenario: a tool only visible to users with a `foo.read` perm.
+		// Alice starts WITHOUT it. Some external mutation grants her the perm
+		// AND fires the user-cache invalidation. The notification dispatcher
+		// must see the FRESH alice (with foo.read), recompute the visible set,
+		// notice the diff, and emit. Without re-resolution, the diff runs
+		// against the frozen no-foo alice and silently suppresses the event.
+		const aliceWithoutFoo = {
+			username: 'alice',
+			role: { permission: {} },
+		};
+		const aliceWithFoo = {
+			username: 'alice',
+			role: { permission: { foo: { tables: { bar: { read: true } } } } },
+		};
+		addTool({
+			name: 'get_foo_bar',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'application',
+			visibleTo: (u) => u?.role?.permission?.foo?.tables?.bar?.read === true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+
+		initListChanged();
+		const rec = registerSession('sid', 'application', aliceWithoutFoo);
+		seedSessionSnapshot('sid');
+		assert.deepEqual(rec.lastTools, [], 'before the grant, alice sees no tools');
+
+		// Now the grant lands externally; the user cache is invalidated. The
+		// test seam resolver returns the fresh alice with the new perms.
+		_setUserResolverForTest(async (username) => (username === 'alice' ? aliceWithFoo : undefined));
+
+		fakeItc._fireUser();
+		const evt = await readNextEvent(rec.queue);
+		assert.equal(evt.data.method, 'notifications/tools/list_changed');
+		// The session's user reference should have been swapped in-place so
+		// subsequent diffs run against current perms too.
+		assert.equal(rec.user, aliceWithFoo, 'record.user updated to the freshly-resolved user');
+	});
+
+	it('preserves the GET credential expiry when refreshing its permissions', async () => {
+		initListChanged();
+		const authExpiresAt = Date.now() / 1000 + 60;
+		const record = registerSession('sid', 'application', { ...ALICE, authExpiresAt });
+		const fresh = { username: ALICE.username, role: { permission: {} } };
+		_setUserResolverForTest(async () => fresh);
+		fakeItc._fireUser();
+		await waitFor(() => record.user.role === fresh.role);
+		assert.equal(record.user.authExpiresAt, authExpiresAt);
+		assert.equal(fresh.authExpiresAt, undefined);
+	});
+
+	it('keeps the certificate mark when it refreshes a session a certificate named', async () => {
+		initListChanged();
+		const record = registerSession('cert-sid', 'application', certificatePrincipal({ username: 'cert_cn' }));
+		const named = record.user;
+		const fresh = { username: 'cert_cn', role: { permission: {} } };
+		_setUserResolverForTest(async () => fresh);
+		fakeItc._fireUser();
+		await waitFor(() => record.user !== named);
+		assert.equal(isCertificatePrincipal(record.user), true);
+		assert.equal(certificateAdmission(record.user), named, 'the refreshed view keeps the admission');
+		assert.equal(isCertificatePrincipal(fresh), false);
+		const refreshed = record.user;
+		fakeItc._fireUser();
+		await waitFor(() => record.user !== refreshed);
+		assert.equal(certificateAdmission(record.user), named, 'and keeps it across refreshes');
+	});
+
+	it('a scoped-token session is never re-resolved by name (no privilege substitution)', async () => {
+		// A scoped token's attribution username may later collide with a real hdb_user; re-resolving
+		// it here would advertise that user's surface. The session's embedded role must stay put.
+		const scopedUser = {
+			username: 'reporting-svc',
+			_scopedToken: true,
+			role: { permission: { operations: ['read_only'] } },
+		};
+		const collidingRealUser = {
+			username: 'reporting-svc',
+			role: { permission: { super_user: true } },
+		};
+		let resolverCalled = false;
+		_setUserResolverForTest(async () => {
+			resolverCalled = true;
+			return collidingRealUser;
+		});
+
+		initListChanged();
+		const rec = registerSession('scoped-sid', 'application', scopedUser);
+		seedSessionSnapshot('scoped-sid');
+
+		fakeItc._fireUser();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(resolverCalled, false, 'scoped session must not trigger a by-name user resolve');
+		assert.equal(rec.user, scopedUser, 'record.user must remain the embedded scoped principal');
+	});
+
+	it('a local-principal session is never re-resolved by name', async () => {
+		const localUser = localPrincipal();
+		let resolverCalled = false;
+		_setUserResolverForTest(async () => {
+			resolverCalled = true;
+			return { username: 'local', role: { permission: {} } };
+		});
+
+		initListChanged();
+		const rec = registerSession('local-sid', 'operations', localUser);
+		seedSessionSnapshot('local-sid');
+
+		fakeItc._fireUser();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(resolverCalled, false, 'no record backs the local principal');
+		assert.equal(rec.user, localUser);
+	});
+
+	it('schema events also fan out (application profile)', async () => {
+		initListChanged();
+		addTool({
+			name: 'get_thing',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'application',
+			visibleTo: () => true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		const rec = registerSession('app-sid', 'application', SUPER);
+		seedSessionSnapshot('app-sid');
+
+		// Register a new tool — simulates the result of a schema change.
+		addTool({
+			name: 'search_thing',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'application',
+			visibleTo: () => true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		fakeItc._fireSchema();
+		const evt = await readNextEvent(rec.queue);
+		assert.equal(evt.data.method, 'notifications/tools/list_changed');
+	});
+
+	it('subscribes to the resourceHandler channel when present', () => {
+		assert.equal(initListChanged(), true);
+		// The fake exposes all three channels; a resource fire must not throw even with no sessions.
+		assert.doesNotThrow(() => fakeItc._fireResources());
+	});
+
+	it('resource-registration events fan out application tool changes (#1448)', async () => {
+		initListChanged();
+		addTool({
+			name: 'get_thing',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'application',
+			visibleTo: () => true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		const rec = registerSession('app-res-sid', 'application', SUPER);
+		seedSessionSnapshot('app-res-sid');
+
+		// A component's resources.js just registered a new custom tool — simulate by adding it,
+		// then firing the resource channel (the signal jsResource emits after registration).
+		addTool({
+			name: 'wi_progress',
+			description: 'x',
+			inputSchema: { type: 'object' },
+			profile: 'application',
+			visibleTo: () => true,
+			handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+		});
+		fakeItc._fireResources();
+		const evt = await readNextEvent(rec.queue);
+		assert.equal(evt.data.method, 'notifications/tools/list_changed');
+	});
+
+	describe('sessions of principals a component resolved', () => {
+		const PRODUCT_ROLE = { permission: { super_user: false, data: { tables: { product: { read: true } } } } };
+
+		before(async () => {
+			testUtils.setupTestDBPath();
+			await testUtils.ensureSystemTables();
+		});
+
+		afterEach(() => testUtils.seedUsers());
+
+		function addProductTool() {
+			addTool({
+				name: 'get_product',
+				description: 'x',
+				inputSchema: { type: 'object' },
+				profile: 'application',
+				visibleTo: (u) => u?.role?.permission?.data?.tables?.product?.read === true,
+				handler: async () => ({ content: [{ type: 'text', text: '' }] }),
+			});
+		}
+
+		it('keeps a principal built with no hdb_user record, from before its stream is seeded', async () => {
+			const componentUser = { username: 'mcp-component-only', role: PRODUCT_ROLE };
+			userModule.trackUserRecords(componentUser, userModule.userRecordVersions(componentUser.username));
+			let resolverCalled = false;
+			_setUserResolverForTest(async (username) => {
+				resolverCalled = true;
+				return { username };
+			});
+			addProductTool();
+			initListChanged();
+			const rec = registerSession('component-sid', 'application', componentUser);
+			fakeItc._fireUser();
+			await waitFor(() => rec.lastTools !== undefined);
+			seedSessionSnapshot('component-sid');
+			fakeItc._fireUser();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+
+			assert.equal(resolverCalled, false, 'no record backs it, so none is read by its name');
+			assert.equal(rec.user, componentUser);
+			assert.deepEqual(rec.lastTools, [{ name: 'get_product' }]);
+		});
+
+		it('latches the certificate admission of a session whose refresh finds an inactive record', async () => {
+			initListChanged();
+			const rec = registerSession(
+				'cert-inactive-sid',
+				'application',
+				certificatePrincipal({ username: 'cert_inactive_cn' })
+			);
+			const admission = certificateAdmission(rec.user);
+			assert.equal(userModule.isRoleRequirementLatched(admission), false);
+			await testUtils.seedUsers([{ username: 'cert_inactive_cn', active: false, role: 'missing_role' }]);
+			fakeItc._fireUser();
+			await waitFor(() => userModule.isRoleRequirementLatched(admission), {
+				message: 'the inactive record backs the name, so the admission needs a role',
+			});
+		});
+
+		it('takes the tools of a dropped record-backed user', async () => {
+			await testUtils.seedUsers([
+				{
+					username: 'mcp_record_user',
+					active: true,
+					role: { id: 'mcp_record_role', role: 'mcp_record_role', ...PRODUCT_ROLE },
+				},
+			]);
+			const recordUser = await userModule.findAndValidateUser('mcp_record_user', null, false);
+			addProductTool();
+			initListChanged();
+			const rec = registerSession('record-sid', 'application', recordUser);
+			seedSessionSnapshot('record-sid');
+			assert.deepEqual(rec.lastTools, [{ name: 'get_product' }]);
+
+			await databases.system.hdb_user.delete('mcp_record_user');
+			fakeItc._fireUser();
+			const evt = await readNextEvent(rec.queue, 2000);
+			assert.equal(evt.data.method, 'notifications/tools/list_changed');
+			assert.equal(rec.user.role, undefined);
+			assert.deepEqual(rec.lastTools, []);
+		});
+	});
+});

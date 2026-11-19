@@ -1,0 +1,1591 @@
+import * as ResourcesCjsModule from '../../../resources/Resources.ts';
+import * as RequestTargetCjsModule from '../../../resources/RequestTarget.ts';
+/**
+ * Application-profile tool generation. Walks Harper's `Resources` registry
+ * and registers verb tools (`get_*`, `search_*`, `create_*`, `update_*`,
+ * `delete_*`) for each exported Resource that:
+ *   1. Has a `'mcp'` exportType not explicitly set to `false`.
+ *   2. Implements the corresponding verb on its prototype (for `create_*`, an actual
+ *      override, not mere inheritance of the base `Resource.post`).
+ *
+ * Tool dispatch delegates to the static `Resource.get/post/put/delete/search`
+ * methods, which wrap `transactional()` internally. That entry point runs the
+ * `allowRead/allowCreate/allowUpdate/allowDelete` per-record predicates and
+ * rejects restricted-attribute writes at runtime — the same authorization path
+ * REST flows through.
+ *
+ * For that authorization to be correct the handlers MUST dispatch on the *live*
+ * Resource class resolved from the registry at call time (see `liveResource`),
+ * never a class reference captured when the tools were registered: a component's
+ * `resources.js` subclass — which carries the row-level `allow*` overrides — is
+ * registered after this profile builds its tools and overwrites the base table
+ * entry at the same path. A captured reference would be the base table class,
+ * whose `allow*` only checks table-level RBAC, silently skipping the per-record
+ * guard REST enforces.
+ */
+import { createHash } from 'node:crypto';
+import * as env from '../../../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
+import harperLogger from '../../../utility/logging/harper_logger.ts';
+import { Resource } from '../../../resources/Resource.ts';
+import {
+	addTool,
+	clearProfileTools,
+	hasClassLevelVerbs,
+	isAuthenticated,
+	snapshotProfileTools,
+	type AuthedUser,
+	type ToolCallContext,
+	type ToolDef,
+	type ToolResult,
+} from '../toolRegistry.ts';
+import {
+	addPrompt,
+	clearProfilePrompts,
+	snapshotProfilePrompts,
+	type PromptDef,
+	type PromptGetResult,
+} from '../promptRegistry.ts';
+import {
+	addCustomResource,
+	clearProfileCustomResources,
+	snapshotProfileCustomResources,
+	type CustomResourceDef,
+	type CustomResourceReadResult,
+	type CustomResourceSubscription,
+	UnsubscribableError,
+	type ResourceReadContext,
+} from '../customResourceRegistry.ts';
+import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
+import { decodeCursor, encodeCursor } from '../pagination.ts';
+import { resolveAttributes } from '../../../resources/jsonSchemaTypes.ts';
+import { serializesToArray, wrapToolResult } from './results.ts';
+import { compileNameFilter, readNameList } from './nameFilter.ts';
+import {
+	type AttributePermissionEntry,
+	type HarperAttribute,
+	deriveCreateSchema,
+	deriveCreateOutputSchema,
+	deriveDeleteSchema,
+	deriveDeleteOutputSchema,
+	deriveGetSchema,
+	deriveGetOutputSchema,
+	derivePatchOutputSchema,
+	deriveSearchSchema,
+	deriveUpdateSchema,
+	deriveUpdateOutputSchema,
+} from './schemas/derive.ts';
+
+type ExportTypes = Record<string, boolean> | undefined;
+
+interface ResourceRegistryEntry {
+	Resource: ResourceClassLike;
+	path: string;
+	exportTypes?: ExportTypes;
+	hasSubPaths?: boolean;
+	relativeURL?: string;
+}
+
+interface ResourceClassLike {
+	prototype?: Record<string, unknown>;
+	databaseName?: string;
+	tableName?: string;
+	primaryKey?: string;
+	attributes?: HarperAttribute[];
+	description?: string;
+	hidden?: boolean;
+	properties?: Record<string, unknown>;
+	required?: readonly string[];
+	outputSchemas?: { [verb: string]: object };
+	/** The URL path (may carry `:param`/`*wildcard` segments), used to bind path params for contract resources. */
+	path?: string;
+	/** Present when built via `Resource.withSchema` (RFC 0001, Pillar 2) — drives typed tool schemas + binding. */
+	requestContract?: unknown;
+	/** Per-verb `{ query?, body? }` JSON-Schema fragments derived from the request contract. */
+	inputSchemas?: {
+		[verb: string]: { query?: JsonSchemaFragmentLike; body?: JsonSchemaFragmentLike; bodyRequired?: boolean };
+	};
+	mcp?: { annotations?: { [verb: string]: ToolAnnotationsLike } };
+	get?: (target: unknown, request: unknown, data?: unknown) => unknown;
+	put?: (target: unknown, data: unknown, request: unknown) => unknown;
+	post?: (target: unknown, data: unknown, request: unknown) => unknown;
+	patch?: (target: unknown, data: unknown, request: unknown) => unknown;
+	delete?: (target: unknown, request: unknown, data?: unknown) => unknown;
+	search?: (target: unknown, request: unknown) => unknown;
+	loadAsInstance?: boolean;
+	/**
+	 * Component-author opt-in: expose non-verb instance methods as MCP tools.
+	 * Each entry maps an instance-method name to an MCP tool descriptor.
+	 * RBAC stays as whatever the Resource's method itself enforces; the MCP
+	 * layer does not invent new ACLs for these.
+	 *
+	 * The mapped method is invoked as `method(args, context)`, where `context`
+	 * exposes `{ user, profile, sessionId, signal?, progress?, serverRequest? }`
+	 * — the per-call MCP context. `progress` (emit `notifications/progress`),
+	 * `signal` (aborts on `notifications/cancelled`), and `serverRequest`
+	 * (`sampling/createMessage`, `elicitation/create`, `roots/list`) are present
+	 * ONLY when the call streams (client sent `_meta.progressToken` +
+	 * `Accept: text/event-stream`), so guard them: `context.progress?.(…)`.
+	 * Methods that declare only `(args)` keep working — the extra arg is ignored.
+	 */
+	mcpTools?: ReadonlyArray<{
+		name: string;
+		method: string;
+		description?: string;
+		inputSchema?: object;
+		annotations?: ToolAnnotationsLike;
+	}>;
+	/**
+	 * Component-author opt-in: publish MCP prompts (#1349 §3.5). Each entry is a
+	 * named, optionally-argumented prompt whose `render(args)` returns the
+	 * messages delivered by `prompts/get`. Prompt content is author-declared —
+	 * Harper has no template primitive to derive it from.
+	 */
+	mcpPrompts?: ReadonlyArray<{
+		name: string;
+		title?: string;
+		description?: string;
+		arguments?: ReadonlyArray<{
+			name: string;
+			description?: string;
+			required?: boolean;
+			values?: ReadonlyArray<string>;
+		}>;
+		render: (args: Record<string, string>) => PromptGetResult | Promise<PromptGetResult>;
+	}>;
+	/**
+	 * Component-author opt-in: publish custom content resources (#1609). Each
+	 * entry exposes a fixed `uri` or an RFC-6570-style `uriTemplate` (`{name}`
+	 * matches one path segment, `{+name}` matches across segments — custom
+	 * schemes like `docs:///{+path}` are fine per the MCP spec). `method` names
+	 * an instance method invoked as `(params, context)` on the LIVE registry
+	 * class at read time (same dispatch as `mcpTools`); it returns a string
+	 * (text content), `{ text }`, `{ blob, mimeType }` (base64 binary), or any
+	 * other object (serialized as JSON). RBAC is delegated to the Resource.
+	 * `completions` optionally declares candidate values per template parameter
+	 * for `completion/complete`. `subscribe` optionally names an instance method
+	 * that makes the URI subscribable (contract in customResourceRegistry.ts).
+	 */
+	mcpResources?: ReadonlyArray<{
+		uri?: string;
+		uriTemplate?: string;
+		name: string;
+		title?: string;
+		description?: string;
+		mimeType?: string;
+		method: string;
+		subscribe?: string;
+		completions?: Readonly<Record<string, ReadonlyArray<string>>>;
+	}>;
+}
+
+interface ToolAnnotationsLike {
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
+}
+
+/**
+ * True when `pattern`'s only dynamic segment is a single trailing `:id` param (e.g. `widget/:id`).
+ * That is the ONLY shape the verb handlers below bind — `target.id = args.id`, treating `:id` as
+ * the record itself — so a differently-named param (`:widgetId`), more than one param, a `*wildcard`
+ * segment, or an `:id` that is NOT the final segment (`widget/:id/action`, where the route names a
+ * sub-resource, not the widget) would advertise an `id` input the handler never actually threads
+ * onto the real segment(s).
+ */
+function isSimpleIdRoute(pattern: string): boolean {
+	const segments = pattern.split('/');
+	if (segments[segments.length - 1] !== ':id') return false;
+	let paramCount = 0;
+	for (const segment of segments) {
+		if (segment.startsWith('*')) return false;
+		if (segment.startsWith(':')) {
+			if (segment !== ':id') return false;
+			paramCount++;
+		}
+	}
+	return paramCount === 1;
+}
+
+/** A subset of `JsonSchemaFragment` (resources/jsonSchemaTypes.ts) — the shared IR request contracts reduce to. */
+interface JsonSchemaFragmentLike {
+	type?: string | string[];
+	properties?: Record<string, unknown>;
+	required?: readonly string[];
+	items?: unknown;
+	enum?: readonly unknown[];
+}
+
+/** MCP verb → request-contract verb. `search` maps to `get`'s query grammar; others are 1:1. */
+const CONTRACT_VERB: Record<string, 'get' | 'post' | 'put' | 'patch' | 'delete'> = {
+	get: 'get',
+	search: 'get',
+	create: 'post',
+	update: 'put',
+	patch: 'patch',
+	delete: 'delete',
+};
+
+/** Parse `:param`/`*wildcard` segments out of a resource path (mirrors the route matcher). */
+function pathParamNames(path?: string): string[] {
+	if (!path) return [];
+	return path
+		.split('/')
+		.filter((segment) => segment.charAt(0) === ':' || segment.charAt(0) === '*')
+		.map((segment) => (segment.charAt(0) === '*' ? segment.slice(1) || 'wildcard' : segment.slice(1)));
+}
+
+/**
+ * Contract fragments mark nulls with OpenAPI 3.0's `nullable: true`, which JSON Schema 2020-12 (the MCP
+ * tool-schema dialect) ignores. Rewrite it at every depth as a `"null"` member of `type` (and of `enum`).
+ * A tool's root schema must stay `type: 'object'`, so a root `nullable` is dropped, not converted; so is
+ * every `nullable` under `allowNull: false` (query params, since a URL cannot carry null).
+ */
+function toJsonSchemaNullability(schema: unknown, root = false, allowNull = true): unknown {
+	if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
+	const { nullable, ...out } = schema as Record<string, unknown>;
+	if (out.properties && typeof out.properties === 'object') {
+		out.properties = Object.fromEntries(
+			Object.entries(out.properties).map(([key, sub]) => [key, toJsonSchemaNullability(sub, false, allowNull)])
+		);
+	}
+	if (out.items) out.items = toJsonSchemaNullability(out.items, false, allowNull);
+	if (nullable === true && !root && allowNull) {
+		if (out.type !== undefined) {
+			const types = Array.isArray(out.type) ? out.type : [out.type];
+			if (!types.includes('null')) out.type = [...types, 'null'];
+		}
+		if (Array.isArray(out.enum) && !out.enum.includes(null)) out.enum = [...out.enum, null];
+	}
+	return out;
+}
+
+/**
+ * Build an MCP tool input schema from a resource's request contract (RFC 0001, Pillar 2): the path
+ * params (always required strings) plus the verb's declared query and body fields, all off the shared
+ * JsonSchemaFragment. Returns undefined when there is nothing contract-derived to advertise (the caller
+ * then falls back to the generic table-attribute derivation).
+ */
+function contractInputSchema(ResourceClass: ResourceClassLike, contractVerb: string): object | undefined {
+	const input = ResourceClass.inputSchemas?.[contractVerb];
+	const params = pathParamNames(ResourceClass.path);
+	if (!input?.query?.properties && !input?.body?.properties && params.length === 0) return undefined;
+	const properties: Record<string, unknown> = {};
+	const required: string[] = [];
+	for (const param of params) {
+		properties[param] = { type: 'string', description: `Path parameter :${param}.` };
+		required.push(param);
+	}
+	const merge = (fragment: JsonSchemaFragmentLike | undefined, allowNull: boolean, promoteRequired: boolean) => {
+		if (!fragment?.properties) return;
+		for (const [key, sub] of Object.entries(fragment.properties)) {
+			properties[key] = toJsonSchemaNullability(sub, false, allowNull);
+		}
+		if (!promoteRequired) return;
+		for (const key of fragment.required ?? []) if (!required.includes(key)) required.push(key);
+	};
+	merge(input?.query, false, true);
+	merge(input?.body, true, input?.bodyRequired !== false);
+	const schema: { type: string; properties: Record<string, unknown>; required?: string[] } = {
+		type: 'object',
+		properties,
+	};
+	if (required.length) schema.required = required;
+	return schema;
+}
+
+/**
+ * Bind a contract resource's MCP arguments onto the RequestTarget the way the router would: path params
+ * as own properties (`target.id`, `target.n`, …) and declared query params via the URLSearchParams API
+ * (so `withSchema`'s pre-dispatch validation/coercion reads them). No-op for non-contract resources, so
+ * table tools are unaffected.
+ */
+function applyContractInputs(
+	target: Record<string, unknown>,
+	ResourceClass: ResourceClassLike,
+	a: Record<string, unknown>,
+	contractVerb: string
+): void {
+	if (!ResourceClass.requestContract) return;
+	for (const param of pathParamNames(ResourceClass.path)) {
+		if (a[param] !== undefined) target[param] = a[param];
+	}
+	const queryProps = ResourceClass.inputSchemas?.[contractVerb]?.query?.properties;
+	const setter = (target as { set?: (n: string, v: string) => void }).set;
+	const appender = (target as { append?: (n: string, v: string) => void }).append;
+	if (queryProps && typeof setter === 'function') {
+		for (const key of Object.keys(queryProps)) {
+			const val = a[key];
+			// query schemas advertise no null (a URL cannot carry one); treat a stray null as omitted
+			if (val == null) continue;
+			if (Array.isArray(val) && typeof appender === 'function') {
+				for (const el of val) appender.call(target, key, String(el));
+			} else {
+				setter.call(target, key, String(val));
+			}
+		}
+	}
+}
+
+/**
+ * MCP delivers path params, query params, and body fields flattened into ONE args object. For a
+ * contract resource those non-body keys are already bound onto the target by {@link applyContractInputs};
+ * strip them here so the remaining object is the request body the contract's `additionalProperties:false`
+ * body schema will accept (otherwise a bound `id`/query key poisons body validation). Non-contract
+ * resources pass through unchanged. An `.optional` body with no keys left is omitted (`undefined`),
+ * as an unframed HTTP request would be, rather than validated as `{}`.
+ */
+function contractBody(
+	a: Record<string, unknown>,
+	ResourceClass: ResourceClassLike,
+	contractVerb: string
+): Record<string, unknown> | undefined {
+	if (!ResourceClass.requestContract) return a;
+	const input = ResourceClass.inputSchemas?.[contractVerb];
+	const exclude = new Set(pathParamNames(ResourceClass.path));
+	if (input?.query?.properties) for (const key of Object.keys(input.query.properties)) exclude.add(key);
+	let body = a;
+	if (exclude.size > 0) {
+		body = {};
+		for (const [key, val] of Object.entries(a)) if (!exclude.has(key)) body[key] = val;
+	}
+	return input?.bodyRequired === false && Object.keys(body).length === 0 ? undefined : body;
+}
+
+/** A compiled parameterised route (e.g. `/widget/:id`), stored outside the base Map. */
+interface ParamRouteEntry {
+	pattern: string;
+	entry: ResourceRegistryEntry;
+}
+type ResourcesRegistry = Map<string, ResourceRegistryEntry> & { paramRoutes?: ParamRouteEntry[] };
+type RequestTargetCtor = new () => Record<string, unknown> & {
+	conditions?: unknown[];
+	operator?: string;
+	limit?: number;
+	offset?: number;
+	select?: string[];
+	id?: unknown;
+	isCollection?: boolean;
+};
+
+// Test seams: avoid Harper's eager graph init in unit tests.
+let _resourcesOverride: ResourcesRegistry | undefined;
+let _requestTargetCtorOverride: RequestTargetCtor | undefined;
+let warnedInvalidResourceSchemas = new WeakSet<object>();
+
+function warnInvalidResourceSchema(resource: ResourceClassLike, path: string, error: unknown): void {
+	if (warnedInvalidResourceSchemas.has(resource)) return;
+	warnedInvalidResourceSchemas.add(resource);
+	let detail = 'unknown schema error';
+	try {
+		detail = typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
+	} catch {}
+	harperLogger.warn(`MCP application skipped invalid schema for resource '/${path}': ${detail}`);
+}
+
+export function _setResourcesForTest(r: ResourcesRegistry | undefined): void {
+	_resourcesOverride = r;
+}
+export function _setRequestTargetForTest(ctor: RequestTargetCtor | undefined): void {
+	_requestTargetCtorOverride = ctor;
+}
+export function _resetInvalidSchemaWarningsForTest(): void {
+	warnedInvalidResourceSchemas = new WeakSet<object>();
+}
+
+// Cache the Resources module object (not the `resources` registry itself):
+// `liveResource` calls `loadResources()` on every verb-tool invocation, so we
+// avoid repeating `require`'s path resolution on the hot path. `resources` is a
+// live binding, so reading it off the cached module each call still reflects the
+// current registry.
+let _resourcesModule: { resources?: ResourcesRegistry } | undefined;
+function loadResources(): ResourcesRegistry | undefined {
+	if (_resourcesOverride) return _resourcesOverride;
+	try {
+		_resourcesModule ??= ResourcesCjsModule as any;
+		return _resourcesModule!.resources as ResourcesRegistry;
+	} catch (err) {
+		harperLogger.trace(`MCP application tools: Resources registry unavailable (${(err as Error).message})`);
+		return undefined;
+	}
+}
+
+function loadRequestTarget(): RequestTargetCtor | undefined {
+	if (_requestTargetCtorOverride) return _requestTargetCtorOverride;
+	try {
+		return RequestTargetCjsModule.RequestTarget as unknown as RequestTargetCtor;
+	} catch {
+		// Tests that don't use the real RequestTarget can supply a fake.
+		return undefined;
+	}
+}
+
+/**
+ * Resolve the Resource class to dispatch on for `path` from the LIVE registry at
+ * call time — never a reference captured at registration time.
+ *
+ * Why this matters for authorization: a component's `resources.js` can export a
+ * Resource subclass (`class Doc extends tables.Doc`) that overrides the row-level
+ * `allowRead/allowCreate/allowUpdate/allowDelete` predicates. That subclass is
+ * registered (overwriting the auto-generated base table entry at the same path)
+ * AFTER the MCP profile registers its tools, and its registration does not
+ * re-trigger `refreshApplicationTools`. A class reference captured at tool-build
+ * time is therefore the *base table* class, whose `allow*` only checks
+ * table-level RBAC — so a low-privilege user with table-level grants would pass
+ * while the subclass's per-record guard (which REST honors) is silently skipped.
+ * Resolving live keeps MCP dispatch in lockstep with the class REST resolves.
+ *
+ * Falls back to the registration-time class only if the registry lookup fails
+ * (e.g. the entry was removed), so a stale tool still dispatches *something*.
+ *
+ * Parameterised routes (e.g. `/widget/:id`) live outside the base Map in
+ * `paramRoutes`, so a plain `Map.get(path)` always misses for them — checked
+ * there too, or the live-dispatch guarantee above silently doesn't apply to
+ * param-route resources.
+ */
+function liveResource(path: string, fallback: ResourceClassLike): ResourceClassLike {
+	const registry = loadResources();
+	const entry = registry?.get(path) ?? registry?.paramRoutes?.find((route) => route.pattern === path)?.entry;
+	return (entry?.Resource as ResourceClassLike | undefined) ?? fallback;
+}
+
+const DEFAULT_SEARCH_LIMIT = 100;
+const MAX_SEARCH_LIMIT = 1000;
+
+function searchLimitFor(_profile: 'application'): number {
+	const v = env.get(CONFIG_PARAMS.MCP_APPLICATION_MAXTOOLS); // existing knob; treat as a sane upper bound
+	if (typeof v === 'number' && v > 0) return Math.min(v, MAX_SEARCH_LIMIT);
+	return DEFAULT_SEARCH_LIMIT;
+}
+
+/**
+ * Sanitize a Resource path into a valid MCP tool-name segment.
+ * MCP tool names must be JSON-encodable identifiers; `/` and `.` are the
+ * common offenders. Anything else non-identifier-friendly gets dropped.
+ */
+function sanitizePath(path: string): string {
+	return path.replace(/[/.]/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+}
+
+/**
+ * Resolve a unique tool-name suffix for this Resource. Default is the
+ * sanitized path; on collision we prefix with the database name; on second
+ * collision we add a short hash. The collision recovery is deterministic
+ * so two boots produce the same tool names.
+ */
+function uniqueSuffix(path: string, databaseName: string | undefined, claimed: Set<string>): string {
+	const base = sanitizePath(path);
+	if (!claimed.has(base)) return base;
+	if (databaseName) {
+		const dbPrefixed = `${sanitizePath(databaseName)}_${base}`;
+		if (!claimed.has(dbPrefixed)) return dbPrefixed;
+	}
+	// Final fallback: append a short stable hash of the full path.
+	const hash = createHash('sha256').update(path).digest('hex').slice(0, 6);
+	return `${base}_${hash}`;
+}
+
+function getUserTablePermissions(
+	user: AuthedUser,
+	databaseName: string | undefined,
+	tableName: string | undefined
+): {
+	read?: boolean;
+	insert?: boolean;
+	update?: boolean;
+	delete?: boolean;
+	describe?: boolean;
+	attribute_permissions?: AttributePermissionEntry[];
+} | null {
+	if (user?.role?.permission?.super_user === true) {
+		return { read: true, insert: true, update: true, delete: true, describe: true };
+	}
+	if (!databaseName || !tableName) return null;
+	const dbPerm = user?.role?.permission?.[databaseName];
+	if (!dbPerm || typeof dbPerm !== 'object' || Array.isArray(dbPerm)) return null;
+	const tablePerm = (dbPerm as { tables?: Record<string, unknown> }).tables?.[tableName];
+	if (!tablePerm || typeof tablePerm !== 'object') return null;
+	return tablePerm as ReturnType<typeof getUserTablePermissions>;
+}
+
+function buildContext(user: AuthedUser): { user: AuthedUser; authorize: true; checkPermission: object } {
+	return {
+		user,
+		authorize: true,
+		checkPermission: user?.role?.permission ?? {},
+	};
+}
+
+function makeTarget(): InstanceType<RequestTargetCtor> {
+	const Ctor = loadRequestTarget();
+	if (!Ctor) {
+		// Fallback target shape — exposes the writable fields Resource methods
+		// read. Real production runs always have RequestTarget available.
+		return {} as InstanceType<RequestTargetCtor>;
+	}
+	return new Ctor();
+}
+
+// A write handler's resolved value is a "structured envelope" when it's a
+// non-null object (a record or a custom outputSchemas-shaped payload) — it
+// should pass through to structuredContent as-is rather than being wrapped in a
+// derived `{ id }`/`{ deleted }` shape, which would corrupt custom Resource
+// responses and their author-declared output schemas (#1324).
+function isStructuredEnvelope(data: unknown): data is object {
+	return typeof data === 'object' && data !== null;
+}
+
+/** Mirrors registration's `overrideOutput`: did the author declare this verb's output schema? */
+function hasAuthoredOutputSchema(ResourceClass: ResourceClassLike, verb: string): boolean {
+	const schemas = (ResourceClass as { outputSchemas?: Record<string, object> }).outputSchemas;
+	return Boolean(schemas?.[verb] ?? schemas?.[CONTRACT_VERB[verb]]);
+}
+
+const warnedArrayContractTools = new Set<string>();
+
+/**
+ * MCP requires `outputSchema` to describe an object, so an array satisfies neither the derived
+ * record schema these verbs advertise nor the wrapped `{ results }` form a client validates
+ * against it. An authored `static outputSchemas.<verb>` means the author owns the contract.
+ */
+function rejectArrayForSchemaBearingVerb(
+	toolName: string,
+	verb: string,
+	data: unknown,
+	ResourceClass: ResourceClassLike
+): ToolResult | undefined {
+	// Classified the same way `wrapToolResult` classifies it: a `toJSON` returning an array
+	// reaches the wire as `{ results }` just like a bare array does.
+	if (!serializesToArray(data)) return undefined;
+	if (hasAuthoredOutputSchema(ResourceClass, verb)) return undefined;
+	const message =
+		`${toolName} resolved to an array, but the tool advertises an object outputSchema. ` +
+		`Return an object envelope — e.g. { results: [...] } — and declare it with ` +
+		`\`static outputSchemas.${verb}\`.`;
+	if (!warnedArrayContractTools.has(toolName)) {
+		warnedArrayContractTools.add(toolName);
+		harperLogger.warn(`MCP ${toolName}: ${message}`);
+	}
+	return {
+		isError: true,
+		content: [{ type: 'text', text: JSON.stringify({ kind: 'harper_error', tool: toolName, message }) }],
+	};
+}
+
+function wrapError(toolName: string, err: unknown): ToolResult {
+	// `err` is arbitrary/untrusted — a revoked Proxy or a throwing getter would crash this
+	// error-serialization path if we accessed properties bare. Read everything inside one guard.
+	let message = `${toolName} failed`;
+	let errors: unknown;
+	let code: string | undefined;
+	let stack: string | undefined;
+	try {
+		const e = err as { message?: string; http_resp_msg?: string; errors?: unknown; code?: string; stack?: string };
+		if (e && typeof e === 'object') {
+			message = e.http_resp_msg ?? e.message ?? message;
+			errors = e.errors;
+			code = e.code;
+			stack = e.stack;
+		}
+	} catch (serializeErr) {
+		harperLogger.error(`Failed to read error in wrapError: ${(serializeErr as Error).message}`);
+	}
+	harperLogger.trace(`MCP ${toolName} threw: ${stack ?? message}`);
+	const payload: { kind: string; tool: string; message: string; code?: string; errors?: unknown } = {
+		kind: 'harper_error',
+		tool: toolName,
+		message,
+	};
+	// Pass structured validation issues through rather than flattening to a single string (RFC 0001 §8).
+	if (Array.isArray(errors) && errors.length) {
+		payload.code = code;
+		payload.errors = errors;
+	}
+	return {
+		isError: true,
+		content: [
+			{
+				type: 'text',
+				text: JSON.stringify(payload),
+			},
+		],
+	};
+}
+
+// ─── Verb-specific handler factories ───────────────────────────────────────
+
+function makeGetHandler(toolName: string, path: string, capturedClass: ResourceClassLike) {
+	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+		const a = (args ?? {}) as Record<string, unknown>;
+		try {
+			const ResourceClass = liveResource(path, capturedClass);
+			const target = makeTarget();
+			target.id = a.id;
+			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
+			applyContractInputs(target, ResourceClass, a, 'get');
+			const data = await ResourceClass.get!(target, buildContext(context.user));
+			return rejectArrayForSchemaBearingVerb(toolName, 'get', data, ResourceClass) ?? wrapToolResult(data);
+		} catch (err) {
+			return wrapError(toolName, err);
+		}
+	};
+}
+
+function makeSearchHandler(toolName: string, path: string, capturedClass: ResourceClassLike) {
+	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+		const a = (args ?? {}) as Record<string, unknown>;
+		try {
+			const ResourceClass = liveResource(path, capturedClass);
+			const target = makeTarget();
+			if (Array.isArray(a.conditions)) target.conditions = a.conditions as unknown[];
+			if (typeof a.operator === 'string') target.operator = a.operator;
+			if (Array.isArray(a.get_attributes)) target.select = a.get_attributes as string[];
+			const requestedLimit = typeof a.limit === 'number' && a.limit > 0 ? Math.floor(a.limit) : DEFAULT_SEARCH_LIMIT;
+			const limit = Math.min(requestedLimit, searchLimitFor('application'));
+			// Reuse the shared cursor serialization, but unlike the MCP list-method
+			// protocol (which rejects a bad cursor with -32602), this is a tool
+			// *argument*: an unusable cursor falls back to offset 0 (best effort)
+			// rather than failing the search call.
+			const offset = decodeCursor(typeof a.cursor === 'string' ? a.cursor : '') ?? 0;
+			// Fetch one extra to know if there's a next page without a second round-trip.
+			target.limit = limit + 1;
+			target.offset = offset;
+			const rawData = await ResourceClass.search!(target, buildContext(context.user));
+			const rows: unknown[] = await collectRows(rawData);
+			const hasMore = rows.length > limit;
+			const page = hasMore ? rows.slice(0, limit) : rows;
+			const result: { rows: unknown[]; nextCursor?: string } = { rows: page };
+			if (hasMore) result.nextCursor = encodeCursor(offset + limit);
+			return wrapToolResult(result);
+		} catch (err) {
+			return wrapError(toolName, err);
+		}
+	};
+}
+
+async function collectRows(rawData: unknown): Promise<unknown[]> {
+	if (rawData == null) return [];
+	if (Array.isArray(rawData)) return rawData;
+	// AsyncIterable
+	if (typeof (rawData as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function') {
+		const out: unknown[] = [];
+		for await (const row of rawData as AsyncIterable<unknown>) out.push(row);
+		return out;
+	}
+	// Sync iterable
+	if (typeof (rawData as { [Symbol.iterator]?: unknown })[Symbol.iterator] === 'function') {
+		return Array.from(rawData as Iterable<unknown>);
+	}
+	// Single value
+	return [rawData];
+}
+
+function makeCreateHandler(toolName: string, path: string, capturedClass: ResourceClassLike) {
+	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+		const a = (args ?? {}) as Record<string, unknown>;
+		try {
+			const ResourceClass = liveResource(path, capturedClass);
+			const target = makeTarget();
+			// Mark the target as a collection so `Resource.post` resolves the table
+			// (not a single record) and routes to `create()` — without this, the
+			// base `post` throws `missingMethod` ("does not have a post method")
+			// because a record-scoped resource has no insert path (#1317).
+			target.isCollection = true;
+			applyContractInputs(target, ResourceClass, a, 'post');
+			const data = await ResourceClass.post!(
+				target,
+				contractBody(a, ResourceClass, 'post'),
+				buildContext(context.user)
+			);
+			// Standard table create resolves to the new record's primary key (a
+			// scalar). Wrap it as `{ id }` so the result carries `structuredContent`
+			// matching `deriveCreateOutputSchema`; strict SDK clients reject a bare
+			// scalar against a declared outputSchema with -32600. A custom Resource
+			// that returns a structured record/envelope (typically with a
+			// `static outputSchemas.create` override) is passed through unchanged (#1324).
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, 'create', data, ResourceClass) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { id: data })
+			);
+		} catch (err) {
+			return wrapError(toolName, err);
+		}
+	};
+}
+
+function makeUpdateHandler(toolName: string, path: string, capturedClass: ResourceClassLike, verb: 'put' | 'patch') {
+	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+		const a = (args ?? {}) as Record<string, unknown>;
+		const { id, ...rest } = a;
+		try {
+			const ResourceClass = liveResource(path, capturedClass);
+			const target = makeTarget();
+			target.id = id;
+			applyContractInputs(target, ResourceClass, a, verb);
+			// Call the verb method *on* ResourceClass so `this` stays bound to the
+			// class — detaching it (`const fn = ResourceClass.put`) makes the static
+			// Resource dispatcher read `this.directURLMapping` off undefined and throw.
+			const ctx = buildContext(context.user);
+			// For a contract resource, strip path/query keys from the body (they're bound onto the target
+			// above); otherwise keep the historical `id`-stripped rest.
+			const body = ResourceClass.requestContract ? contractBody(a, ResourceClass, verb) : rest;
+			const data = await (verb === 'put'
+				? ResourceClass.put!(target, body, ctx)
+				: ResourceClass.patch!(target, body, ctx));
+			// Table.put/patch resolve to undefined; surface a `{ ok: true }`
+			// acknowledgement so the result has structuredContent matching
+			// derive{Update,Patch}OutputSchema. A custom Resource that returns a
+			// structured envelope (with a static outputSchemas override) passes
+			// through unchanged (#1324).
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, verb === 'put' ? 'update' : 'patch', data, ResourceClass) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { ok: true })
+			);
+		} catch (err) {
+			return wrapError(toolName, err);
+		}
+	};
+}
+
+function makeDeleteHandler(toolName: string, path: string, capturedClass: ResourceClassLike) {
+	return async function (args: unknown, context: { user: AuthedUser }): Promise<ToolResult> {
+		const a = (args ?? {}) as Record<string, unknown>;
+		try {
+			const ResourceClass = liveResource(path, capturedClass);
+			const target = makeTarget();
+			target.id = a.id;
+			applyContractInputs(target, ResourceClass, a, 'delete');
+			const data = await ResourceClass.delete!(target, buildContext(context.user));
+			// Table.delete resolves to a boolean; wrap it as `{ deleted }` so the
+			// result carries structuredContent matching deriveDeleteOutputSchema. A
+			// custom Resource that returns a structured envelope (typically with a
+			// `static outputSchemas.delete` override) is passed through unchanged (#1324).
+			return (
+				rejectArrayForSchemaBearingVerb(toolName, 'delete', data, ResourceClass) ??
+				wrapToolResult(isStructuredEnvelope(data) ? data : { deleted: Boolean(data) })
+			);
+		} catch (err) {
+			return wrapError(toolName, err);
+		}
+	};
+}
+
+// ─── Verb-presence introspection ───────────────────────────────────────────
+
+interface VerbAvailability {
+	get: boolean;
+	search: boolean;
+	create: boolean;
+	updatePut: boolean;
+	updatePatch: boolean;
+	delete: boolean;
+}
+
+function detectVerbs(ResourceClass: ResourceClassLike): VerbAvailability {
+	const p = ResourceClass.prototype as Record<string, unknown> | undefined;
+	if (!p || typeof p !== 'object') {
+		return { get: false, search: false, create: false, updatePut: false, updatePatch: false, delete: false };
+	}
+	// `post` is inherited from the base `Resource` prototype whether or not a subclass
+	// overrides it, so `hasClassLevelVerbs` identity-compares instead of a bare `typeof`.
+	// A `create()` override counts too: `loadAsInstance === false` dispatches straight to it.
+	return {
+		get: typeof p.get === 'function',
+		search: typeof p.search === 'function',
+		create: hasClassLevelVerbs(p, Resource.prototype).post || typeof p.create === 'function',
+		updatePut: typeof p.put === 'function',
+		updatePatch: typeof p.patch === 'function',
+		delete: typeof p.delete === 'function',
+	};
+}
+
+// ─── Visibility predicate ──────────────────────────────────────────────────
+
+function makeVisibleTo(
+	databaseName: string | undefined,
+	tableName: string | undefined,
+	mode: 'read' | 'insert' | 'update' | 'delete'
+) {
+	return function visibleTo(user: AuthedUser): boolean {
+		// Super-user sees everything.
+		if (user?.role?.permission?.super_user === true) return true;
+		// A Resource with no backing table has no static permission gate to consult, so listing is
+		// open to any authenticated caller and the Resource's own `allow*` predicates enforce at call
+		// time — hiding these while still accepting `tools/call` on them bought no security, only
+		// undiscoverable tools (#1940).
+		//
+		// Anonymous sessions stay excluded. They are a supported deployment (#1609) and reach here as
+		// `{ username: '' }`, so this must be tested explicitly. Custom `mcpTools` DO list to them, but
+		// that is an author opt-in — declaring `static mcpTools` is a deliberate act of publishing.
+		// Verb tools are generated for every exported Resource with no author action, so publishing an
+		// app's field names and docstrings to unauthenticated callers by default is not equivalent.
+		if (!databaseName || !tableName) return isAuthenticated(user);
+		const perm = getUserTablePermissions(user, databaseName, tableName);
+		if (!perm) return false;
+		if (mode === 'read') return perm.read === true || perm.describe === true;
+		return perm[mode] === true;
+	};
+}
+
+// ─── Registration ──────────────────────────────────────────────────────────
+
+interface ResourceContext {
+	path: string;
+	suffix: string;
+	ResourceClass: ResourceClassLike;
+	databaseName: string | undefined;
+	tableName: string | undefined;
+	attributes: HarperAttribute[];
+	verbs: VerbAvailability;
+}
+
+function shouldEnumerate(entry: ResourceRegistryEntry): boolean {
+	const types = entry.exportTypes;
+	if (!types) return true; // no per-protocol controls → all enabled
+	return types.mcp !== false;
+}
+
+/**
+ * Per-tool registration; reads attribute_permissions for the registering
+ * call's hypothetical "schema-time" user — but since we register at boot
+ * (one user-agnostic surface), schemas reflect the *table's* attribute
+ * list. The `attribute_permissions` filter on input schemas only applies
+ * for users with restricted permissions; at registration time we treat
+ * the schema as "all attributes". Runtime enforcement is the real gate.
+ */
+type Verb = 'get' | 'search' | 'create' | 'update' | 'patch' | 'delete';
+
+/**
+ * Per-verb sentence templates. Replaces the prior mechanical
+ * `"${verb} on resource '/X'"` output with prose grounded in the actual verb.
+ */
+const VERB_SENTENCES: Record<Verb, (ctx: { tableName?: string; primaryKey?: string; path: string }) => string> = {
+	get: ({ tableName, primaryKey, path }) => `Fetches a single ${tableName ?? path} record by ${primaryKey ?? 'id'}.`,
+	search: ({ tableName, path }) => `Searches ${tableName ?? path} records by attribute conditions.`,
+	create: ({ tableName, path }) => `Creates a new ${tableName ?? path} record.`,
+	update: ({ tableName, primaryKey, path }) =>
+		`Replaces a ${tableName ?? path} record by ${primaryKey ?? 'id'} (PUT semantics).`,
+	patch: ({ tableName, primaryKey, path }) =>
+		`Partially updates a ${tableName ?? path} record by ${primaryKey ?? 'id'}.`,
+	delete: ({ tableName, primaryKey, path }) => `Deletes a ${tableName ?? path} record by ${primaryKey ?? 'id'}.`,
+};
+
+interface VerbDescriptionContext {
+	tableDoc?: string;
+	tableName?: string;
+	primaryKey?: string;
+	path: string;
+}
+
+/**
+ * Map each verb to the Resource RBAC method that gates it at runtime.
+ * Harper exposes four predicates — allowRead / allowCreate / allowUpdate /
+ * allowDelete — so multiple verbs share the same method (get + search both
+ * gate on allowRead; update + patch both gate on allowUpdate).
+ */
+const VERB_TO_RBAC_METHOD: Record<Verb, string> = {
+	get: 'allowRead',
+	search: 'allowRead',
+	create: 'allowCreate',
+	update: 'allowUpdate',
+	patch: 'allowUpdate',
+	delete: 'allowDelete',
+};
+
+/**
+ * Compose the per-verb tool description. When the Resource carries a
+ * `static description` (or a `Table.description` from the GraphQL parser),
+ * prefix it; then the verb-specific sentence; then the runtime-RBAC note.
+ */
+function verbDescription(verb: Verb, ctx: VerbDescriptionContext): string {
+	const prefix = ctx.tableDoc ? `${ctx.tableDoc}\n\n` : '';
+	const sentence = VERB_SENTENCES[verb](ctx);
+	const allowMethod = VERB_TO_RBAC_METHOD[verb];
+	return `${prefix}${sentence} Runtime RBAC (${allowMethod}) enforces operation access at call time.`;
+}
+
+/**
+ * Merge per-verb annotation overrides from `ResourceClass.mcp.annotations[verb]`
+ * over the defaults. Used for narrow MCP-only knobs that don't fit JSON Schema
+ * (e.g. `idempotentHint` overrides per verb).
+ */
+function mergeAnnotations(
+	verb: Verb,
+	defaults: ToolAnnotationsLike,
+	ResourceClass: ResourceClassLike
+): ToolAnnotationsLike {
+	const override = ResourceClass.mcp?.annotations?.[verb];
+	return override ? { ...defaults, ...override } : defaults;
+}
+
+/**
+ * Operations a Resource may opt into via `static mcp.annotations.<verb>.idempotentHint`.
+ * Default-empty: under MCP semantics `idempotentHint: true` means same observable
+ * outcome on repeat call; we under-annotate before mis-annotate. `update_*` (PUT
+ * semantics) is the only built-in default; `patch_*`/`delete_*` annotations are
+ * deferred until repeat-call behavior is verified end-to-end.
+ */
+function deriveVerbTools(ctx: ResourceContext): ToolDef[] {
+	const definitions: ToolDef[] = [];
+	const { suffix, ResourceClass, attributes, verbs, tableName, databaseName, path } = ctx;
+	const tableDoc = ResourceClass.description;
+	const primaryKey = ResourceClass.primaryKey;
+	const ctxForVerb: VerbDescriptionContext = { tableDoc, tableName, primaryKey, path };
+
+	// `outputSchemas` is authored/keyed by MCP verb (`create`/`update`) for table resources, but a request
+	// contract stores it by HTTP verb (`post`/`put`); fall back to the HTTP-verb key so a contract's
+	// `post.response`/`put.response` reaches the `create_*`/`update_*` output schema.
+	const overrideOutput = (verb: Verb): object | undefined =>
+		toJsonSchemaNullability(
+			ResourceClass.outputSchemas?.[verb] ?? ResourceClass.outputSchemas?.[CONTRACT_VERB[verb]],
+			true
+		) as object | undefined;
+	// When the resource carries a request contract (RFC 0001, Pillar 2), drive the tool INPUT schema off
+	// the contract (path params + declared query/body) instead of the generic table-attribute derivation.
+	// `search_*` is excluded: the contract has no `search` verb and the `search`/`query` static isn't
+	// wrapped by the contract validator, so it keeps the rich generic conditions/sort/limit grammar.
+	const overrideInput = (verb: Verb): object | undefined =>
+		ResourceClass.requestContract && verb !== 'search'
+			? contractInputSchema(ResourceClass, CONTRACT_VERB[verb])
+			: undefined;
+
+	if (verbs.get) {
+		const name = `get_${suffix}`;
+		definitions.push({
+			name,
+			description: verbDescription('get', ctxForVerb),
+			inputSchema: overrideInput('get') ?? deriveGetSchema(attributes, undefined),
+			outputSchema: overrideOutput('get') ?? deriveGetOutputSchema(attributes, undefined),
+			profile: 'application',
+			annotations: mergeAnnotations('get', { readOnlyHint: true }, ResourceClass),
+			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
+			handler: makeGetHandler(name, path, ResourceClass),
+		});
+	}
+	if (verbs.search) {
+		const name = `search_${suffix}`;
+		// search_* deliberately omits outputSchema — envelope shape (records vs
+		// data, cursor vs nextCursor) is tracked in the sibling envelope issue.
+		definitions.push({
+			name,
+			description: verbDescription('search', ctxForVerb),
+			inputSchema: overrideInput('search') ?? deriveSearchSchema(attributes, undefined),
+			profile: 'application',
+			annotations: mergeAnnotations('search', { readOnlyHint: true }, ResourceClass),
+			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
+			handler: makeSearchHandler(name, path, ResourceClass),
+		});
+	}
+	if (verbs.create) {
+		const name = `create_${suffix}`;
+		definitions.push({
+			name,
+			description: verbDescription('create', ctxForVerb),
+			inputSchema: overrideInput('create') ?? deriveCreateSchema(attributes, undefined),
+			outputSchema: overrideOutput('create') ?? deriveCreateOutputSchema(attributes, undefined),
+			profile: 'application',
+			annotations: mergeAnnotations('create', {}, ResourceClass),
+			visibleTo: makeVisibleTo(databaseName, tableName, 'insert'),
+			handler: makeCreateHandler(name, path, ResourceClass),
+		});
+	}
+	if (verbs.updatePut) {
+		const name = `update_${suffix}`;
+		definitions.push({
+			name,
+			description: verbDescription('update', ctxForVerb),
+			inputSchema: overrideInput('update') ?? deriveUpdateSchema(attributes, undefined),
+			outputSchema: overrideOutput('update') ?? deriveUpdateOutputSchema(attributes, undefined),
+			profile: 'application',
+			// PUT semantics: replacing with the same payload yields the same state,
+			// so the observable outcome on repeat call is identical.
+			annotations: mergeAnnotations('update', { idempotentHint: true }, ResourceClass),
+			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
+			handler: makeUpdateHandler(name, path, ResourceClass, 'put'),
+		});
+	} else if (verbs.updatePatch) {
+		const name = `patch_${suffix}`;
+		definitions.push({
+			name,
+			description: verbDescription('patch', ctxForVerb),
+			inputSchema: overrideInput('patch') ?? deriveUpdateSchema(attributes, undefined),
+			outputSchema: overrideOutput('patch') ?? derivePatchOutputSchema(attributes, undefined),
+			profile: 'application',
+			// patch_* idempotency depends on partial-update semantics; default
+			// omitted, opt-in via static mcp.annotations.patch.idempotentHint.
+			annotations: mergeAnnotations('patch', {}, ResourceClass),
+			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
+			handler: makeUpdateHandler(name, path, ResourceClass, 'patch'),
+		});
+	}
+	if (verbs.delete) {
+		const name = `delete_${suffix}`;
+		// `Table.delete` returns Promise<boolean>; `makeDeleteHandler` wraps it as
+		// `{ deleted }` so the result carries structuredContent matching the
+		// `{ deleted: boolean }` outputSchema. Authors can override the shape via
+		// `static outputSchemas.delete`.
+		definitions.push({
+			name,
+			description: verbDescription('delete', ctxForVerb),
+			inputSchema: overrideInput('delete') ?? deriveDeleteSchema(attributes, undefined),
+			outputSchema: overrideOutput('delete') ?? deriveDeleteOutputSchema(attributes),
+			profile: 'application',
+			// delete_* idempotency depends on delete-of-deleted behavior; default
+			// omits idempotentHint until verified end-to-end.
+			annotations: mergeAnnotations('delete', { destructiveHint: true }, ResourceClass),
+			visibleTo: makeVisibleTo(databaseName, tableName, 'delete'),
+			handler: makeDeleteHandler(name, path, ResourceClass),
+		});
+	}
+	return definitions;
+}
+
+/**
+ * #622 — Component-author opt-in. Walk `ResourceClass.mcpTools` and register
+ * each entry as a standalone MCP tool that invokes the named instance method.
+ *
+ * Each invocation constructs an instance with `(undefined, context)` and
+ * calls `instance[method](args)`. This mirrors what a custom user-defined
+ * Harper Resource expects when its methods are reached outside of a REST
+ * request — they receive arguments and rely on internal Harper calls to
+ * enforce any RBAC they need.
+ *
+ * No `visibleTo` filter beyond "is the user authenticated" — per the design,
+ * the Resource is responsible for its own ACLs. An LLM that calls a tool
+ * it shouldn't gets the Resource's natural error back as `isError: true`.
+ */
+// Dedup keys for warn-once telemetry on missing description / inputSchema.
+// Keyed by `${path}:${name}`. Survives across `registerApplicationTools()`
+// re-invocations so re-registering the same Resource doesn't re-spam the log.
+// Test seam below resets these.
+const _warnedMissingDesc = new Set<string>();
+const _warnedMissingInput = new Set<string>();
+
+export function _resetCustomToolWarningsForTest(): void {
+	_warnedMissingDesc.clear();
+	_warnedMissingInput.clear();
+}
+
+function registerCustomMcpTools(
+	ResourceClass: ResourceClassLike,
+	path: string,
+	isToolAllowed: (name: string) => boolean
+): number {
+	const tools = ResourceClass.mcpTools;
+	if (!Array.isArray(tools) || tools.length === 0) return 0;
+	let count = 0;
+	for (const def of tools) {
+		if (!def?.name || !def?.method) {
+			harperLogger.warn(
+				`MCP application profile: skipping invalid mcpTools entry on '${path}' (missing name or method): ${JSON.stringify(def)}`
+			);
+			continue;
+		}
+		if (!isToolAllowed(def.name)) continue;
+		const methodName = def.method;
+		if (typeof (ResourceClass.prototype as Record<string, unknown>)?.[methodName] !== 'function') {
+			harperLogger.warn(
+				`MCP application profile: '${path}' declares mcpTool '${def.name}' for method '${methodName}', but no such instance method exists on the prototype`
+			);
+			continue;
+		}
+		// Nudge component authors toward shipping description + inputSchema. Both
+		// materially affect LLM tool selection: description tells the model WHICH
+		// tool to pick; inputSchema tells it HOW to fill the arguments. Falling
+		// back to a generic description + `additionalProperties: true` makes the
+		// tool callable but hard to invoke correctly.
+		const dedupKey = `${path}:${def.name}`;
+		let description = def.description;
+		if (!description) {
+			if (!_warnedMissingDesc.has(dedupKey)) {
+				_warnedMissingDesc.add(dedupKey);
+				harperLogger.warn(
+					`MCP application: Resource '${path}' exposes mcpTool '${def.name}' without a description. ` +
+						`LLM tool selection degrades without one; add { description: '...' } to the mcpTools entry.`
+				);
+			}
+			description = `Custom MCP tool exposed by Resource '${path}' (method '${methodName}'). RBAC is enforced by the Resource itself.`;
+		}
+		let inputSchema = def.inputSchema;
+		if (!inputSchema) {
+			if (!_warnedMissingInput.has(dedupKey)) {
+				_warnedMissingInput.add(dedupKey);
+				harperLogger.warn(
+					`MCP application: Resource '${path}' exposes mcpTool '${def.name}' without an inputSchema. ` +
+						`LLM cannot construct typed arguments; add { inputSchema: { type: 'object', properties: {...}, required: [...] } } to the mcpTools entry.`
+				);
+			}
+			inputSchema = { type: 'object', additionalProperties: true };
+		}
+		addTool({
+			name: def.name,
+			description,
+			inputSchema,
+			profile: 'application',
+			...(def.annotations ? { annotations: def.annotations } : {}),
+			// Per the design: custom-tool RBAC is delegated to the Resource. No
+			// visibleTo filter beyond "the user is authenticated" — the runtime
+			// rejects unauthorized calls naturally.
+			visibleTo: () => true,
+			handler: makeCustomMethodHandler(def.name, path, ResourceClass, methodName),
+		});
+		count++;
+	}
+	return count;
+}
+
+/**
+ * #1349 §3.5 — Component-author opt-in. Walk `ResourceClass.mcpPrompts` and
+ * register each as an MCP prompt. Prompt content is author-declared via the
+ * entry's `render(args)`; the registry adapts it to the `(args, context)`
+ * signature. Invalid entries (missing name or render) are skipped with a warn.
+ */
+function registerCustomMcpPrompts(ResourceClass: ResourceClassLike, path: string): number {
+	const prompts = ResourceClass.mcpPrompts;
+	if (!Array.isArray(prompts) || prompts.length === 0) return 0;
+	let count = 0;
+	for (const def of prompts) {
+		if (!def?.name || typeof def.render !== 'function') {
+			harperLogger.warn(
+				`MCP application profile: skipping invalid mcpPrompts entry on '${path}' (needs name + render): ${JSON.stringify(def)}`
+			);
+			continue;
+		}
+		const prompt: PromptDef = {
+			name: def.name,
+			profile: 'application',
+			...(def.title ? { title: def.title } : {}),
+			...(def.description ? { description: def.description } : {}),
+			...(def.arguments ? { arguments: def.arguments.map((a) => ({ ...a })) } : {}),
+			render: (args) => def.render(args),
+		};
+		addPrompt(prompt);
+		count++;
+	}
+	return count;
+}
+
+// Warn-once dedup for mcpResources entries missing a description (same telemetry
+// pattern as custom tools). Keyed by `${path}:${name}`; test seam resets it.
+const _warnedResourceMissingDesc = new Set<string>();
+const _warnedResourceInvalidSubscribe = new Set<string>();
+
+export function _resetCustomResourceWarningsForTest(): void {
+	_warnedResourceMissingDesc.clear();
+	_warnedResourceInvalidSubscribe.clear();
+}
+
+/**
+ * #1609 — Component-author opt-in. Walk `ResourceClass.mcpResources` and
+ * register each entry as a custom content resource served by `resources/read`.
+ * Reads dispatch to the named instance method on the LIVE registry class
+ * (see `liveResource` — same reasoning as custom tools: the exported
+ * `resources.js` subclass carries the author's access control). Invalid
+ * entries are skipped with a warn so one bad entry can't take down the
+ * profile rebuild.
+ */
+function registerCustomMcpResources(ResourceClass: ResourceClassLike, path: string): number {
+	const resources = ResourceClass.mcpResources;
+	if (!Array.isArray(resources) || resources.length === 0) return 0;
+	let count = 0;
+	for (const def of resources) {
+		const hasUri = typeof def?.uri === 'string' && def.uri.length > 0;
+		const hasTemplate = typeof def?.uriTemplate === 'string' && def.uriTemplate.length > 0;
+		if (!def?.name || !def?.method || hasUri === hasTemplate) {
+			harperLogger.warn(
+				`MCP application profile: skipping invalid mcpResources entry on '${path}' (needs name + method + exactly one of uri/uriTemplate): ${JSON.stringify(def)}`
+			);
+			continue;
+		}
+		// Custom entries match BEFORE the discovered surfaces, so the scheme must be
+		// a LITERAL, non-reserved custom scheme: a reserved scheme (or a template
+		// whose scheme position contains a parameter, e.g. `{scheme}://...`) could
+		// shadow built-ins like harper://schema/... for every client of this instance.
+		const declaredUri = (hasUri ? def.uri : def.uriTemplate) as string;
+		const schemeMatch = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(declaredUri);
+		if (!schemeMatch || /^(harper|harper\+rest|https?)$/i.test(schemeMatch[1])) {
+			harperLogger.warn(
+				`MCP application profile: skipping mcpResource '${def.name}' on '${path}': the uri must start with a literal custom scheme (harper:, harper+rest:, http:, https: are reserved); use e.g. docs:///...`
+			);
+			continue;
+		}
+		const methodName = def.method;
+		if (typeof (ResourceClass.prototype as Record<string, unknown>)?.[methodName] !== 'function') {
+			harperLogger.warn(
+				`MCP application profile: '${path}' declares mcpResource '${def.name}' for method '${methodName}', but no such instance method exists on the prototype`
+			);
+			continue;
+		}
+		const dedupKey = `${path}:${def.name}`;
+		if (!def.description && !_warnedResourceMissingDesc.has(dedupKey)) {
+			_warnedResourceMissingDesc.add(dedupKey);
+			harperLogger.warn(
+				`MCP application: Resource '${path}' exposes mcpResource '${def.name}' without a description. ` +
+					`Clients surface it to models/users by description; add { description: '...' } to the mcpResources entry.`
+			);
+		}
+		const subscribeName = validSubscribeMethod(ResourceClass, path, def);
+		const registryDef: CustomResourceDef = {
+			...(hasUri ? { uri: def.uri } : {}),
+			...(hasTemplate ? { uriTemplate: def.uriTemplate } : {}),
+			name: def.name,
+			...(def.title ? { title: def.title } : {}),
+			...(def.description ? { description: def.description } : {}),
+			...(def.mimeType ? { mimeType: def.mimeType } : {}),
+			...(def.completions ? { completions: def.completions } : {}),
+			profile: 'application',
+			read: makeCustomResourceReader(path, ResourceClass, methodName),
+			...(subscribeName ? { subscribe: makeCustomResourceSubscriber(path, ResourceClass, subscribeName) } : {}),
+		};
+		try {
+			addCustomResource(registryDef);
+			count++;
+		} catch (err) {
+			// compileUriTemplate rejects malformed templates
+			harperLogger.warn(
+				`MCP application profile: skipping mcpResource '${def.name}' on '${path}': ${(err as Error).message}`
+			);
+		}
+	}
+	return count;
+}
+
+/**
+ * Build the read dispatcher for a custom resource. Mirrors
+ * `makeCustomMethodHandler`: resolve the live class, construct an instance
+ * with the caller's context, invoke `(params, context)`. Unlike tools, errors
+ * are NOT wrapped here — `resources/read` surfaces failures as JSON-RPC
+ * errors, which `readResource` handles.
+ */
+function makeCustomResourceReader(path: string, capturedClass: ResourceClassLike, methodName: string) {
+	return async function (
+		params: Record<string, string>,
+		context: ResourceReadContext
+	): Promise<CustomResourceReadResult> {
+		const ResourceClass = liveResource(path, capturedClass);
+		const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
+		const instance = new Ctor(undefined, buildContext(context.user));
+		const method = instance[methodName] as
+			((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceReadResult) | undefined;
+		if (typeof method !== 'function') {
+			throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
+		}
+		return await method.call(instance, params ?? {}, context);
+	};
+}
+
+function validSubscribeMethod(
+	ResourceClass: ResourceClassLike,
+	path: string,
+	def: { name: string; subscribe?: unknown }
+): string | undefined {
+	const subscribeName = def.subscribe;
+	if (subscribeName === undefined) return undefined;
+	const fn =
+		typeof subscribeName === 'string'
+			? (ResourceClass.prototype as Record<string, unknown>)?.[subscribeName]
+			: undefined;
+	let problem: string | undefined;
+	if (typeof fn !== 'function') {
+		problem = `declares subscribe ${JSON.stringify(subscribeName)}, but no such instance method exists on the prototype`;
+	} else if (isGeneratorFunction(fn)) {
+		problem = `names generator method '${subscribeName}' as subscribe; a generator's body runs only once iteration starts, outside the subscribing user's transaction, so return an async iterable from a regular method instead`;
+	}
+	if (!problem) return subscribeName as string;
+	const dedupKey = `${path}:${def.name}:${problem}`;
+	if (!_warnedResourceInvalidSubscribe.has(dedupKey)) {
+		_warnedResourceInvalidSubscribe.add(dedupKey);
+		harperLogger.warn(
+			`MCP application profile: mcpResource '${def.name}' on '${path}' ${problem}; it is registered without subscriptions`
+		);
+	}
+	return undefined;
+}
+
+function isGeneratorFunction(fn: unknown): boolean {
+	const tag = Object.prototype.toString.call(fn);
+	return tag === '[object AsyncGeneratorFunction]' || tag === '[object GeneratorFunction]';
+}
+
+// The generator check repeats here because the live class can be a subclass registered after the walk.
+function makeCustomResourceSubscriber(path: string, capturedClass: ResourceClassLike, methodName: string) {
+	return async function (
+		params: Record<string, string>,
+		context: ResourceReadContext
+	): Promise<CustomResourceSubscription> {
+		const ResourceClass = liveResource(path, capturedClass);
+		const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
+		const instance = new Ctor(undefined, buildContext(context.user));
+		const method = instance[methodName] as
+			((p: Record<string, string>, ctx: ResourceReadContext) => CustomResourceSubscription) | undefined;
+		if (typeof method !== 'function') {
+			throw new UnsubscribableError(`method '${methodName}' is not a function on the constructed Resource`);
+		}
+		if (isGeneratorFunction(method)) {
+			throw new UnsubscribableError(
+				`subscribe method '${methodName}' is a generator; return an async iterable from a regular method`
+			);
+		}
+		return await method.call(instance, params ?? {}, context);
+	};
+}
+
+function makeCustomMethodHandler(toolName: string, path: string, capturedClass: ResourceClassLike, methodName: string) {
+	return async function (args: unknown, context: ToolCallContext): Promise<ToolResult> {
+		try {
+			// Instantiate per call. Component authors define custom methods on
+			// the instance side; the Harper context carries the user so any
+			// internal Resource calls the method makes pick up RBAC naturally.
+			// Resolve the live registry class (see `liveResource`) so the exported
+			// subclass's method runs, in parity with the verb tools and REST.
+			const ResourceClass = liveResource(path, capturedClass);
+			const Ctor = ResourceClass as unknown as new (id: unknown, ctx: unknown) => Record<string, unknown>;
+			const instance = new Ctor(undefined, buildContext(context.user));
+			const method = instance[methodName] as ((a: unknown, ctx: unknown) => unknown) | undefined;
+			if (typeof method !== 'function') {
+				throw new Error(`method '${methodName}' is not a function on the constructed Resource`);
+			}
+			// Forward the per-call MCP context as a curated second arg so author tools can
+			// emit progress, observe cancellation, and issue server→client requests
+			// (#1349 §3.3/§3.4/§3.7). progress/signal/serverRequest are only populated on a
+			// streaming call, so authors must guard them (`context.progress?.(…)`). A method
+			// that only declares `(args)` ignores the extra positional arg (back-compat).
+			const mcpContext: ToolCallContext = {
+				user: context.user,
+				profile: context.profile,
+				sessionId: context.sessionId,
+				signal: context.signal,
+				progress: context.progress,
+				serverRequest: context.serverRequest,
+			};
+			const data = await method.call(instance, args ?? {}, mcpContext);
+			return wrapToolResult(data ?? { ok: true });
+		} catch (err) {
+			return wrapError(toolName, err);
+		}
+	};
+}
+
+/**
+ * Idempotent registration — walk the Resources Map, register verb tools
+ * for each entry that passes the exportTypes + verb-presence filters.
+ * Re-invocation overwrites prior tool entries (Map.set semantics).
+ */
+// True once the application profile has registered its tools at least once.
+// Gates `refreshApplicationTools` so schema-change rebuilds only happen when the
+// application profile is actually enabled.
+let applicationToolsRegistered = false;
+// Resources.registrationVersion at the last walk. Component entry loading is
+// asynchronous past the boot awaits (chokidar's initial scan completes after
+// loadComponentDirectories resolves), so tableless components with custom
+// mcpTools/mcpPrompts/mcpResources can register AFTER the initial walk without
+// any schema-change event to trigger a refresh. The transport compares this on
+// each request and rebuilds lazily when the registry moved (#1609).
+let lastWalkedRegistrationVersion = -1;
+
+/**
+ * Lazy freshness gate, called per MCP request on the application profile: if
+ * the Resources registry changed since the last walk, rebuild. An integer
+ * compare in the common case.
+ */
+export function ensureApplicationToolsFresh(): void {
+	if (!applicationToolsRegistered) return;
+	const resources = loadResources();
+	if (!resources) return;
+	// Coerce a missing version to 0 on BOTH sides (here and in the walk snapshot):
+	// an undefined comparison would fail every request and turn the lazy check
+	// into a synchronous rebuild per call.
+	const currentVersion = (resources as { registrationVersion?: number }).registrationVersion ?? 0;
+	if (currentVersion === lastWalkedRegistrationVersion) return;
+	registerApplicationTools();
+}
+
+/**
+ * Rebuild the application tool registry from the CURRENT schema graph. Tools are
+ * derived from exported `@table` Resources, which may register AFTER the MCP
+ * component loads (component load order isn't guaranteed). Re-running on every
+ * schema change keeps `tools/list` in sync — without it, a table created after
+ * boot would never surface a `create_`/`get_` tool (#1317). No-op until the
+ * application profile has been registered once.
+ */
+export function refreshApplicationTools(): void {
+	if (applicationToolsRegistered) registerApplicationTools();
+}
+
+/** Test seam: reset the registered flag so suites can re-exercise registration. */
+export function _resetApplicationToolsRegisteredForTest(): void {
+	applicationToolsRegistered = false;
+}
+
+export function registerApplicationTools(): void {
+	const resources = loadResources();
+	if (!resources) {
+		harperLogger.warn('MCP application profile: Resources registry not available; no tools registered');
+		return;
+	}
+	applicationToolsRegistered = true;
+	// A rebuild is the lifecycle point where an author's fix (or re-break) lands, so the
+	// warn-once set resets with it.
+	warnedArrayContractTools.clear();
+	// Capture BEFORE walking: a registration landing mid-walk bumps the version
+	// past this snapshot, so the next request's freshness check re-walks.
+	lastWalkedRegistrationVersion = (resources as { registrationVersion?: number }).registrationVersion ?? 0;
+	// Atomic idempotent rebuild: drop any application tools from a prior pass so a
+	// removed/renamed table doesn't leave a stale tool behind. Snapshot the prior
+	// set first so a throw mid-loop (e.g. a malformed custom tool on a @table)
+	// restores it rather than leaving `tools/list` empty until the next schema
+	// change. Registration is synchronous, so no reader observes the gap.
+	const previousTools = snapshotProfileTools('application');
+	const previousPrompts = snapshotProfilePrompts('application');
+	const previousCustomResources = snapshotProfileCustomResources('application');
+	const previousPromptNames = previousPrompts
+		.map((p) => p.name)
+		.sort()
+		.join(' ');
+	clearProfileTools('application');
+	clearProfilePrompts('application');
+	clearProfileCustomResources('application');
+	try {
+		buildApplicationTools(resources);
+	} catch (err) {
+		clearProfileTools('application');
+		clearProfilePrompts('application');
+		clearProfileCustomResources('application');
+		for (const def of previousTools) addTool(def);
+		for (const def of previousPrompts) addPrompt(def);
+		for (const def of previousCustomResources) addCustomResource(def);
+		throw err;
+	}
+	// Tell connected sessions if the prompt set actually changed (added/removed),
+	// fulfilling the advertised prompts.listChanged capability without no-op spam.
+	const currentPromptNames = snapshotProfilePrompts('application')
+		.map((p) => p.name)
+		.sort()
+		.join(' ');
+	if (currentPromptNames !== previousPromptNames) {
+		notifyPromptsListChanged('application');
+	}
+	// Custom resources feed resources/list; the notifier diffs each session's
+	// visible URI set itself, so no-op rebuilds don't spam (#1609).
+	notifyResourcesListChanged('application');
+	// The lazy per-request rebuild (ensureApplicationToolsFresh) can change the
+	// tool set outside any schema event; the notifier per-session diffs, so this
+	// is silent when nothing changed.
+	notifyToolsListChanged('application');
+}
+
+function buildApplicationTools(resources: ResourcesRegistry): void {
+	const claimedSuffixes = new Set<string>();
+	let toolsRegistered = 0;
+	let resourcesConsidered = 0;
+	const isToolAllowed = compileNameFilter(
+		readNameList(env.get(CONFIG_PARAMS.MCP_APPLICATION_ALLOW)),
+		readNameList(env.get(CONFIG_PARAMS.MCP_APPLICATION_DENY))
+	);
+	const generatedToolsEnabled = env.get(CONFIG_PARAMS.MCP_APPLICATION_GENERATEDTOOLS) !== false;
+
+	// How much of a param route the GENERATED verb handlers can bind:
+	// 'id'   — single-`:id` routes: get/update/patch/delete bind `target.id = args.id`,
+	//          but makeCreateHandler forces `target.isCollection = true` (never binds id)
+	//          and makeSearchHandler is collection-scoped, so create/search are dropped.
+	// 'none' — multi-segment/named-wildcard routes: no generated handler can bind the
+	//          segments yet, so ALL generated verbs are dropped. Author-defined
+	//          mcpTools/mcpPrompts carry their own schemas and handler methods, so they
+	//          register regardless of binding mode.
+	// A request contract (RFC 0001, Pillar 2) LIFTS this: `applyContractInputs` binds arbitrary
+	// path params + declared query itself, so contract resources register their generated verbs on
+	// any route shape — this is the "richer binding rides on the contract" the plain paths defer.
+	const considerEntry = (
+		path: string,
+		entry: ResourceRegistryEntry | undefined,
+		paramBinding?: 'id' | 'none'
+	): void => {
+		if (!entry) return;
+		resourcesConsidered++;
+		if (!shouldEnumerate(entry)) return;
+		const ResourceClass = entry.Resource;
+		// @hidden type-level: suppress the Resource from MCP tool listing entirely.
+		// Data remains accessible via direct query/RBAC; only descriptive surfaces drop it.
+		if (ResourceClass?.hidden === true) {
+			harperLogger.trace(`MCP application: '/${path}' suppressed from tool listing (@hidden)`);
+			return;
+		}
+		const verbs = detectVerbs(ResourceClass);
+		// A request contract binds arbitrary path params + query (applyContractInputs), so it is exempt
+		// from the generated-handler binding restrictions below.
+		if (!ResourceClass.requestContract) {
+			if (paramBinding === 'id') {
+				verbs.search = false;
+				verbs.create = false;
+			} else if (paramBinding === 'none') {
+				harperLogger.trace(
+					`MCP application: '/${path}' generated verb tools skipped — multi-segment/named-wildcard binding not yet supported`
+				);
+				verbs.get = verbs.search = verbs.create = verbs.updatePut = verbs.updatePatch = verbs.delete = false;
+			}
+		}
+		const hasVerbs =
+			generatedToolsEnabled &&
+			(verbs.get || verbs.search || verbs.create || verbs.updatePut || verbs.updatePatch || verbs.delete);
+		const hasCustomTools = Array.isArray(ResourceClass?.mcpTools) && ResourceClass.mcpTools.length > 0;
+		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
+		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
+		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) return;
+		const suffix = uniqueSuffix(path, ResourceClass?.databaseName, claimedSuffixes);
+		claimedSuffixes.add(suffix);
+		if (hasVerbs) {
+			let attributes: HarperAttribute[] | undefined;
+			try {
+				attributes = resolveAttributes(ResourceClass) as HarperAttribute[];
+			} catch (error) {
+				warnInvalidResourceSchema(ResourceClass, path, error);
+			}
+			if (attributes) {
+				const databaseName = ResourceClass?.databaseName;
+				const tableName = ResourceClass?.tableName;
+				let definitions: ToolDef[] | undefined;
+				try {
+					definitions = deriveVerbTools({
+						path,
+						suffix,
+						ResourceClass,
+						databaseName,
+						tableName,
+						attributes,
+						verbs,
+					});
+				} catch (error) {
+					warnInvalidResourceSchema(ResourceClass, path, error);
+				}
+				if (definitions) {
+					for (const definition of definitions) {
+						if (!isToolAllowed(definition.name)) continue;
+						addTool(definition);
+						toolsRegistered++;
+					}
+				}
+			}
+		}
+		toolsRegistered += registerCustomMcpTools(ResourceClass, path, isToolAllowed);
+		registerCustomMcpPrompts(ResourceClass, path);
+		registerCustomMcpResources(ResourceClass, path);
+	};
+
+	for (const [path, entry] of resources) considerEntry(path, entry);
+
+	// Parameterised routes (e.g. `/widget/:id`) live OUTSIDE the base Map: Resources.setParamRoute
+	// stores them in `paramRoutes` and returns before the Map insert, so the loop above never sees
+	// them. Without this, a custom resource declaring `static path = '/widget/:id'` produces ZERO MCP
+	// tools — even though it appears in the OpenAPI document, which already iterates `paramRoutes`.
+	// Enumerate them so the tool surface matches the REST surface; the binding mode restricts the
+	// GENERATED verb tools to what their handlers actually bind (see considerEntry), while custom
+	// mcpTools/mcpPrompts (and contract resources) register on every route shape.
+	for (const route of resources.paramRoutes ?? []) {
+		considerEntry(route.pattern, route.entry, isSimpleIdRoute(route.pattern) ? 'id' : 'none');
+	}
+
+	harperLogger.info(
+		`MCP application profile: considered ${resourcesConsidered} resource(s), registered ${toolsRegistered} tool(s)`
+	);
+}

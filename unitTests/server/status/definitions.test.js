@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { STATUS_DEFINITIONS, STATUS_IDS, DEFAULT_STATUS_ID } = require('#src/server/status/definitions');
 
 describe('server.status.definitions', function () {

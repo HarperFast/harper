@@ -1,0 +1,6 @@
+rest: true
+graphqlSchema:
+  files: 'schema.graphql'
+  # Shortened from the 30s default so a baseline run against the unfixed loader — where each broken
+  # component holds the plugin-wide load lock for its whole watchdog — costs seconds, not a minute.
+  timeout: 5000

@@ -1,9 +1,10 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const sinon = require('sinon');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { waitFor } = require('../waitFor');
 
 describe('Resource.get context passing', function () {
 	// Note: When Resource.get calls source.get, the context is wrapped in a sourceContext object
@@ -12,6 +13,7 @@ describe('Resource.get context passing', function () {
 
 	let TestTable;
 	let sourceGetStub;
+	let expectedCachedRecords = 0;
 
 	before(function () {
 		setupTestDBPath();
@@ -35,6 +37,11 @@ describe('Resource.get context passing', function () {
 
 	after(async function () {
 		sinon.restore();
+
+		// Resource.get resolves before its source-backed cache write commits.
+		await waitFor(() => !TestTable || TestTable.primaryStore.getKeysCount() === expectedCachedRecords, {
+			message: 'Source-backed cache writes did not commit before teardown',
+		});
 
 		// Clean up the test table
 		await TestTable?.dropTable();
@@ -62,6 +69,7 @@ describe('Resource.get context passing', function () {
 
 		// Call Resource.get with context
 		const result = await TestTable.get(testId, testContext);
+		expectedCachedRecords++;
 
 		// Verify source.get was called
 		assert(sourceGetStub.calledOnce, 'source.get should be called once');
@@ -106,6 +114,7 @@ describe('Resource.get context passing', function () {
 		// Call within a transaction
 		await transaction(testContext, async () => {
 			const result = await TestTable.get(testId, testContext);
+			expectedCachedRecords++;
 
 			assert(sourceGetStub.calledOnce, 'source.get should be called once');
 
@@ -143,6 +152,7 @@ describe('Resource.get context passing', function () {
 
 		// Call without context
 		const result = await TestTable.get(testId);
+		expectedCachedRecords++;
 
 		assert(sourceGetStub.calledOnce);
 		const [idArg, contextArg] = sourceGetStub.firstCall.args;
@@ -157,7 +167,8 @@ describe('Resource.get context passing', function () {
 	it('should handle source.get returning null', async function () {
 		// Use a unique ID to ensure no cached data
 		const testId = 'test-null-' + Date.now() + '-' + Math.random();
-		const testContext = { user: { id: 'user-null' } };
+		// Avoid an unobservable empty background cache transaction during teardown.
+		const testContext = { user: { id: 'user-null' }, noCacheStore: true };
 
 		// Source returns null (record not found)
 		sourceGetStub.resolves(null);
@@ -174,5 +185,128 @@ describe('Resource.get context passing', function () {
 
 		// Result should be null or undefined when source returns null
 		assert(!result || result === null);
+	});
+});
+
+describe('dropTable does not wait for in-flight source-populated cache writes (harper#1381)', function () {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // this table drop path is RocksDB-only
+
+	it('resolves dropTable() while a gated cache-from-source write is still pending, and that write never lands', async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		const TestTable = table({
+			table: 'DropRaceTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } },
+			],
+		});
+
+		let releaseEmbed;
+		const embedGate = new Promise((resolve) => {
+			releaseEmbed = resolve;
+		});
+		let embedEntered;
+		const embedEnteredPromise = new Promise((resolve) => {
+			embedEntered = resolve;
+		});
+		TestTable.setEmbedAttribute('vector', async () => {
+			embedEntered();
+			await embedGate;
+			return [1, 2, 3];
+		});
+		TestTable.sourcedFrom({
+			get: async (id) => ({ id, name: 'gated' }),
+			available: () => true,
+		});
+
+		const getPromise = TestTable.get('gated-1', {});
+		await embedEnteredPromise;
+
+		const started = Date.now();
+		await TestTable.dropTable();
+		assert.ok(Date.now() - started < 5000, 'dropTable() must not wait on the pending write');
+		assert.strictEqual(
+			[...TestTable.dbisDB.getRange({ start: 'DropRaceTable/', end: 'DropRaceTable0' })].length,
+			0,
+			'the catalog rows are removed'
+		);
+
+		releaseEmbed();
+		await getPromise;
+		assert.strictEqual(
+			TestTable.primaryStore.getSync('gated-1'),
+			undefined,
+			'a write released after the drop began must not be staged'
+		);
+		// the storage environment stays writable: the late write never named the retired family
+		const Probe = table({
+			table: 'DropRaceProbe',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.put({ id: 1 });
+		assert.ok(await Probe.get(1));
+		await Probe.dropTable();
+	});
+
+	it('does not start a new cache write once dropTable() has begun (late admission)', async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		const TestTable = table({
+			table: 'DropRaceLateAdmission',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+
+		let releaseFirst;
+		const firstGate = new Promise((resolve) => {
+			releaseFirst = resolve;
+		});
+		let firstEntered;
+		const firstEnteredPromise = new Promise((resolve) => {
+			firstEntered = resolve;
+		});
+		let lateSourceCalled = false;
+		TestTable.sourcedFrom({
+			get: async (id) => {
+				if (id === 'first') {
+					firstEntered();
+					await firstGate;
+				} else lateSourceCalled = true;
+				return { id, name: 'value' };
+			},
+			available: () => true,
+		});
+
+		// A source round trip still in flight when the drop starts. Wait on an explicit "entered the
+		// source" signal rather than a guessed number of ticks.
+		const firstGetPromise = TestTable.get('first', {});
+		await firstEnteredPromise;
+
+		const dropPromise = TestTable.dropTable();
+
+		// A get() admitted in the same tick the drop began (before the class stopped admitting) must
+		// still return fresh source data...
+		const lateResult = await TestTable.get('late', {});
+		assert.ok(lateSourceCalled, 'the source should still be consulted for a late-admitted read');
+		assert.strictEqual(lateResult.name, 'value');
+		// ...but must not have started a new cache write into a table that is being dropped. The
+		// get() resolves before its own cache write would land, so give a bounded window for an
+		// (incorrectly) unblocked write to land before checking.
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.strictEqual(
+			TestTable.primaryStore.getSync('late'),
+			undefined,
+			'a get() admitted after dropTable() started must not cache its result'
+		);
+
+		releaseFirst();
+		await firstGetPromise;
+		await dropPromise;
 	});
 });

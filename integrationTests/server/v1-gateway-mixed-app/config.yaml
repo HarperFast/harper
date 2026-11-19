@@ -1,0 +1,7 @@
+# Deliberately declares NO `rest` section.
+#
+# This app exports a table, so it has a REST-exportable entry in the shared
+# Resources registry — but by omitting `rest` it opts out of being served over
+# REST. Enabling the /v1 gateway must not change that.
+graphqlSchema:
+  files: '*.graphql'

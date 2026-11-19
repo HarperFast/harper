@@ -1,0 +1,5 @@
+graphqlSchema:
+  files: '*.graphql'
+rest: true
+# #1822 — SQL two-sided PK range must fuse into one bounded range-seek (O(window)),
+# not scan from one bound to end-of-table filtering the other in memory (O(table)).

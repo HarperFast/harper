@@ -1,0 +1,400 @@
+/**
+ * MCP tool registry — framework for `tools/list` and `tools/call` per MCP
+ * §server/tools. No real tools register here yet — the operations profile
+ * walks `OPERATION_FUNCTION_MAP`, and the application profile walks the
+ * `Resources` registry. Both call `addTool(def)` to publish.
+ *
+ * Filtering follows a two-step pattern:
+ *   1. Class-level verb introspection (which tools are *publishable*)
+ *      reuses the prototype-comparison helper from `resources/openApi.ts:149-153`.
+ *   2. User-level RBAC walk (which publishable tools are *visible*) reuses
+ *      the direct `user.role.permission[db].tables[table]` walk from
+ *      `dataLayer/schemaDescribe.ts:29-49`. Resource.allow* methods are
+ *      *not* used — they're per-record instance methods.
+ *
+ * Security model — important:
+ *   - `visibleTo` controls **listing** (the LLM only sees what it's likely
+ *     allowed to use). It is **not** invoked at `tools/call` time and is
+ *     explicitly NOT a security boundary.
+ *   - **Enforcement runs in the tool handler at call time**, via Harper's
+ *     existing `transactional()` + per-record `allow{Read,Create,Update,
+ *     Delete}` predicates. The framework intentionally passes a
+ *     known-but-filtered-out tool through to its handler so an LLM that
+ *     hallucinates a name gets a clean `isError` result from the runtime
+ *     predicate. See the `tools/call` pass-through test in
+ *     `transport.test.js`.
+ */
+import { encodeCursor } from './pagination.ts';
+import type { McpProfile } from './transport.ts';
+export { canRoleInvokeOperation } from './operationVisibility.ts';
+
+export interface ToolAnnotations {
+	title?: string;
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
+}
+
+export interface ToolContent {
+	type: 'text' | 'image' | 'audio' | 'resource';
+	text?: string;
+	data?: string;
+	mimeType?: string;
+}
+
+export interface ToolResult {
+	content: ToolContent[];
+	isError?: boolean;
+	/** MCP requires an object here; build it with `tools/results.ts`'s `wrapToolResult`. */
+	structuredContent?: Record<string, unknown>;
+}
+
+/** Public shape sent to clients on `tools/list`. */
+export interface ToolDescriptor {
+	name: string;
+	description: string;
+	inputSchema: object;
+	outputSchema?: object;
+	annotations?: ToolAnnotations;
+}
+
+/** Authenticated user object as Harper builds it (subset we touch). */
+export interface AuthedUser {
+	username?: string;
+	authExpiresAt?: number;
+	// Attribution-only principal that must not be re-resolved against hdb_user (see refreshSessionUser).
+	_scopedToken?: boolean;
+	role?: {
+		role?: string;
+		permission?: {
+			super_user?: boolean;
+			structure_user?: boolean | string[];
+			operations?: string[];
+			[database: string]:
+				| boolean
+				| string[]
+				| undefined
+				| {
+						describe?: boolean;
+						tables?: {
+							[table: string]:
+								| undefined
+								| {
+										read?: boolean;
+										insert?: boolean;
+										update?: boolean;
+										delete?: boolean;
+										describe?: boolean;
+										attribute_permissions?: unknown;
+								  };
+						};
+				  };
+		};
+	};
+}
+
+export interface ToolProgressUpdate {
+	/** Monotonic progress value — a count, or a fraction of `total`. */
+	progress: number;
+	/** Optional known total, for a percentage. */
+	total?: number;
+	/** Optional human-readable status line. */
+	message?: string;
+}
+
+export interface ToolCallContext {
+	user: AuthedUser;
+	profile: McpProfile;
+	sessionId: string;
+	/**
+	 * Aborted when the client sends `notifications/cancelled` for this call
+	 * (#1349 §3.3). Long-running handlers should check `signal.aborted` (or pass
+	 * `signal` to abortable work) and stop promptly. Absent in contexts that
+	 * don't wire cancellation (e.g. some tests).
+	 */
+	signal?: AbortSignal;
+	/**
+	 * Emit a `notifications/progress` update for this call. A no-op unless the
+	 * client supplied a `_meta.progressToken` and accepts `text/event-stream`
+	 * (i.e. the response streams) — safe to call unconditionally.
+	 */
+	progress?: (update: ToolProgressUpdate) => void;
+	/**
+	 * Issue a server→client request (#1349 §3.7) — e.g. `sampling/createMessage`,
+	 * `elicitation/create`, `roots/list` — and await the client's response. Only
+	 * present on a streaming call (the request rides the SSE stream); rejects if
+	 * the client didn't declare the matching capability.
+	 */
+	serverRequest?: (method: string, params: unknown) => Promise<unknown>;
+}
+
+/**
+ * Internal tool definition. `handler` and `visibleTo` are not sent to the
+ * client; only the public `ToolDescriptor` fields are.
+ */
+export interface ToolDef extends ToolDescriptor {
+	profile: McpProfile;
+	visibleTo: (user: AuthedUser) => boolean;
+	handler: (args: unknown, context: ToolCallContext) => Promise<ToolResult> | ToolResult;
+}
+
+const registry = new Map<string, ToolDef>();
+
+/**
+ * Dynamic, per-profile tool source. A profile may register a provider that
+ * computes its tool set *lazily* — walked on every `tools/list` / `tools/call`
+ * rather than snapshotted into the static registry at registration time. The
+ * operations profile uses this so component operations registered after MCP
+ * boot (`server.registerOperation`, e.g. the built-in agent's `agent_prompt`)
+ * still surface once allow-listed, instead of being missed by a one-time walk
+ * of `OPERATION_FUNCTION_MAP` — see components/mcp/tools/operations.ts (#1562).
+ *
+ * On a name collision, a statically-registered tool (`addTool`) for the same
+ * profile wins over a provider entry — a curated tool overrides a generic
+ * same-named provider tool.
+ */
+export interface ProfileToolProvider {
+	/** Every tool the provider currently exposes for its profile. */
+	list(): ToolDef[];
+	/** Resolve a single tool by name, or `undefined` if not currently exposed. */
+	get(name: string): ToolDef | undefined;
+}
+
+const profileProviders = new Map<McpProfile, ProfileToolProvider>();
+
+/** Per-session pagination cache. Invalidated when a fresh `tools/list` (no cursor) call recomputes. */
+const sessionListCache = new Map<string, { tools: ToolDescriptor[] }>();
+
+/**
+ * Install (or, with `undefined`, remove) the dynamic tool provider for a
+ * profile. Idempotent — re-installing swaps the provider. Drops the pagination
+ * caches so the next `tools/list` recomputes against the new provider.
+ */
+export function setProfileToolProvider(profile: McpProfile, provider: ProfileToolProvider | undefined): void {
+	if (provider) profileProviders.set(profile, provider);
+	else profileProviders.delete(profile);
+	sessionListCache.clear();
+}
+
+export function addTool(def: ToolDef): void {
+	if (!def?.name) throw new Error('addTool: name is required');
+	registry.set(def.name, def);
+	// New tool → drop pagination caches; next list call rebuilds.
+	sessionListCache.clear();
+}
+
+export function removeTool(name: string): boolean {
+	const existed = registry.delete(name);
+	if (existed) sessionListCache.clear();
+	return existed;
+}
+
+/**
+ * Resolve a tool by name for `tools/call`. Pass the caller's `profile` so
+ * resolution is profile-scoped: the flat name→def registry is a single
+ * namespace shared by both profiles, so without scoping a static tool in one
+ * profile shadows a same-named provider tool in another — the shadowed tool
+ * then lists but is uncallable (the transport rejects the wrong-profile def).
+ *
+ * With a profile: a static registration of that profile wins over its provider
+ * entry (curated tool overrides a generic same-named provider tool), then the
+ * profile's provider, then any static registration by name (harmless — the
+ * transport re-checks `tool.profile`). Without a profile (internal/tests):
+ * static registry first, then any provider.
+ */
+export function getTool(name: string, profile?: McpProfile): ToolDef | undefined {
+	const statik = registry.get(name);
+	if (profile !== undefined) {
+		if (statik?.profile === profile) return statik;
+		const def = profileProviders.get(profile)?.get(name);
+		if (def) return def;
+		return statik;
+	}
+	if (statik) return statik;
+	for (const provider of profileProviders.values()) {
+		const def = provider.get(name);
+		if (def) return def;
+	}
+	return undefined;
+}
+
+/**
+ * Snapshot every tool currently registered for a profile. Used to capture the
+ * live tool set before an atomic rebuild so a mid-rebuild failure can restore
+ * it (rather than leaving `tools/list` empty); see `registerApplicationTools`.
+ */
+export function snapshotProfileTools(profile: McpProfile): ToolDef[] {
+	const out: ToolDef[] = [];
+	for (const def of registry.values()) {
+		if (def.profile === profile) out.push(def);
+	}
+	return out;
+}
+
+/**
+ * Every tool a profile currently exposes: its dynamic provider's tools merged
+ * with its statically-registered tools, deduped by name (static wins, matching
+ * `getTool`/`buildToolListPage`). Unlike `snapshotProfileTools` — which reads
+ * only the static registry for atomic-rebuild restore — this includes lazy
+ * providers, so the built-in agent (which drains the `operations` profile, a
+ * pure lazy provider) sees the operation tools at all.
+ */
+export function listProfileTools(profile: McpProfile): ToolDef[] {
+	const byName = new Map<string, ToolDef>();
+	const provider = profileProviders.get(profile);
+	const providerTools = provider?.list?.();
+	if (providerTools) {
+		for (const def of providerTools) byName.set(def.name, def);
+	}
+	for (const def of registry.values()) {
+		if (def.profile === profile) byName.set(def.name, def);
+	}
+	return [...byName.values()];
+}
+
+/**
+ * Remove every tool registered for a profile. Used to rebuild the
+ * application-profile tool set when schemas change (a table may have been
+ * added/removed after the initial registration); see `refreshApplicationTools`.
+ * Drops the pagination caches so the next `tools/list` recomputes.
+ */
+export function clearProfileTools(profile: McpProfile): void {
+	let removed = 0;
+	for (const [name, def] of registry) {
+		if (def.profile === profile) {
+			registry.delete(name);
+			removed++;
+		}
+	}
+	if (removed > 0) sessionListCache.clear();
+}
+
+/**
+ * Drop the pagination cache entry for a session. Called by
+ * `session.deleteSession` so the cache doesn't outlive the session that
+ * created it. Without this, every session that ever paged tools/list
+ * leaves an orphan entry until the process restarts.
+ */
+export function clearSessionCache(sessionId: string): void {
+	sessionListCache.delete(sessionId);
+}
+
+/** Test seam: drop all registrations. */
+export function _resetRegistryForTest(): void {
+	registry.clear();
+	profileProviders.clear();
+	sessionListCache.clear();
+}
+
+export interface ListToolsArgs {
+	user: AuthedUser;
+	profile: McpProfile;
+	sessionId: string;
+	/**
+	 * Decoded pagination offset, or `undefined` for a fresh (first-page) call.
+	 * The transport decodes the opaque cursor and rejects invalid cursors with
+	 * `-32602` before calling us (see `decodeCursor` in pagination.ts).
+	 */
+	offset?: number;
+	limit: number;
+}
+
+export interface ListToolsResult {
+	tools: ToolDescriptor[];
+	nextCursor?: string;
+}
+
+/**
+ * Filter the registry to tools the user can see on this profile, then page.
+ *
+ * Cursor encoding: base64 of `{offset:N}`. Opaque to clients per MCP
+ * §server/utilities/pagination. A fresh call (no cursor) recomputes and
+ * caches the filtered list; subsequent paged calls reuse the cache so
+ * pagination is stable even if the registry mutates between pages.
+ */
+export function listTools(args: ListToolsArgs): ListToolsResult {
+	const { user, profile, sessionId, offset: cursorOffset, limit } = args;
+	if (limit < 1) throw new Error('listTools: limit must be >= 1');
+
+	let cached = sessionListCache.get(sessionId);
+	let offset = 0;
+	if (cursorOffset !== undefined) {
+		offset = cursorOffset;
+		if (!cached) {
+			// Cache evicted (likely registry change). Treat as a fresh call from
+			// the cursor's offset — best effort. The client may see the next
+			// page from a slightly different list, which is acceptable per
+			// MCP's eventual-consistency stance on listChanged.
+			cached = { tools: computeFilteredList(user, profile) };
+			sessionListCache.set(sessionId, cached);
+		}
+	} else {
+		cached = { tools: computeFilteredList(user, profile) };
+		sessionListCache.set(sessionId, cached);
+	}
+
+	const slice = cached.tools.slice(offset, offset + limit);
+	const next = offset + slice.length;
+	return {
+		tools: slice,
+		nextCursor: next < cached.tools.length ? encodeCursor(next) : undefined,
+	};
+}
+
+function computeFilteredList(user: AuthedUser, profile: McpProfile): ToolDescriptor[] {
+	const out: ToolDescriptor[] = [];
+	for (const def of listProfileTools(profile)) {
+		if (!def.visibleTo(user)) continue;
+		out.push({
+			name: def.name,
+			description: def.description,
+			inputSchema: def.inputSchema,
+			...(def.outputSchema ? { outputSchema: def.outputSchema } : {}),
+			...(def.annotations ? { annotations: def.annotations } : {}),
+		});
+	}
+	// Sort for deterministic pagination (insertion order would also work, but
+	// the registry can mutate between calls and we want stable cursor offsets).
+	out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	return out;
+}
+
+// ─── RBAC + introspection helpers ──────────────────────────────────────────
+
+/** True if any role-level flag grants super-user privilege. */
+export function isSuperUser(user: AuthedUser | undefined): boolean {
+	return user?.role?.permission?.super_user === true;
+}
+
+/**
+ * True if the request carries an authenticated principal. Anonymous MCP sessions are a supported
+ * deployment (the public-docs case, #1609) — the adapter hands them through as `{ username: '' }`
+ * rather than rejecting them — so a listing filter that means "any real user" has to test for this
+ * explicitly. `user?.role` is not a proxy: an authenticated user may legitimately carry no role.
+ */
+export function isAuthenticated(user: AuthedUser | undefined): boolean {
+	return typeof user?.username === 'string' && user.username.length > 0;
+}
+
+/**
+ * Class-level verb introspection. Mirrors `resources/openApi.ts:149-153` so
+ * a class is considered to "have" a verb only if its prototype overrides the
+ * base Resource implementation. Note that `post`'s default in Harper's
+ * `Resource` is a no-op that ResourceClass implementations frequently
+ * override implicitly via `update` — the openApi pattern accounts for that.
+ */
+export function hasClassLevelVerbs(
+	prototype: any,
+	resourcePrototype: any
+): { get: boolean; post: boolean; put: boolean; patch: boolean; delete: boolean } {
+	return {
+		get: typeof prototype.get === 'function' && prototype.get !== resourcePrototype.get,
+		post:
+			(typeof prototype.post === 'function' && prototype.post !== resourcePrototype.post) ||
+			typeof prototype.update === 'function',
+		put: typeof prototype.put === 'function' && prototype.put !== resourcePrototype.put,
+		patch: typeof prototype.patch === 'function' && prototype.patch !== resourcePrototype.patch,
+		delete: typeof prototype.delete === 'function' && prototype.delete !== resourcePrototype.delete,
+	};
+}

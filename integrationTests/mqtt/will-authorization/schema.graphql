@@ -1,0 +1,4 @@
+type WillTopic @table(audit: true) @export {
+	id: ID @primaryKey
+	value: Int
+}

@@ -1,0 +1,18 @@
+# QA-606 — fresh-install control table.
+#
+# WidthDrift (the legacy-v4-origin, upgraded table) is deliberately NOT declared here: it was
+# created under harperdb@4.7.34 (no randomAccessFields concept at all) and migrated in place.
+# It carries no explicit per-table randomAccessFields directive in its persisted
+# primaryKeyAttribute (databases.ts never had one to set), so on every open it follows
+# whatever the CURRENT global `storage.randomAccessFields` default is (see databases.ts
+# table(): "Tables WITHOUT the directive ... follow the current global default on each open").
+# Declaring it here with an explicit directive would PIN it and short-circuit exactly the
+# mechanism under test — so we leave it fully undeclared and drive it via `tables.WidthDrift`
+# / `databases.data.WidthDrift` at runtime instead (see resources.js).
+#
+# FreshControl is a genuine fresh-install table: created for the first time by CURRENT MAIN
+# (never touched by the v4 binary), with an explicit randomAccessFields: true directive —
+# the QA-598-style baseline/oracle arm.
+type FreshControl @table(randomAccessFields: true) @export {
+	id: ID @primaryKey
+}

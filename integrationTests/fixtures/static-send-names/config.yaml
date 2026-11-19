@@ -1,0 +1,4 @@
+static:
+  files:
+    - 'web/**'
+    - 'web/.well-known/**'

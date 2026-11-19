@@ -1,4 +1,5 @@
 export const METRIC = {
+	FULL_TEXT: 'fulltext',
 	TABLE_SIZE: 'table-size',
 	DATABASE_SIZE: 'database-size',
 	STORAGE_VOLUME: 'storage-volume',
@@ -6,6 +7,14 @@ export const METRIC = {
 	RESOURCE_USAGE: 'resource-usage',
 	UTILIZATION: 'utilization',
 	NODE_STORAGE: 'node-storage',
+	ROCKSDB_STATS: 'rocksdb-stats',
+	ROCKSDB_TXNLOG_STATS: 'rocksdb-txnlog-stats',
+	TRANSACTION_COMMIT_TIME: 'transaction-commit-time',
+	WRITE_TRANSACTION_QUEUE_DEPTH: 'write-transaction-queue-depth',
+	READ_TRANSACTION_QUEUE_DEPTH: 'read-transaction-queue-depth',
+	EVENT_LOOP_DELAY: 'event-loop-delay',
+	REQUEST_TIME: 'request-time',
+	DURATION_BY_THREAD: 'duration-by-thread',
 } as const;
 
 export type BuiltInMetricName = (typeof METRIC)[keyof typeof METRIC];

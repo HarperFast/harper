@@ -1,0 +1,19 @@
+type Addr @table @export {
+	id: ID @primaryKey
+	ip: String @indexed
+	note: String
+	flag: String
+}
+
+type Lines @table @export {
+	id: ID @primaryKey
+	tag: String @indexed
+	note: String
+	flag: String
+}
+
+type Wide @table @export {
+	id: ID @primaryKey
+	note: String
+	flag: String
+}

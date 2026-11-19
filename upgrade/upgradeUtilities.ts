@@ -1,7 +1,7 @@
 'use strict';
 
 import * as hdbUtil from '../utility/common_utils.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
 
 /**
  * We need to make sure we are setting empty string for values that are null/undefined/empty string - PropertiesReader

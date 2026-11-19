@@ -1,0 +1,12 @@
+# QA-349 — DELETE vs concurrent UPDATE race correctness probe.
+#
+# Widget: main test table with a secondary-indexed field (category).
+# Gives us: point-read (GET /Widget/K), scan (GET /Widget/), count (SQL COUNT),
+# and secondary-index search (search_by_value on category).
+
+type Widget @table @export {
+	id: ID @primaryKey
+	value: String
+	counter: Int
+	category: String @indexed
+}

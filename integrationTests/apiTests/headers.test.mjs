@@ -23,7 +23,7 @@
  * with a local fixture but ultimately depends on the same restart path.
  */
 import { suite, test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import assert from 'node:assert';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
 import { restartHttpWorkers } from './utils/lifecycle.mjs';
@@ -118,7 +118,10 @@ suite('HTTP Header / Set-Cookie handling', { skip: skipSuite }, (ctx) => {
 			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: config.yaml'), r.text))
 			.expect(200);
 
-		await restartHttpWorkers(client, '/CookieTest');
+		// Use an extended timeout on CI — slow runners (especially under shard
+		// contention) can take well over the default 60s to reload component routes
+		// after restart_service http_workers.
+		await restartHttpWorkers(client, '/CookieTest', 120000);
 	});
 
 	after(async () => {

@@ -90,6 +90,15 @@
 				"attribute": "request"
 			},
 			{
+				"attribute": "owner_instance"
+			},
+			{
+				"attribute": "owner_pid"
+			},
+			{
+				"attribute": "deferred_to"
+			},
+			{
 				"attribute": "__createdtime__"
 			},
 			{
@@ -303,10 +312,10 @@
 				"attribute": "id"
 			},
 			{
-				"attribute": "time"
+				"name": "action"
 			},
 			{
-				"attribute": "metrics"
+				"name": "metrics"
 			}
 		]
 	},
@@ -395,6 +404,12 @@
 				"attribute": "payload_blob"
 			},
 			{
+				"attribute": "install_fingerprint"
+			},
+			{
+				"attribute": "preview"
+			},
+			{
 				"attribute": "status"
 			},
 			{
@@ -425,7 +440,191 @@
 				"attribute": "rollback_of"
 			},
 			{
+				"attribute": "activated_from"
+			},
+			{
+				"name": "routing"
+			},
+			{
+				"attribute": "restart_job_id"
+			},
+			{
+				"attribute": "source"
+			},
+			{
 				"attribute": "error"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
+	},
+	"hdb_secret": {
+		"hash_attribute": "name",
+		"name": "hdb_secret",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "name"
+			},
+			{
+				"attribute": "envelope"
+			},
+			{
+				"attribute": "kid"
+			},
+			{
+				"attribute": "grants"
+			},
+			{
+				"attribute": "processEnv"
+			},
+			{
+				"attribute": "metadata"
+			},
+			{
+				"attribute": "unverified"
+			},
+			{
+				"attribute": "updated_by"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
+	},
+	"hdb_oidc_trust": {
+		"hash_attribute": "id",
+		"name": "hdb_oidc_trust",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"attribute": "issuer"
+			},
+			{
+				"attribute": "audience"
+			},
+			{
+				"attribute": "claims"
+			},
+			{
+				"attribute": "user"
+			},
+			{
+				"attribute": "operations"
+			},
+			{
+				"attribute": "enabled"
+			},
+			{
+				"attribute": "description"
+			},
+			{
+				"attribute": "updated_by"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
+	},
+	"hdb_oidc_token_use": {
+		"hash_attribute": "id",
+		"name": "hdb_oidc_token_use",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_model_decisions": {
+		"hash_attribute": "id",
+		"name": "hdb_model_decisions",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_model_outcomes": {
+		"hash_attribute": "id",
+		"name": "hdb_model_outcomes",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_model_calibrations": {
+		"hash_attribute": "id",
+		"name": "hdb_model_calibrations",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
+	},
+	"hdb_residency_slots": {
+		"hash_attribute": "database",
+		"name": "hdb_residency_slots",
+		"schema": "system",
+		"residence": ["*"],
+		"attributes": [
+			{
+				"attribute": "database"
+			},
+			{
+				"attribute": "version"
+			},
+			{
+				"attribute": "digest"
+			},
+			{
+				"attribute": "slots"
+			},
+			{
+				"attribute": "ranges"
+			}
+		]
+	},
+	"hdb_network_access": {
+		"hash_attribute": "scope",
+		"name": "hdb_network_access",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "scope"
+			},
+			{
+				"attribute": "allow"
+			},
+			{
+				"attribute": "updatedBy"
+			},
+			{
+				"attribute": "updatedAt"
 			},
 			{
 				"attribute": "__createdtime__"

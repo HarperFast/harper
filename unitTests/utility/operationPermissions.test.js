@@ -16,6 +16,7 @@ describe('operationPermissions', function () {
 			assert.ok(ops.includes(terms.OPERATIONS_ENUM.SQL));
 			assert.ok(ops.includes(terms.OPERATIONS_ENUM.DESCRIBE_ALL));
 			assert.ok(ops.includes(terms.OPERATIONS_ENUM.USER_INFO));
+			assert.ok(ops.includes(terms.OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION));
 		});
 
 		it('read_only does not contain write operations', function () {
@@ -65,6 +66,21 @@ describe('operationPermissions', function () {
 			const ops = OPERATION_PERMISSION_GROUPS.admin_read;
 			assert.ok(!ops.includes(terms.OPERATIONS_ENUM.INSERT));
 			assert.ok(!ops.includes(terms.OPERATIONS_ENUM.DELETE));
+		});
+
+		it('agent contains the agent-drive operations', function () {
+			const ops = OPERATION_PERMISSION_GROUPS.agent;
+			assert.ok(ops.includes(terms.OPERATIONS_ENUM.AGENT_PROMPT));
+			assert.ok(ops.includes(terms.OPERATIONS_ENUM.GET_AGENT_SESSION));
+			assert.ok(ops.includes(terms.OPERATIONS_ENUM.LIST_AGENT_SESSIONS));
+			assert.ok(ops.includes(terms.OPERATIONS_ENUM.CANCEL_AGENT_RUN));
+			assert.ok(ops.includes(terms.OPERATIONS_ENUM.APPROVE_AGENT_ACTION));
+		});
+
+		it('agent excludes set_agent_config and get_agent_config (operator-only)', function () {
+			const ops = OPERATION_PERMISSION_GROUPS.agent;
+			assert.ok(!ops.includes(terms.OPERATIONS_ENUM.SET_AGENT_CONFIG));
+			assert.ok(!ops.includes(terms.OPERATIONS_ENUM.GET_AGENT_CONFIG));
 		});
 	});
 

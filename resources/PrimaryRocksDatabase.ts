@@ -1,0 +1,265 @@
+import { commitTrackedRocksTransaction, trackReadRange } from './DatabaseTransaction.ts';
+import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
+
+const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
+import { LRFUExpirer, WeakLRUCache } from 'weak-lru-cache';
+import { when } from '../utility/when.ts';
+import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
+import { get as envGet } from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { resolveRecordCacheSize } from '../utility/rocksMemoryConfig.ts';
+
+// The expirer is what holds a cache's entries strongly, so one per thread makes storage.recordCacheSize
+// a budget shared by every table in the thread. Harper owns it because weak-lru-cache's default
+// expirer takes its size from whichever cache the thread constructs first, which on an LMDB database is
+// one of lmdb's.
+let recordCacheExpirer: LRFUExpirer | undefined;
+
+/**
+ * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
+ *   - RecordEncoder metadata extraction (version, metadataFlags, etc.)
+ *   - Optional WeakLRUCache keyed on entry version, verified via the process-wide VerificationTable
+ *
+ * Replaces both the old CachingRocksDatabase and the RocksDB-specific patches applied by
+ * handleLocalTimeForGets. Call initStore(rootStore) after open() — or let
+ * handleLocalTimeForGets delegate to it automatically via the isPrimaryRocksDatabase marker.
+ *
+ * Caching is enabled by default; pass { cache: false } to disable (useful for benchmarking
+ * or stores where version tracking is not desired).
+ *
+ * Cache freshness pattern (using the rocksdb-js VT API):
+ *   1. verifyVersion(key, cached.version)  → true  → return cached entry (no disk I/O)
+ *   2. verifyVersion(key, cached.version)  → false → read from DB, populateVersion, update cache
+ */
+export class PrimaryRocksDatabase extends RocksDatabase {
+	readonly isPrimaryRocksDatabase = true;
+	#cache?: WeakLRUCache;
+	readCount = 0;
+	cachePuts = false;
+	declare rootStore: any;
+	declare decoder: any;
+
+	get cache(): WeakLRUCache | undefined {
+		return this.#cache;
+	}
+
+	get #enc(): any {
+		return (this as any).encoder;
+	}
+
+	constructor(pathOrStore: string | Store, options?: RocksDatabaseOptions & { cache?: boolean }) {
+		const enableCache = (options as any)?.cache === true;
+		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
+		if (enableCache) {
+			recordCacheExpirer ??= new LRFUExpirer({
+				lruSize: resolveRecordCacheSize(envGet(CONFIG_PARAMS.STORAGE_RECORDCACHESIZE)) >> 2,
+			});
+			this.#cache = new WeakLRUCache({ expirer: recordCacheExpirer });
+		}
+	}
+
+	// Match LMDB's remove(key, version) contract without splitting the version check from the delete.
+	async removeIfVersion(id: any, version: number): Promise<boolean> {
+		let retried = false;
+		while (true) {
+			let transaction: Transaction | undefined;
+			try {
+				transaction = new Transaction(this.store);
+				const entry = this.#processEntry(super.getSync(id, { transaction }), id);
+				if (!entry || entry.version !== version) {
+					transaction.abort();
+					return false;
+				}
+				this.#cache?.delete(id);
+				super.removeSync(id, { transaction });
+				await commitTrackedRocksTransaction(transaction, this);
+				return true;
+			} catch (error: any) {
+				try {
+					transaction?.abort();
+				} catch {}
+				// rocksdb-js reports a writer that committed between our read and our commit as ERR_BUSY
+				if (retried || error?.code !== 'ERR_BUSY') throw error;
+				retried = true;
+			}
+		}
+	}
+
+	/**
+	 * Initialises encoder/decoder state. Must be called once after open() with the root
+	 * RocksDatabase. Equivalent to the RocksDB branch of handleLocalTimeForGets, but as
+	 * a real method rather than instance-level monkey-patching.
+	 */
+	initStore(rootStore: RocksDatabase) {
+		this.readCount = 0;
+		this.cachePuts = false;
+		this.rootStore = rootStore;
+		this.#enc.rootStore = rootStore;
+		this.#enc.isRocksDB = true;
+		this.decoder = this.#enc;
+	}
+
+	#withEntry(entry: Entry, id: any): Entry {
+		if (entry.value) {
+			if (entry.value.constructor === Object && this.#enc.structPrototype) {
+				const originalValue = entry.value;
+				entry.value = new this.#enc.structPrototype.constructor();
+				assignStoredFields(entry.value, originalValue, this.#enc);
+			}
+			if (typeof entry.value === 'object' && entry.value !== null) {
+				entryMap.set(entry.value, entry);
+			}
+		}
+		entry.key = id;
+		return entry;
+	}
+
+	#processEntry(raw: any, id: any): Entry | undefined {
+		if (raw == null) return undefined;
+		// Presence check, not truthiness: a [timestamp][no flags word] record decodes with
+		// metadataFlags === 0, and a falsy gate would hand the metadata wrapper itself back as
+		// the record value (harper#2012).
+		if (raw[METADATA] !== undefined) {
+			raw.metadataFlags = raw[METADATA];
+			return this.#withEntry(raw, id);
+		}
+		// Metadata-less values (e.g. records a broken migration stored without the prefix) still
+		// get the prototype repair and value→Entry mapping, matching getRange and the LMDB
+		// wrapper — only the version is unrecoverable (harper#2012).
+		return this.#withEntry({ value: raw } as Entry, id);
+	}
+
+	/**
+	 * Core read method. Returns a full Entry (with version, metadataFlags, value, …) or
+	 * undefined. When caching is enabled, passes `expectedVersion` to the native layer so
+	 * a single call handles both verification (returns FRESH_VERSION_FLAG on hit) and VT
+	 * population (auto-seeded on DB read). Only cold reads (no cached version) need a
+	 * separate populateVersion call.
+	 */
+	getEntry(id: any, options?: any): any {
+		this.readCount++;
+		// Commit-path base reads must reflect the caller's transaction snapshot; the cache vouch
+		// answers "latest committed" — the wrong question there, and wrong outright for a version a
+		// resequenced write reused — so read the store directly, touching neither cache nor VT.
+		if (options?.uncachedRead) {
+			if (options.async) return when(super.get(id, options), (result) => this.#processEntry(result, id));
+			return this.#processEntry(super.getSync(id, options), id);
+		}
+		const cache = this.#cache;
+		// The cache stores the record *value* (weakly, via setValue) rather than
+		// the Entry: a WeakRef-wrapped value lets the LRFU expirer release it once
+		// it cycles out of the LRU stages (a raw Entry stored via set() has neither
+		// a .deref nor a .cache hook, so it would never be reclaimed — an unbounded
+		// leak). The value→Entry WeakMap (entryMap) recovers the Entry metadata
+		// (version, flags) needed for the fast path while the value is live.
+		const cachedValue = cache?.getValue(id);
+		const cached =
+			cachedValue != null && typeof cachedValue === 'object'
+				? (entryMap.get(cachedValue) as Entry | undefined)
+				: undefined;
+		const expectedVersion = cached?.version;
+
+		// Build get options, carrying the caller's transaction to preserve its snapshot. Pass
+		// expectedVersion when cached:
+		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
+		//   VT miss → native reads DB and auto-populates VT slot
+		// For cold reads (no cached version), use populateVersion flag so the
+		// native layer seeds the VT slot in the same call.
+		// Copy only the keys rocksdb-js reads, not the caller's options: HNSW passes a whole
+		// DatabaseTransaction here.
+		let getOptions: any;
+		if (expectedVersion != null) {
+			getOptions = { transaction: options?.transaction, expectedVersion };
+		} else if (cache) {
+			getOptions = { transaction: options?.transaction, populateVersion: true };
+		} else {
+			getOptions = options;
+		}
+		const raw = options?.async ? super.get(id, getOptions) : super.getSync(id, getOptions);
+		if (raw === FRESH_VERSION_FLAG) return cached;
+		return when(raw, (result) => {
+			if (result === FRESH_VERSION_FLAG) return cached;
+			const entry = this.#processEntry(result, id);
+			if (entry == null) {
+				if (cache && cachedValue !== undefined) cache.delete(id);
+				return undefined;
+			}
+			if (entry.version != null && cache) {
+				// its version no longer identifies its value, so drop any copy already held
+				if (entry.metadataFlags & VERSION_REUSED) {
+					if (cachedValue !== undefined) cache.delete(id);
+				} else if (entry.value != null && typeof entry.value === 'object') {
+					// Only object values can be weakly cached and mapped back to their Entry;
+					// primitive/empty values fall through uncached (no fast path, still correct).
+					entryMap.set(entry.value, entry);
+					cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+				}
+			}
+			return entry;
+		});
+	}
+
+	getSync(id: any, options?: any): any {
+		const entry = this.getEntry(id, options) as Entry;
+		return entry?.value;
+	}
+
+	get(id: any, options?: any): any {
+		return when(this.getEntry(id, { ...options, async: true }), (entry: Entry) => entry?.value);
+	}
+
+	getRange(options?: any): any {
+		const iterable = trackReadRange(options?.transaction, () => super.getRange(options));
+		if (options?.valuesForKey) return iterable.map((v: any) => v?.value);
+		if (options?.values === false || options?.onlyCount) return iterable;
+		if (!this.#enc.isRocksDB) return iterable;
+		const enc = this.#enc;
+		return iterable.map((entry: any) => {
+			if (entry.value?.[METADATA] !== undefined) {
+				entry.metadataFlags = entry.value[METADATA];
+				Object.assign(entry, entry.value);
+			}
+			if (entry.value?.constructor === Object && enc.structPrototype) {
+				const originalValue = entry.value;
+				entry.value = new enc.structPrototype.constructor();
+				assignStoredFields(entry.value, originalValue, enc);
+			}
+			return entry;
+		});
+	}
+
+	putSync(id: any, value: any, options?: any): any {
+		this.#cache?.delete(id);
+		return super.putSync(id, value, options);
+	}
+
+	removeSync(id: any, options?: any): any {
+		this.#cache?.delete(id);
+		return super.removeSync(id, options);
+	}
+
+	clearSync(): void {
+		// clearSync wipes every record; the per-instance cache must be dropped
+		// too, otherwise a cached entry would survive the clear and be served as
+		// a stale "still exists" hit on the next read.
+		this.#cache?.clear();
+		return super.clearSync();
+	}
+
+	clear(): Promise<void> {
+		this.#cache?.clear();
+		return super.clear();
+	}
+
+	open(): PrimaryRocksDatabase {
+		super.open();
+		if (this.#enc && this.store.sharedStructuresKey !== undefined) {
+			this.#enc.rocksStore = this;
+		}
+		return this;
+	}
+
+	static open(pathOrStore: string | Store, options?: RocksDatabaseOptions): PrimaryRocksDatabase {
+		return new PrimaryRocksDatabase(pathOrStore, options).open();
+	}
+}

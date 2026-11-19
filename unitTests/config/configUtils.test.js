@@ -3,6 +3,8 @@
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
+const assert = require('node:assert/strict');
+const plainAssert = require('node:assert');
 const rewire = require('rewire');
 const path = require('path');
 const fs = require('fs-extra');
@@ -11,9 +13,15 @@ const YAML = require('yaml');
 const logger = require('#src/utility/logging/harper_logger');
 const common_utils = require('#src/utility/common_utils');
 const testUtils = require('../testUtils.js');
+const { clearRootPath } = require('../bootPropsFixture.js');
 const hdbTerms = require('#src/utility/hdbTerms');
+const { applyRuntimeEnvConfig } = require('#src/config/harperConfigEnvVars');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = require('#src/utility/errors/commonErrors');
+// configUtils imports `configValidator` as a named export; stub it on the shared
+// module object (configUtils reads the same cached module) rather than via rewire,
+// which can no longer reach the binding once the module is compiled from TS.
+const configValidatorModule = require('#src/validation/configValidator');
 
 const DIRNAME = __dirname;
 const HDB_ROOT = path.join(DIRNAME, 'yaml');
@@ -114,6 +122,9 @@ const STRING_ERROR = 'Harper config file validation error: "logging.rotation.max
 describe('Test configUtils module', () => {
 	const sandbox = sinon.createSandbox();
 
+	// exercises boot-props resolution, which mocha.init.js's ROOTPATH export shadows
+	clearRootPath();
+
 	after(() => {
 		sandbox.restore();
 	});
@@ -141,11 +152,19 @@ describe('Test configUtils module', () => {
 		const ATOMIC_TEST_DIR = path.join(DIRNAME, 'yaml');
 		const ATOMIC_TEST_PATH = path.join(ATOMIC_TEST_DIR, 'atomic-write-test.yaml');
 
+		let originalPlatform;
+		const setPlatform = (value) => Object.defineProperty(process, 'platform', { value, configurable: true });
+
 		before(() => {
 			fs.ensureDirSync(ATOMIC_TEST_DIR);
 		});
 
+		beforeEach(() => {
+			originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+		});
+
 		afterEach(() => {
+			Object.defineProperty(process, 'platform', originalPlatform);
 			try {
 				fs.unlinkSync(ATOMIC_TEST_PATH);
 			} catch {}
@@ -196,13 +215,26 @@ describe('Test configUtils module', () => {
 			expect(stragglers).to.be.empty;
 		});
 
-		it('generates a unique temp path even when pid and timestamp are identical', () => {
-			// Worker threads share process.pid, and worker arrivals cluster within the
-			// same millisecond — a pid+timestamp scheme would collide. Pin Date.now()
-			// so this test fails if uniqueness ever stops depending on randomness.
+		// A partial write leaves the temp file behind, and its name carries fresh randomness on every
+		// call, so nothing else would ever collect it.
+		it('removes the temp file when the write itself fails part-way', () => {
+			const realWriteFileSync = fs.writeFileSync;
+			const writeStub = sandbox.stub(fs, 'writeFileSync').callsFake((target) => {
+				realWriteFileSync(target, '');
+				throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+			});
+			try {
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content')).to.throw(/ENOSPC/);
+				const tempPath = writeStub.firstCall.args[0];
+				expect(fs.existsSync(tempPath)).to.be.false;
+			} finally {
+				writeStub.restore();
+			}
+		});
+
+		it('generates a unique temp path for each write', () => {
 			const writeStub = sandbox.stub(fs, 'writeFileSync');
 			const renameStub = sandbox.stub(fs, 'renameSync');
-			const dateStub = sandbox.stub(Date, 'now').returns(1234567890);
 			try {
 				const tempPaths = new Set();
 				for (let i = 0; i < 100; i++) {
@@ -213,8 +245,309 @@ describe('Test configUtils module', () => {
 			} finally {
 				writeStub.restore();
 				renameStub.restore();
-				dateStub.restore();
 			}
+		});
+
+		it('retries transient Windows rename errors and succeeds once the holder releases the file', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			const eaccesError = Object.assign(new Error('EACCES: permission denied, rename'), { code: 'EACCES' });
+			renameStub.onCall(0).throws(epermError);
+			renameStub.onCall(1).throws(eaccesError);
+			renameStub.onCall(2).returns(undefined);
+			try {
+				atomicWriteFile(ATOMIC_TEST_PATH, 'content', {
+					retryBudgetMs: 60_000,
+					initialDelayMs: 0,
+				});
+				expect(renameStub.callCount).to.equal(3);
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		it('preserves the explicit retry-count limit', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			renameStub.throws(epermError);
+			try {
+				expect(() =>
+					atomicWriteFile(ATOMIC_TEST_PATH, 'content', {
+						retryBudgetMs: 60_000,
+						maxRetries: 2,
+						initialDelayMs: 0,
+					})
+				).to.throw(epermError);
+				expect(renameStub.callCount).to.equal(3);
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		it('rejects invalid retry options', () => {
+			expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: Number.NaN })).to.throw(
+				RangeError,
+				'rename retry options must be non-negative numbers'
+			);
+			expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { retryBudgetMs: Infinity })).to.throw(
+				RangeError,
+				'rename retry options must be non-negative numbers'
+			);
+		});
+
+		it('gives up after the retry budget expires on a persistent EPERM, cleans up the temp file, and rethrows', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			renameStub.throws(epermError);
+			try {
+				const startedAt = performance.now();
+				expect(() =>
+					atomicWriteFile(ATOMIC_TEST_PATH, 'content', {
+						retryBudgetMs: 50,
+					})
+				).to.throw(epermError);
+				const elapsedMs = performance.now() - startedAt;
+				expect(renameStub.callCount).to.be.at.least(2);
+				expect(elapsedMs).to.be.at.least(50);
+				expect(elapsedMs).to.be.below(1_000);
+				const stragglers = fs
+					.readdirSync(ATOMIC_TEST_DIR)
+					.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
+				expect(stragglers).to.be.empty;
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		// Every case above overrides `retryBudgetMs`, so the shipped default's own loop never runs:
+		// widening it to effectively unbounded leaves them all green, and the value that actually
+		// governs `set_configuration` on Windows would ship unwatched. The bound is spelled out
+		// rather than read back from the module, or the assertion would move with the regression.
+		it('gives up on the shipped default budget, not on an unbounded one', function () {
+			this.timeout(30_000);
+			// The window the 12-attempt schedule it replaced spanned: 10+20+40+80+160+320+500*6.
+			const expectedBudgetMs = 3_630;
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			renameStub.throws(epermError);
+			try {
+				const startedAt = performance.now();
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content')).to.throw(epermError);
+				const elapsedMs = performance.now() - startedAt;
+				expect(elapsedMs, 'the default budget was shortened').to.be.at.least(expectedBudgetMs * 0.8);
+				expect(elapsedMs, 'the default budget was widened').to.be.below(expectedBudgetMs * 2);
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		it('does not retry on a non-permission rename error', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const enoentError = Object.assign(new Error('ENOENT: no such file or directory, rename'), { code: 'ENOENT' });
+			renameStub.throws(enoentError);
+			try {
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content')).to.throw(enoentError);
+				expect(renameStub.callCount).to.equal(1);
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+			it(`retries ${code}, whatever the platform reports`, () => {
+				setPlatform('linux');
+				const renameStub = sandbox.stub(fs, 'renameSync');
+				const error = Object.assign(new Error(`${code}: rename`), { code });
+				renameStub.onFirstCall().throws(error);
+				renameStub.onSecondCall().returns(undefined);
+				try {
+					atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: 0 });
+					expect(renameStub.callCount).to.equal(2);
+				} finally {
+					renameStub.restore();
+				}
+			});
+		}
+	});
+
+	describe('Test ensureConfigKeysPresent function', () => {
+		const { ensureConfigKeysPresent } = config_utils_rw;
+		const ENSURE_DIR = path.join(DIRNAME, 'yaml', 'ensure-keys');
+		const ENSURE_CONFIG_PATH = path.join(ENSURE_DIR, hdbTerms.HARPER_CONFIG_FILE);
+
+		beforeEach(() => {
+			fs.ensureDirSync(ENSURE_DIR);
+			// getConfigFilePath() resolves the config file from the CLI/env root; point it at our
+			// temp dir. resolvePath() passes an absolute path through unchanged.
+			sandbox.stub(common_utils, 'getEnvCliRootPath').returns(ENSURE_DIR);
+		});
+
+		afterEach(() => {
+			sandbox.restore();
+			fs.removeSync(ENSURE_DIR);
+		});
+
+		function writeConfig(yaml) {
+			fs.writeFileSync(ENSURE_CONFIG_PATH, yaml);
+		}
+
+		it('adds an empty block for a missing key and reports it', () => {
+			writeConfig('replication: {}\nanalytics:\n  enabled: true\n');
+			const added = ensureConfigKeysPresent(['secretCustody']);
+			assert.deepStrictEqual(added, ['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8'));
+			assert.ok('secretCustody' in doc);
+			assert.deepStrictEqual(doc.secretCustody, {});
+		});
+
+		it('never touches an existing key or its value', () => {
+			writeConfig('analytics:\n  enabled: true\n');
+			ensureConfigKeysPresent(['analytics']);
+			const doc = YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8'));
+			// existing value preserved, not overwritten with {}
+			assert.deepStrictEqual(doc.analytics, { enabled: true });
+		});
+
+		it('only adds the keys that are missing', () => {
+			writeConfig('replication: {}\n');
+			const added = ensureConfigKeysPresent(['replication', 'secretCustody', 'analytics']);
+			assert.deepStrictEqual(added.sort(), ['analytics', 'secretCustody']);
+		});
+
+		it('is idempotent — a second run adds nothing', () => {
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), ['secretCustody']);
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), []);
+		});
+
+		it('does not rewrite the file when no keys are missing', () => {
+			writeConfig('secretCustody: {}\n');
+			const before = fs.statSync(ENSURE_CONFIG_PATH).mtimeMs;
+			const added = ensureConfigKeysPresent(['secretCustody']);
+			assert.deepStrictEqual(added, []);
+			assert.strictEqual(fs.statSync(ENSURE_CONFIG_PATH).mtimeMs, before);
+		});
+
+		it('ignores empty/falsy key names', () => {
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureConfigKeysPresent(['', undefined]), []);
+		});
+
+		it('returns [] when the config file does not exist', () => {
+			// no writeConfig — dir exists but file does not
+			assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), []);
+		});
+
+		it('mirrors added keys into the memoized configObj so they take effect on the current boot', () => {
+			writeConfig('replication: {}\n');
+			// Simulate config already memoized earlier in boot (before this backfill runs).
+			const restore = config_utils_rw.__set__('configObj', { replication: {} });
+			try {
+				ensureConfigKeysPresent(['secretCustody']);
+				assert.ok('secretCustody' in config_utils_rw.__get__('configObj'));
+				assert.deepStrictEqual(config_utils_rw.__get__('configObj').secretCustody, {});
+			} finally {
+				restore();
+			}
+		});
+
+		it('mirrors added keys into the memoized flatConfigObj so getConfigValue sees them on the current boot', () => {
+			writeConfig('replication: {}\n');
+			const restoreConfigObj = config_utils_rw.__set__('configObj', { replication: {} });
+			const restoreFlatConfigObj = config_utils_rw.__set__('flatConfigObj', { replication: {} });
+			try {
+				ensureConfigKeysPresent(['secretCustody']);
+				assert.ok('secretcustody' in config_utils_rw.__get__('flatConfigObj'));
+				assert.deepStrictEqual(config_utils_rw.__get__('flatConfigObj').secretcustody, {});
+			} finally {
+				restoreFlatConfigObj();
+				restoreConfigObj();
+			}
+		});
+	});
+
+	describe('Test ensureBuiltInComponentConfigKeys function', () => {
+		const { ensureBuiltInComponentConfigKeys } = config_utils_rw;
+		const BI_DIR = path.join(DIRNAME, 'yaml', 'ensure-builtins');
+		const BI_CONFIG_PATH = path.join(BI_DIR, hdbTerms.HARPER_CONFIG_FILE);
+		let savedBuiltIns;
+
+		beforeEach(() => {
+			fs.ensureDirSync(BI_DIR);
+			sandbox.stub(common_utils, 'getEnvCliRootPath').returns(BI_DIR);
+			savedBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+		});
+
+		afterEach(() => {
+			sandbox.restore();
+			fs.removeSync(BI_DIR);
+			if (savedBuiltIns === undefined) delete process.env.HARPER_BUILTIN_COMPONENTS;
+			else process.env.HARPER_BUILTIN_COMPONENTS = savedBuiltIns;
+		});
+
+		function writeConfig(yaml) {
+			fs.writeFileSync(BI_CONFIG_PATH, yaml);
+		}
+
+		it('backfills secretCustody when it is a registered built-in and the key is missing', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS =
+				'replication=@/dist/replication/replicator.js,secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), ['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
+			assert.deepStrictEqual(doc.secretCustody, {});
+		});
+
+		it('backfills waf when it is a registered built-in and the key is missing', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'waf=@/dist/waf/waf.js';
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), ['waf']);
+			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
+			assert.deepStrictEqual(doc.waf, {});
+		});
+
+		it('never re-adds a long-standing built-in absent from the config (e.g. admin-removed replication)', () => {
+			// replication is registered but NOT in the new-built-in backfill list, so a config that
+			// omits it (operator disabled it by removing the block) must stay without it.
+			process.env.HARPER_BUILTIN_COMPONENTS =
+				'replication=@/dist/replication/replicator.js,secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('analytics: {}\n');
+			const added = ensureBuiltInComponentConfigKeys();
+			assert.deepStrictEqual(added, ['secretCustody']);
+			const doc = YAML.parse(fs.readFileSync(BI_CONFIG_PATH, 'utf8'));
+			assert.ok(!('replication' in doc));
+		});
+
+		it('adds nothing on OSS core, which registers no built-ins', () => {
+			delete process.env.HARPER_BUILTIN_COMPONENTS;
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
+		});
+
+		it('adds nothing when secretCustody is not registered in this runtime', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'replication=@/dist/replication/replicator.js';
+			writeConfig('replication: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
+		});
+
+		it('does not backfill a built-in registered without a package identifier', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'secretCustody';
+			writeConfig('replication: {}\n');
+			const original = fs.readFileSync(BI_CONFIG_PATH, 'utf8');
+			plainAssert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
+			plainAssert.strictEqual(fs.readFileSync(BI_CONFIG_PATH, 'utf8'), original);
+		});
+
+		it('backfills built-ins with spaces around the registration separator', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = ' secretCustody = @/dist/security/keyCustody.js ';
+			writeConfig('replication: {}\n');
+			plainAssert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), ['secretCustody']);
+		});
+
+		it('is a no-op when secretCustody is already present', () => {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'secretCustody=@/dist/security/keyCustody.js';
+			writeConfig('secretCustody: {}\n');
+			assert.deepStrictEqual(ensureBuiltInComponentConfigKeys(), []);
 		});
 	});
 
@@ -229,7 +562,7 @@ describe('Test configUtils module', () => {
 			authentication_refreshtokentimeout: '30d',
 			applications_moduleloader: 'vm',
 			applications_dependencyloader: false,
-			applications_lockdown: 'freeze',
+			applications_lockdown: 'seal-after-load',
 			applications_allowedspawncommands: 'freeze',
 			http_cors: false,
 			http_corsaccesslist: [null],
@@ -430,6 +763,12 @@ describe('Test configUtils module', () => {
 			validate_config = config_utils_rw.__get__('validateConfig');
 		});
 
+		afterEach(() => {
+			// configValidator is stubbed on the shared module; restore between cases so
+			// the next stub() doesn't fail with "already wrapped".
+			config_validator_stub?.restore();
+		});
+
 		it('Test error message is thrown if there is a validation error', () => {
 			const test_val_config_obj = {
 				value: {},
@@ -443,8 +782,7 @@ describe('Test configUtils module', () => {
 
 			const test_config_doc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
 			const test_config_json = test_config_doc.toJSON();
-			config_validator_stub = sandbox.stub().returns(test_val_config_obj);
-			config_utils_rw.__set__('configValidator', config_validator_stub);
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(test_val_config_obj);
 
 			let error;
 			try {
@@ -502,8 +840,7 @@ describe('Test configUtils module', () => {
 				toJSON: () => fake_json,
 				setIn: set_in_stub,
 			};
-			config_validator_stub = sandbox.stub().returns(fake_validation);
-			config_utils_rw.__set__('configValidator', config_validator_stub);
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
 
 			let error;
 			try {
@@ -521,6 +858,191 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.args[2][1]).to.equal(LOG_ROOT);
 			expect(set_in_stub.args[3][1]).to.equal('path/to/storage');
 			expect(set_in_stub.args[4][1]).to.equal('path/for/rotated/logs');
+		});
+
+		it('Test a domainSocket exceeding the Unix socket path limit logs a warning but does not throw', () => {
+			const fake_validation = {
+				value: {
+					rootPath: '/' + 'a'.repeat(120),
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: 'operations-server' } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+			const logger_warn_stub = sandbox.stub(logger, 'warn');
+
+			const fake_config_doc = { toJSON: () => ({}), setIn: () => {} };
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+			expect(logger_warn_stub.calledOnce).to.be.true;
+			expect(logger_warn_stub.firstCall.args[0]).to.include('Unix domain socket path limit');
+			logger_warn_stub.restore();
+		});
+
+		it('Test error is thrown if operationsApi securePort collides with http securePort', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { securePort: 9926 },
+					operationsApi: { network: { port: 9925, securePort: 9926 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.securePort and operationsApi.network.securePort cannot be the same value (9926)'
+			);
+		});
+
+		it('Test error is thrown if operationsApi port collides with http port', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 9926 },
+					operationsApi: { network: { port: 9926 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.port and operationsApi.network.port cannot be the same value (9926)'
+			);
+		});
+
+		it('Test collision is detected when one port is a string and the other a number', () => {
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { securePort: 9926 },
+					operationsApi: { network: { securePort: '9926' } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error?.message, `Error was: ${error}`).to.equal(
+				'Harper config file validation error: http.securePort and operationsApi.network.securePort cannot be the same value (9926)'
+			);
+		});
+
+		it('Test port 0 (OS-assigned) does not trigger a collision error', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 0 },
+					operationsApi: { network: { port: 0 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+		});
+
+		it('Test non-numeric port values do not trigger a collision error', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+
+			// Malformed values (e.g. boolean true, which Number() would coerce to 1) must not be treated as ports here;
+			// the schema validator reports them.
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: true },
+					operationsApi: { network: { port: true } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+		});
+
+		it('Test no collision error is thrown when http and operationsApi ports are distinct', () => {
+			const fake_validation = {
+				value: {
+					threads: { count: 1 },
+					componentsRoot: '/yaml/components',
+					logging: { root: '/yaml/log', rotation: { path: '/yaml/log/rotated' } },
+					storage: { path: '/yaml/storage' },
+					operationsApi: { network: { domainSocket: null } },
+				},
+			};
+			config_validator_stub = sandbox.stub(configValidatorModule, 'configValidator').returns(fake_validation);
+
+			const fake_config_doc = {
+				toJSON: () => ({
+					http: { port: 9926, securePort: 9927 },
+					operationsApi: { network: { port: 9925, securePort: 9928 } },
+				}),
+				setIn: () => {},
+			};
+
+			let error;
+			try {
+				validate_config(fake_config_doc);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error, `Error was: ${error}`).to.not.exist;
+			expect(config_validator_stub.called).to.be.true;
 		});
 	});
 
@@ -551,6 +1073,115 @@ describe('Test configUtils module', () => {
 				`Unable to update config object because config param 'fake_logging_level' does not exist`
 			);
 			logger_trace_stub.restore();
+		});
+
+		it('mirrors the override into the nested configObj tree at the corresponding path', () => {
+			const nested_config = { operationsApi: { network: { port: 9925, securePort: 9925 } } };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
+
+			expect(nested_config.operationsApi.network.securePort).to.equal(null);
+			config_obj_rw();
+		});
+
+		it('does not initialize configObj — that would permanently short-circuit getConfigObj()s lazy initConfig()', () => {
+			// getConfigObj() treats a falsy configObj as "not yet initialized" and calls initConfig();
+			// creating configObj as {} here (before any real config has been loaded, e.g. during
+			// install before the config file exists) would make that check pass on an empty tree
+			// forever, and componentLoader's root-component load would see zero components.
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', undefined);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
+
+			expect(config_utils_rw.__get__('configObj')).to.be.undefined;
+			config_obj_rw();
+		});
+
+		it('does not clobber an existing scalar value (legacy shorthand) while descending the nested path', () => {
+			const nested_config = { threads: 4 };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.THREADS_COUNT, 2);
+
+			expect(nested_config).to.eql({ threads: 4 });
+			config_obj_rw();
+		});
+
+		it('deletes rather than writing an undefined value into flatConfigObj or the nested tree', () => {
+			// squashObj (below) never writes an undefined value as an enumerable key either; several
+			// root-config readers iterate configObj's own keys and assume every one holds a real value.
+			const flat_config = {
+				databases: { data: { path: '/old' } },
+				operationsapi_network_port: 9925,
+			};
+			const nested_config = {
+				databases: { data: { path: '/old' } },
+				operationsApi: { network: { port: 9925 } },
+			};
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', flat_config);
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, undefined);
+			config_utils_rw.updateConfigObject(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, undefined);
+
+			expect(flat_config.hasOwnProperty('databases')).to.be.false;
+			expect(flat_config.hasOwnProperty('operationsapi_network_port')).to.be.false;
+			expect(nested_config.hasOwnProperty('databases')).to.be.false;
+			expect(nested_config.operationsApi.network.hasOwnProperty('port')).to.be.false;
+			config_obj_rw();
+		});
+
+		it('does not auto-vivify missing ancestors when the value being set is undefined', () => {
+			// If it did, the (now-empty) intermediate objects it created on the way to the deleted
+			// leaf would be left behind — and componentLoader.ts treats any truthy top-level config
+			// key as a component to load.
+			const nested_config = {};
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, undefined);
+
+			expect(nested_config).to.eql({});
+			config_obj_rw();
+		});
+
+		it('never mirrors a boot-props-file-only param (not a real config-tree path) into the nested tree', () => {
+			// SETTINGS_PATH_KEY ('settings_path') lives in BOOT_PROP_PARAMS, not the harper-config.yaml
+			// schema — CONFIG_PARAM_MAP still maps it (so the flat map keeps working), but splitting
+			// it on '_' and writing into the nested tree would create a bogus top-level
+			// configObj.settings.path, which componentLoader.ts would try to load as a component
+			// named 'settings'. installer.ts and testUtils.js's initTestEnvironment() both call
+			// setProperty() with this key on every install/test run.
+			const nested_config = { rootPath: '/hdb' };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', nested_config);
+
+			config_utils_rw.updateConfigObject(hdbTerms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY, '/hdb/settings.file');
+
+			expect(nested_config).to.eql({ rootPath: '/hdb' });
+			config_obj_rw();
+		});
+
+		it('flattening a throwaway doc does not make it the live config the mirror writes into', () => {
+			// flattenConfig() also runs on docs that are discarded moments later — the defaults doc in
+			// getDefaultConfig()/createConfigFile(), and the user-supplied doc installer.ts reads for
+			// an HDB_CONFIG install. When it installed those as configObj, the mirror above wrote the
+			// override into a tree nobody would ever read, which is the exact flat/nested divergence
+			// it exists to close. Only setActiveConfig()'s callers own the live tree.
+			const live_config = { operationsApi: { network: { port: 9925 } } };
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', {});
+			const config_obj_rw = config_utils_rw.__set__('configObj', live_config);
+
+			config_utils_rw.flattenConfig({ operationsApi: { network: { port: 1 } } });
+			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9999);
+
+			expect(config_utils_rw.__get__('configObj')).to.equal(live_config);
+			expect(live_config.operationsApi.network.port).to.equal(9999);
+			config_obj_rw();
 		});
 	});
 
@@ -586,11 +1217,14 @@ describe('Test configUtils module', () => {
 
 		it('Test happy path with parsed_args and where backup and update_config_obj are false', () => {
 			const set_in_stub = sandbox.stub().callsFake(() => {});
-			const get_in_stub = sandbox.stub().callsFake(() => HDB_ROOT);
+			const get_in_stub = sandbox
+				.stub()
+				.callsFake((path) => (Array.isArray(path) && path[0] === 'rootPath' ? HDB_ROOT : {}));
 			const fake_config_doc = {
 				value: CONFIG_DOC_VALUE,
 				setIn: set_in_stub,
 				getIn: get_in_stub,
+				deleteIn: sandbox.stub(),
 			};
 			const parse_yaml_doc_stub = sandbox.stub().returns(fake_config_doc);
 			config_utils_rw.__set__('parseYamlDoc', parse_yaml_doc_stub);
@@ -695,6 +1329,7 @@ describe('Test configUtils module', () => {
 				value: CONFIG_DOC_VALUE,
 				setIn: set_in_stub,
 				getIn: get_in_stub,
+				deleteIn: sandbox.stub(),
 			};
 			const parse_yaml_doc_stub = sandbox.stub().returns(fake_config_doc);
 			config_utils_rw.__set__('parseYamlDoc', parse_yaml_doc_stub);
@@ -759,7 +1394,7 @@ describe('Test configUtils module', () => {
 				if (Array.isArray(path) && path[0] === 'rootPath') return HDB_ROOT;
 				return undefined;
 			});
-			const fake_config_doc = { setIn: set_in_stub, getIn: get_in_stub, errors: [] };
+			const fake_config_doc = { setIn: set_in_stub, getIn: get_in_stub, deleteIn: sandbox.stub(), errors: [] };
 			const parse_yaml_doc_stub = sandbox.stub().returns(fake_config_doc);
 			const parse_yaml_doc_rw = config_utils_rw.__set__('parseYamlDoc', parse_yaml_doc_stub);
 			const get_config_value_stub = sandbox.stub().returns(HDB_ROOT);
@@ -783,6 +1418,48 @@ describe('Test configUtils module', () => {
 				parse_yaml_doc_rw();
 				get_config_value_rw();
 				fs_exists_stub.restore();
+				atomic_write_rw();
+			}
+		});
+
+		it('clears boolean/scalar ancestors when setting nested config paths like http_mtls_required under http.mtls: false', () => {
+			const realDoc = YAML.parseDocument(
+				`rootPath: ${HDB_ROOT}\nhttp:\n  mtls: false\n  port: 9926\nlogging: true\noperationsApi:\n  network:\n    port: 9925\n`
+			);
+			const parse_yaml_doc_rw = config_utils_rw.__set__('parseYamlDoc', sandbox.stub().returns(realDoc));
+			const get_config_value_rw = config_utils_rw.__set__('getConfigValue', sandbox.stub().returns(CONFIG_FILE_PATH));
+			const fs_exists_stub = sandbox.stub(fs, 'existsSync').returns(true);
+			const validate_config_rw = config_utils_rw.__set__('validateConfig', sandbox.stub());
+			const atomic_write_rw = config_utils_rw.__set__('atomicWriteFile', sandbox.stub());
+
+			try {
+				config_utils_rw.__set__('flatConfigObj', {
+					rootpath: HDB_ROOT,
+					http_mtls: false,
+					http_port: 9926,
+					logging: true,
+					operationsapi_network_port: 9925,
+				});
+
+				config_utils_rw.updateConfigValue(
+					undefined,
+					undefined,
+					{
+						http_mtls_required: true,
+						logging_level: 'debug',
+					},
+					false,
+					false
+				);
+
+				const json = realDoc.toJSON();
+				expect(json.http.mtls).to.eql({ required: true });
+				expect(json.logging).to.eql({ level: 'debug' });
+			} finally {
+				parse_yaml_doc_rw();
+				get_config_value_rw();
+				fs_exists_stub.restore();
+				validate_config_rw();
 				atomic_write_rw();
 			}
 		});
@@ -880,7 +1557,7 @@ describe('Test configUtils module', () => {
 		it('Test happy path success response returned', async () => {
 			const test_set_config_json = {
 				operation: 'set_configuration',
-				operationsApi_processes: 18,
+				threads_count: 18,
 				hdb_user: {},
 				hdb_auth_header: 'test_header',
 			};
@@ -908,6 +1585,193 @@ describe('Test configUtils module', () => {
 			}
 
 			expect(error.name).to.equal(STRING_ERROR);
+		});
+
+		describe('unrecognized config params (#2266)', () => {
+			async function rejection(body) {
+				try {
+					await config_utils_rw.setConfiguration({ operation: 'set_configuration', ...body });
+				} catch (err) {
+					return err.http_resp_msg ?? err.message;
+				}
+				return undefined;
+			}
+
+			it('rejects an unrecognized param instead of reporting success', async () => {
+				const message = await rejection({ not_a_real_param: 1 });
+				expect(message).to.include('unrecognized config parameter: not_a_real_param');
+			});
+
+			it('names every unrecognized param in one error', async () => {
+				const message = await rejection({ nope_one: 1, nope_two: 2 });
+				expect(message).to.include('unrecognized config parameters: nope_one, nope_two');
+			});
+
+			it('writes nothing when a request mixes recognized and unrecognized params', async () => {
+				const message = await rejection({ logging_level: 'debug', not_a_real_param: 1 });
+				expect(message).to.include('not_a_real_param');
+				expect(update_config_value_stub.called).to.equal(false);
+			});
+
+			it('still accepts recognized params', async () => {
+				expect(await rejection({ logging_level: 'debug' })).to.equal(undefined);
+				expect(update_config_value_stub.called).to.equal(true);
+			});
+
+			it('preserves the operator-named _package and _port escape hatch', async () => {
+				expect(await rejection({ 'my-component_package': 'x', 'my-component_port': 1 })).to.equal(undefined);
+			});
+
+			it('treats the escape hatch as case-sensitive, so an uppercase typo is still rejected', async () => {
+				expect(await rejection({ TYPO_PORT: 1 })).to.include('TYPO_PORT');
+			});
+
+			it('does not mistake control fields for config params', async () => {
+				const message = await rejection({ hdb_user: {}, hdbAuthHeader: 'h', hdb_auth_header: 'h', replicated: false });
+				expect(message).to.equal(undefined);
+			});
+
+			it('rejects an inherited Object.prototype name rather than resolving it', async () => {
+				expect(await rejection({ toString: 'x' })).to.include('toString');
+			});
+
+			it('replaces control characters in reported names so a name cannot forge a log line', async () => {
+				const message = await rejection({ 'bad\nname': 1 });
+				expect(message).to.include('bad?name');
+				expect(message).to.not.include('\n');
+			});
+
+			it('caps the reported names so a body full of unknown keys cannot make the message unbounded', async () => {
+				const body = {};
+				for (let i = 0; i < 25; i++) body[`nope_${i}`] = i;
+				const message = await rejection(body);
+				expect(message).to.include('(and 15 more)');
+				expect(message).to.include('nope_0');
+				expect(message).to.not.include('nope_10,');
+			});
+		});
+
+		describe('replicated: true', () => {
+			// configUtils reads `server` from the shared module object, so stubbing the
+			// property (the same way harper-pro installs the real implementation) reaches it.
+			const { server } = require('#src/server/Server');
+			let replicate_operation_stub;
+			let original_replicate_operation;
+
+			beforeEach(() => {
+				original_replicate_operation = server.replication.replicateOperation;
+				replicate_operation_stub = sandbox.stub().resolves({
+					message: '',
+					replicated: [{ message: 'ok', node: 'peer-1' }],
+				});
+				server.replication.replicateOperation = replicate_operation_stub;
+			});
+
+			afterEach(() => {
+				server.replication.replicateOperation = original_replicate_operation;
+			});
+
+			it('Test replicated: true fans out and returns per-node results', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: true,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.calledOnceWith(test_set_config_json)).to.equal(true);
+				expect(result.message).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+				expect(result.replicated).to.eql([{ message: 'ok', node: 'peer-1' }]);
+			});
+
+			it('Test replicated is stripped from the config fields written to file', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: true,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				await config_utils_rw.setConfiguration(test_set_config_json);
+
+				const config_fields = update_config_value_stub.firstCall.args[2];
+				expect(config_fields).to.eql({
+					http_corsAccessList: ['harper.fast'],
+				});
+			});
+
+			it('Test no replicated flag does not fan out', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					threads_count: 18,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.called).to.equal(false);
+				expect(result).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+			});
+
+			it('Test replicated: false (peer receiving a fanned-out call) does not re-replicate', async () => {
+				const test_set_config_json = {
+					operation: 'set_configuration',
+					http_corsAccessList: ['harper.fast'],
+					replicated: false,
+					hdb_user: {},
+					hdb_auth_header: 'test_header',
+				};
+
+				const result = await config_utils_rw.setConfiguration(test_set_config_json);
+
+				expect(replicate_operation_stub.called).to.equal(false);
+				expect(result).to.equal(CONFIGURE_SUCCESS_RESPONSE);
+				const config_fields = update_config_value_stub.firstCall.args[2];
+				expect(config_fields).to.not.have.property('replicated');
+			});
+
+			it('Test non-boolean replicated is rejected before any local write', async () => {
+				for (const bad of ['false', 'true', 1, 0]) {
+					let error;
+					try {
+						await config_utils_rw.setConfiguration({
+							operation: 'set_configuration',
+							http_corsAccessList: ['harper.fast'],
+							replicated: bad,
+						});
+					} catch (err) {
+						error = err;
+					}
+
+					expect(error, `expected rejection for replicated: ${JSON.stringify(bad)}`).to.not.equal(undefined);
+					expect(error.http_resp_msg ?? error.message).to.include('replicated');
+				}
+				expect(update_config_value_stub.called).to.equal(false);
+				expect(replicate_operation_stub.called).to.equal(false);
+			});
+
+			it('Test local config write failure propagates without fanning out', async () => {
+				update_config_value_stub.throws(STRING_ERROR);
+
+				let error;
+				try {
+					await config_utils_rw.setConfiguration({
+						operation: 'set_configuration',
+						http_corsAccessList: ['harper.fast'],
+						replicated: true,
+					});
+				} catch (err) {
+					error = err;
+				}
+
+				expect(error.name).to.equal(STRING_ERROR);
+				expect(replicate_operation_stub.called).to.equal(false);
+			});
 		});
 	});
 	describe('Test readConfigFile function', () => {
@@ -1092,8 +1956,8 @@ describe('Test configUtils module', () => {
 
 			// Reset parseYamlDoc in case previous tests stubbed it
 			// Re-require the module to get a fresh copy
-			delete require.cache[require.resolve('#js/config/configUtils')];
-			require('#js/config/configUtils');
+			delete require.cache[require.resolve('#src/config/configUtils')];
+			require('#src/config/configUtils');
 			const freshRewire = rewire('#js/config/configUtils');
 			// Copy the fresh parseYamlDoc to our rewired module
 			const parseYamlDoc = freshRewire.__get__('parseYamlDoc');
@@ -1297,6 +2161,251 @@ describe('Test configUtils module', () => {
 			// Port should be null and securePort should be set
 			expect(configJson.operationsApi.network.port).to.be.null;
 			expect(configJson.operationsApi.network.securePort).to.equal(defaultPort);
+		});
+
+		it('wraps backfilled defaults and synced env objects in YAMLMap nodes while preserving inline comments on overridden scalars', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config.yaml');
+			fs.writeFileSync(
+				hdbConfigTemplatePath,
+				'threads: 4\nstorage:\n  engine: rocksdb # storage engine comment\nlogging:\n  level: info # log level comment\n',
+				'utf8'
+			);
+			process.env.HARPER_SET_CONFIG = JSON.stringify({
+				threads: {
+					count: 2,
+				},
+				logging: {
+					level: 'warn',
+				},
+			});
+
+			try {
+				const staged = config_utils_rw.stageInstallConfig(
+					{
+						ROOTPATH: HDB_ROOT,
+						STORAGE_ENGINE: 'lmdb',
+					},
+					hdbConfigTemplatePath
+				);
+				config_utils_rw.writeStagedInstallConfig(staged);
+
+				const rawConfig = fs.readFileSync(CONFIG_FILE_PATH, 'utf8');
+				const configDoc = YAML.parseDocument(rawConfig);
+				const configJson = configDoc.toJSON();
+				expect(configJson.threads.count).to.equal(2);
+				expect(configJson.storage.engine).to.equal('lmdb');
+				expect(configJson.logging.level).to.equal('warn');
+				expect(configJson.operationsApi.network.domainSocket).to.be.a('string');
+				expect(configJson.logging.root).to.be.a('string');
+				expect(rawConfig).to.include('# storage engine comment');
+				expect(rawConfig).to.include('# log level comment');
+			} finally {
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('leaves optional root sections an HDB_CONFIG template omits absent while backfilling required ones', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-optional-sections.yaml');
+			fs.writeFileSync(hdbConfigTemplatePath, 'storage:\n  engine: lmdb\nhttp:\n  port: 9000\n', 'utf8');
+
+			try {
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig({ ROOTPATH: HDB_ROOT }, hdbConfigTemplatePath)
+				);
+
+				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
+				plainAssert.equal(Object.hasOwn(configJson, 'mqtt'), false);
+				plainAssert.equal(Object.hasOwn(configJson, 'applications'), false);
+				plainAssert.equal(Object.hasOwn(configJson, 'authentication'), false);
+				plainAssert.equal(configJson.http.port, 9000);
+				plainAssert.equal(configJson.http.securePort, 9926);
+				plainAssert.equal(configJson.storage.caching, true);
+				plainAssert.equal(configJson.localStudio.enabled, true);
+				plainAssert.equal(configJson.logging.level, 'warn');
+				plainAssert.equal(configJson.operationsApi.network.securePort, 9925);
+			} finally {
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('backfills defaults under an optional root section that an install arg or env layer introduces', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-introduced-section.yaml');
+			fs.writeFileSync(hdbConfigTemplatePath, 'storage:\n  engine: lmdb\n', 'utf8');
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ mqtt: { network: { port: 1884 } } });
+
+			try {
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{ ROOTPATH: HDB_ROOT, AUTHENTICATION_AUTHORIZELOCAL: true },
+						hdbConfigTemplatePath
+					)
+				);
+
+				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
+				plainAssert.equal(configJson.authentication.authorizeLocal, true);
+				plainAssert.equal(configJson.authentication.cacheTTL, 30000);
+				plainAssert.equal(configJson.mqtt.network.port, 1884);
+				plainAssert.equal(configJson.mqtt.network.securePort, 8883);
+				plainAssert.equal(Object.hasOwn(configJson, 'applications'), false);
+			} finally {
+				delete process.env.HARPER_SET_CONFIG;
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('expands numeric threads: 4 shorthand in HDB_CONFIG when CLI/env THREADS_COUNT or THREADS_DEBUG is passed without HARPER_SET_CONFIG', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-threads.yaml');
+			fs.writeFileSync(hdbConfigTemplatePath, 'threads: 4\nhttp:\n  mtls: false\nstorage:\n  engine: lmdb\n', 'utf8');
+			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
+
+			try {
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{
+							ROOTPATH: HDB_ROOT,
+							THREADS_COUNT: 2,
+						},
+						hdbConfigTemplatePath
+					)
+				);
+
+				let configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				let configJson = configDoc.toJSON();
+				expect(configJson.threads.count).to.equal(2);
+				expect(configJson.threads.debug).to.equal(false);
+
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{
+							ROOTPATH: HDB_ROOT,
+							THREADS_DEBUG: true,
+						},
+						hdbConfigTemplatePath
+					)
+				);
+
+				configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				configJson = configDoc.toJSON();
+				expect(configJson.threads.count).to.equal(4);
+				expect(configJson.threads.debug).to.equal(true);
+
+				process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+					threads: { count: 8, debug: true },
+					http: { mtls: { required: true } },
+				});
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{
+							ROOTPATH: HDB_ROOT,
+						},
+						hdbConfigTemplatePath
+					)
+				);
+
+				configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				configJson = configDoc.toJSON();
+				expect(configJson.threads.count).to.equal(4);
+				expect(configJson.threads.debug).to.equal(true);
+				expect(configJson.http.mtls).to.equal(false);
+				const runtimeConfig = applyRuntimeEnvConfig(configJson, HDB_ROOT);
+				plainAssert.equal(runtimeConfig.http.mtls, false);
+			} finally {
+				if (origDefaultConfig === undefined) {
+					delete process.env.HARPER_DEFAULT_CONFIG;
+				} else {
+					process.env.HARPER_DEFAULT_CONFIG = origDefaultConfig;
+				}
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('allows HARPER_DEFAULT_CONFIG to override defaults under an empty section in HDB_CONFIG while preserving authored empty component maps', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-empty-section.yaml');
+			fs.writeFileSync(
+				hdbConfigTemplatePath,
+				'storage:\n  engine: lmdb\nhttp: {}\nmyComponent: {}\noperationsApi:\n  tls: {}\n',
+				'utf8'
+			);
+			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
+
+			try {
+				process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({
+					http: { port: 8080 },
+					myComponent: false,
+					operationsApi: { tls: { certificate: '/certs/default.pem' } },
+				});
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig(
+						{
+							ROOTPATH: HDB_ROOT,
+						},
+						hdbConfigTemplatePath
+					)
+				);
+
+				const configDoc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
+				const configJson = configDoc.toJSON();
+				expect(configJson.storage.engine).to.equal('lmdb');
+				expect(configJson.http.port).to.equal(8080);
+				expect(configJson.http.securePort).to.equal(9926);
+				expect(configJson.myComponent).to.deep.equal({});
+				expect(configJson.operationsApi.tls).to.deep.equal({});
+				const runtimeConfig = applyRuntimeEnvConfig(configJson, HDB_ROOT);
+				plainAssert.deepEqual(runtimeConfig.operationsApi.tls, {});
+			} finally {
+				if (origDefaultConfig === undefined) {
+					delete process.env.HARPER_DEFAULT_CONFIG;
+				} else {
+					process.env.HARPER_DEFAULT_CONFIG = origDefaultConfig;
+				}
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('leaves listener and CORS defaults out of sections an HDB_CONFIG template authored', () => {
+			const hdbConfigTemplatePath = path.join(HDB_ROOT, 'template-hdb-config-tls-only.yaml');
+			fs.writeFileSync(
+				hdbConfigTemplatePath,
+				'storage:\n  engine: lmdb\nmqtt:\n  network:\n    securePort: 8883\noperationsApi:\n  network:\n    securePort: 9925\n',
+				'utf8'
+			);
+
+			try {
+				config_utils_rw.writeStagedInstallConfig(
+					config_utils_rw.stageInstallConfig({ ROOTPATH: HDB_ROOT }, hdbConfigTemplatePath)
+				);
+
+				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
+				plainAssert.equal(configJson.mqtt.network.securePort, 8883);
+				plainAssert.equal(Object.hasOwn(configJson.mqtt.network, 'port'), false);
+				plainAssert.equal(Object.hasOwn(configJson.mqtt, 'webSocket'), false);
+				plainAssert.equal(configJson.mqtt.requireAuthentication, true);
+				plainAssert.equal(Object.hasOwn(configJson.operationsApi.network, 'cors'), false);
+				plainAssert.equal(Object.hasOwn(configJson.operationsApi.network, 'corsAccessList'), false);
+				plainAssert.equal(typeof configJson.operationsApi.network.domainSocket, 'string');
+			} finally {
+				fs.removeSync(hdbConfigTemplatePath);
+			}
+		});
+
+		it('createConfigFile() leaves paths HARPER_DEFAULT_CONFIG supplies sourced to it', () => {
+			const origDefaultConfig = process.env.HARPER_DEFAULT_CONFIG;
+			process.env.HARPER_DEFAULT_CONFIG = JSON.stringify({ http: { corsAccessList: ['https://default.example'] } });
+
+			try {
+				config_utils_rw.createConfigFile({ ROOTPATH: HDB_ROOT, HTTP_CORSACCESSLIST: ['https://leader.example'] });
+
+				const state = JSON.parse(fs.readFileSync(path.join(HDB_ROOT, 'backup', '.harper-config-state.json'), 'utf8'));
+				plainAssert.equal(state.sources['http.corsAccessList'], 'HARPER_DEFAULT_CONFIG');
+				const configJson = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).toJSON();
+				plainAssert.deepEqual(configJson.http.corsAccessList, ['https://default.example']);
+			} finally {
+				if (origDefaultConfig === undefined) {
+					delete process.env.HARPER_DEFAULT_CONFIG;
+				} else {
+					process.env.HARPER_DEFAULT_CONFIG = origDefaultConfig;
+				}
+			}
 		});
 	});
 });

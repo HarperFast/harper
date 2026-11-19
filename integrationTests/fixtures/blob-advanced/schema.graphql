@@ -1,0 +1,11 @@
+type DesktopPage @table(database: "cache_desktop") @export {
+	id: ID @primaryKey
+	content: Bytes
+	contentType: String
+}
+
+type MobilePage @table(database: "cache_mobile") @export {
+	id: ID @primaryKey
+	content: Bytes
+	contentType: String
+}

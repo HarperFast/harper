@@ -1,0 +1,4 @@
+# Regression fixture for GHSA-5c29-q62v-jrwf — schema-unqualified SQL must be authorized.
+graphqlSchema:
+  files: '*.graphql'
+rest: true

@@ -1,0 +1,13 @@
+# QA-184 — Single-snapshot vs two-read oracle tiebreaker.
+#
+# Widget: same shape as QA-183 — `bucket` is the @indexed attribute under test.
+# A concurrent delete workload targets Widget rows by bucket.
+# Two oracle endpoints probe the same bucket for phantom index entries:
+#   /TwoReadCheck/  — two-read oracle: separate index query + PK-GET (reproduces QA-183)
+#   /SnapCheck/     — single-snapshot oracle: index search + get() in ONE request txn
+type Widget @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}

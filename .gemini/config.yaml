@@ -1,0 +1,21 @@
+# Configure Gemini PR reviews, schema at https://docs.cloud.google.com/gemini/docs/code-review/customize-repo-review#schema
+memory_config:
+  disabled: false
+code_review:
+  disable: false
+  # MEDIUM (the default) kept: LOW drowns reviews in nits; HIGH would drop legitimate medium findings.
+  # Severity honesty is enforced via styleguide.md instead.
+  comment_severity_threshold: MEDIUM
+  # Cap total comments per review; measured pattern was the same finding repeated per-hunk (4x in one PR).
+  # A finite cap forces prioritization; styleguide.md additionally requires one comment per distinct finding.
+  max_review_comments: 15
+  # Automatic review on open is off; comment `/gemini review` on a PR to request one.
+  pull_request_opened:
+    help: false
+    summary: false
+    code_review: false
+    include_drafts: true
+ignore_patterns:
+  - 'package-lock.json'
+
+# styleguide.md alongside this file is injected into every review prompt (house style + review discipline).

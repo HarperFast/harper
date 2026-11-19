@@ -1,0 +1,10 @@
+# QA-658 (#1865) — component-defined table used across a GENUINE cross-version upgrade
+# boot: seeded under a real Harper 5.1.x release, then restarted with the current build
+# over the SAME dataRootDir. Shape matches QA-647's fixture (a prior same-build-restart arm
+# of the same investigation), so results are directly comparable.
+type Widget @table(database: "qa658") @export {
+	id: ID @primaryKey
+	sku: String @indexed
+	batch: String @indexed
+	name: String
+}

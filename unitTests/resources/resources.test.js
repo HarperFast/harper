@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const resourcesComponent = require('#src/resources/Resources');
 
 // might want to enable an iteration with NATS being assigned as a source

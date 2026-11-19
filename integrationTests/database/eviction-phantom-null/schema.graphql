@@ -1,0 +1,36 @@
+# QA-670 — does harper#1896 (F-149 fix) also eliminate the F-175 phantom null-keyed index
+# entry on EVERY removal path, or only the narrow RocksDB TTL-eviction-batcher leg?
+#
+# Four tables isolate the three removal call sites plus an update-in-place control:
+#   DelTable    — no TTL. Removed via explicit Table.delete() (_writeDelete -> updateIndices(id,
+#                 existing, null)).
+#   SweepTable  — table-level TTL (expiration:3, scanInterval:1). Removed by the BACKGROUND
+#                 cleanup sweep (scheduleCleanup(): RocksDB batcher's stageInto() calls
+#                 updateIndices() directly; LMDB takes the per-record TableResource.evict() path).
+#   EvictTable  — table-level TTL (expiration:2) but a huge scanInterval:300 so the background
+#                 sweep never fires inside this test's window. Removed only via the READ-triggered
+#                 LAZY eviction path (ensureLoadedFromSource -> TableResource.evict() called
+#                 directly from a GET, independent of the sweep timer) — isolates evict() from the
+#                 sweep call site.
+#   ControlTable — no TTL, never deleted. Rows are only ever UPDATED IN PLACE (bucket changed,
+#                 record stays non-null). Must show zero phantom null-keyed entries — proves the
+#                 oracle itself doesn't manufacture phantoms out of ordinary updates.
+type DelTable @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+}
+
+type SweepTable @table(expiration: 3, scanInterval: 1) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+}
+
+type EvictTable @table(expiration: 2, scanInterval: 300) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+}
+
+type ControlTable @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+}

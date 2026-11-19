@@ -21,7 +21,12 @@
  * helpers below.
  */
 import { setEmbedding, setGenerative } from '../../resources/models/backendRegistry.ts';
-import { assignFiniteTokenCount, composeSignal, requireModel } from '../../resources/models/backendHelpers.ts';
+import {
+	assignFiniteTokenCount,
+	composeSignal,
+	isContextWindowRejection,
+	requireModel,
+} from '../../resources/models/backendHelpers.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import type {
@@ -46,6 +51,12 @@ const DEFAULT_MAX_TOKENS = 4096;
 // Max accumulated `bytes` from streamed Claude tool-use input_json_delta;
 // matches the cap in `components/anthropic/index.ts`.
 const MAX_TOOL_CALL_ARGS_CHARS = 1 << 20;
+// Maximum number of distinct tool-call accumulator entries. Upstream-controlled
+// `index` values could otherwise allocate unbounded map entries if
+// content_block_stop events never arrive. Matches the cap in the direct backends.
+const MAX_TOOL_CALL_ACCUMULATOR_ENTRIES = 128;
+// Total tool-call argument chars across all content blocks in one stream.
+const MAX_TOTAL_TOOL_CALL_ARGS_CHARS = 8 * 1024 * 1024; // 8 MiB
 
 const log = harperLogger.forComponent('bedrock').conditional;
 
@@ -139,21 +150,33 @@ export function _injectSdkForTests(sdk: SdkLike): void {
  * support tools (or that haven't been wired into the per-family dispatcher
  * yet) raise structured errors.
  */
+const CAPABILITIES: ModelCapabilities = Object.freeze({
+	embed: true,
+	generate: true,
+	stream: true,
+	tools: true,
+	adapters: false,
+	structuredOutput: false,
+});
+const TRUNCATING: ModelCapabilities = Object.freeze({ ...CAPABILITIES, truncate: true });
+
 export class BedrockBackend implements ModelBackend {
 	readonly name = 'bedrock';
 	readonly #region?: string;
 	readonly #defaultModel?: string;
 	readonly #requestTimeoutMs?: number;
+	readonly #capabilities: ModelCapabilities;
 	#client?: { send: (cmd: object) => Promise<unknown> };
 
 	constructor(config: BedrockBackendConfig = {}) {
 		this.#region = config.region;
 		this.#defaultModel = config.model;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
+		this.#capabilities = config.model && embedTruncation(config.model) ? TRUNCATING : CAPABILITIES;
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: true, generate: true, stream: true, tools: true, adapters: false };
+		return this.#capabilities;
 	}
 
 	async embed(input: string | string[], opts: BackendOpts<EmbedOpts>): Promise<ModelCallResult<Float32Array[]>> {
@@ -161,6 +184,11 @@ export class BedrockBackend implements ModelBackend {
 		requireModel(model, 'embed', BedrockBackendError);
 		const family = familyOf(model);
 		const texts = Array.isArray(input) ? input : [input];
+		const truncation = opts.truncate === true ? embedTruncation(model) : undefined;
+		if (opts.truncate === true && !truncation)
+			throw new BedrockBackendError(
+				`Bedrock embed cannot truncate for model '${model}'; only Cohere embed v3 and v4 can`
+			);
 
 		const client = await this.#getClient();
 		const sdk = await loadSdk();
@@ -173,7 +201,7 @@ export class BedrockBackend implements ModelBackend {
 		// trip the SDK's request budget on larger batches without bounded
 		// concurrency, which is overkill for v1.
 		for (const text of texts) {
-			const body = buildEmbedBody(family, text, opts.inputType);
+			const body = buildEmbedBody(family, text, opts.inputType, truncation);
 			const command = new sdk.InvokeModelCommand({
 				modelId: model,
 				body: JSON.stringify(body),
@@ -199,7 +227,7 @@ export class BedrockBackend implements ModelBackend {
 		const model = opts.model ?? this.#defaultModel;
 		requireModel(model, 'generate', BedrockBackendError);
 		const family = familyOf(model);
-		const body = buildGenerateBody(family, input, opts);
+		const body = buildGenerateBody(family, model, input, opts);
 
 		const client = await this.#getClient();
 		const sdk = await loadSdk();
@@ -219,7 +247,7 @@ export class BedrockBackend implements ModelBackend {
 		const model = opts.model ?? this.#defaultModel;
 		requireModel(model, 'generateStream', BedrockBackendError);
 		const family = familyOf(model);
-		const body = buildGenerateBody(family, input, opts);
+		const body = buildGenerateBody(family, model, input, opts);
 
 		const client = await this.#getClient();
 		const sdk = await loadSdk();
@@ -250,6 +278,11 @@ export class BedrockBackend implements ModelBackend {
 	 * Send a command with caller-supplied AbortSignal + optional per-call
 	 * timeout composed via `AbortSignal.any`. The SDK accepts `abortSignal`
 	 * in the request options bag.
+	 *
+	 * SDK `ServiceException`s are re-thrown as `BedrockBackendError` carrying the
+	 * upstream HTTP status (`$metadata.httpStatusCode`) so the sanitized `@embed`
+	 * error is diagnosable, matching the openai/anthropic/ollama backends (#1593).
+	 * Aborts/timeouts are caller-driven, not upstream failures — propagated untouched.
 	 */
 	async #sendWithAbort(
 		client: { send: (cmd: object, options?: { abortSignal?: AbortSignal }) => Promise<unknown> },
@@ -257,7 +290,22 @@ export class BedrockBackend implements ModelBackend {
 		callerSignal?: AbortSignal
 	): Promise<unknown> {
 		const abortSignal = composeSignal(callerSignal, this.#requestTimeoutMs);
-		return client.send(command, abortSignal ? { abortSignal } : undefined);
+		try {
+			return await client.send(command, abortSignal ? { abortSignal } : undefined);
+		} catch (err) {
+			if ((err as any)?.name === 'AbortError' || abortSignal?.aborted) throw err;
+			const status = (err as any)?.$metadata?.httpStatusCode;
+			const sdkName = (err as any)?.name;
+			const wrapped = new BedrockBackendError(
+				`Bedrock request failed${sdkName ? ` (${sdkName})` : ''}`,
+				typeof status === 'number' ? status : undefined
+			);
+			if (isContextWindowRejection(status, (err as any)?.message)) wrapped.contextWindowExceeded = true;
+			// Keep the raw SDK error for the unsanitized server log; only class name +
+			// upstreamStatus surface to callers.
+			(wrapped as any).cause = err;
+			throw wrapped;
+		}
 	}
 }
 
@@ -278,9 +326,14 @@ export function registerBedrockBackend(args: {
 }
 
 export class BedrockBackendError extends ServerError {
-	constructor(message: string) {
+	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
+	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
+	declare upstreamStatus?: number;
+	declare contextWindowExceeded?: boolean;
+	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'BedrockBackendError';
+		if (upstreamStatus !== undefined) this.upstreamStatus = upstreamStatus;
 	}
 }
 
@@ -288,19 +341,56 @@ export class BedrockBackendError extends ServerError {
 
 type Family = 'anthropic' | 'amazon' | 'meta' | 'cohere' | 'mistral' | 'unknown';
 
+const KNOWN_FAMILIES: Set<Family> = new Set(['anthropic', 'amazon', 'meta', 'cohere', 'mistral']);
+
 function familyOf(modelId: string): Family {
-	const prefix = modelId.split('.', 1)[0]?.toLowerCase() ?? '';
-	if (prefix === 'anthropic') return 'anthropic';
-	if (prefix === 'amazon') return 'amazon';
-	if (prefix === 'meta') return 'meta';
-	if (prefix === 'cohere') return 'cohere';
-	if (prefix === 'mistral') return 'mistral';
+	// Cross-region inference-profile IDs are prefixed with a geographic segment
+	// (e.g. `us.anthropic.claude-3-5-sonnet-…`, `eu.meta.llama3-…`, `global.…`).
+	// Split on '.' and walk segments: the first segment that is a known family wins.
+	const segments = modelId.toLowerCase().split('.');
+	for (const seg of segments) {
+		if (KNOWN_FAMILIES.has(seg as Family)) return seg as Family;
+	}
 	return 'unknown';
 }
 
 // ---------- embed body / result extraction ----------
 
-function buildEmbedBody(family: Family, text: string, inputType?: 'document' | 'query'): object {
+interface EmbedTruncation {
+	/** The Cohere value that discards the end of an over-long input; v3 and v4 name it differently. */
+	truncate: 'END' | 'RIGHT';
+	/** Bedrock rejects a longer text before any token truncation applies. */
+	maxChars?: number;
+}
+
+const COHERE_EMBED_V3 = /\bcohere\.embed-(?:english|multilingual)(?:-light)?-v3\b/i;
+const COHERE_EMBED_V4 = /\bcohere\.embed-v4\b/i;
+const COHERE_V3_TRUNCATION: EmbedTruncation = Object.freeze({ truncate: 'END', maxChars: 2048 });
+const COHERE_V4_TRUNCATION: EmbedTruncation = Object.freeze({ truncate: 'RIGHT' });
+
+function embedTruncation(model: string): EmbedTruncation | undefined {
+	if (familyOf(model) !== 'cohere') return undefined;
+	if (COHERE_EMBED_V4.test(model)) return COHERE_V4_TRUNCATION;
+	if (COHERE_EMBED_V3.test(model)) return COHERE_V3_TRUNCATION;
+	return undefined;
+}
+
+/**
+ * The first `maxChars` UTF-16 units of `text`, never ending inside a surrogate pair. At most that many
+ * code points too, so the cut fits the limit whichever unit Bedrock counts.
+ */
+function cutToChars(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text;
+	const lastUnit = text.charCodeAt(maxChars - 1);
+	return text.slice(0, lastUnit >= 0xd800 && lastUnit <= 0xdbff ? maxChars - 1 : maxChars);
+}
+
+function buildEmbedBody(
+	family: Family,
+	text: string,
+	inputType?: 'document' | 'query',
+	truncation?: EmbedTruncation
+): object {
 	if (family === 'amazon') {
 		// Titan embed v2: { inputText, dimensions?, normalize? }. Titan does
 		// not currently differentiate document vs query at the wire level.
@@ -313,7 +403,9 @@ function buildEmbedBody(family: Family, text: string, inputType?: 'document' | '
 		// `search_document` when unset (matches Cohere's recommended default
 		// for indexing).
 		const cohereInputType = inputType === 'query' ? 'search_query' : 'search_document';
-		return { texts: [text], input_type: cohereInputType };
+		if (!truncation) return { texts: [text], input_type: cohereInputType };
+		const cut = truncation.maxChars === undefined ? text : cutToChars(text, truncation.maxChars);
+		return { texts: [cut], input_type: cohereInputType, truncate: truncation.truncate };
 	}
 	throw new BedrockBackendError(`Bedrock embed not supported for model family '${family}'`);
 }
@@ -349,10 +441,33 @@ function extractEmbedResult(
 
 // ---------- generate body / result extraction ----------
 
-function buildGenerateBody(family: Family, input: GenerateInput, opts: BackendOpts<GenerateOpts>): object {
+/**
+ * amazon.nova-* models use the Converse API messages-v1 shape, not the Titan
+ * `inputText` shape. The Converse migration is a larger follow-up; for now
+ * throw a clear error so operators get actionable feedback instead of a
+ * malformed-request 400 from Bedrock.
+ */
+function rejectNovaModel(modelId: string): void {
+	if (modelId.toLowerCase().includes('nova')) {
+		throw new BedrockBackendError(
+			`amazon.nova models are not yet supported by the bedrock backend (model: ${modelId}); ` +
+				'these models require the Converse API shape, not the legacy InvokeModel shape'
+		);
+	}
+}
+
+function buildGenerateBody(
+	family: Family,
+	modelId: string,
+	input: GenerateInput,
+	opts: BackendOpts<GenerateOpts>
+): object {
 	if (family === 'anthropic') return buildAnthropicBody(input, opts);
 	if (family === 'meta') return buildLlamaBody(input, opts);
-	if (family === 'amazon') return buildTitanGenerateBody(input, opts);
+	if (family === 'amazon') {
+		rejectNovaModel(modelId);
+		return buildTitanGenerateBody(input, opts);
+	}
 	if (family === 'mistral') return buildMistralBody(input, opts);
 	if (family === 'cohere') return buildCohereGenerateBody(input, opts);
 	throw new BedrockBackendError(`Bedrock generate not supported for model family '${family}'`);
@@ -526,6 +641,7 @@ async function* parseAnthropicStream(
 	const decoder = new TextDecoder('utf-8');
 	const toolBuf = new Map<number, { id: string; name: string; argumentsBuf: string }>();
 	let finalFinishReason: GenerateResult['finishReason'] | undefined;
+	let totalArgChars = 0;
 
 	for await (const event of body) {
 		if (!event.chunk?.bytes) continue;
@@ -563,6 +679,12 @@ async function* parseAnthropicStream(
 		}
 
 		if (type === 'content_block_start' && index !== undefined && contentBlock?.type === 'tool_use') {
+			// Cap total accumulator entries; content_block_stop may never arrive.
+			if (toolBuf.size >= MAX_TOOL_CALL_ACCUMULATOR_ENTRIES) {
+				throw new BedrockBackendError(
+					`Bedrock tool-call accumulator exceeded ${MAX_TOOL_CALL_ACCUMULATOR_ENTRIES} distinct tool-call entries`
+				);
+			}
 			toolBuf.set(index, { id: contentBlock.id ?? '', name: contentBlock.name ?? '', argumentsBuf: '' });
 		}
 		if (type === 'content_block_delta' && index !== undefined && delta) {
@@ -574,6 +696,12 @@ async function* parseAnthropicStream(
 					if (acc.argumentsBuf.length + delta.partial_json.length > MAX_TOOL_CALL_ARGS_CHARS) {
 						throw new BedrockBackendError(
 							`Bedrock tool-call arguments exceed ${MAX_TOOL_CALL_ARGS_CHARS} chars (index ${index})`
+						);
+					}
+					totalArgChars += delta.partial_json.length;
+					if (totalArgChars > MAX_TOTAL_TOOL_CALL_ARGS_CHARS) {
+						throw new BedrockBackendError(
+							`Bedrock tool-call arguments exceed total stream cap of ${MAX_TOTAL_TOOL_CALL_ARGS_CHARS} chars`
 						);
 					}
 					acc.argumentsBuf += delta.partial_json;
@@ -789,7 +917,10 @@ function flattenToFlatPrompt(input: GenerateInput): string {
 function mapAnthropicStopReason(reason: string | null | undefined): GenerateResult['finishReason'] {
 	switch (reason) {
 		case 'max_tokens':
+		case 'model_context_window_exceeded':
 			return 'length';
+		case 'refusal':
+			return 'content_filter';
 		case 'tool_use':
 			return 'tool_calls';
 		case 'end_turn':

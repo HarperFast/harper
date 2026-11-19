@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { deriveGlobOptions } = require('#src/components/deriveGlobOptions');
 
 // components/deriveGlobOptions.test.ts

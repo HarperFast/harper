@@ -1,0 +1,10 @@
+# Fixture for the TTL-eviction cross-worker record-caching test.
+# expiration: 2 -> short TTL so the cleanup sweep runs well within the test timeout.
+# `bucket` is @indexed so the test can compare the cached point-GET path against the
+# always-direct scan path (GET /CacheGhost/?bucket=...) for the same committed rows.
+type CacheGhost @table(expiration: 2) @export {
+	id: ID @primaryKey
+	name: String
+	bucket: String @indexed
+	seq: Int
+}

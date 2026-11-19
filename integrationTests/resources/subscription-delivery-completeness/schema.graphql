@@ -1,0 +1,10 @@
+# QA-883 — subscription coalescing / drop measurement fixture.
+#
+# seq  : strictly increasing per-write counter for a given id (drop-detection witness)
+# tag  : run/test tag so concurrent tests can filter their own events out of shared streams
+type Burst @table @export {
+	id: ID @primaryKey
+	value: Int
+	seq: Int
+	tag: String
+}

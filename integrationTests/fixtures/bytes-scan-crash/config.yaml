@@ -1,0 +1,5 @@
+# Regression fixture for HarperFast/harper#1298 — octet-stream sub-attribute write
+# stores a bare-TypedArray-root record that must not crash table scans.
+graphqlSchema:
+  files: '*.graphql'
+rest: true

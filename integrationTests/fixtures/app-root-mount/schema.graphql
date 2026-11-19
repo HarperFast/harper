@@ -1,0 +1,4 @@
+type MountedThing @table @export {
+	id: ID @primaryKey
+	name: String
+}

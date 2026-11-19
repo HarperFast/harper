@@ -1,6 +1,7 @@
 'use strict';
 const { join, dirname } = require('node:path');
-const { existsSync, readFileSync } = require('node:fs');
+const { existsSync, readFileSync, realpathSync } = require('node:fs');
+const { pathToFileURL } = require('node:url');
 
 /**
  * A naive find-up implementation to find the root package.json, and
@@ -37,10 +38,49 @@ const packageJsonPath = findPackageJson();
 const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
 
 /**
- * The Harper package root directory.
+ * The Harper package root directory, canonicalized (symlinks resolved).
  *
- * Works across dev and prod (built).
+ * Works across dev and prod (built). Callers that compare this against a `realpathSync`'d
+ * path (e.g. the module sandbox's allowed-path check in security/jsLoader.ts) need it
+ * canonical too, or a symlinked checkout (e.g. `--preserve-symlinks`, a symlinked worktree
+ * root) makes the string comparison fail even though the path is legitimately inside.
  */
-const PACKAGE_ROOT = dirname(packageJsonPath);
+const PACKAGE_ROOT = realpathSync(dirname(packageJsonPath));
 
-module.exports = { packageJson, PACKAGE_ROOT };
+const PRODUCT_NAME = packageJson.productName || 'Harper';
+
+/**
+ * Canonical directory containing core's runtime modules, independent of the
+ * metadata owner: the source root, standalone dist, or an embedded dist/core.
+ */
+const RUNTIME_SRC_ROOT = realpathSync(join(__dirname, '..'));
+
+/**
+ * Source layouts carry hdbTerms.ts beside this helper; compiled layouts carry
+ * hdbTerms.js. Use that local marker for core worker and helper filenames.
+ */
+const RUNTIME_FILE_EXT = existsSync(join(__dirname, 'hdbTerms.ts')) ? '.ts' : '.js';
+
+function loadNativePackage(name, entryPath = '') {
+	if (entryPath) return require(join(dirname(require.resolve(`${name}/package.json`)), entryPath));
+	return require(name);
+}
+
+function loadRuntimeModule(relativePath) {
+	return require(join(__dirname, '..', relativePath + RUNTIME_FILE_EXT));
+}
+
+function getRuntimeModuleURL(relativePath) {
+	return pathToFileURL(join(__dirname, '..', relativePath + RUNTIME_FILE_EXT)).href;
+}
+
+module.exports = {
+	packageJson,
+	PACKAGE_ROOT,
+	PRODUCT_NAME,
+	RUNTIME_SRC_ROOT,
+	RUNTIME_FILE_EXT,
+	loadNativePackage,
+	loadRuntimeModule,
+	getRuntimeModuleURL,
+};

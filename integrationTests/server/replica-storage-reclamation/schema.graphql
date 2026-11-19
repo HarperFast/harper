@@ -1,0 +1,5 @@
+type Reclaimable @table(database: "replicareclamation", audit: true, replicaExpiration: 3600) @export {
+	id: ID @primaryKey
+	name: String @indexed
+	body: String
+}

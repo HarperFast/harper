@@ -6,7 +6,7 @@ testUtils.preTestPrep();
 let DeleteResponseObject = require('#src/dataLayer/DataLayerObjects').DeleteResponseObject;
 const rewire = require('rewire');
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
-const _delete = rewire('#src/dataLayer/delete');
+const _delete = rewire('#js/dataLayer/delete');
 const log = require('#src/utility/logging/harper_logger');
 const hdb_utils = require('#src/utility/common_utils');
 const chai = require('chai');
@@ -141,7 +141,8 @@ describe('Tests for delete.js', () => {
 			let bridge_delete_txns_stub = sandbox.stub(harperBridge, 'deleteTransactionLogsBefore').resolves({
 				start_timestamp: 1,
 				end_timestamp: 2,
-				transactions_deleted: 3,
+				entries_deleted: 3,
+				log_files_deleted: 1,
 			});
 
 			global.hdb_schema = {
@@ -150,12 +151,15 @@ describe('Tests for delete.js', () => {
 				},
 			};
 			let delete_obj = testUtils.deepClone(DELETE_TXN_BEFORE_OBJ);
-			await _delete.deleteAuditLogsBefore(delete_obj);
+			const result = await _delete.deleteAuditLogsBefore(delete_obj);
 
 			expect(bridge_delete_txns_stub).to.have.been.calledWith(delete_obj);
 			expect(log_info_spy).to.have.been.calledWith(
 				`Finished deleting audit logs before ${DELETE_TXN_BEFORE_OBJ.timestamp}`
 			);
+			// the bridge's `entries_deleted` is surfaced as the legacy `transactions_deleted` field
+			expect(result.transactions_deleted).to.equal(3);
+			expect(result.log_files_deleted).to.equal(1);
 		});
 	});
 
@@ -177,6 +181,24 @@ describe('Tests for delete.js', () => {
 			expect(test_err_result).to.be.true;
 		});
 
+		it('Test that a null hash value is rejected before the bridge is called (studio#1199)', async () => {
+			// A null/undefined hash value would be coerced downstream into a whole-collection target
+			// and silently delete every record in the table (reported as "1 of 1"). The validator must
+			// reject it up front, before deleteRecords is ever reached.
+			let bridge_spy = sandbox.stub().resolves();
+			let revert = _delete.__set__('harperBridge_ts_1', { default: { deleteRecords: bridge_spy } });
+			let delete_obj = testUtils.deepClone(DELETE_OBJ_TEST);
+			delete_obj.hash_values = [8, null, 9];
+			let test_err_result = await testUtils.testError(
+				_delete.deleteRecord(delete_obj),
+				"'hash_values[1]' must not contain null"
+			);
+
+			expect(test_err_result).to.be.true;
+			expect(bridge_spy).to.not.have.been.called;
+			revert();
+		});
+
 		it('Test for nominal behaviour, success msg is returned', async () => {
 			global.hdb_schema = {
 				[DELETE_RECORDS_TEST.schema]: {
@@ -187,7 +209,7 @@ describe('Tests for delete.js', () => {
 			expected_response.deleted_hashes = [];
 			expected_response.skipped_hashes = [8, 9];
 			let delete_records_stub = sandbox.stub().resolves(expected_response);
-			let revert = _delete.__set__('harperBridge', { deleteRecords: delete_records_stub });
+			let revert = _delete.__set__('harperBridge_ts_1', { default: { deleteRecords: delete_records_stub } });
 			let result = await _delete.deleteRecord(DELETE_RECORDS_TEST);
 
 			expect(delete_records_stub).to.have.been.calledWith(DELETE_RECORDS_TEST);

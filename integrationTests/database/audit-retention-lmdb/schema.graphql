@@ -1,0 +1,9 @@
+# QA-746 — closes out F-218 (audit-retention engine asymmetry).
+#
+# Ledger is a write-heavy, audited table. The suite boots against it with
+# HARPER_STORAGE_ENGINE=lmdb so the LMDB retention branch is the one under test.
+type Ledger @table(audit: true) @export {
+	id: ID @primaryKey
+	seq: Int
+	payload: String
+}

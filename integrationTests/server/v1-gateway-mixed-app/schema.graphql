@@ -1,0 +1,9 @@
+# An @export table in an app that does not declare `rest`.
+#
+# @export puts it in the shared Resources registry; the missing `rest` section is
+# what should keep it off the wire. If enabling modelsGateway ever starts REST on
+# this app's behalf, this table becomes reachable and the regression test fails.
+type MixedAppPrivate @table @export {
+	id: ID @primaryKey
+	value: String
+}

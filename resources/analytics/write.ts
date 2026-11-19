@@ -1,25 +1,33 @@
-import { parentPort, threadId } from 'worker_threads';
-import { onMessageByType } from '../../server/threads/manageThreads.js';
+import { parentPort, threadId } from 'node:worker_threads';
+import { onStartup } from '../../utility/lifecycle.ts';
+import { onMessageByType } from '../../server/threads/manageThreads.ts';
 import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { stat, readdir } from 'node:fs/promises';
+import { stat, opendir } from 'node:fs/promises';
 const { getLogFilePath, forComponent } = harperLogger;
-import { dirname, join } from 'path';
-import { open } from 'fs/promises';
+import { dirname, join } from 'node:path';
+import { open } from 'node:fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
-import { get as envGet, getHdbBasePath, initSync } from '../../utility/environment/environmentManager.ts';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import { get as envGet, getHdbBasePath } from '../../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { acceptsFullTextTelemetryRow, setFullTextAnalyticsEnabled } from './fullTextTelemetryRuntime.ts';
+import {
+	readEventLoopDelay,
+	resetEventLoopDelay,
+	startEventLoopDelayMonitor,
+	stopEventLoopDelayMonitor,
+} from '../../server/eventLoopDelay.ts';
+import { getTransactionQueueDepths, setCommitLatencyRecorder } from '../DatabaseTransaction.ts';
+import { contextStorage } from '../transaction.ts';
+import { RocksDatabase, type TransactionLogStats } from '@harperfast/rocksdb-js';
 
 const log = forComponent('analytics').conditional;
 const isBun = typeof globalThis.Bun !== 'undefined';
-
-initSync();
 
 type ActionCallback = (action: Action) => void;
 export type Value = number | boolean | ActionCallback;
@@ -37,25 +45,50 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
+// activeActions by recordAction's arguments as given. A tuple enters only once activeActions already holds
+// its action, so an action recorded once in a window is never indexed.
+let actionIndex = new Map<string, Map<string | undefined, Map<string | undefined, Map<string | undefined, Action>>>>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
+let analyticsGeneration = 0;
+let analyticsExiting = false;
+let runningAnalyticsFlush: Promise<void> | undefined;
+let exitAnalyticsFlush: Promise<void> | undefined;
 
-// Check read-only mode lazily to avoid circular dependency at module load time
-function checkAnalyticsEnabled(): boolean {
+onStartup(() => {
+	analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
+	analyticsReadOnlyChecked = false;
+	setFullTextAnalyticsEnabled(checkAnalyticsEnabled(false));
+});
+
+// Check read-only mode lazily to avoid circular dependency at module load time. The event loop
+// sampler starts here rather than at load, so a read-only worker never runs it.
+export function checkAnalyticsEnabled(startSampler = true): boolean {
+	if (!startSampler) return analyticsEnabled && !isReadOnlyMode();
 	if (!analyticsReadOnlyChecked) {
 		analyticsReadOnlyChecked = true;
-		if (isReadOnlyMode()) {
-			analyticsEnabled = false;
-		}
+		if (isReadOnlyMode()) analyticsEnabled = false;
+		else if (analyticsEnabled) startEventLoopDelayMonitor();
 	}
 	return analyticsEnabled;
 }
 
+/** Resets this thread's analytics window; other threads keep their own. */
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
+	setFullTextAnalyticsEnabled(enabled);
+	if (enabled) startEventLoopDelayMonitor();
+	else stopEventLoopDelayMonitor();
 	clearTimeout(sendAnalyticsTimeout); // reset this
 	sendAnalyticsTimeout = null;
+	// The cancelled window must not stretch the next one's period, skip its histogram reset, or leak its samples.
+	analyticsStart = 0;
+	lastFlushAt = 0;
+	activeActions = new Map();
+	actionIndex = new Map();
+	getTransactionQueueDepths(); // restarts the queue high-water marks with the window
+	analyticsGeneration++;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -114,27 +147,85 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  * @param type
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (!checkAnalyticsEnabled()) return;
-	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
+	if (!checkAnalyticsEnabled() || analyticsExiting) return;
+	const actionsByPath = actionIndex.get(metric)?.get(method)?.get(type);
+	const action = actionsByPath?.get(path);
+	if (action !== undefined) {
+		recordExistingAction(value, action);
+		armFlush();
+	} else {
+		const existing = recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
+		if (existing !== undefined && isPrimitive(path) && isPrimitive(method) && isPrimitive(type))
+			(actionsByPath ?? indexedActionsByPath(metric, method, type)).set(path, existing);
+	}
+}
+
+// Keyed by identity, a fresh object per call (a request body's operation) would add an entry per call
+function isPrimitive(value: unknown): boolean {
+	return value === null || (typeof value !== 'object' && typeof value !== 'function');
+}
+
+export function isActionIndexedForTests(metric: string, path?: string, method?: string, type?: string): boolean {
+	return actionIndex.get(metric)?.get(method)?.get(type)?.has(path) ?? false;
+}
+
+function indexedActionsByPath(metric: string, method?: string, type?: string): Map<string | undefined, Action> {
+	let byMethod = actionIndex.get(metric);
+	if (byMethod === undefined) actionIndex.set(metric, (byMethod = new Map()));
+	let byType = byMethod.get(method);
+	if (byType === undefined) byMethod.set(method, (byType = new Map()));
+	let byPath = byType.get(type);
+	if (byPath === undefined) byType.set(type, (byPath = new Map()));
+	return byPath;
+}
+
+/** recordAction with the key built once, for a hot path that would otherwise concatenate and hash it per call */
+export function actionRecorder(metric: string, path?: string, method?: string, type?: string): (value: Value) => void {
+	const key = actionKey(metric, path, method, type);
+	return (value) => {
+		if (checkAnalyticsEnabled() && !analyticsExiting) recordKeyedAction(key, value, metric, path, method, type);
+	};
+}
+
+function actionKey(metric: string, path?: string, method?: string, type?: string): string {
 	let key = metric + (path ? '-' + path : '');
 	if (method !== undefined) key += '-' + method;
 	if (type !== undefined) key += '-' + type;
+	return key;
+}
+
+/** The action the window already held for the key; undefined when this call started it */
+function recordKeyedAction(
+	key: string,
+	value: Value,
+	metric: string,
+	path?: string,
+	method?: string,
+	type?: string
+): Action | undefined {
 	const action = activeActions.get(key);
 	if (action) {
 		recordExistingAction(value, action);
 	} else {
 		recordNewAction(key, value, metric, path, method, type);
 	}
-	if (!sendAnalyticsTimeout) sendAnalytics();
+	armFlush();
+	return action;
 }
 
-server.recordAnalytics = recordAction;
+function armFlush() {
+	if (!sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
+}
+
+// Let the storage layer emit write-commit latency without statically depending on this module.
+setCommitLatencyRecorder((durationMs) => recordAction(durationMs, METRIC.TRANSACTION_COMMIT_TIME));
 
 export function recordActionBinary(value, metric, path?, method?, type?) {
 	recordAction(Boolean(value), metric, path, method, type);
 }
 
 let analyticsStart = 0;
+let lastFlushAt = 0;
 export const analyticsDelay = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
 const analyticsListeners = [];
@@ -142,88 +233,179 @@ const analyticsAggregateListeners = [];
 
 export function addAnalyticsListener(callback) {
 	analyticsListeners.push(callback);
+	return () => {
+		const index = analyticsListeners.indexOf(callback);
+		if (index >= 0) analyticsListeners.splice(index, 1);
+	};
+}
+
+export function requestAnalyticsFlush(): void {
+	if (!analyticsExiting && checkAnalyticsEnabled() && !sendAnalyticsTimeout) contextStorage.exit(sendAnalytics);
+}
+
+/** Deliver the last window after resource owners close, without starting new periodic work. */
+export function flushAnalyticsForExit(): Promise<void> {
+	if (exitAnalyticsFlush) return exitAnalyticsFlush;
+	analyticsExiting = true;
+	clearTimeout(sendAnalyticsTimeout);
+	sendAnalyticsTimeout = null;
+	return (exitAnalyticsFlush = contextStorage.exit(async () => {
+		await runningAnalyticsFlush?.catch(() => {});
+		if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
+		else for (const listener of [...analyticsListeners]) listener([], true);
+		if (!parentPort) await RawAnalyticsTable?.primaryStore.committed;
+	}));
 }
 
 const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
 
 /**
- * Periodically send analytics data back to the main thread for storage
+ * Periodically send analytics data back to the main thread for storage. Callers arm it through
+ * contextStorage.exit(): the first sample of a period comes from some request, but the flush and the
+ * scheduled tasks it starts are process-wide work, which under that request's context would write as
+ * its user and, once its client disconnected, have every write rejected by its aborted signal.
  */
 function sendAnalytics() {
-	analyticsStart ||= performance.now();
-	sendAnalyticsTimeout = setTimeout(async () => {
-		sendAnalyticsTimeout = null;
-		const period = performance.now() - analyticsStart;
-		analyticsStart = 0;
-		const metrics = [];
-		const report = {
-			time: Date.now(),
-			period,
-			threadId,
-			metrics,
-		};
-		for (const [_name, action] of activeActions) {
-			if (action.values) {
-				const values = action.values.subarray(0, (action.values as any).index);
-				values.sort();
-				const count = values.length;
-				// compute the stats
-				let lastUpperBound = 0;
-				const distribution = [];
-				let lastValue;
-				for (const percentile of IDEAL_PERCENTILES) {
-					const upperBound = Math.floor(count * percentile);
-					const value = values[upperBound - 1];
-					if (upperBound > lastUpperBound) {
-						const count = upperBound - lastUpperBound;
-						if (value === lastValue) {
-							const entry = distribution[distribution.length - 1];
-							if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
-							else entry.count += count;
-						} else {
-							distribution.push(count > 1 ? { value, count } : value);
-							lastValue = value;
-						}
-						lastUpperBound = upperBound;
-					}
-				}
-				metrics.push(
-					Object.assign(action.description, {
-						mean: action.total / count,
-						distribution,
-						count,
-					})
-				);
-			} else if (action.callback) {
-				metrics.push(Object.assign(action.description, action.callback(action)));
-			} else {
-				metrics.push(
-					Object.assign(action.description, {
-						total: action.total,
-						count: action.count,
-					})
-				);
-			}
-			await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
-		}
-		const memoryUsage = process.memoryUsage();
-		metrics.push({
-			metric: 'memory',
-			threadId,
-			byThread: true,
-			...memoryUsage,
-		});
-		for (const listener of analyticsListeners) {
-			listener(metrics);
-		}
-		activeActions = new Map();
-		if (parentPort)
-			parentPort.postMessage({
-				type: ANALYTICS_REPORT_TYPE,
-				report,
-			});
-		else recordAnalytics({ report });
+	if (!analyticsStart) {
+		analyticsStart = performance.now();
+		// After an idle gap or at boot, the report's delay covers its own window, not the gap. Right
+		// after a flush, which already reset the histogram, another reset would only add a blind spot.
+		if (!lastFlushAt || analyticsStart - lastFlushAt > analyticsDelay) resetEventLoopDelay();
+	}
+	sendAnalyticsTimeout = setTimeout(() => {
+		// One more timer turn: a stall that ran past the deadline is recorded by the event loop
+		// sampler's overdue firing, which libuv runs before a timer armed now, and the read below
+		// would otherwise reset that sample away.
+		sendAnalyticsTimeout = setTimeout(flushPeriodicAnalytics, 0).unref();
 	}, analyticsDelay).unref();
+}
+
+function flushPeriodicAnalytics(): void {
+	void flushAnalytics().catch((error) => log.error?.('Analytics flush failed', error));
+}
+
+function flushAnalytics(final = false): Promise<void> {
+	const run = () => collectAnalytics(final);
+	const result = runningAnalyticsFlush ? runningAnalyticsFlush.then(run, run) : run();
+	runningAnalyticsFlush = result;
+	const settled = () => {
+		if (runningAnalyticsFlush === result) runningAnalyticsFlush = undefined;
+	};
+	void result.then(settled, settled);
+	return result;
+}
+
+async function collectAnalytics(final: boolean) {
+	sendAnalyticsTimeout = null;
+	const generation = analyticsGeneration;
+	// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
+	// an entry already reported, and dropped with it.
+	const reportingActions = activeActions;
+	activeActions = new Map();
+	actionIndex = new Map();
+	const period = analyticsStart ? performance.now() - analyticsStart : 0;
+	analyticsStart = 0;
+	// Read before the first yield too, so the event loop's samples from the rest of the flush belong
+	// to the next report.
+	const eventLoopDelay = readEventLoopDelay();
+	lastFlushAt = performance.now();
+	const metrics = [];
+	const report = {
+		time: Date.now(),
+		period,
+		threadId,
+		metrics,
+	};
+	for (const [_name, action] of reportingActions) {
+		if (action.values) {
+			const values = action.values.subarray(0, (action.values as any).index);
+			values.sort();
+			const count = values.length;
+			// compute the stats
+			let lastUpperBound = 0;
+			const distribution = [];
+			let lastValue;
+			for (const percentile of IDEAL_PERCENTILES) {
+				const upperBound = Math.floor(count * percentile);
+				const value = values[upperBound - 1];
+				if (upperBound > lastUpperBound) {
+					const count = upperBound - lastUpperBound;
+					if (value === lastValue) {
+						const entry = distribution[distribution.length - 1];
+						if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
+						else entry.count += count;
+					} else {
+						distribution.push(count > 1 ? { value, count } : value);
+						lastValue = value;
+					}
+					lastUpperBound = upperBound;
+				}
+			}
+			metrics.push(
+				Object.assign(action.description, {
+					mean: action.total / count,
+					distribution,
+					count,
+				})
+			);
+		} else if (action.callback) {
+			metrics.push(Object.assign(action.description, action.callback(action)));
+		} else {
+			metrics.push(
+				Object.assign(action.description, {
+					total: action.total,
+					count: action.count,
+				})
+			);
+		}
+		await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
+		if (generation !== analyticsGeneration) return;
+	}
+	const memoryUsage = process.memoryUsage();
+	metrics.push({
+		metric: 'memory',
+		threadId,
+		byThread: true,
+		...memoryUsage,
+	});
+	if (eventLoopDelay) {
+		metrics.push({
+			metric: METRIC.EVENT_LOOP_DELAY,
+			threadId,
+			perThread: true,
+			...eventLoopDelay,
+		});
+	}
+	// Transaction queue depth gauges. `depth` is the instantaneous depth at emit time; `maxDepth` is
+	// the high-water mark over this sampling window (the queue can fill and drain within a single
+	// period, so the instantaneous sample alone would miss short spikes). Reported per-thread and
+	// summed across threads by the aggregator, mirroring the `memory` gauge above.
+	const queueDepths = getTransactionQueueDepths();
+	metrics.push({
+		metric: METRIC.WRITE_TRANSACTION_QUEUE_DEPTH,
+		threadId,
+		byThread: true,
+		depth: queueDepths.writeDepth,
+		maxDepth: queueDepths.writeMaxDepth,
+	});
+	metrics.push({
+		metric: METRIC.READ_TRANSACTION_QUEUE_DEPTH,
+		threadId,
+		byThread: true,
+		depth: queueDepths.readDepth,
+		maxDepth: queueDepths.readMaxDepth,
+	});
+	for (const listener of [...analyticsListeners]) {
+		if (generation !== analyticsGeneration) return;
+		listener(metrics, final);
+	}
+	if (generation !== analyticsGeneration) return;
+	if (parentPort)
+		parentPort.postMessage({
+			type: ANALYTICS_REPORT_TYPE,
+			report,
+		});
+	else await recordAnalytics({ report });
 }
 
 export async function recordHostname() {
@@ -267,7 +449,15 @@ function storeMetric(table: Table, metric: Metric) {
 		...metric,
 	};
 	log.trace?.(`storing metric ${JSON.stringify(metricValue)}`);
-	table.put(metricValue.id, metricValue);
+	try {
+		Promise.resolve(table.put(metricValue.id, metricValue)).catch(logMetricWriteError);
+	} catch (error) {
+		logMetricWriteError(error);
+	}
+}
+
+function logMetricWriteError(error) {
+	log[error?.statusCode === 503 ? 'debug' : 'warn']?.('Unable to save analytics metric', error);
 }
 
 interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {
@@ -329,13 +519,13 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 	return dbUsedSize;
 }
 
-function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
+export function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
 		try {
 			const [firstTable] = Object.values(tables);
 			const dbAuditSize = firstTable?.getAuditSize();
-			if (!dbAuditSize) {
-				return;
+			if (dbAuditSize == null) {
+				continue;
 			}
 			let metric;
 			if (firstTable.primaryStore instanceof RocksDatabase) {
@@ -374,54 +564,464 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
-function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
-	for (const [db, tables] of Object.entries(databases)) {
-		try {
-			const [firstTable] = Object.values(tables);
-			const storageStats = firstTable?.getStorageStats();
-			if (!storageStats) {
-				return;
+export async function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
+	await Promise.all(
+		Object.entries(databases).map(async ([db, tables]) => {
+			try {
+				const [firstTable] = Object.values(tables);
+				const storageStats = await firstTable?.getStorageStats();
+				if (!storageStats) {
+					return;
+				}
+				const metric = {
+					metric: METRIC.STORAGE_VOLUME,
+					database: db,
+					...storageStats,
+				};
+				storeMetric(analyticsTable, metric);
+				log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
+			} catch (error) {
+				// a table or db was deleted, could get an error here
+				log.warn?.(`Error getting DB volume metrics`, error);
 			}
-			const metric = {
-				metric: METRIC.STORAGE_VOLUME,
-				database: db,
-				...storageStats,
-			};
-			storeMetric(analyticsTable, metric);
-			log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
+		})
+	);
+}
+
+// RocksDB stat names are kebab-case with a "rocksdb." prefix (e.g. "rocksdb.block.cache.hit");
+// camelCase them to match the field shape used throughout systemInformation.
+export function toRocksDBCamelCase(key: string): string {
+	return key.replace(/^rocksdb\./, '').replace(/[-.]([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+// Every column family on the same physical RocksDB shares one Statistics object, so all ticker
+// counters returned by getStats() — including memtableHit/memtableMiss — are DB-wide, not per-CF.
+// Listing them as DB-level avoids emitting the same delta on every table row.
+const ROCKSDB_DB_COUNTERS = [
+	'bytesRead',
+	'bytesWritten',
+	'numberKeysRead',
+	'numberKeysWritten',
+	'blockCacheHit',
+	'blockCacheMiss',
+	'blockCacheDataHit',
+	'blockCacheDataMiss',
+	'blockCacheIndexHit',
+	'blockCacheIndexMiss',
+	'blockCacheFilterHit',
+	'blockCacheFilterMiss',
+	'stallMicros',
+	'memtableHit',
+	'memtableMiss',
+	// Transaction log counters, summed across all of a database's logs by getStats(). The summed
+	// roll-up rides on the db-level rocksdb-stats row; per-log detail lives on rocksdb-txnlog-stats.
+	'txnlogBytesWritten',
+	'txnlogTransactionsWritten',
+] as const;
+// Gauges are scalar values that are not cumulative. They go up and down over time.
+const ROCKSDB_DB_GAUGES = [
+	'blockCacheUsage',
+	'blockCacheCapacity',
+	'numRunningFlushes',
+	// Transaction log gauges, summed across all of a database's logs by getStats().
+	'txnlogLogCount',
+	'txnlogFileCount',
+	'txnlogTotalSizeBytes',
+	'txnlogMappedBytes',
+	'txnlogOverlayBytes',
+	'txnlogActiveMaps',
+	'txnlogPendingTransactions',
+	'txnlogUncommittedTransactions',
+	'txnlogReplayGapBytes',
+] as const;
+const ROCKSDB_TABLE_GAUGES = ['numRunningCompactions', 'compactionPending'] as const;
+
+// Per-transaction-log stats (rocksdb-txnlog-stats metric), flattened from log.getStats(), one
+// row per log. Sequence numbers, positions, and static config are intentionally dropped as noise
+// (see normalizeTxnLogStats).
+const ROCKSDB_TXNLOG_GAUGES = [
+	'fileCount',
+	'totalSizeBytes',
+	'currentFileSize',
+	'pendingTransactions',
+	'uncommittedTransactions',
+	'replayGapBytes',
+	'memoryMappedBytes',
+	'memoryOverlayBytes',
+	'memoryActiveMaps',
+	'purgeOldestFileAgeMs',
+	'purgePurgeableFiles',
+	'purgeRetainedUnflushedFiles',
+] as const;
+// Per-transaction-log lifetime counters (diffed to per-period rates).
+const ROCKSDB_TXNLOG_COUNTERS = [
+	'totalsTransactionsWritten',
+	'totalsEntriesWritten',
+	'totalsBytesWritten',
+	'totalsRotations',
+	'totalsWriteFailures',
+] as const;
+
+const lastRocksDBDbStats = new Map<string, Record<string, number>>();
+// Per-log counter baselines, nested db name -> log name -> last normalized stats, so a database's
+// log baselines can be pruned together when the database is dropped.
+const lastRocksDBLogStats = new Map<string, Map<string, Record<string, number>>>();
+let lastRocksDBStatsTime = 0;
+
+export function diffRocksDBCounter(curr: number, last: number | undefined): number {
+	// A negative delta means RocksDB itself reset the counter mid-process (e.g. an internal
+	// statistics reset). Process restarts are handled separately because the module-level
+	// last-stats maps are reinitialized, which takes the no-prior-reading path below.
+	if (last === undefined || curr < last) return curr;
+	return curr - last;
+}
+
+/**
+ * Filter a raw RocksDB stats record to numeric scalar entries, camelCasing the keys.
+ * Histogram entries (objects) are dropped — they don't fit the flat analytics row model.
+ * @param raw - The raw RocksDB stats record to normalize.
+ * @returns The normalized RocksDB stats record.
+ */
+export function normalizeRocksDBStats(raw: Record<string, unknown>): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (!raw) return out;
+	for (const [key, value] of Object.entries(raw)) {
+		if (typeof value === 'number') out[toRocksDBCamelCase(key)] = value;
+	}
+	return out;
+}
+
+/**
+ * Flattens a per-log TransactionLogStats snapshot to the flat numeric record used by analytics,
+ * selecting only the performance- and resource-relevant fields. Sequence numbers, log positions,
+ * the path, and static config are intentionally dropped — they carry no analytic signal as a
+ * periodic time series (replayGapBytes already captures the meaningful flushed-vs-written gap).
+ * @param raw - The raw per-log stats from log.getStats().
+ * @returns The normalized per-log stats record.
+ */
+export function normalizeTxnLogStats(raw: TransactionLogStats): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (!raw) return out;
+	const setNumber = (key: string, value: unknown) => {
+		if (typeof value === 'number') out[key] = value;
+	};
+	setNumber('fileCount', raw.fileCount);
+	setNumber('totalSizeBytes', raw.totalSizeBytes);
+	setNumber('currentFileSize', raw.currentFileSize);
+	setNumber('pendingTransactions', raw.pendingTransactions);
+	setNumber('uncommittedTransactions', raw.uncommittedTransactions);
+	setNumber('replayGapBytes', raw.replayGapBytes);
+	const { memory, purge, totals } = raw;
+	if (memory) {
+		setNumber('memoryMappedBytes', memory.mappedBytes);
+		setNumber('memoryOverlayBytes', memory.overlayBytes);
+		setNumber('memoryActiveMaps', memory.activeMaps);
+	}
+	if (purge) {
+		setNumber('purgeOldestFileAgeMs', purge.oldestFileAgeMs);
+		setNumber('purgePurgeableFiles', purge.purgeableFiles);
+		setNumber('purgeRetainedUnflushedFiles', purge.retainedUnflushedFiles);
+	}
+	if (totals) {
+		setNumber('totalsTransactionsWritten', totals.transactionsWritten);
+		setNumber('totalsEntriesWritten', totals.entriesWritten);
+		setNumber('totalsBytesWritten', totals.bytesWritten);
+		setNumber('totalsRotations', totals.rotations);
+		setNumber('totalsWriteFailures', totals.writeFailures);
+	}
+	return out;
+}
+
+/**
+ * Gathers metrics for a RocksDB database.
+ * @param dbName - The name of the database.
+ * @param stats - The stats to build the metric from.
+ * @param lastStats - The last stats to diff the stats from.
+ * @param now - The current time.
+ * @param period - The period to store the metrics for.
+ */
+export function buildRocksDBDbMetric(
+	dbName: string,
+	stats: Record<string, number>,
+	lastStats: Record<string, number> | undefined,
+	now: number,
+	period: number | undefined
+): Record<string, unknown> {
+	const metric: Record<string, unknown> = {
+		metric: METRIC.ROCKSDB_STATS,
+		database: dbName,
+		time: now,
+	};
+	if (period !== undefined) metric.period = period;
+	for (const field of ROCKSDB_DB_COUNTERS) {
+		metric[field] = diffRocksDBCounter(stats[field] ?? 0, lastStats?.[field]);
+	}
+	for (const field of ROCKSDB_DB_GAUGES) {
+		metric[field] = stats[field] ?? 0;
+	}
+	return metric;
+}
+
+/**
+ * Gathers metrics for a RocksDB table. Only gauges are reported per-table; ticker counters
+ * are DB-wide (see ROCKSDB_DB_COUNTERS comment) and live on the DB-level metric.
+ * @param dbName - The name of the database.
+ * @param tableName - The name of the table.
+ * @param stats - The stats to build the metric from.
+ * @param now - The current time.
+ * @param period - The period to store the metrics for.
+ */
+export function buildRocksDBTableMetric(
+	dbName: string,
+	tableName: string,
+	stats: Record<string, number>,
+	now: number,
+	period: number | undefined
+): Record<string, unknown> {
+	const metric: Record<string, unknown> = {
+		metric: METRIC.ROCKSDB_STATS,
+		database: dbName,
+		table: tableName,
+		time: now,
+	};
+	if (period !== undefined) metric.period = period;
+	for (const field of ROCKSDB_TABLE_GAUGES) {
+		metric[field] = stats[field] ?? 0;
+	}
+	return metric;
+}
+
+/**
+ * Gathers metrics for a single RocksDB transaction log (rocksdb-txnlog-stats). Counters are
+ * diffed against the prior sample (like the DB-level counters); gauges pass through absolute.
+ * Carries a `log` dimension alongside `database`.
+ * @param dbName - The name of the database the log is attached to.
+ * @param logName - The name of the transaction log.
+ * @param stats - The normalized per-log stats.
+ * @param lastStats - The previous sample's normalized stats, for diffing counters.
+ * @param now - The current time.
+ * @param period - The period to store the metrics for.
+ */
+export function buildRocksDBTxnLogMetric(
+	dbName: string,
+	logName: string,
+	stats: Record<string, number>,
+	lastStats: Record<string, number> | undefined,
+	now: number,
+	period: number | undefined
+): Record<string, unknown> {
+	const metric: Record<string, unknown> = {
+		metric: METRIC.ROCKSDB_TXNLOG_STATS,
+		database: dbName,
+		log: logName,
+		time: now,
+	};
+	if (period !== undefined) metric.period = period;
+	for (const field of ROCKSDB_TXNLOG_COUNTERS) {
+		metric[field] = diffRocksDBCounter(stats[field] ?? 0, lastStats?.[field]);
+	}
+	for (const field of ROCKSDB_TXNLOG_GAUGES) {
+		metric[field] = stats[field] ?? 0;
+	}
+	return metric;
+}
+
+/**
+ * Stores the RocksDB stats metrics for the given databases.
+ * @param analyticsTable - The analytics table to store the metrics in.
+ * @param databases - The databases to store the metrics for.
+ * @param now - The current time.
+ * @param period - The period to store the metrics for.
+ */
+export function storeRocksDBStatsMetrics(
+	analyticsTable: Table,
+	databases: Databases,
+	now: number,
+	period: number | undefined
+) {
+	for (const [db, tables] of Object.entries(databases)) {
+		if (!tables) continue; // no tables or not loaded/initialized yet
+		const tableEntries = Object.entries(tables);
+		const [, firstTable] = tableEntries[0] ?? [];
+		// Tables in a database share one root store; check the first to skip non-RocksDB databases.
+		const rootStore = firstTable?.primaryStore;
+		if (!(rootStore instanceof RocksDatabase)) continue;
+
+		let firstNormalizedStats: Record<string, number> | undefined;
+		for (const [tableName, tbl] of tableEntries) {
+			try {
+				const tableStats = normalizeRocksDBStats(tbl.primaryStore.getStats());
+				if (!firstNormalizedStats) firstNormalizedStats = tableStats;
+				const tableMetric = buildRocksDBTableMetric(db, tableName, tableStats, now, period);
+				storeMetric(analyticsTable, tableMetric);
+			} catch (error) {
+				// A table may be removed mid-collection — keep iterating siblings.
+				log.warn?.(`Error getting RocksDB stats for table ${db}.${tableName}`, error);
+			}
+		}
+
+		if (firstNormalizedStats) {
+			// Any table's getStats() returns the same DB-wide counters; reuse the first one's.
+			const lastDbStats = lastRocksDBDbStats.get(db);
+			// Skip the first sample for a db — counters are cumulative since process start,
+			// so reporting them as a delta would produce a misleading spike.
+			if (lastDbStats !== undefined) {
+				const dbMetric = buildRocksDBDbMetric(db, firstNormalizedStats, lastDbStats, now, period);
+				storeMetric(analyticsTable, dbMetric);
+				log.trace?.(`db ${db} rocksdb stats metric: ${JSON.stringify(dbMetric)}`);
+			}
+			lastRocksDBDbStats.set(db, firstNormalizedStats);
+		}
+
+		// Per-transaction-log stats. Logs are attached at the database (root store) level, so we
+		// enumerate them once per database rather than per table.
+		let logNames: string[];
+		try {
+			logNames = rootStore.listLogs();
 		} catch (error) {
-			// a table or db was deleted, could get an error here
-			log.warn?.(`Error getting DB volume metrics`, error);
+			// The store may have been closed/dropped mid-cycle (e.g. "Database not open"); skip this
+			// database's logs rather than letting the throw abort the whole analytics cycle.
+			log.warn?.(`Error listing RocksDB logs for ${db}`, error);
+			continue;
+		}
+		let logStatsByName = lastRocksDBLogStats.get(db);
+		const seenLogs = new Set<string>();
+		for (const logName of logNames) {
+			seenLogs.add(logName);
+			try {
+				const logStats = normalizeTxnLogStats(rootStore.useLog(logName).getStats());
+				const lastLogStats = logStatsByName?.get(logName);
+				// Skip the first sample for a log — its counters are cumulative since the log was
+				// created, so a delta-from-zero would produce a misleading spike (mirrors the
+				// DB-level skip above).
+				if (lastLogStats !== undefined) {
+					const logMetric = buildRocksDBTxnLogMetric(db, logName, logStats, lastLogStats, now, period);
+					storeMetric(analyticsTable, logMetric);
+					log.trace?.(`db ${db} log ${logName} rocksdb txnlog metric: ${JSON.stringify(logMetric)}`);
+				}
+				if (!logStatsByName) {
+					logStatsByName = new Map();
+					lastRocksDBLogStats.set(db, logStatsByName);
+				}
+				logStatsByName.set(logName, logStats);
+			} catch (error) {
+				// A log may be removed mid-collection — keep iterating siblings.
+				log.warn?.(`Error getting RocksDB stats for log ${db}.${logName}`, error);
+			}
+		}
+		// Drop cached baselines for logs that no longer exist on this database.
+		if (logStatsByName) {
+			for (const cachedLog of logStatsByName.keys()) {
+				if (!seenLogs.has(cachedLog)) logStatsByName.delete(cachedLog);
+			}
 		}
 	}
 }
 
-export async function getDirectorySizeAsync(dirPath: string): Promise<number> {
-	try {
-		const entries = await readdir(dirPath, { withFileTypes: true });
-		const sizes = await Promise.all(
-			entries.map((entry) => {
-				const fullPath = join(dirPath, entry.name);
-				if (entry.isDirectory()) return getDirectorySizeAsync(fullPath);
-				if (entry.isFile()) return stat(fullPath).then((s) => s.size);
-				return 0;
-			})
-		);
-		let total = 0;
-		for (const size of sizes) total += size;
-		return total;
-	} catch {
-		// directory may not exist or be inaccessible
-		return 0;
+/**
+ * Drop cached counter readings for databases that no longer exist, to bound memory
+ * growth across drop/recreate cycles and prevent stale baselines from producing wrong diffs.
+ * @param databases - The databases to prune the stats cache for.
+ */
+function pruneRocksDBStatsCache(databases: Databases) {
+	const activeDbs = new Set<string>(Object.keys(databases));
+	for (const key of lastRocksDBDbStats.keys()) {
+		if (!activeDbs.has(key)) lastRocksDBDbStats.delete(key);
 	}
+	for (const key of lastRocksDBLogStats.keys()) {
+		if (!activeDbs.has(key)) lastRocksDBLogStats.delete(key);
+	}
+}
+
+/**
+ * Returns a Databases view that includes the `system` database as an enumerable property.
+ * getDatabases() marks `system` non-enumerable so general consumers skip it; analytics
+ * needs to iterate over it like any other database.
+ */
+function getDatabasesIncludingSystem(): Databases {
+	const databases = getDatabases();
+	if (!databases.system) return databases;
+	const all: Databases = Object.create(null);
+	Object.assign(all, databases);
+	all.system = databases.system;
+	return all;
+}
+
+/**
+ * Total size of everything under `dirPath`, measured with the smallest footprint we can manage rather
+ * than the fewest wall-clock seconds: this runs about every ten minutes (`analytics.aggregatePeriod`
+ * 60s x `analytics.storageInterval` 10), so it can afford to be slow, and it shares the libuv thread
+ * pool with everything else on this thread.
+ *
+ * Peak live set is O(directories): each directory streams through `opendir` instead of materializing a
+ * dirent array, files are stat'd one at a time, and only the directory stack and a running total are
+ * retained. The previous implementation fanned out over every entry in the tree with an unbounded
+ * `Promise.all`, holding a path string, a dirent and a pending stat per file simultaneously — which
+ * grew the main thread's heap until V8 aborted on a root with a large blob store (harper#2240).
+ *
+ * A per-file stat failure must not zero the tree: the previous `Promise.all` rejected on one bad stat
+ * and the outer catch returned 0 for everything under `dirPath`, so a file removed mid-walk erased the
+ * whole measurement.
+ *
+ * `statFile` is a test seam; production always uses `stat`.
+ */
+export async function getDirectorySizeAsync(
+	dirPath: string,
+	options?: { statFile?: (path: string) => Promise<{ size: number }> }
+): Promise<number> {
+	const statFile = options?.statFile ?? stat;
+	const directories: string[] = [dirPath];
+	let total = 0;
+	let statFailures = 0;
+	while (directories.length > 0) {
+		const directory = directories.pop() as string;
+		let handle;
+		try {
+			handle = await opendir(directory);
+		} catch {
+			continue; // may not exist or be inaccessible — contributes 0, as before
+		}
+		try {
+			for await (const entry of handle) {
+				const fullPath = join(directory, entry.name);
+				if (entry.isDirectory()) {
+					directories.push(fullPath);
+					continue;
+				}
+				if (!entry.isFile()) continue;
+				try {
+					total += (await statFile(fullPath)).size;
+				} catch {
+					statFailures++;
+				}
+			}
+		} catch {
+			// Iteration failed partway (permissions, removal mid-walk). `for await` does not run the
+			// iterator's return() when next() rejects, so close explicitly rather than relying on Dir
+			// internals; a double close throws ERR_DIR_CLOSED, hence the swallow.
+			await handle.close().catch(() => {});
+		}
+	}
+	if (statFailures > 0) {
+		log.debug?.(`Storage metric: ${statFailures} file(s) could not be stat'd; reported size is an under-count`);
+	}
+	return total;
 }
 
 const DEFAULT_STORAGE_INTERVAL = 10;
 let nodeStorageInterval = DEFAULT_STORAGE_INTERVAL;
 let nodeStorageCycleCount = 0;
+let nodeStorageWalkInFlight = false;
 
 async function storeNodeStorageMetric(analyticsTable: Table) {
 	if (nodeStorageInterval <= 0 || ++nodeStorageCycleCount % nodeStorageInterval !== 1) return;
+	// A walk of a large root can outlast the cadence; overlapping walks would multiply the peak. Logged
+	// so a gap in the series reads as "measurement is not keeping up" rather than "storage stopped".
+	if (nodeStorageWalkInFlight) {
+		log.debug?.('Skipping node storage metric: the previous walk is still running');
+		return;
+	}
+	nodeStorageWalkInFlight = true;
 	try {
 		const size = await getDirectorySizeAsync(getHdbBasePath());
 		storeMetric(analyticsTable, {
@@ -430,8 +1030,64 @@ async function storeNodeStorageMetric(analyticsTable: Table) {
 		});
 	} catch (error) {
 		log.warn?.('Error getting node storage metric', error);
+	} finally {
+		nodeStorageWalkInFlight = false;
 	}
 }
+
+// Upper bound on the cold-start reverse scan that seeds `lastAggregationTime`. A healthy node's
+// newest record matches at depth 1; this cap only engages in the pathological no-matching-record
+// case, keeping the one-time main-thread decode cost bounded instead of O(table size). See #1538.
+const MAX_LAST_AGGREGATION_SCAN = 1000;
+// Time of this node's last completed aggregation, tracked in O(1) across cycles within a process.
+let lastAggregationTime: number | undefined;
+// Resume point into the raw analytics table: it moves only over records a cycle read, so it is not
+// a clock and never passes an unread report.
+let rawCursor: number | undefined;
+// A cycle stopped at its window edge with raw records still behind it, so the next one skips the
+// cadence guard and drains the next window.
+let aggregationBehind = false;
+
+/**
+ * Find the time of the local node's most recent aggregation record by scanning back from the
+ * newest entry. The scan is BOUNDED to `maxScan` records: if no composite-id record for this node
+ * sits near the top — e.g. legacy scalar ids carried across an upgrade, or a node that has never
+ * completed an aggregation — an unbounded reverse scan would decode the entire table with msgpackr
+ * on the main thread, starving TLS handshakes and other main-thread work. Returns `undefined` when
+ * no match is found within the bound, so the caller falls back to aggregating recent raw data
+ * rather than scanning to EOF. Exported for testing. See #1538.
+ */
+export function findLastAggregationTime(
+	primaryStore: { getRange(options: object): Iterable<{ value?: any }> },
+	localNodeId: number,
+	maxScan: number = MAX_LAST_AGGREGATION_SCAN
+): number | undefined {
+	let scanned = 0;
+	for (const entry of primaryStore.getRange({ start: Infinity, end: false, reverse: true })) {
+		if (entry.value?.time && Array.isArray(entry.value.id) && entry.value.id[1] === localNodeId)
+			return entry.value.time;
+		if (++scanned >= maxScan) break;
+	}
+	return undefined;
+}
+
+let aggregationRunning = false;
+
+/** Two cycles reading the same cursor roll the same window up twice, and the scheduler does not
+ * await its callback. */
+export async function runAggregationCycle(fromPeriod, toPeriod = 60000) {
+	if (aggregationRunning) return;
+	aggregationRunning = true;
+	try {
+		await aggregation(fromPeriod, toPeriod);
+	} finally {
+		aggregationRunning = false;
+	}
+}
+
+// A mean of per-sample peaks is not a peak, so peak-named measures fold with max.
+const MAX_MEASURE_NAME = /^max[A-Z]/;
+const PER_THREAD_METRICS = new Map<string, string>([['duration', METRIC.DURATION_BY_THREAD]]);
 
 async function aggregation(fromPeriod, toPeriod = 60000) {
 	const rawAnalyticsTable = getRawAnalyticsTable();
@@ -439,78 +1095,132 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	const taskQueueLatency = (async () => {
 		const start = performance.now();
 		// measure how long it takes to enqueue and get a callback from a simple/fast task:
-		await stat(getLogFilePath());
+		// The result is discarded — only the round trip is being measured — so a missing file is not a
+		// failure. It rejects whenever the probe races a rotation, which the write-path size guard
+		// makes a routine event rather than a once-a-minute one, and an unhandled rejection here takes
+		// the process down over a latency measurement.
+		await stat(getLogFilePath()).catch(() => {});
 		const delay = performance.now() - start;
 		if (delay > 5000) {
 			log.warn?.('Unusually high task queue latency on the main thread of ' + Math.round(delay) + 'ms');
 		}
 		return delay;
 	})();
-	let lastForPeriod;
 	const localNodeId = getHostNodeId(server.hostname);
-	// find the last entry for this period for the local node only
-	for (const entry of analyticsTable.primaryStore.getRange({
-		start: Infinity,
-		end: false,
-		reverse: true,
-	})) {
-		if (!entry.value?.time || entry.value?.id[1] !== localNodeId) continue;
-		lastForPeriod = entry.value.time;
-		break;
+	// Find the time of this node's last aggregation. In steady state this is tracked in O(1) via
+	// `lastAggregationTime` (set at the end of every completed run below), so cycles after the
+	// first never touch the table. On the first cycle after boot we seed it once from the table
+	// via a bounded reverse scan (see findLastAggregationTime). Caching the seeded value keeps
+	// the next cycle O(1) even when this run early-returns below as "too recent"; a bound-hit
+	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and stamp the
+	// cadence marker at the end of the cycle instead (#1538).
+	let lastForPeriod = lastAggregationTime;
+	if (lastForPeriod === undefined) {
+		lastForPeriod = findLastAggregationTime(analyticsTable.primaryStore, localNodeId);
+		if (lastForPeriod !== undefined) {
+			lastAggregationTime = lastForPeriod;
+			rawCursor ??= lastForPeriod;
+		}
 	}
 	// was the last aggregation too recent to calculate a whole period?
-	if (Date.now() - toPeriod < lastForPeriod) return;
+	if (!aggregationBehind && lastForPeriod !== undefined && Date.now() - toPeriod < lastForPeriod) return;
 	let firstForPeriod;
 	const aggregateActions = new Map();
 	const distributions = new Map();
 	const threadsToAverage = [];
-	let lastTime: number;
+	// A measure's weight is the count of only the samples that carried it, per action or thread record.
+	const measureCounts = new Map<object, Record<string, number>>();
+	let lastTime: number | undefined;
+	let stoppedAtWindowEdge = false;
 	for (const { key, value } of rawAnalyticsTable.primaryStore.getRange({
-		start: lastForPeriod || false,
+		start: rawCursor || false,
 		exclusiveStart: true,
 		end: Infinity,
 	})) {
 		if (!value) continue;
 		if (firstForPeriod) {
-			if (key > firstForPeriod + toPeriod) break; // outside the period of interest
+			if (key > firstForPeriod + toPeriod) {
+				stoppedAtWindowEdge = true;
+				break; // outside the period of interest
+			}
 		} else firstForPeriod = key;
 		lastTime = key;
 		const { metrics, threadId } = value;
-		for (const entry of metrics || []) {
-			// eslint-disable-next-line no-unused-vars
-			let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
+		const aggregateEntry = (entry) => {
+			let {
+				path,
+				method,
+				type,
+				metric,
+				count,
+				total,
+				distribution,
+				threads: _threads,
+				threadId: _threadId,
+				perThread,
+				...measures
+			} = entry;
 			if (!count) count = 1;
 			let key = metric + (path ? '-' + path : '');
 			if (method !== undefined) key += '-' + method;
 			if (type !== undefined) key += '-' + type;
+			// No ordinary key ends in NUL and digits: HTTP methods are token characters, and an operation
+			// key, whose action name a request body chooses, always ends in `-operation`.
+			if (perThread) key += '\0' + threadId;
 			let action = aggregateActions.get(key);
+			if (entry.cumulative) {
+				if (!action || entry.sampledAt >= action.sampledAt) {
+					const latest = { ...entry, period: toPeriod, thread: threadId };
+					delete latest.perThread;
+					delete latest.threadId;
+					aggregateActions.set(key, latest);
+				}
+				return;
+			}
 			if (action) {
-				if (action.threads) {
+				const byThread = Boolean(action.byThread);
+				if (byThread) {
 					const actionForThread = action.threads[threadId];
 					if (actionForThread) action = actionForThread;
 					else {
 						action.threads[threadId] = { ...measures };
-						continue;
+						return;
 					}
 				}
 				if (!action.count) action.count = 1;
-				const previousCount = action.count;
+				let counts = measureCounts.get(action);
+				if (!counts) {
+					// Until its first fold, a target holds only its first sample.
+					counts = Object.create(null);
+					for (const measureName in action) {
+						if (typeof action[measureName] === 'number') counts[measureName] = action.count;
+					}
+					measureCounts.set(action, counts);
+				}
 				for (const measureName in measures) {
 					const value = measures[measureName];
-					if (typeof value === 'number') {
-						action[measureName] = (action[measureName] * previousCount + value * count) / (previousCount + count);
-					}
+					if (typeof value !== 'number') continue;
+					const measureCount = counts[measureName];
+					if (measureCount === undefined) action[measureName] = value;
+					else if (MAX_MEASURE_NAME.test(measureName)) action[measureName] = Math.max(action[measureName], value);
+					else action[measureName] = (action[measureName] * measureCount + value * count) / (measureCount + count);
+					counts[measureName] = (measureCount ?? 0) + count;
 				}
 				action.count += count;
-				if (total >= 0) {
+				// A thread's record is built from measures alone, so it has no total to add to.
+				if (total >= 0 && !byThread) {
 					action.total += total;
 					action.ratio = action.total / action.count;
 				}
 			} else {
 				action = { period: toPeriod, ...entry };
 				delete action.distribution;
+				delete action.threadId;
 				aggregateActions.set(key, action);
-				if (action.byThread) {
+				if (perThread) {
+					delete action.perThread;
+					action.thread = threadId;
+				} else if (action.byThread) {
 					action.threads = [];
 					action.threads[threadId] = { ...measures };
 					threadsToAverage.push(action);
@@ -524,23 +1234,32 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 					existingDistribution.push(...distribution);
 				}
 			}
+		};
+		for (const entry of metrics || []) {
+			aggregateEntry(entry);
+			const perThreadMetric = PER_THREAD_METRICS.get(entry.metric);
+			if (perThreadMetric)
+				aggregateEntry({ metric: perThreadMetric, count: entry.count, mean: entry.mean, perThread: true });
 		}
 		await rest();
 	}
+	// Peak-named measures sum per-thread peaks, which bounds concurrent depth only over intervals that
+	// every relevant thread's samples fully cover; the peaks need not coincide.
 	for (const entry of threadsToAverage) {
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
-		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
+		let { path, method, type, metric, count, total, distribution, threads, period, ...measures } = entry;
 		threads = threads.filter((thread) => thread);
 		for (const measureName in measures) {
-			if (typeof entry[measureName] !== 'number') continue;
-			let total = 0;
-			for (const thread of threads) {
+			if (typeof entry[measureName] === 'number') entry[measureName] = 0;
+		}
+		// A thread can carry measures the entry's first sample lacked.
+		for (const thread of threads) {
+			for (const measureName in thread) {
+				if (measureName === 'period') continue;
 				const value = thread[measureName];
-				if (typeof value === 'number') {
-					total += value;
-				}
+				if (typeof value === 'number')
+					entry[measureName] = (typeof entry[measureName] === 'number' ? entry[measureName] : 0) + value;
 			}
-			entry[measureName] = total;
 		}
 		entry.count = threads.length;
 		delete entry.threads;
@@ -618,15 +1337,28 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	};
 	storeMetric(analyticsTable, cruMetric);
 	lastResourceUsage = resourceUsage;
+	// The cursor may only pass records this cycle read, and nothing reads below it again: the scan
+	// covers one `toPeriod` window, and a raw report whose `put` has not committed is invisible to
+	// it however recent its key is. An empty scan therefore leaves the cursor where it was.
+	if (lastTime !== undefined) rawCursor = lastTime;
+	aggregationBehind = stoppedAtWindowEdge;
+	lastAggregationTime = now;
+
+	// `system` is set as non-enumerable on the object returned by getDatabases() so most
+	// callers skip it; for analytics we want it included, so build a view where it's enumerable.
+	const databases = getDatabasesIncludingSystem();
 
 	// database-size & table-size metrics
-	const databases = getDatabases();
 	storeDBSizeMetrics(analyticsTable, databases);
-	storeDBSizeMetrics(analyticsTable, { system: databases.system });
 
 	// database storage volume metrics
-	storeVolumeMetrics(analyticsTable, databases);
-	storeVolumeMetrics(analyticsTable, { system: databases.system });
+	await storeVolumeMetrics(analyticsTable, databases);
+
+	// rocksdb engine stats (only for RocksDB-backed databases)
+	const rocksDBPeriod = lastRocksDBStatsTime ? now - lastRocksDBStatsTime : undefined;
+	storeRocksDBStatsMetrics(analyticsTable, databases, now, rocksDBPeriod);
+	pruneRocksDBStatsCache(databases);
+	lastRocksDBStatsTime = now;
 
 	// node storage metric (total HDB directory size)
 	await storeNodeStorageMetric(analyticsTable);
@@ -714,19 +1446,19 @@ function startScheduledTasks() {
 	scheduledTasksRunning = true;
 	nodeStorageInterval = envGet(CONFIG_PARAMS.ANALYTICS_STORAGEINTERVAL) ?? DEFAULT_STORAGE_INTERVAL;
 	const AGGREGATE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
-	if (AGGREGATE_PERIOD) {
+	if (AGGREGATE_PERIOD > 0) {
 		// Clamp raw retention to at least one full aggregation period so raw records
 		// are never deleted before they can be rolled up.
 		const rawRetentionMs = Math.max(envGet(CONFIG_PARAMS.ANALYTICS_RAWRETENTIONMS) ?? RAW_EXPIRATION, AGGREGATE_PERIOD);
 		const aggregateRetentionMs = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATERETENTIONMS) ?? AGGREGATE_EXPIRATION;
 		setInterval(
 			async () => {
-				await aggregation(analyticsDelay, AGGREGATE_PERIOD);
+				await runAggregationCycle(analyticsDelay, AGGREGATE_PERIOD);
 				await cleanup(getRawAnalyticsTable(), rawRetentionMs);
 				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
 				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);
 			},
-			Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)
+			Math.max(0, Math.min(AGGREGATE_PERIOD / 2, MAX_SET_TIMEOUT_MS))
 		).unref();
 	}
 }
@@ -740,11 +1472,19 @@ function recordAnalytics(message, worker?) {
 	const report = message.report;
 	report.threadId = worker?.threadId || threadId;
 	// Add system information stats as well
-	for (const metric of report.metrics) {
+	let retained;
+	for (let i = 0; i < report.metrics.length; i++) {
+		const metric = report.metrics[i];
+		if (metric.metric === METRIC.FULL_TEXT && !acceptsFullTextTelemetryRow(metric)) {
+			retained ??= report.metrics.slice(0, i);
+			continue;
+		}
+		retained?.push(metric);
 		if (metric.metric === 'bytes-sent') {
 			totalBytesProcessed += metric.mean * metric.count;
 		}
 	}
+	if (retained) report.metrics = retained;
 	report.totalBytesProcessed = totalBytesProcessed;
 	if (worker && !isBun) {
 		report.metrics.push({
@@ -754,9 +1494,10 @@ function recordAnalytics(message, worker?) {
 		lastUtilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
-	getRawAnalyticsTable().primaryStore.put(report.id, report);
+	const written = getRawAnalyticsTable().primaryStore.put(report.id, report);
 	if (!scheduledTasksRunning) startScheduledTasks();
 	if (LOG_ANALYTICS) lastAppend = logAnalytics(report);
+	return written;
 }
 let lastAppend;
 let analyticsLog;
@@ -867,3 +1608,5 @@ function rebalance({ counts, values, totalCount }, resetCounts: boolean) {
 	else counts.set(targetCounts);
 }
 */
+
+server.recordAnalytics = recordAction;

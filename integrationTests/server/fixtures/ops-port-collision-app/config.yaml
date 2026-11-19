@@ -1,0 +1,10 @@
+# Minimal app whose config carries a port-less operationsApi block. This mirrors a real
+# customer app (paddock_pro) and is the #1420 trigger: loading it on the main thread
+# re-invokes the operations-API plugin with no port, so without the getPorts fix the ops
+# registration falls back onto the app http ports and locks the http workers out.
+rest: true
+jsResource:
+  files: resources.js
+operationsApi:
+  network:
+    cors: true

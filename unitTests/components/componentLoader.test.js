@@ -1,13 +1,16 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const sinon = require('sinon');
 const path = require('path');
 const { tmpdir } = require('os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } = require('fs');
+const fs = require('node:fs/promises');
+const { waitFor } = require('../waitFor.js');
 
 describe('ComponentLoader Status Integration', function () {
 	let componentStatusRegistry;
 	let tempDir;
 	let componentLoader;
+	let withComponentPreparationLock;
 	let lifecycle;
 	let sandbox;
 
@@ -18,9 +21,9 @@ describe('ComponentLoader Status Integration', function () {
 		tempDir = mkdtempSync(path.join(tmpdir(), 'harper-test-components-'));
 
 		// Mock environment to use our temp directory
-		const env = require('#src/utility/environment/environmentManager');
+		const env = require('#js/utility/environment/environmentManager');
 		sandbox.stub(env, 'get').callsFake((key) => {
-			if (key === 'COMPONENTSROOT') {
+			if (key === 'componentsRoot') {
 				return tempDir;
 			}
 			// Return some default values for other config
@@ -28,7 +31,9 @@ describe('ComponentLoader Status Integration', function () {
 			if (key === 'MAX_HEADER_SIZE') return 8192;
 			if (key === 'HTTP_PORT') return 9925;
 			if (key === 'CUSTOM_FUNCTIONS') return false;
-			return '';
+			// Unknown keys must read as unset — '' is a real (and sometimes invalid)
+			// config value, e.g. storage.compression rejects '' as an algorithm name
+			return undefined;
 		});
 
 		// Get both the lifecycle and internal objects
@@ -50,7 +55,7 @@ describe('ComponentLoader Status Integration', function () {
 		sandbox.spy(componentStatusRegistry, 'getStatus');
 
 		// Mock getConfigObj to avoid loading real config for root components
-		const configUtils = require('#js/config/configUtils');
+		const configUtils = require('#src/config/configUtils');
 		sandbox.stub(configUtils, 'getConfigObj').returns({});
 
 		// Clear the componentLoader from require cache to ensure it gets our spied lifecycle
@@ -58,6 +63,7 @@ describe('ComponentLoader Status Integration', function () {
 
 		// Load componentLoader after setting up spies
 		componentLoader = require('#src/components/componentLoader');
+		({ withComponentPreparationLock } = require('#src/components/componentPreparationLock'));
 	});
 
 	after(function () {
@@ -154,6 +160,123 @@ describe('ComponentLoader Status Integration', function () {
 				.filter((call) => call.args[0] === expectedStatusName);
 			assert.equal(loadedCalls.length, 1);
 			assert.match(loadedCalls[0].args[1], /loaded successfully/);
+		});
+
+		it('should expose ensureTable on handleApplication scope with component origin', async function () {
+			const componentDirName = 'scope-ensure-table-component';
+			const componentDir = path.join(tempDir, componentDirName);
+			const pluginName = 'scopeEnsureTablePlugin';
+			const origin = 'test-origin';
+			let capturedScope;
+
+			mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${pluginName}: {}`);
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+				handleApplication(scope) {
+					capturedScope = scope;
+				},
+			};
+
+			try {
+				await componentLoader.loadComponent(
+					componentDir,
+					{
+						isWorker: true,
+						set: sinon.stub(),
+					},
+					origin
+				);
+			} finally {
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			}
+
+			assert.equal(typeof capturedScope?.ensureTable, 'function', 'scope.ensureTable should be exposed');
+
+			let assignedOrigin;
+			const options = new Proxy(
+				{},
+				{
+					set(target, property, value) {
+						if (property === 'origin') {
+							assignedOrigin = value;
+							throw new Error('stop before table call');
+						}
+						return Reflect.set(target, property, value);
+					},
+				}
+			);
+
+			assert.throws(() => capturedScope.ensureTable(options), /stop before table call/);
+			assert.equal(assignedOrigin, origin, 'scope.ensureTable should preserve the component origin');
+		});
+
+		describe('status reported by a plugin while it loads', function () {
+			const { statusForComponent } = require('#src/components/status/index');
+
+			async function loadPlugin(name, plugin) {
+				const componentDir = path.join(tempDir, name);
+				mkdirSync(componentDir);
+				writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${name}Plugin: {}`);
+				componentLoader.TRUSTED_RESOURCE_PLUGINS[`${name}Plugin`] = plugin;
+				try {
+					await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, 'test-origin');
+				} finally {
+					delete componentLoader.TRUSTED_RESOURCE_PLUGINS[`${name}Plugin`];
+				}
+				return statusForComponent(`${name}.${name}Plugin`).get();
+			}
+
+			for (const level of ['warning', 'unknown', 'error']) {
+				it(`keeps a ${level} set in handleApplication`, async function () {
+					const name = `reports-${level}`;
+					const status = await loadPlugin(name, {
+						handleApplication() {
+							statusForComponent(`${name}.${name}Plugin`)[level]('plugin says so');
+						},
+					});
+					assert.equal(status.status, level);
+					assert.match(status.message, /plugin says so/);
+				});
+			}
+
+			it('surfaces a plugin warning through get_components aggregation', async function () {
+				const name = 'reports-warning-aggregated';
+				await loadPlugin(name, {
+					handleApplication() {
+						statusForComponent(`${name}.${name}Plugin`).warning('plugin says so');
+					},
+				});
+
+				const result = await componentStatusRegistry.getAggregatedStatusFor(name);
+
+				assert.equal(result.status, 'warning');
+				assert.match(result.message, /plugin says so/);
+				assert.equal(result.details[`${name}.${name}Plugin`].status, 'warning');
+			});
+
+			it('keeps a warning set in the legacy start hook', async function () {
+				const name = 'reports-warning-legacy';
+				const status = await loadPlugin(name, {
+					start() {
+						statusForComponent(`${name}.${name}Plugin`).warning('legacy says so');
+					},
+				});
+				assert.equal(status.status, 'warning');
+			});
+
+			it('marks a plugin that reports nothing healthy', async function () {
+				const status = await loadPlugin('reports-nothing', { handleApplication() {} });
+				assert.equal(status.status, 'healthy');
+				assert.match(status.message, /loaded successfully/);
+			});
+
+			it('lets a retry replace an earlier failure', async function () {
+				const name = 'retried';
+				componentStatusRegistry.markFailed(`${name}.${name}Plugin`, new Error('earlier'));
+				const status = await loadPlugin(name, { handleApplication() {} });
+				assert.equal(status.status, 'healthy');
+			});
 		});
 
 		// TODO: Does the plugin API have an equivalent mechanism?
@@ -264,6 +387,381 @@ describe('ComponentLoader Status Integration', function () {
 
 			// Restore the original handleApplication method
 			dataLoaderModule.handleApplication = originalhandleApplication;
+		});
+	});
+
+	it('isolates a dangling component symlink while loading healthy siblings', async function () {
+		if (process.platform === 'win32') this.skip();
+		const danglingAppName = 'dangling-component-probe';
+		const healthyAppName = 'healthy-sibling-probe';
+		const healthyPluginName = 'healthySiblingProbe';
+		const danglingAppPath = path.join(tempDir, danglingAppName);
+		const healthyAppPath = path.join(tempDir, healthyAppName);
+		let healthyLoadCalls = 0;
+
+		await fs.symlink(path.join(tempDir, 'missing-component-target'), danglingAppPath, 'dir');
+		await fs.mkdir(healthyAppPath);
+		await fs.writeFile(path.join(healthyAppPath, 'config.yaml'), `${healthyPluginName}: {}\n`);
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[healthyPluginName] = {
+			start() {
+				healthyLoadCalls++;
+			},
+		};
+
+		try {
+			await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+
+			assert.strictEqual(healthyLoadCalls, 1, 'healthy sibling did not load');
+			const danglingFailure = lifecycle.failed.getCalls().find((call) => call.args[0] === danglingAppName);
+			assert.ok(danglingFailure, 'dangling component was not marked failed');
+			assert.strictEqual(danglingFailure.args[1].code, 'ENOENT');
+		} finally {
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[healthyPluginName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(danglingAppPath, { force: true });
+			await fs.rm(healthyAppPath, { recursive: true, force: true });
+		}
+	});
+
+	describe('isolated applications (harper#642 tier 2)', function () {
+		const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
+		let mainWasWorker;
+		beforeEach(() => (mainWasWorker = getWorkerIndex() === 0));
+		const configUtils = require('#src/config/configUtils');
+		const isoName = 'isolated-probe';
+		const sharedName = 'shared-probe';
+		let isoStarts = 0;
+		let sharedStarts = 0;
+
+		beforeEach(async () => {
+			isoStarts = sharedStarts = 0;
+			for (const [name, plugin] of [
+				[isoName, 'isolatedProbePlugin'],
+				[sharedName, 'sharedProbePlugin'],
+			]) {
+				await fs.mkdir(path.join(tempDir, name), { recursive: true });
+				await fs.writeFile(path.join(tempDir, name, 'config.yaml'), `${plugin}: {}\n`);
+			}
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.isolatedProbePlugin = { start: () => isoStarts++ };
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.sharedProbePlugin = { start: () => sharedStarts++ };
+			configUtils.getConfigObj.returns({ [isoName]: { isolated: true } });
+		});
+		afterEach(async () => {
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS.isolatedProbePlugin;
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS.sharedProbePlugin;
+			componentLoader.loadedPaths.clear();
+			for (const name of [isoName, sharedName]) await fs.rm(path.join(tempDir, name), { recursive: true, force: true });
+		});
+
+		it('a thread that is not the dedicated worker never imports an isolated application', async function () {
+			setMainIsWorker(false); // the main thread of a multi-worker instance
+			try {
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+			} finally {
+				setMainIsWorker(mainWasWorker); // other suites in this process rely on the previous mode
+			}
+			assert.strictEqual(sharedStarts, 1, 'the shared application loads here');
+			assert.strictEqual(isoStarts, 0, 'the isolated one is left to its own thread');
+			assert.ok(!lifecycle.failed.getCalls().some((call) => call.args[0] === isoName), 'and is not a failure');
+		});
+
+		it('fails an isolated application closed when the main thread is the only worker', async function () {
+			setMainIsWorker(true); // threads.count: 0
+			try {
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+			} finally {
+				setMainIsWorker(mainWasWorker); // other suites in this process rely on the previous mode
+			}
+			assert.strictEqual(isoStarts, 0, 'never downgraded onto the shared thread');
+			const failure = lifecycle.failed.getCalls().find((call) => call.args[0] === isoName);
+			assert.ok(failure, 'reported as a failed load');
+			assert.match(failure.args[1].message, /threads\.count is 0/);
+		});
+
+		it('fails a malformed isolation setting closed instead of loading it in the pool', async function () {
+			configUtils.getConfigObj.returns({ [isoName]: { isolated: 'true' } });
+			setMainIsWorker(false);
+			try {
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+			} finally {
+				setMainIsWorker(mainWasWorker);
+			}
+			assert.strictEqual(isoStarts, 0);
+			const failure = lifecycle.failed.getCalls().find((call) => call.args[0] === isoName);
+			assert.ok(failure, 'reported as a failed load');
+			assert.match(failure.args[1].message, /expected a boolean/);
+		});
+	});
+
+	it('serializes deferred readiness per component without blocking unrelated loads', async function () {
+		this.timeout(15000);
+		const appName = 'deferred-generation-probe';
+		const pluginName = 'deferredGenerationProbe';
+		const independentAppName = 'independent-generation-probe';
+		const independentPluginName = 'independentGenerationProbe';
+		const componentDir = path.join(tempDir, appName);
+		const independentComponentDir = path.join(tempDir, independentAppName);
+		const asidePath = path.join(tempDir, '.deploy-aside', appName, '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'config.yaml'), `${pluginName}: {}\n`);
+		await fs.mkdir(componentDir, { recursive: true });
+		await fs.writeFile(path.join(componentDir, 'partial'), 'partial');
+
+		let releasePreparation;
+		let preparationHeld;
+		const preparationStarted = new Promise((resolve) => (preparationHeld = resolve));
+		const preparation = withComponentPreparationLock(componentDir, async () => {
+			preparationHeld();
+			await new Promise((resolve) => (releasePreparation = resolve));
+		});
+
+		let releaseStart;
+		let startEntered = false;
+		let readyCalls = 0;
+		let independentStartCalls = 0;
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+			async start() {
+				startEntered = true;
+				await new Promise((resolve) => (releaseStart = resolve));
+				return { ready: () => readyCalls++ };
+			},
+		};
+		const loadedComponents = new Map();
+		const resources = { isWorker: true, set() {} };
+
+		try {
+			await preparationStarted;
+			await componentLoader.loadComponentDirectories(loadedComponents, resources, new WeakMap());
+			releasePreparation();
+			await preparation;
+			try {
+				await waitFor(() => startEntered, { timeout: 5000, message: 'deferred component load did not start' });
+			} catch (error) {
+				error.message += `: loading=${lifecycle.loading
+					.getCalls()
+					.map((call) => String(call.args[0]))
+					.join(',')} failed=${lifecycle.failed
+					.getCalls()
+					.map((call) => String(call.args[1]))
+					.join('; ')} live=${existsSync(componentDir)} staging=${existsSync(path.dirname(asidePath))} loaded=${[
+					...componentLoader.loadedPaths.keys(),
+				].join(',')}`;
+				throw error;
+			}
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[independentPluginName] = {
+				start() {
+					independentStartCalls++;
+				},
+			};
+			await fs.mkdir(independentComponentDir);
+			await fs.writeFile(path.join(independentComponentDir, 'config.yaml'), `${independentPluginName}: {}\n`);
+
+			let supersedingLoadSettled = false;
+			const supersedingLoad = componentLoader
+				.loadComponentDirectories(loadedComponents, resources, new WeakMap())
+				.then(() => (supersedingLoadSettled = true));
+			await waitFor(() => independentStartCalls === 1, {
+				timeout: 5000,
+				message: 'unrelated component load was blocked by deferred readiness',
+			});
+			assert.strictEqual(supersedingLoadSettled, false);
+
+			releaseStart();
+			await supersedingLoad;
+			await waitFor(() => readyCalls === 1);
+			assert.strictEqual(readyCalls, 1);
+		} finally {
+			releasePreparation?.();
+			releaseStart?.();
+			await preparation;
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[independentPluginName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(path.join(tempDir, '.deploy-aside', appName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(componentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(independentComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('keeps installed-package readiness scoped to each concurrent deferred component load', async function () {
+		this.timeout(15000);
+		const firstAppName = 'first-deferred-readiness-probe';
+		const firstPackageName = 'first-deferred-readiness-package';
+		const firstPluginName = 'firstDeferredReadinessProbe';
+		const secondAppName = 'second-deferred-readiness-probe';
+		const secondPluginName = 'secondDeferredReadinessProbe';
+		const secondBlockerName = 'secondDeferredReadinessBlocker';
+		const firstComponentDir = path.join(tempDir, firstAppName);
+		const secondComponentDir = path.join(tempDir, secondAppName);
+		const firstAsideDir = path.join(tempDir, '.deploy-aside', firstAppName, '.in-progress-123-previous');
+		const secondAsideDir = path.join(tempDir, '.deploy-aside', secondAppName, '.in-progress-123-previous');
+		await fs.mkdir(firstAsideDir, { recursive: true });
+		await fs.writeFile(
+			path.join(firstAsideDir, 'config.yaml'),
+			`${firstPackageName}:\n  package: ${firstPackageName}\n`
+		);
+		const firstPackageDir = path.join(firstAsideDir, 'node_modules', firstPackageName);
+		await fs.mkdir(firstPackageDir, { recursive: true });
+		await fs.writeFile(path.join(firstPackageDir, 'config.yaml'), `${firstPluginName}: {}\n`);
+		await fs.mkdir(secondAsideDir, { recursive: true });
+		await fs.writeFile(path.join(secondAsideDir, 'config.yaml'), `${secondPluginName}: {}\n${secondBlockerName}: {}\n`);
+		await fs.mkdir(firstComponentDir, { recursive: true });
+		await fs.writeFile(path.join(firstComponentDir, 'partial'), 'partial');
+		await fs.mkdir(secondComponentDir, { recursive: true });
+		await fs.writeFile(path.join(secondComponentDir, 'partial'), 'partial');
+
+		let releaseFirstPreparation;
+		let releaseSecondPreparation;
+		let firstPreparationHeld;
+		let secondPreparationHeld;
+		const firstPreparationStarted = new Promise((resolve) => (firstPreparationHeld = resolve));
+		const secondPreparationStarted = new Promise((resolve) => (secondPreparationHeld = resolve));
+		const firstPreparation = withComponentPreparationLock(firstComponentDir, async () => {
+			firstPreparationHeld();
+			await new Promise((resolve) => (releaseFirstPreparation = resolve));
+		});
+		const secondPreparation = withComponentPreparationLock(secondComponentDir, async () => {
+			secondPreparationHeld();
+			await new Promise((resolve) => (releaseSecondPreparation = resolve));
+		});
+
+		let releaseFirstStart;
+		let releaseSecondStart;
+		let firstStartEntered;
+		let secondBlockerEntered = false;
+		let firstReadyCalls = 0;
+		let secondReadyCalls = 0;
+		const firstStartReached = new Promise((resolve) => (firstStartEntered = resolve));
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[firstPluginName] = {
+			async start() {
+				firstStartEntered();
+				await new Promise((resolve) => (releaseFirstStart = resolve));
+				return { ready: () => firstReadyCalls++ };
+			},
+		};
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[secondPluginName] = {
+			async start() {
+				await firstStartReached;
+				return { ready: () => secondReadyCalls++ };
+			},
+		};
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[secondBlockerName] = {
+			async start() {
+				secondBlockerEntered = true;
+				await new Promise((resolve) => (releaseSecondStart = resolve));
+			},
+		};
+		const loadedComponents = new Map();
+		const resources = { isWorker: true, set() {} };
+
+		try {
+			await Promise.all([firstPreparationStarted, secondPreparationStarted]);
+			await componentLoader.loadComponentDirectories(loadedComponents, resources, new WeakMap());
+			releaseFirstPreparation();
+			releaseSecondPreparation();
+			await Promise.all([firstPreparation, secondPreparation]);
+			await waitFor(() => secondBlockerEntered, {
+				timeout: 5000,
+				message: 'concurrent deferred loads did not reach the controlled interleaving',
+			});
+
+			releaseFirstStart();
+			await waitFor(() => firstReadyCalls === 1, {
+				timeout: 5000,
+				message: 'first deferred component did not become ready',
+			});
+			assert.strictEqual(secondReadyCalls, 0, 'second component became ready before its load completed');
+
+			releaseSecondStart();
+			await waitFor(() => secondReadyCalls === 1, {
+				timeout: 5000,
+				message: 'second deferred component did not become ready after its load completed',
+			});
+		} finally {
+			releaseFirstPreparation?.();
+			releaseSecondPreparation?.();
+			releaseFirstStart?.();
+			releaseSecondStart?.();
+			await Promise.all([firstPreparation, secondPreparation]);
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[firstPluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[secondPluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[secondBlockerName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(path.join(tempDir, '.deploy-aside', firstAppName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(path.join(tempDir, '.deploy-aside', secondAppName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(firstComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(secondComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	// A mounted application's deprecated `start`/`startOnMainThread` hooks receive the raw,
+	// unmounted server (unlike the new Plugin API's `handleApplication(scope)`), so routes they
+	// register would silently escape the mount. Loading must fail closed instead (review finding).
+	describe('deprecated extension API vs an application mount', function () {
+		function makeOldApiComponent(pluginName, hooks) {
+			const componentDir = path.join(tempDir, `old-api-${pluginName}`);
+			if (!existsSync(componentDir)) mkdirSync(componentDir);
+			writeFileSync(path.join(componentDir, 'harperdb-config.yaml'), `${pluginName}: {}`);
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = hooks;
+			return componentDir;
+		}
+
+		afterEach(function () {
+			for (const pluginName of Object.keys(componentLoader.TRUSTED_RESOURCE_PLUGINS)) {
+				if (pluginName.startsWith('oldApi')) delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			}
+			componentLoader.loadedPaths.clear();
+		});
+
+		it('loads normally when the deprecated `start` hook is used unmounted', async function () {
+			const pluginName = 'oldApiUnmounted';
+			let started = false;
+			const componentDir = makeOldApiComponent(pluginName, {
+				start({ server }) {
+					started = true;
+					return { server };
+				},
+			});
+
+			await componentLoader.loadComponent(componentDir, { isWorker: true, set() {} }, 'test-origin');
+
+			assert.equal(started, true, 'the deprecated start hook should have run');
+		});
+
+		it('fails closed when the deprecated `start` hook is used on a mounted application', async function () {
+			const pluginName = 'oldApiMounted';
+			let started = false;
+			const componentDir = makeOldApiComponent(pluginName, {
+				start({ server }) {
+					started = true;
+					return { server };
+				},
+			});
+
+			await componentLoader.loadComponent(componentDir, { isWorker: true, set: sinon.stub() }, 'test-origin', {
+				mount: { host: 'api.example.com', urlPath: undefined },
+			});
+
+			assert.equal(started, false, 'the deprecated start hook must not run for a mounted application');
+			const failedCalls = lifecycle.failed
+				.getCalls()
+				.filter((call) => call.args[0] === `old-api-${pluginName}.${pluginName}`);
+			assert.ok(failedCalls.length >= 1, 'the component should be marked failed rather than loaded unmounted');
 		});
 	});
 });

@@ -1,6 +1,9 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const sinon = require('sinon');
 const rewire = require('rewire');
 
@@ -14,6 +17,7 @@ describe('storageReclamation module', function () {
 	let storageReclamation;
 	let getWorkerIndexStub;
 	let getWorkerCountStub;
+	let ownsStoreMaintenanceStub;
 
 	before(() => {
 		env.initTestEnvironment();
@@ -30,6 +34,8 @@ describe('storageReclamation module', function () {
 		const manageThreads = require('#js/server/threads/manageThreads');
 		getWorkerIndexStub = sandbox.stub(manageThreads, 'getWorkerIndex').returns(0);
 		getWorkerCountStub = sandbox.stub(manageThreads, 'getWorkerCount').returns(1);
+		// the module gates on the per-store predicate, which reads the raw getters internally (unstubbable)
+		ownsStoreMaintenanceStub = sandbox.stub(manageThreads, 'ownsStoreMaintenance').returns(true);
 
 		storageReclamation = rewire(STORAGE_RECLAMATION_PATH);
 	});
@@ -68,6 +74,7 @@ describe('storageReclamation module', function () {
 			// Worker index 0, worker count 1 means this is the last worker (0 === 1-1)
 			getWorkerIndexStub.returns(0);
 			getWorkerCountStub.returns(1);
+			ownsStoreMaintenanceStub.returns(true);
 
 			const handler = sandbox.stub();
 			storageReclamation.onStorageReclamation('/test/path', handler);
@@ -80,6 +87,7 @@ describe('storageReclamation module', function () {
 			// Worker index 0, worker count 2 means this is NOT the last worker
 			getWorkerIndexStub.returns(0);
 			getWorkerCountStub.returns(2);
+			ownsStoreMaintenanceStub.returns(false);
 
 			// Need to reload module with new stub values
 			delete require.cache[require.resolve(STORAGE_RECLAMATION_PATH)];
@@ -391,6 +399,289 @@ describe('storageReclamation module', function () {
 			// First path should error, but second path should still be processed
 			assert.ok(errorPathHandler.notCalled);
 			assert.ok(okPathHandler.calledOnce);
+		});
+	});
+
+	describe('quota mode', function () {
+		const QUOTA_100GB = 100 * 1024 * 1024 * 1024;
+		let tmpDir;
+		let quotaStatusPath;
+		let originalRootPath;
+
+		beforeEach(function () {
+			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-quota-test-'));
+			quotaStatusPath = path.join(tmpDir, 'quota-status.json');
+			originalRootPath = env.get('rootPath');
+			env.setProperty('rootPath', tmpDir);
+		});
+
+		afterEach(function () {
+			env.setProperty('rootPath', originalRootPath);
+			try {
+				fs.rmSync(tmpDir, { recursive: true });
+			} catch {}
+		});
+
+		describe('getQuotaStatus', function () {
+			it('returns parsed object when file is present and valid', async function () {
+				const data = { usedBytes: 50_000_000_000, quotaBytes: QUOTA_100GB, updatedAt: Date.now() };
+				fs.writeFileSync(quotaStatusPath, JSON.stringify(data));
+				assert.deepEqual(await storageReclamation.getQuotaStatus(), data);
+			});
+
+			it('returns undefined when file is absent', async function () {
+				assert.equal(await storageReclamation.getQuotaStatus(), undefined);
+			});
+
+			it('returns undefined when file contains malformed JSON', async function () {
+				fs.writeFileSync(quotaStatusPath, 'not-valid-json{');
+				assert.equal(await storageReclamation.getQuotaStatus(), undefined);
+			});
+		});
+
+		describe('getStorageSpaceStats', function () {
+			it('derives available/free/size from a fresh quota-status file', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'quota');
+				assert.equal(stats.size, QUOTA_100GB);
+				assert.equal(stats.available, QUOTA_100GB - usedBytes);
+				assert.equal(stats.free, stats.available);
+			});
+
+			it('falls back to statfs when usedBytes is missing, instead of treating it as 0 free usage', async function () {
+				fs.writeFileSync(quotaStatusPath, JSON.stringify({ quotaBytes: QUOTA_100GB, updatedAt: Date.now() }));
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				// A quota file missing usedBytes is malformed, not "0 used" — trusting it would
+				// report 100% free even if the volume is actually full.
+				assert.equal(stats.basis, 'filesystem');
+			});
+
+			it('falls back to statfs when quotaBytes is not a positive number', async function () {
+				fs.writeFileSync(quotaStatusPath, JSON.stringify({ usedBytes: 1, quotaBytes: 0, updatedAt: Date.now() }));
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'filesystem');
+			});
+
+			it('falls back to statfs when usedBytes is negative', async function () {
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes: -1, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'filesystem');
+			});
+
+			it('falls back to statfs when the requested path is outside the quota root', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+				const otherVolume = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-quota-other-'));
+				try {
+					// e.g. a database configured with its own STORAGE_PATH on a different volume than
+					// ROOTPATH: the root's quota-status.json can't speak to this path's usage.
+					const stats = await storageReclamation.getStorageSpaceStats(otherVolume);
+
+					assert.equal(stats.basis, 'filesystem');
+				} finally {
+					fs.rmSync(otherVolume, { recursive: true });
+				}
+			});
+
+			it('falls back to statfs when the path lexically stays under root but is a symlink to another volume', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+				const otherVolume = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-quota-other-'));
+				const linkPath = path.join(tmpDir, 'databases');
+				try {
+					fs.mkdirSync(path.join(otherVolume, 'some-db'));
+					fs.symlinkSync(otherVolume, linkPath);
+					const nestedPath = path.join(linkPath, 'some-db');
+
+					// `resolve()` alone would see this as lexically under tmpDir; only resolving the
+					// symlink reveals it actually points outside the quota root.
+					const stats = await storageReclamation.getStorageSpaceStats(nestedPath);
+
+					assert.equal(stats.basis, 'filesystem');
+				} finally {
+					fs.rmSync(linkPath, { force: true });
+					fs.rmSync(otherVolume, { recursive: true });
+				}
+			});
+
+			it('uses quota data for a nested path within the quota root', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+				const nestedPath = path.join(tmpDir, 'databases', 'some-db');
+				fs.mkdirSync(nestedPath, { recursive: true });
+
+				const stats = await storageReclamation.getStorageSpaceStats(nestedPath);
+
+				assert.equal(stats.basis, 'quota');
+				assert.equal(stats.available, QUOTA_100GB - usedBytes);
+			});
+
+			it('uses quota data for a nested path literally named "..data" (Kubernetes ConfigMap/Secret convention)', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+				// A directory named "..data" starts with the string "..", but is a real child of
+				// tmpDir, not a parent-traversal — it must not be rejected as escaping the root.
+				const nestedPath = path.join(tmpDir, '..data');
+				fs.mkdirSync(nestedPath, { recursive: true });
+
+				const stats = await storageReclamation.getStorageSpaceStats(nestedPath);
+
+				assert.equal(stats.basis, 'quota');
+				assert.equal(stats.available, QUOTA_100GB - usedBytes);
+			});
+
+			it('falls back to statfs when quota-status updatedAt is in the future', async function () {
+				const usedBytes = 30 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() + 60 * 60 * 1000 })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				// A future updatedAt (clock skew or a corrupt writer) yields a negative age, which
+				// must not be treated as "fresher than fresh" and trusted indefinitely.
+				assert.equal(stats.basis, 'filesystem');
+			});
+
+			it('clamps available to 0 when usage exceeds the quota', async function () {
+				const usedBytes = QUOTA_100GB + 5 * 1024 * 1024 * 1024;
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'quota');
+				assert.equal(stats.available, 0);
+				assert.equal(stats.free, 0);
+			});
+
+			it('falls back to statfs when quota-status file is absent', async function () {
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'filesystem');
+				assert.ok(stats.size > 0);
+				assert.ok(stats.available >= 0);
+				assert.ok(stats.free >= 0);
+			});
+
+			it('falls back to statfs when quota-status file is stale', async function () {
+				const staleTimestamp = Date.now() - 10 * 60 * 1000; // 10 minutes old
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes: 1, quotaBytes: QUOTA_100GB, updatedAt: staleTimestamp })
+				);
+
+				const stats = await storageReclamation.getStorageSpaceStats(tmpDir);
+
+				assert.equal(stats.basis, 'filesystem');
+			});
+		});
+
+		describe('defaultGetAvailableSpaceRatio', function () {
+			beforeEach(function () {
+				storageReclamation.setAvailableSpaceRatioGetter(undefined); // use real default
+			});
+
+			it('uses fresh quota-status file and triggers reclamation when headroom is low', async function () {
+				const usedBytes = 65 * 1024 * 1024 * 1024; // 65 GB → 35% remaining → below 40% threshold
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const handler = sandbox.stub().returns(Promise.resolve());
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await storageReclamation.runReclamationHandlers();
+
+				assert.ok(handler.calledOnce);
+				assert.ok(handler.firstCall.args[0] > 1); // priority = 0.4 / 0.35 ≈ 1.14
+			});
+
+			it('uses fresh quota-status file and does not trigger when headroom is sufficient', async function () {
+				const usedBytes = 50 * 1024 * 1024 * 1024; // 50% used → 50% remaining → above threshold
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const handler = sandbox.stub();
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await storageReclamation.runReclamationHandlers();
+
+				assert.ok(handler.notCalled);
+			});
+
+			it('clamps ratio to 0 and triggers reclamation when usage exceeds quota', async function () {
+				const usedBytes = 110 * 1024 * 1024 * 1024; // 10 GB over quota
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes, quotaBytes: QUOTA_100GB, updatedAt: Date.now() })
+				);
+
+				const handler = sandbox.stub().returns(Promise.resolve());
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await storageReclamation.runReclamationHandlers();
+
+				// Ratio clamped to 0 → priority = Infinity → handler called
+				assert.ok(handler.calledOnce);
+			});
+
+			it('computeAvailableRatio treats a zero-size result as ratio 0 (not NaN), so a full disk still triggers reclamation', function () {
+				// Without the size>0 guard, available/size is 0/0 = NaN, priority (threshold/NaN) is
+				// NaN, and `NaN > 1` is false — reclamation would silently never fire for a zero-size
+				// volume. Guarded, ratio is 0 and priority is 0.4/0 = Infinity, which correctly fires.
+				assert.equal(storageReclamation.computeAvailableRatio(0, 0), 0);
+				assert.ok(!Number.isNaN(storageReclamation.computeAvailableRatio(0, 0)));
+			});
+
+			it('falls back to statfs when quota-status file is absent', async function () {
+				const handler = sandbox.stub();
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await assert.doesNotReject(storageReclamation.runReclamationHandlers());
+			});
+
+			it('falls back to statfs when quota-status file is stale', async function () {
+				const staleTimestamp = Date.now() - 10 * 60 * 1000; // 10 minutes old
+				fs.writeFileSync(
+					quotaStatusPath,
+					JSON.stringify({ usedBytes: 65 * 1024 * 1024 * 1024, quotaBytes: QUOTA_100GB, updatedAt: staleTimestamp })
+				);
+
+				const handler = sandbox.stub();
+				storageReclamation.onStorageReclamation(tmpDir, handler, true);
+				await assert.doesNotReject(storageReclamation.runReclamationHandlers());
+			});
 		});
 	});
 });

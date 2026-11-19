@@ -1,17 +1,39 @@
+import { trackReadRange } from './DatabaseTransaction.ts';
 import {
+	type CountEstimate,
+	type CountEstimateOptions,
 	DBI,
 	type StoreIteratorOptions,
+	type StoreGetOptions,
 	type StorePutOptions,
 	type StoreRemoveOptions,
 	RocksDatabase,
 } from '@harperfast/rocksdb-js';
-import { Id } from './ResourceInterface.ts';
+import { type Id } from './ResourceInterface.ts';
 import { MAXIMUM_KEY } from 'ordered-binary';
-
 declare module '@harperfast/rocksdb-js' {
 	interface DBI<T> {
 		getValuesCount(indexedValue: any): number;
 	}
+}
+
+/**
+ * Widen value-space bounds to `[value, MAXIMUM_KEY]` composite bounds. The base implementation's
+ * encoded-byte successor of the bare indexed value would exclude the wrong entries on composite
+ * `[indexedValue, primaryKey]` keys.
+ */
+function translateIndexBounds<
+	T extends { start?: any; end?: any; exclusiveStart?: boolean; inclusiveEnd?: boolean; reverse?: boolean },
+>(options: T): T {
+	let { start, end } = options;
+	const { exclusiveStart, inclusiveEnd, reverse } = options;
+	if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
+		start = [start, MAXIMUM_KEY];
+	}
+	if ((reverse ? !inclusiveEnd : inclusiveEnd) && end !== undefined) {
+		end = [end, MAXIMUM_KEY];
+	}
+	return { ...options, start, end };
 }
 
 /**
@@ -22,22 +44,35 @@ declare module '@harperfast/rocksdb-js' {
  * RocksDatabase rather than a store because it actually alters the interface
  */
 export class RocksIndexStore extends RocksDatabase {
+	hasIndexEntry(indexedValue: any, primaryKey: Id, options?: StoreGetOptions): boolean {
+		return super.getBinaryFastSync([indexedValue, primaryKey], options) !== undefined;
+	}
+
 	/**
-	 * Get all entries matching the range
+	 * Get all entries matching the range, as `{ key: indexedValue, value: primaryKey }`. Both come from
+	 * the composite key, so the stored (null) values are never read, whatever `options.values` says.
 	 * @param options
 	 */
 	getRange(options: StoreIteratorOptions): Iterable<any> {
-		let { start, end, exclusiveStart, inclusiveEnd, reverse } = options;
-		if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
-			start = [start, MAXIMUM_KEY];
-		}
-		if ((reverse ? !inclusiveEnd : inclusiveEnd) && end !== undefined) {
-			end = [end, MAXIMUM_KEY];
-		}
-		const translatedOptions = { ...options, start, end };
-		return super.getRange(translatedOptions).map(({ key }) => {
-			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
+		return trackReadRange(options.transaction, () => {
+			const rangeOptions = translateIndexBounds(options);
+			rangeOptions.values = false;
+			return super.getRange(rangeOptions);
+		}).map((entry) => {
+			// each iteration yields a fresh entry object, so it can be rewritten in place
+			const key = entry.key;
+			entry.key = key[0];
+			entry.value = key.length > 2 ? key.slice(1) : key[1];
+			return entry;
 		});
+	}
+
+	/**
+	 * Estimate the entry count of a range of indexed values. Shares `getRange`'s bound translation
+	 * so a planner estimate always covers exactly the range execution would iterate.
+	 */
+	estimateCount(options?: CountEstimateOptions): CountEstimate {
+		return super.estimateCount(translateIndexBounds(options ?? {}));
 	}
 
 	/**

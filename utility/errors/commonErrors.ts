@@ -124,6 +124,7 @@ const AUTHENTICATION_ERROR_MSGS = {
 	INVALID_BODY: 'invalid body',
 	TOKEN_EXPIRED: 'token expired',
 	REFRESH_TOKEN_SAVE_FAILED: 'unable to store refresh_token',
+	NO_USER_TO_MINT_FOR: 'no user to mint a token for; create a user first',
 };
 
 const OPERATION_AUTH_ERROR_MSGS = {
@@ -132,12 +133,22 @@ const OPERATION_AUTH_ERROR_MSGS = {
 	OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
 	OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
 	OP_NOT_IN_OPERATIONS: (op) => `Operation '${op}' is not permitted for this role's operations configuration`,
+	PUT_WITH_ATTRIBUTE_PERMS: (schema, table) =>
+		`'put' is not permitted for a role with attribute permissions on '${schema}.${table}', because replacing a record removes the attributes the request omits and those removals cannot be checked against attribute permissions. Use 'update' or 'upsert' to merge, or a REST PUT, which restores attributes the role may not update.`,
 	OPERATIONS_MUST_BE_ARRAY: "Permission 'operations' must be an array of operation names or group names",
 	INVALID_OPERATIONS_OP: (op) =>
 		`Invalid operations value '${op}'. Must be a valid operation name or group (e.g. 'read_only').`,
 	SYSTEM_TIMESTAMP_PERMS_ERR:
 		"Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users.",
 	UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
+	UNRESOLVED_SQL_TABLE:
+		'This operation is not authorized: the statement references a table that could not be resolved to a single database. Qualify the table with its database name (e.g. `database.table`).',
+	UNRESOLVED_SQL_COLUMN: (columns: string[]) =>
+		`This operation is not authorized: the statement qualifies ${columns.join(', ')} with a table name or alias that does not identify exactly one table in the statement.`,
+	SQL_ROW_ACCESSOR:
+		'This operation is not authorized: the statement reads whole rows through `_`, `SELECT VALUE`/`ROW`, a JavaScript expression, a `?` or `$n` parameter or a JSON literal that sets `__proto__`, which attribute permissions cannot be applied to. Name the attributes to read instead.',
+	SQL_RELATIONSHIP_MEMBER: (relationship: string) =>
+		`This operation is not authorized: member access reads through the relationship '${relationship}' without naming the path. Follow the relationship column directly with literal member names (for example \`dept->name\`).`,
 	USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
 	DROP_SYSTEM:
 		"The 'system' database, tables and records are used internally by Harper and cannot be updated or removed.",
@@ -166,6 +177,8 @@ const ROLE_PERMS_ERROR_MSGS = {
 		`Your role does not have permission to view database metadata for '${schema_name}'`,
 	SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) =>
 		`Your role does not have permission to view database.table metadata for '${schema_name}.${table_name}'`,
+	SYSTEM_ROLE_PERMISSIONS_MANAGED: 'Permissions for system are managed by Harper and cannot be declared in a role',
+	PERMISSION_NOT_OBJECT: "Value for 'permission' must be an object of role and database permissions",
 	SU_ROLE_MISSING_ERROR: "Missing 'super_user' key/value in permission set",
 	SU_CU_ROLE_BOOLEAN_ERROR: (role) => `Value for '${role}' permission must be a boolean`,
 	STRUCTURE_USER_ROLE_TYPE_ERROR: (role) => `Value for '${role}' permission must be a boolean or Array`,
@@ -197,7 +210,11 @@ const USER_ERROR_MSGS = {
 	ALTER_USER_ROLE_NOT_FOUND: (role) => `Update failed.  Requested '${role}' role not found.`,
 	DUP_ROLES_FOUND: (role) =>
 		`Multiple ${role} roles found.  Roles must have unique 'role' value. Please update and try again.`,
+	LAST_SUPER_USER:
+		'Rejected: this change would leave the instance with no active super_user. Grant super_user to another active user first.',
 	ROLE_NAME_NOT_FOUND: (role) => `${role} role not found`,
+	RESERVED_USERNAME: (user) =>
+		`'${user}' is a reserved username: it identifies requests trusted by their transport (authorizeLocal, the operations domain socket)`,
 	USER_ALREADY_EXISTS: (user) => `User ${user} already exists`,
 	USER_NOT_EXIST: (user) => `User ${user} does not exist`,
 };
@@ -229,6 +246,8 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
 	NO_FILE: 'File does not exist',
 	BAD_FILE_NAME: 'File name can only contain alphanumeric, dash and underscore characters',
 	BAD_PROJECT_NAME: 'Project name can only contain alphanumeric, dash and underscores characters',
+	RESERVED_PROJECT_NAME: (project: string) =>
+		`Component name '${project}' is reserved for Harper's '${project}' configuration section; deploy under a different name`,
 	BAD_PACKAGE: 'Packaged project must be base64-encoded tar file of project directory',
 	DROP_FUNCTION: 'Error dropping custom function, check the log for more details',
 	ADD_FUNCTION: 'Error adding custom function project, check the log for more details',

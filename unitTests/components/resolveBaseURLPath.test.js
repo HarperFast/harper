@@ -1,5 +1,5 @@
 const { resolveBaseURLPath, InvalidBaseURLPathError } = require('#src/components/resolveBaseURLPath');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 
 describe('resolveBaseURLPath', () => {
 	const componentName = 'test-component';

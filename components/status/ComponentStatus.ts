@@ -5,7 +5,7 @@
  * component's status with methods for status management.
  */
 
-import { type ComponentStatusLevel, COMPONENT_STATUS_LEVELS } from './types.ts';
+import { type ComponentStatusLevel, type ComponentStatusSource, COMPONENT_STATUS_LEVELS } from './types.ts';
 
 /**
  * Component status information class
@@ -19,12 +19,25 @@ export class ComponentStatus {
 	public message?: string;
 	/** Error information if status is 'error' */
 	public error?: Error | string;
+	/** When this thread last finished loading the component, successfully or not; kept across later reports */
+	public loadedAt?: Date;
+	/** How the status was set */
+	public source?: ComponentStatusSource;
+	/** Optional metadata, unpopulated by the log bridge; its deadlines are tracked separately. */
+	public expiresAt?: number;
+	/** Consecutive reports at the current level; resets to 1 on a level change. */
+	public occurrenceCount: number;
+	/** Beginning of the current same-level sequence. */
+	public firstOccurrence: Date;
 
-	constructor(status: ComponentStatusLevel, message?: string, error?: Error | string) {
+	constructor(status: ComponentStatusLevel, message?: string, error?: Error | string, source?: ComponentStatusSource) {
 		this.lastChecked = new Date();
 		this.status = status;
 		this.message = message;
 		this.error = error;
+		this.source = source;
+		this.occurrenceCount = 1;
+		this.firstOccurrence = this.lastChecked;
 	}
 
 	/**

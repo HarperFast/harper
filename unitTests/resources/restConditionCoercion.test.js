@@ -1,0 +1,264 @@
+const assert = require('node:assert');
+const { setupTestDBPath } = require('../testUtils');
+const { databases, table } = require('#src/resources/databases');
+const { loadGQLSchema } = require('#src/resources/graphql');
+const { RequestTarget } = require('#src/resources/RequestTarget');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+
+describe('REST condition value conversion', () => {
+	let Brand, Product, Untyped;
+
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		await loadGQLSchema(`
+			type CoercionBrand @table(database: "restConditionCoercion") {
+				id: Int @primaryKey
+				name: String @indexed
+				products: [CoercionProduct] @relationship(to: "brandId")
+			}
+			type CoercionProduct @table(database: "restConditionCoercion") {
+				id: Int @primaryKey
+				brandId: Int @indexed
+				brand: CoercionBrand @relationship(from: "brandId")
+				price: Int @indexed
+				pricePlain: Int
+				weight: Float
+				sizes: [Int] @indexed
+				sizesPlain: [Int]
+				matrix: [[Int]]
+				code: String
+				extra: Any
+				tags: [Any]
+			}
+		`);
+		Brand = databases.restConditionCoercion.CoercionBrand;
+		Product = databases.restConditionCoercion.CoercionProduct;
+		for (const brand of [
+			{ id: 1, name: 'Acme' },
+			{ id: 2, name: 'Bolt' },
+			{ id: 3, name: 'Core' },
+		])
+			await Brand.put(brand);
+		const products = [
+			{
+				id: 1,
+				brandId: 1,
+				price: 5,
+				weight: 1.5,
+				sizes: [5, 40],
+				code: '007',
+				matrix: [[176, 0]],
+				extra: 'abc',
+				tags: ['123', 'abc'],
+			},
+			{
+				id: 2,
+				brandId: 1,
+				price: 25,
+				weight: 2.5,
+				sizes: [25],
+				code: '25',
+				extra: { tag: '123' },
+			},
+			{ id: 3, brandId: 2, price: 30, weight: 3.5, sizes: [17, 107], code: '30', extra: 123, tags: [123] },
+			{ id: 4, brandId: 2, price: 31, weight: 10.25, sizes: [31, 17], code: '31' },
+			{ id: 5, brandId: 3, price: 100, weight: 20, sizes: [100, 200], code: '100', extra: '123' },
+		];
+		for (const product of products)
+			await Product.put({ ...product, pricePlain: product.price, sizesPlain: product.sizes });
+		Untyped = table({
+			table: 'CoercionUntyped',
+			database: 'restConditionCoercion',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true, type: 'Int' },
+				{ name: 'val', indexed: true },
+			],
+		});
+		await Untyped.put({ id: 1, val: 5 });
+		await Untyped.put({ id: 2, val: '5' });
+	});
+
+	async function collectIds(iterable) {
+		const ids = [];
+		for await (const record of iterable) ids.push(record.id);
+		return ids.sort((a, b) => a - b);
+	}
+	const rest = async (Table, queryString) => collectIds(Table.search(new RequestTarget('?' + queryString)));
+	async function assertRejects400(Table, queryString, attributeName) {
+		await assert.rejects(rest(Table, queryString), (error) => {
+			assert.strictEqual(error.statusCode, 400);
+			assert.match(error.message, new RegExp(`attribute ${attributeName}:`));
+			return true;
+		});
+	}
+
+	describe('chained range legs (harper#2433)', () => {
+		for (const attribute of ['price', 'pricePlain']) {
+			it(`${attribute}: both legs are converted, in either order`, async function () {
+				assert.deepStrictEqual(await rest(Product, `${attribute}=ge=25&=le=30`), [2, 3]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=le=30&=ge=25`), [2, 3]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=gt=25&=lt=31`), [3]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=ge=number:25&=le=number:30`), [2, 3]);
+			});
+			it(`${attribute}: an invalid chained leg is a 400 in either order`, async function () {
+				await assertRejects400(Product, `${attribute}=ge=25&=le=abc`, attribute);
+				await assertRejects400(Product, `${attribute}=le=abc&=ge=25`, attribute);
+			});
+		}
+		it('Float: a fractional chained bound is kept', async function () {
+			assert.deepStrictEqual(await rest(Product, 'weight=ge=2.5&=lt=10.25'), [2, 3]);
+		});
+		it("does not write converted values onto the caller's chained children", async function () {
+			const chained = Object.freeze({ comparator: 'le', value: '30' });
+			const condition = { attribute: 'price', comparator: 'ge', value: '25', chainedConditions: [chained] };
+			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [condition] })), [2, 3]);
+			assert.strictEqual(condition.value, '25');
+			assert.strictEqual(chained.value, '30');
+			const onString = { attribute: 'code', comparator: 'ge', value: '25', chainedConditions: [chained] };
+			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [onString] })), [2, 3]);
+			const tupleCondition = Object.assign(['price', '25'], {
+				comparator: 'ge',
+				chainedConditions: [chained],
+			});
+			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [tupleCondition] })), [2, 3]);
+		});
+	});
+
+	describe('array attributes compare their elements (harper#2481)', () => {
+		for (const attribute of ['sizes', 'sizesPlain']) {
+			it(`${attribute}: value comparators convert with the element type`, async function () {
+				assert.deepStrictEqual(await rest(Product, `${attribute}=ge=100`), [3, 5]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=lt=10`), [1]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}==25`), [2]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=25`), [2]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=in=(25,31)`), [2, 4]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=ge=20&=le=30`), [2]);
+				assert.deepStrictEqual(await rest(Product, `${attribute}=ge=number:100`), [3, 5]);
+				assert.deepStrictEqual(
+					await collectIds(
+						Product.search({ conditions: [{ attribute, comparator: 'greater_than_equal', value: '100' }] })
+					),
+					[3, 5]
+				);
+			});
+			it(`${attribute}: pattern comparators keep a string operand`, async function () {
+				// as a string, 07 matches 107 but not 17
+				assert.deepStrictEqual(await rest(Product, `${attribute}=ct=07`), [3]);
+			});
+			it(`${attribute}: an invalid element value is a 400 naming the attribute`, async function () {
+				await assertRejects400(Product, `${attribute}=ge=abc`, attribute);
+			});
+		}
+		it('a nested array compares immediate elements, which are arrays', async function () {
+			const condition = {
+				attribute: 'matrix',
+				comparator: 'between',
+				value: [
+					[175, 0],
+					[180, 0],
+				],
+			};
+			assert.deepStrictEqual(await collectIds(Product.search({ conditions: [condition] })), [1]);
+		});
+		it('[Any] auto-casts value operands like a scalar Any attribute', async function () {
+			assert.deepStrictEqual(await rest(Product, 'tags=123'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'tags==123'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'tags==string:123'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'tags=ge=100&=le=200'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'tags=abc'), [1]);
+		});
+		it('leaves custom-index distance thresholds (condition.target) unconverted', function () {
+			const prepared = Product._prepareQueryConditions(
+				[
+					{
+						attribute: 'sizes',
+						comparator: 'lt',
+						value: 0.5,
+						target: [1, 2],
+						chainedConditions: [{ comparator: 'gt', value: 0.2 }],
+					},
+				],
+				undefined,
+				{}
+			);
+			assert.deepStrictEqual(prepared.conditions[0].value, [0.2, 0.5]);
+		});
+		it('an empty operand follows the element type (null for numeric elements, empty string for String/Any)', async function () {
+			assert.strictEqual(
+				Product._prepareQueryConditions([{ attribute: 'sizes', comparator: 'equals', value: '' }], undefined, {})
+					.conditions[0].value,
+				null
+			);
+			assert.strictEqual(
+				Product._prepareQueryConditions([{ attribute: 'tags', comparator: 'equals', value: '' }], undefined, {})
+					.conditions[0].value,
+				''
+			);
+			assert.deepStrictEqual(await rest(Product, 'tags='), []);
+		});
+	});
+
+	describe('paths convert with the leaf type (harper#3940)', () => {
+		it('to-many relationship', async function () {
+			assert.deepStrictEqual(await rest(Brand, 'products.price=ge=30'), [2, 3]);
+			assert.deepStrictEqual(await rest(Brand, 'products.price=ge=number:30'), [2, 3]);
+			assert.deepStrictEqual(await rest(Brand, 'products.price=ge=25&=le=30'), [1, 2]);
+			assert.deepStrictEqual(await rest(Brand, 'products.sizes=ge=150'), [3]);
+			assert.deepStrictEqual(await rest(Brand, 'products.price==5'), [1]);
+		});
+		it('to-one relationship', async function () {
+			assert.deepStrictEqual(await rest(Product, 'brand.id=ge=2'), [3, 4, 5]);
+			assert.deepStrictEqual(await rest(Product, 'brand.name==Acme'), [1, 2]);
+		});
+		it('same-record relationship[...] group', async function () {
+			assert.deepStrictEqual(await rest(Brand, 'products[price=ge=25&=le=30&sizes=ge=100]'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products[sizes=ct=07]'), [2]);
+			assert.deepStrictEqual(await rest(Product, 'brand[id=ge=2]'), [3, 4, 5]);
+			await assertRejects400(Brand, 'products[price=ge=abc]', 'price');
+			await assertRejects400(Brand, 'products[price=ge=25&=le=abc]', 'price');
+			await assertRejects400(Brand, 'products[sizes=ge=abc]', 'sizes');
+		});
+		it('an invalid related leaf value is a 400', async function () {
+			await assertRejects400(Brand, 'products.price=ge=abc', 'price');
+		});
+		it('an undeclared JSON leaf keeps the decoded string', async function () {
+			assert.deepStrictEqual(await rest(Product, 'extra.tag==123'), [2]);
+		});
+		it('an Any path leaf auto-casts value operands like top-level Any and relationship[...] groups', async function () {
+			assert.deepStrictEqual(await rest(Product, 'extra=123'), [3]);
+			assert.deepStrictEqual(await rest(Product, 'extra==string:123'), [3]);
+			assert.deepStrictEqual(await rest(Brand, 'products.extra=123'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products.extra==string:123'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products.extra=ge=100&=le=200'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products[extra=123]'), [2]);
+			assert.deepStrictEqual(await rest(Brand, 'products.extra=abc'), [1]);
+		});
+	});
+
+	it('strict equality on a typed attribute is converted', async function () {
+		assert.deepStrictEqual(await rest(Product, 'price===25'), [2]);
+		assert.deepStrictEqual(await rest(Product, 'code===007'), [1]);
+		assert.deepStrictEqual(await rest(Product, 'sizes===25'), [2]);
+	});
+
+	it('untyped attributes auto-cast only COERCIBLE_OPERATORS and keep = / === / !== and long comparator names strict', async function () {
+		assert.deepStrictEqual(await rest(Untyped, 'val==5'), [1]);
+		assert.deepStrictEqual(await rest(Untyped, 'val=ge=5&=le=5'), [1]);
+		assert.deepStrictEqual(await rest(Untyped, 'val=5'), [2]);
+		assert.deepStrictEqual(await rest(Untyped, 'val===5'), [2]);
+		assert.deepStrictEqual(await rest(Untyped, 'val!=5'), [2]);
+		assert.deepStrictEqual(await rest(Untyped, 'val!==5'), [1]);
+		assert.deepStrictEqual(
+			await collectIds(
+				Untyped.search({
+					conditions: [
+						{ attribute: 'val', comparator: 'greater_than_equal', value: '5' },
+						{ attribute: 'val', comparator: 'less_than_equal', value: '5' },
+					],
+				})
+			),
+			[2]
+		);
+	});
+});

@@ -1,14 +1,30 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const path = require('node:path');
 const { loadComponent, loadedPaths } = require('#src/components/componentLoader');
 const { PACKAGE_ROOT } = require('#src/utility/packageUtils');
 const fs = require('node:fs');
 const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
+
+// What static/defaultConfig.yaml ships. A machine with no Harper install has no config at all, so
+// without this the allowlist is empty and `spawn('npm')` is rejected as a disallowed command before
+// it can be rejected for having no process name — the restriction the spawn test is about.
+const DEFAULT_ALLOWED_SPAWN_COMMANDS = ['npm', 'node'];
 
 describe('Global Variable Isolation in testJSWithDeps', function () {
 	let mockResources;
 	let pidsDir;
+	let configuredSpawnCommands;
+
+	before(function () {
+		configuredSpawnCommands = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS);
+		env.setProperty(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS, DEFAULT_ALLOWED_SPAWN_COMMANDS);
+	});
+
+	after(function () {
+		env.setProperty(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS, configuredSpawnCommands);
+	});
 
 	beforeEach(function () {
 		// Create mock resources
@@ -234,7 +250,7 @@ describe('Global Variable Isolation in testJSWithDeps', function () {
 
 		// Verify the old process was killed and a new one spawned
 		assert(child3.pid, 'New version process should have a PID');
-		assert.notEqual(child1.pid, child3.pid, 'Higher version should have spawned a new process');
+		assert.notStrictEqual(child1.pid, child3.pid, 'Higher version should have spawned a new process');
 
 		// Clean up
 		child3.kill();

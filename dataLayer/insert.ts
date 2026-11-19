@@ -7,10 +7,10 @@
  * as the update module is meant to be used in more specific circumstances.
  */
 import insertValidator from '../validation/insertValidator.ts';
-import * as hdbUtils from '../utility/common_utils.ts';
-import * as util from 'util';
-// Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
-const harperBridge = require('./harperBridge/harperBridge').default;
+import * as _hdbUtils from '../utility/common_utils.ts';
+const hdbUtils = _hdbUtils;
+import * as util from 'node:util';
+import harperBridge from './harperBridge/harperBridge.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 import log from '../utility/logging/harper_logger.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
@@ -21,6 +21,7 @@ const pGlobalSchema = util.promisify(globalSchema.getTableSchema);
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
 const UPSERT_ACTION = 'upserted';
+const PUT_ACTION = 'put';
 
 //IMPORTANT - This validation function is the async version of the code in harperBridge/bridgeUtility/insertUpdateValidate.js
 // make sure any changes below are also made there. This is to resolve a circular dependency.
@@ -219,6 +220,42 @@ async function upsertData(upsertObject: any) {
 }
 
 /**
+ * Create-or-replace the records in the putObject parameter: the stored record becomes exactly the
+ * submitted one, so an attribute the request omits is removed. `update`/`upsert` merge instead, and
+ * must keep doing so for v4 compatibility — hence a distinct operation rather than a flag on those.
+ * Equivalent to REST `PUT /Table/id`.
+ * @param putObject - Represents the data that will be written
+ */
+async function putData(putObject: any) {
+	if (putObject.operation !== 'put') {
+		throw handleHDBError(new Error(), 'invalid operation, must be put', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+	}
+
+	let validator = insertValidator(putObject);
+	if (validator) {
+		throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	hdbUtils.transformReq(putObject);
+
+	let invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(putObject.schema, putObject.table);
+	if (invalidSchemaTableMsg) {
+		throw handleHDBError(new Error(), invalidSchemaTableMsg, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	let bridgePutResult = await harperBridge.putRecords(putObject);
+
+	return returnObject(
+		PUT_ACTION,
+		bridgePutResult.written_hashes,
+		putObject,
+		[],
+		bridgePutResult.new_attributes,
+		bridgePutResult.txn_time
+	);
+}
+
+/**
  * Constructs return object for insert, update, and upsert.
  * @param action
  * @param written_hashes
@@ -254,6 +291,12 @@ function returnObject(
 		return return_object;
 	}
 
+	if (action === PUT_ACTION) {
+		// `put` never skips: every submitted record is written, created or replaced.
+		return_object.put_hashes = written_hashes;
+		return return_object;
+	}
+
 	return_object.update_hashes = written_hashes;
 	return_object.skipped_hashes = skipped;
 	return return_object;
@@ -263,4 +306,4 @@ export function flush(object: any) {
 	hdbUtils.transformReq(object);
 	return harperBridge.flush(object.schema, object.table);
 }
-export { insertData as insert, updateData as update, upsertData as upsert };
+export { insertData as insert, updateData as update, upsertData as upsert, putData as put };

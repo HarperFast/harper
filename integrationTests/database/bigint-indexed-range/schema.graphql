@@ -1,0 +1,21 @@
+# QA-190 — TRUE 64-bit Long @indexed range queries above 2^53.
+#
+# Residual gap from QA-188: big/Float column used JS double-precision floats which
+# cannot represent 2^53+1 (collapses to 2^53).  This fixture declares a true Long
+# column AND a BigInt column so we can:
+#   (a) prove Long@indexed enforces the JS MAX_SAFE_INTEGER cap (typed-Long limitation)
+#   (b) prove BigInt@indexed stores distinct values above 2^53 and returns correct ranges
+#
+# LongRow  — Long @indexed  (for cap-enforcement test)
+# BigRow   — BigInt @indexed (for true 64-bit range tests)
+type LongRow @table @export {
+	id: ID @primaryKey
+	lval: Long @indexed
+	label: String
+}
+
+type BigRow @table @export {
+	id: ID @primaryKey
+	bval: BigInt @indexed
+	label: String
+}

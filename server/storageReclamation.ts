@@ -1,10 +1,17 @@
+import { readFile, realpath } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { ownsStoreMaintenance } from '../server/threads/manageThreads.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import { convertToMS } from '../utility/common_utils.ts';
-envMgr.initSync();
+
+try {
+	envMgr.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 const reclamationHandlers = new Map<
 	string,
 	{ priority: number; handler: (priority: number) => Promise<void> | void }[]
@@ -12,6 +19,83 @@ const reclamationHandlers = new Map<
 
 const RECLAMATION_THRESHOLD = envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_THRESHOLD) ?? 0.4; // 40% remaining free space is the default
 const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_INTERVAL)) || 3600000; // 1 hour is the default
+
+// Written by host-manager every ~90s alongside the instance's hdb root
+const QUOTA_STATUS_FILE = 'quota-status.json';
+// Use statfs fallback if the file is older than this (host-manager outage, container start race, etc.)
+const QUOTA_STATUS_MAX_AGE_MS = 5 * 60 * 1000;
+
+export type QuotaStatusData = {
+	usedBytes: number;
+	quotaBytes?: number;
+	updatedAt: number;
+};
+
+/**
+ * Resolves `target` to its real (symlink-free) path. `target` itself may not exist yet (e.g. a
+ * table's storage directory that hasn't been created), so walk up to the nearest existing
+ * ancestor, resolve that, and rejoin the not-yet-existing remainder lexically — this still
+ * catches a symlinked *parent* directory, which is the case that actually matters for quota
+ * scoping (leaf directories are created by Harper itself, not symlinked).
+ */
+async function resolveRealPath(target: string): Promise<string> {
+	try {
+		return await realpath(target);
+	} catch {
+		const parent = dirname(target);
+		if (parent === target) return resolve(target);
+		return join(await resolveRealPath(parent), basename(target));
+	}
+}
+
+/**
+ * Whether `target` resolves to a path inside `root`. quota-status.json is scoped to a single
+ * ROOTPATH; a database or table configured with its own STORAGE_PATH (or a STORAGE_BLOBPATHS
+ * entry) can live on an entirely different volume, and must not be reported against the root's
+ * quota. Compares real (symlink-resolved) paths, not just lexically-normalized ones — a `..`-free
+ * path can still be a symlink into another volume, and `resolve()` alone wouldn't catch that.
+ */
+async function isPathWithinRoot(root: string, target: string): Promise<boolean> {
+	const [resolvedRoot, resolvedTarget] = await Promise.all([resolveRealPath(root), resolveRealPath(target)]);
+	const relativePath = relative(resolvedRoot, resolvedTarget);
+	if (relativePath === '') return true;
+	if (isAbsolute(relativePath)) return false;
+	// Check the first segment specifically (`..`), not a `..`-prefix match — a child directory
+	// literally named e.g. `..data` (the Kubernetes ConfigMap/Secret atomic-update symlink
+	// convention) is not a parent-traversal and must not be rejected as escaping the root.
+	const firstSegment = relativePath.split(sep)[0];
+	return firstSegment !== '..';
+}
+
+/**
+ * Guards against a syntactically valid but semantically broken quota-status.json (missing or
+ * negative usage, non-positive quota, non-finite timestamp) being read as "100% free" or worse.
+ */
+function isValidQuotaStatus(status: QuotaStatusData): boolean {
+	return (
+		Number.isFinite(status.updatedAt) &&
+		Number.isFinite(status.quotaBytes) &&
+		status.quotaBytes > 0 &&
+		Number.isFinite(status.usedBytes) &&
+		status.usedBytes >= 0
+	);
+}
+
+/**
+ * Reads the quota-status.json file written by host-manager.
+ * Returns undefined if the file is absent or malformed; does not apply age filtering.
+ */
+export async function getQuotaStatus(): Promise<QuotaStatusData | undefined> {
+	const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
+	if (!rootPath) return undefined;
+	try {
+		const raw = await readFile(join(rootPath, QUOTA_STATUS_FILE), 'utf8');
+		return JSON.parse(raw) as QuotaStatusData;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Register a handler to be called when storage free space is low and reclamation is needed. The callback is called
  * with the priority of the reclamation, which is the ratio of the threshold to the available space ratio. If space is
@@ -20,13 +104,14 @@ const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAM
  * @param path
  * @param handler
  * @param skipThreadCheck
+ * @returns whether this thread registered the handler
  */
 export function onStorageReclamation(
 	path: string,
 	handler: (priority: number) => Promise<void> | void,
 	skipThreadCheck?: boolean
-) {
-	if (skipThreadCheck || getWorkerIndex() === getWorkerCount() - 1) {
+): boolean {
+	if (skipThreadCheck || ownsStoreMaintenance(path)) {
 		// only run on one thread (last one)
 		if (!path) {
 			throw new Error('Storage reclamation path cannot be empty');
@@ -36,14 +121,97 @@ export function onStorageReclamation(
 		}
 		reclamationHandlers.get(path).push({ priority: 0, handler });
 		if (!reclamationTimer) reclamationTimer = setTimeout(runReclamationHandlers, RECLAMATION_INTERVAL).unref();
+		return true;
 	}
+	return false;
+}
+
+/**
+ * Drop every reclamation handler registered for `path`. Registration is process-global and keyed by
+ * storage path with no lifetime of its own, so a store that is closed and discarded leaves both its
+ * handler and the closure holding the closed store alive for the life of the process, and every
+ * re-open of the same path appends another.
+ */
+export function removeStorageReclamation(path: string): boolean {
+	return reclamationHandlers.delete(path);
+}
+
+/**
+ * Drop one handler; a RocksDB column family shares its path with every other family in the database.
+ * The list is replaced rather than spliced so a run iterating it across awaits skips nothing.
+ */
+export function removeStorageReclamationHandler(path: string, handler: (priority: number) => unknown): boolean {
+	const handlers = reclamationHandlers.get(path);
+	const remaining = handlers?.filter((entry) => entry.handler !== handler);
+	if (!remaining || remaining.length === handlers.length) return false;
+	if (remaining.length === 0) reclamationHandlers.delete(path);
+	else reclamationHandlers.set(path, remaining);
+	return true;
 }
 let reclamationTimer: NodeJS.Timeout;
-const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
+
+export type StorageSpaceStats = {
+	available: number;
+	free: number;
+	size: number;
+	// Whether these numbers reflect a quota (accurate for what Harper can actually write) or
+	// raw filesystem-level statfs (can be wildly wrong under a quota-limited data directory).
+	basis: 'quota' | 'filesystem';
+};
+
+/**
+ * Get available/free/size storage stats for a path, preferring a fresh quota-status.json (see
+ * getQuotaStatus) over statfs. statfs describes the filesystem, which is misleading whenever
+ * the data directory is quota-limited on a larger shared volume (#1976).
+ */
+export async function getStorageSpaceStats(path: string): Promise<StorageSpaceStats> {
+	const rootPath = envMgr.get(CONFIG_PARAMS.ROOTPATH);
+	const status = await getQuotaStatus();
+	const statusAge = status ? Date.now() - status.updatedAt : undefined;
+	if (
+		status &&
+		isValidQuotaStatus(status) &&
+		rootPath &&
+		// A negative age (clock skew, or a corrupt/future updatedAt) is not "fresh" — treat it the
+		// same as stale rather than trusting quota data indefinitely.
+		statusAge >= 0 &&
+		statusAge < QUOTA_STATUS_MAX_AGE_MS &&
+		// Checked last: it's the only async/IO-bound condition, so short-circuit it behind the
+		// cheap synchronous checks above.
+		(await isPathWithinRoot(rootPath, path))
+	) {
+		const available = Math.max(0, status.quotaBytes - status.usedBytes);
+		return { available, free: available, size: status.quotaBytes, basis: 'quota' };
+	}
 	const fsStats = await statfs(path);
-	return fsStats.bavail / fsStats.blocks;
+	return {
+		available: fsStats.bavail * fsStats.bsize,
+		free: fsStats.bfree * fsStats.bsize,
+		size: fsStats.blocks * fsStats.bsize,
+		basis: 'filesystem',
+	};
+}
+
+/**
+ * Ratio of available to total size, guarding the 0/0 = NaN case (a zero-size statfs/quota result,
+ * e.g. an empty or misconfigured mount) so a full disk still reports a ratio of 0 rather than NaN.
+ */
+export function computeAvailableRatio(available: number, size: number): number {
+	return size > 0 ? available / size : 0;
+}
+
+// If a fresh quota-status.json exists (written by host-manager every ~90s), use quota-based ratio.
+// Otherwise fall back to statfs for the registered path.
+const defaultGetAvailableSpaceRatio = async (path: string): Promise<number> => {
+	const { available, size } = await getStorageSpaceStats(path);
+	return computeAvailableRatio(available, size);
 };
 let getAvailableSpaceRatio: (path: string) => Promise<number> = defaultGetAvailableSpaceRatio;
+
+/** The ratio of the threshold to a path's available space ratio; above 1 means reclamation is needed. */
+export async function getStorageReclamationPriority(path: string): Promise<number> {
+	return RECLAMATION_THRESHOLD / (await getAvailableSpaceRatio(path));
+}
 
 /**
  * Run the registered reclamation handlers, if any disk drives are below the threshold
@@ -51,8 +219,7 @@ let getAvailableSpaceRatio: (path: string) => Promise<number> = defaultGetAvaila
 export async function runReclamationHandlers() {
 	for (const [path, handlers] of reclamationHandlers) {
 		try {
-			const availableRatio = await getAvailableSpaceRatio(path);
-			const priority = RECLAMATION_THRESHOLD / availableRatio;
+			const priority = await getStorageReclamationPriority(path);
 			for (const entry of handlers) {
 				const { priority: previousPriority, handler } = entry;
 				entry.priority = priority;

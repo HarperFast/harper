@@ -1,12 +1,13 @@
+import { loadNativePackage } from '../../utility/packageUtils.js';
 /**
  * Shared utilities for certificate verification
  */
 
 import { createHash } from 'node:crypto';
-import * as pkijs from 'pkijs';
-import * as asn1js from 'asn1js';
+import type * as Asn1js from 'asn1js';
+import { loadPkijs } from './pkijs-ed25519-patch.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { table } from '../../resources/databases.ts';
+import { declareCertificateCacheTable } from './verificationTables.ts';
 import type { PeerCertificate, CertificateChainEntry } from './types.ts';
 
 const logger = loggerWithTag('cert-verification-utils');
@@ -69,6 +70,8 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
 	try {
 		// Parse the certificate using PKI.js
 		const certBuffer = pemToBuffer(certPem);
+		const pkijs = loadPkijs();
+		const asn1js = loadNativePackage('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for CRL Distribution Points extension (OID: 2.5.29.31)
@@ -127,6 +130,8 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
  */
 export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocspUrls: string[] } {
 	try {
+		const pkijs = loadPkijs();
+		const asn1js = loadNativePackage('asn1js') as typeof Asn1js;
 		// Parse the certificate using PKI.js (single parse for both URL types)
 		const certBuffer = pemToBuffer(certPem);
 		const cert = pkijs.Certificate.fromBER(certBuffer);
@@ -220,6 +225,8 @@ export function extractOCSPUrls(certPem: string): string[] {
 	try {
 		// Parse the certificate using PKI.js
 		const certBuffer = pemToBuffer(certPem);
+		const pkijs = loadPkijs();
+		const asn1js = loadNativePackage('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for Authority Information Access extension (OID: 1.3.6.1.5.5.7.1.1)
@@ -297,6 +304,10 @@ export function pemToBuffer(pem: string): ArrayBuffer {
 	return buffer;
 }
 
+// A verdict cached before verdicts carried their own expiry has none and would read as fresh forever, so the
+// keys it was stored under are never read again.
+const VERDICT_KEY_VERSION = 2;
+
 /**
  * Create a cache key for certificate verification
  * @param certPem - Certificate in PEM format
@@ -316,6 +327,7 @@ export function createCacheKey(
 		issuerPem,
 		method,
 		...additionalData,
+		keyVersion: VERDICT_KEY_VERSION,
 	};
 	const cacheKeyHash = createHash('sha256').update(JSON.stringify(cacheData)).digest('hex');
 	return `${method}:${cacheKeyHash}`;
@@ -349,6 +361,7 @@ export function createRevokedCertificateId(issuerKeyId: string, serialNumber: st
 export function extractSerialNumber(certPem: string): string {
 	try {
 		const certBuffer = pemToBuffer(certPem);
+		const pkijs = loadPkijs();
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Convert serial number to string
@@ -370,6 +383,8 @@ export function extractSerialNumber(certPem: string): string {
 export function extractIssuerKeyId(certPem: string): string {
 	try {
 		const certBuffer = pemToBuffer(certPem);
+		const pkijs = loadPkijs();
+		const asn1js = loadNativePackage('asn1js') as typeof Asn1js;
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Look for Authority Key Identifier extension (OID: 2.5.29.35)
@@ -410,38 +425,9 @@ export function extractIssuerKeyId(certPem: string): string {
  * Get shared certificate verification cache table
  * @returns Harper table instance for certificate verification cache
  */
-// Cache the certificate cache table instance to avoid recreating it
-let certificateCacheTable: ReturnType<typeof table> | null = null;
+let certificateCacheTable: ReturnType<typeof declareCertificateCacheTable> | null = null;
 
 export function getCertificateCacheTable() {
-	if (!certificateCacheTable) {
-		certificateCacheTable = table({
-			table: 'hdb_certificate_cache',
-			database: 'system',
-			attributes: [
-				{
-					name: 'certificate_id',
-					isPrimaryKey: true,
-				},
-				{
-					name: 'status', // 'good', 'revoked', 'unknown'
-				},
-				{
-					name: 'reason',
-				},
-				{
-					name: 'checked_at',
-				},
-				{
-					name: 'expiresAt',
-					expiresAt: true,
-					indexed: true,
-				},
-				{
-					name: 'method', // 'ocsp' or 'crl'
-				},
-			],
-		});
-	}
+	certificateCacheTable ??= declareCertificateCacheTable();
 	return certificateCacheTable;
 }

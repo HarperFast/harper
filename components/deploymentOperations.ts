@@ -1,20 +1,33 @@
 'use strict';
 
-// Read-side operations against system.hdb_deployment. Slice A of issue #641.
-// Write-side lives in deploymentRecorder.ts; this module only reads.
+// Operations against system.hdb_deployment: reads (list/get/payload download) plus the
+// one targeted write, delete_deployment_payload. Deploy-time writes live in deploymentRecorder.ts.
 
+import { Readable } from 'node:stream';
 import { databases } from '../resources/databases.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { ClientError } from '../utility/errors/hdbError.ts';
-import { getActiveEmitter } from './deploymentRecorder.ts';
+import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { getActiveDeployment } from './deploymentRecorder.ts';
+import { logger } from '../utility/logging/logger.ts';
 import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts';
+import { componentGrantOf, grantCoversComponent } from '../security/componentGrant.ts';
+import { redactUrlCredentials } from '../utility/urlCredentials.ts';
+
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
-const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
+// `staged` belongs here: the build is complete on disk and nothing further happens to this deployment, so
+// an SSE tail must finish and `delete_deployment_payload` must not refuse a tarball nobody is installing
+// from any more. Activating the artifact is a separate deployment with a row of its own.
+// `partial` ends a rolling deploy some node did not take; `rolling_out` is still in progress, on the activation job.
+const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back', 'staged', 'partial']);
 
 interface ListRequest {
+	hdb_user?: unknown;
 	project?: string;
 	status?: string;
+	/** The commit a deploy's `source` names. */
+	sha?: string;
 	since?: number;
 	until?: number;
 	limit?: number;
@@ -22,9 +35,24 @@ interface ListRequest {
 }
 
 interface GetRequest {
+	hdb_user?: unknown;
 	deployment_id: string;
 	// Set by serverHandlers.js when the client asks for `Accept: text/event-stream`.
 	progress?: ProgressEmitter;
+}
+
+interface PayloadRequest {
+	deployment_id: string;
+	hdb_user?: { username?: string; role?: { permission?: { super_user?: boolean } } };
+}
+
+function requireSuperUser(req: PayloadRequest, operationName: string): void {
+	if (!req?.hdb_user?.role?.permission?.super_user) {
+		throw new ClientError(
+			`Operation '${operationName}' is restricted to super_user roles`,
+			HTTP_STATUS_CODES.FORBIDDEN
+		);
+	}
 }
 
 function deploymentTable() {
@@ -39,12 +67,25 @@ function deploymentTable() {
 }
 
 // Strip the blob attribute from a row; the bytes never travel over the operations API.
-// Callers wanting bytes use get_deployment_payload (added in Slice B).
+// A separate get_deployment_payload operation streams the raw bytes when callers need them.
 function stripBlob(row: any): any {
 	if (!row || typeof row !== 'object') return row;
 	const { payload_blob, ...rest } = row;
 	rest.payload_blob_present = payload_blob != null;
 	return rest;
+}
+
+// A super user deployed with the package's credential and may redeploy from it; anyone else sees no URL credential
+// anywhere in a deployment row or event, whichever release or peer wrote it.
+function visibleTo(hdbUser: unknown, value: any): any {
+	return (hdbUser as PayloadRequest['hdb_user'])?.role?.permission?.super_user ? value : redactCredentials(value);
+}
+
+function redactCredentials(value: any): any {
+	if (typeof value === 'string') return redactUrlCredentials(value);
+	if (Array.isArray(value)) return value.map(redactCredentials);
+	if (value === null || typeof value !== 'object') return value;
+	return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactCredentials(entry)]));
 }
 
 export async function handleListDeployments(req: ListRequest = {}): Promise<{ deployments: any[]; total: number }> {
@@ -56,8 +97,11 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 		conditions.push({ attribute: 'started_at', value: req.since, comparator: 'greater_than_equal' });
 	if (req.until != null) conditions.push({ attribute: 'started_at', value: req.until, comparator: 'less_than_equal' });
 
+	const componentGrant = componentGrantOf(req.hdb_user);
 	const collected: any[] = [];
 	for await (const row of table.search(conditions)) {
+		if (componentGrant && !grantCoversComponent(componentGrant, row.project)) continue;
+		if (req.sha != null && row?.source?.sha !== req.sha) continue;
 		collected.push(stripBlob(row));
 	}
 	// Newest first by started_at; ties broken by deployment_id for stability.
@@ -68,7 +112,69 @@ export async function handleListDeployments(req: ListRequest = {}): Promise<{ de
 	const total = collected.length;
 	const offset = Math.max(0, req.offset ?? 0);
 	const limit = req.limit != null ? Math.max(0, req.limit) : collected.length;
-	return { deployments: collected.slice(offset, offset + limit), total };
+	const deployments = collected.slice(offset, offset + limit).map((row) => visibleTo(req.hdb_user, row));
+	return { deployments, total };
+}
+
+// A deployment whose release went live on the node that received it; a rolling one may still be reaching the others.
+const RELEASED_STATUSES = new Set(['success', 'rolling_out', 'partial']);
+const RELEASE_FIELDS = ['deployment_id', 'project', 'status', 'activated_from', 'completed_at'];
+
+/** A deployment's record by id, without its payload; undefined when this node has none. */
+export async function deploymentRecord(deploymentId: unknown): Promise<any | undefined> {
+	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
+	if (!table || typeof deploymentId !== 'string') return undefined;
+	return stripBlob(await table.get(deploymentId)) ?? undefined;
+}
+
+/**
+ * The record that made a component's live release live: the newest released deploy or activation naming the id in
+ * its tree's provenance marker, found by key and by `activated_from` so a long history is never scanned. A tree without
+ * one (installed before 5.3, by `add_component`, or from a `file:` link) is described by the project's newest
+ * released deployment, one bounded search per released status, so no run of unreleased deploys can hide it.
+ */
+export async function deploymentOfLiveRelease(
+	project: string,
+	liveDeploymentId: string | undefined
+): Promise<{ deployment_id: string; completed_at?: number } | undefined> {
+	const table = (databases as any).system?.[DEPLOYMENT_TABLE];
+	if (!table) return undefined;
+	let newest: any;
+	const consider = (row: any) => {
+		if (!row || row.project !== project || !RELEASED_STATUSES.has(row.status)) return;
+		if (newest === undefined || (row.completed_at ?? 0) > (newest.completed_at ?? 0)) newest = row;
+	};
+	if (liveDeploymentId) {
+		const named = [await table.get(liveDeploymentId)];
+		try {
+			const conditions = [{ attribute: 'activated_from', value: liveDeploymentId }];
+			for await (const row of table.search({ conditions, select: RELEASE_FIELDS })) named.push(row);
+		} catch (error) {
+			// A catalog upgraded before `activated_from` was registered cannot search it; the record found by key stands.
+			logger.debug?.(`Searching deployments activated from ${liveDeploymentId} failed`, error);
+		}
+		for (const row of named) consider(row);
+		// A deploy that swapped here and then failed on a peer is recorded failed, yet the marker says it is live.
+		if (!newest) {
+			for (const row of named) {
+				if (row?.project !== project || row.status !== 'failed') continue;
+				if (newest === undefined || (row.completed_at ?? 0) > (newest.completed_at ?? 0)) newest = row;
+			}
+		}
+	} else {
+		const sort = { attribute: 'completed_at', descending: true };
+		for (const status of RELEASED_STATUSES) {
+			const conditions = [
+				{ attribute: 'project', value: project },
+				{ attribute: 'status', value: status },
+			];
+			for await (const row of table.search({ conditions, sort, select: RELEASE_FIELDS, limit: 1 })) {
+				consider(row);
+				break;
+			}
+		}
+	}
+	return newest && { deployment_id: newest.deployment_id, completed_at: newest.completed_at };
 }
 
 export async function handleGetDeployment(req: GetRequest): Promise<any> {
@@ -80,6 +186,13 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	if (!row) {
 		throw new ClientError(`No deployment found with id '${req.deployment_id}'`);
 	}
+	const componentGrant = componentGrantOf(req.hdb_user);
+	if (componentGrant && !grantCoversComponent(componentGrant, row.project)) {
+		throw new ClientError(
+			`Deployment '${req.deployment_id}' is of a component this role's component grant does not cover`,
+			HTTP_STATUS_CODES.FORBIDDEN
+		);
+	}
 
 	// SSE content-negotiated branch — when serverHandlers.js detects
 	// `Accept: text/event-stream` it attaches a ProgressEmitter as req.progress and wraps
@@ -88,86 +201,149 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 	// reaches a terminal status. The final return value becomes the SSE `done` event.
 	if (req.progress && typeof (req.progress as any).emit === 'function') {
 		const sse = req.progress;
-		const liveEmitter = getActiveEmitter(req.deployment_id);
+		const live = getActiveDeployment(req.deployment_id);
 
-		// Subscribe FIRST, before reading the row, so any event the recorder emits between
-		// "now" and the moment we finish reading the historical log still lands. Buffer
+		// Subscribe FIRST, before replaying the row, so any event the recorder emits between
+		// "now" and the moment we finish replaying the historical log still lands. Buffer
 		// those live events; dedupe by recording the timestamp of the last replayed entry
 		// and skipping any live event whose timestamp is <= that. Forward everything else.
 		let lastReplayedTs = 0;
-		let resolveLive: (() => void) | null = null;
-		let liveDone = false;
+		let replayed = false;
 		const liveBuffer: Array<{ t: number; event: { event: string; data: unknown } }> = [];
-		const forwardLive = (e: { event: string; data: unknown }) => {
-			sse.emit(e.event, e.data);
-			// A terminal signal — either explicit success/error event from the lifecycle, or
-			// the recorder's `_recorder_finished` sentinel emitted before it unsubscribes.
-			const isTerminalEvent =
-				e.event === '_recorder_finished' ||
-				e.event === 'error' ||
-				(e.event === 'phase' &&
-					e.data &&
-					typeof e.data === 'object' &&
-					(e.data as { phase?: string }).phase === 'success');
-			if (isTerminalEvent && !liveDone) {
-				liveDone = true;
-				resolveLive?.();
-			}
-		};
-		const unsubscribe = liveEmitter
-			? liveEmitter.subscribe((event) => {
+		const emit = (event: string, data: unknown) => sse.emit(event, visibleTo(req.hdb_user, data));
+		const unsubscribe = live
+			? live.emitter.subscribe((event) => {
 					const t = Date.now();
-					if (resolveLive) {
-						// Replay phase finished; we own the live forward path now.
-						if (t > lastReplayedTs) forwardLive(event);
-					} else {
-						// Still replaying; stash for dedup-and-forward once replay completes.
-						liveBuffer.push({ t, event });
-					}
+					if (!replayed) liveBuffer.push({ t, event });
+					else emit(event.event, event.data);
 				})
 			: null;
 
 		try {
-			for (const entry of row.event_log ?? []) {
-				sse.emit(entry.event, entry.data);
+			const replayRow = (await table.get(req.deployment_id)) ?? row;
+			for (const entry of replayRow.event_log ?? []) {
+				emit(entry.event, entry.data);
 				if (typeof entry.t === 'number') lastReplayedTs = Math.max(lastReplayedTs, entry.t);
 			}
-
-			if (liveEmitter && !TERMINAL_STATUSES.has(row.status)) {
-				await new Promise<void>((resolve) => {
-					resolveLive = resolve;
-					// Flush anything that arrived during replay, filtering to events the replay missed.
-					for (const buffered of liveBuffer) {
-						if (buffered.t > lastReplayedTs) forwardLive(buffered.event);
-					}
-					if (liveDone) resolve();
-					// Safety net — if the in-memory emitter is dropped (recorder finished or
-					// the process recycled) before signaling, poll the row's status as a
-					// fallback so the client never hangs indefinitely.
-					const pollTimer = setInterval(async () => {
-						if (liveDone) {
-							clearInterval(pollTimer);
-							return;
-						}
-						const live = getActiveEmitter(req.deployment_id);
-						if (!live || live !== liveEmitter) {
-							clearInterval(pollTimer);
-							const latest = await table.get(req.deployment_id);
-							if (latest && TERMINAL_STATUSES.has(latest.status) && !liveDone) {
-								liveDone = true;
-								resolve();
-							}
-						}
-					}, 500);
-				});
+			for (const buffered of liveBuffer) {
+				if (buffered.t > lastReplayedTs) emit(buffered.event.event, buffered.event.data);
 			}
-			// Re-read the row so the final SSE payload reflects the post-deploy state.
+			replayed = true;
+			// Settles after the recorder's terminal write, so the re-read below sees the final row.
+			if (live && !TERMINAL_STATUSES.has(replayRow.status)) await untilFinished(live.finished, sse.signal);
 			const finalRow = await table.get(req.deployment_id);
-			return stripBlob(finalRow ?? row);
+			return visibleTo(req.hdb_user, stripBlob(finalRow ?? row));
 		} finally {
 			unsubscribe?.();
 		}
 	}
 
-	return stripBlob(row);
+	return visibleTo(req.hdb_user, stripBlob(row));
+}
+
+/** Ends early when the SSE client disconnects, so a dropped tail stops holding the request. */
+function untilFinished(finished: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	if (!signal) return finished;
+	if (signal.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const onAbort = () => resolve();
+		signal.addEventListener('abort', onAbort, { once: true });
+		finished.then(() => {
+			signal.removeEventListener('abort', onAbort);
+			resolve();
+		});
+	});
+}
+
+async function requireDeploymentRow(deploymentId: unknown): Promise<any> {
+	if (typeof deploymentId !== 'string' || !deploymentId) {
+		throw new ClientError(`'deployment_id' is required`);
+	}
+	const table = deploymentTable();
+	const row = await table.get(deploymentId);
+	if (!row) {
+		throw new ClientError(`No deployment found with id '${deploymentId}'`, 404);
+	}
+	return row;
+}
+
+/**
+ * Stream the stored payload tarball back to the caller as raw bytes. Never base64 — payloads
+ * can be hundreds of MB and a base64 round-trip materializes multi-hundred-MB strings (V8's
+ * string cap is ~512MiB, so large payloads would hard-fail with ERR_STRING_TOO_LONG).
+ * serverHandlers.js pipes any returned Readable that carries a `headers` Map.
+ *
+ * Unlike the other deployment ops, this ALSO enforces super_user directly (matching the
+ * secrets-store ops) rather than relying only on the registered permission, so it cannot be
+ * delegated to a non-SU role via a role's `operations` allowlist (operation_authorization.ts
+ * gate-2). The full tarball can embed secrets — `get_deployment`/`list_deployments` only ever
+ * expose stripped metadata, so this is the one deployment op with that exposure.
+ */
+export async function handleGetDeploymentPayload(req: PayloadRequest): Promise<Readable> {
+	requireSuperUser(req, 'get_deployment_payload');
+	const row = await requireDeploymentRow(req?.deployment_id);
+	if (row.payload_blob == null) {
+		throw new ClientError(
+			`No payload is stored for deployment '${req.deployment_id}' (it may have been reclaimed by ` +
+				`payload retention or delete_deployment_payload)`,
+			404
+		);
+	}
+	// Blob.stream() blocks on incomplete chunk writes, so serving a still-replicating row is
+	// safe — the response streams as the bytes land.
+	const stream = Readable.fromWeb(row.payload_blob.stream() as any);
+	const headers = new Map<string, string>();
+	headers.set('content-type', 'application/octet-stream');
+	// Sourced from the stored row, not the request, so header content is never client-chosen.
+	headers.set('content-disposition', `attachment; filename="deployment-${row.deployment_id}.tar.gz"`);
+	(stream as any).headers = headers;
+	// The payload is already a gzipped tar; tell serverHandlers not to recompress it.
+	(stream as any).preCompressed = true;
+	return stream;
+}
+
+/**
+ * Drop a deployment's stored payload tarball, retaining the row (metadata, event_log) as the
+ * audit trail. Committing the row with payload_blob nulled unlinks the blob file locally via
+ * RecordEncoder's retained-blob check AND replicates the null so peers drop their copies too —
+ * one call reclaims the space cluster-wide (same mechanism as the automatic post-deploy
+ * retention drop in operations.js).
+ */
+export async function handleDeleteDeploymentPayload(
+	req: PayloadRequest
+): Promise<{ message: string; deployment_id: string; freed_bytes: number }> {
+	const row = await requireDeploymentRow(req?.deployment_id);
+	if (!TERMINAL_STATUSES.has(row.status)) {
+		// A non-terminal deployment's blob may still be the replication channel peers are
+		// installing from; yanking it mid-flight would wedge them.
+		throw new ClientError(
+			`Deployment '${req.deployment_id}' is not in a terminal state (status '${row.status}'); ` +
+				`its payload may still be in use. Wait for the deployment to finish before deleting the payload.`,
+			409
+		);
+	}
+	if (row.payload_blob == null) {
+		// Idempotent: deleting an already-reclaimed payload succeeds without a write.
+		return {
+			message: `No payload stored for deployment '${req.deployment_id}'`,
+			deployment_id: req.deployment_id,
+			freed_bytes: 0,
+		};
+	}
+	const freedBytes = typeof row.payload_size === 'number' ? row.payload_size : 0;
+	// Copy before mutating — the row from get() may be a shared/cached record.
+	const updated: any = { ...row, payload_blob: null };
+	updated.event_log = Array.isArray(row.event_log) ? [...row.event_log] : [];
+	// Mirror the recorder's event_log entry shape and the automatic drop's event name.
+	updated.event_log.push({
+		t: Date.now(),
+		event: 'payload_dropped',
+		data: { payload_size: freedBytes, deleted_by: req.hdb_user?.username ?? null },
+	});
+	await deploymentTable().put(updated);
+	return {
+		message: `Deleted payload for deployment '${req.deployment_id}'`,
+		deployment_id: req.deployment_id,
+		freed_bytes: freedBytes,
+	};
 }

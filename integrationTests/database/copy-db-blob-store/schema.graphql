@@ -1,0 +1,7 @@
+# One table with a Blob attribute plus a small inline control field: the inline values must
+# survive copy-db byte-exact, which is what makes the blob loss partial and easy to miss.
+type Doc @table @export {
+	key: ID @primaryKey
+	payload: Blob
+	note: String
+}

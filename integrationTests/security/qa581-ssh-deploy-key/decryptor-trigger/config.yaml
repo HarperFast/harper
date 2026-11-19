@@ -1,0 +1,3 @@
+# A component registered through HARPER_BUILTIN_COMPONENTS is only trusted, not loaded; this
+# project's reference to its key is what loads it.
+qa581FakeDecryptor: true

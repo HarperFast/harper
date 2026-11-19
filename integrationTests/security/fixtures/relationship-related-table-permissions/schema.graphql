@@ -1,0 +1,39 @@
+type Dept @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	budget: Int @indexed
+}
+
+type Emp @table @export {
+	id: ID @primaryKey
+	name: String
+	deptId: ID @indexed
+	payload: Any
+	dept: Dept @relationship(from: deptId)
+}
+
+type Seat @table @export {
+	id: ID @primaryKey
+	deptId: ID @indexed
+	dept: Dept @relationship(from: deptId) @enumerable
+}
+
+type Team @table @export {
+	id: ID @primaryKey
+	name: String
+	vaultId: ID @indexed
+	vault: Vault @relationship(from: vaultId) @enumerable
+}
+
+type Vault @table @export {
+	id: ID @primaryKey
+	code: String
+	teamId: ID @indexed
+	team: Team @relationship(from: teamId) @enumerable
+}
+
+type Badge @table @export {
+	id: ID @primaryKey
+	teamId: ID @indexed
+	team: Team @relationship(from: teamId)
+}

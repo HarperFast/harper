@@ -1,5 +1,7 @@
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const sinon = require('sinon');
+const { Headers } = require('#src/server/serverHelpers/Headers');
+const { assertNoDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 
 // First set up test environment
 const testUtils = require('../testUtils.js');
@@ -31,7 +33,7 @@ describe('auth.ts - certificate verification integration', function () {
 		sandbox.stub(contentTypes, 'serializeMessage').returnsArg(0);
 
 		// Stub env to ensure auth is loaded with correct settings
-		const env = require('#src/utility/environment/environmentManager');
+		const env = require('#js/utility/environment/environmentManager');
 		envStub = sandbox.stub(env, 'get');
 		envStub.withArgs('authentication.enableSessions').returns(false); // Disable sessions for simpler testing
 		envStub.withArgs('authentication.authorizeLocal').returns(false);
@@ -87,9 +89,7 @@ describe('auth.ts - certificate verification integration', function () {
 
 			response = {
 				status: 200,
-				headers: {
-					set: sandbox.stub(),
-				},
+				headers: new Headers(),
 				body: {},
 			};
 
@@ -133,7 +133,8 @@ describe('auth.ts - certificate verification integration', function () {
 				status: 'good',
 			});
 
-			getUserStub.resolves({ username: 'test-client', active: true });
+			const shared = { username: 'test-client', active: true };
+			getUserStub.resolves(shared);
 
 			const result = await authModule.authentication(request, nextHandler);
 
@@ -141,6 +142,9 @@ describe('auth.ts - certificate verification integration', function () {
 			assert(certificateVerificationStub.calledWith(request.peerCertificate, request.mtlsConfig));
 			assert(getUserStub.calledWith('test-client', null, request));
 			assert.strictEqual(request.user.username, 'test-client');
+			const { isCertificatePrincipal } = require('#src/security/user');
+			assert.strictEqual(isCertificatePrincipal(request.user), true, 'the certificate names the principal');
+			assert.strictEqual(isCertificatePrincipal(shared), false, 'the object server.getUser returned stays unmarked');
 			assert(nextHandler.calledOnce);
 			assert.strictEqual(result.status, 200);
 		});
@@ -166,6 +170,10 @@ describe('auth.ts - certificate verification integration', function () {
 			assert(!nextHandler.called);
 			assert.strictEqual(result.status, 401);
 			assert.deepStrictEqual(result.body, { error: 'Certificate revoked or verification failed' });
+			assert.throws(
+				() => assertNoDeferredCredentialRejection(request),
+				(error) => error.statusCode === 401 && error.message === 'Certificate revoked or verification failed'
+			);
 		});
 
 		it('should reject request when certificate verification fails', async function () {
@@ -346,9 +354,7 @@ describe('auth.ts - certificate verification integration', function () {
 
 			nextHandler = sandbox.stub().resolves({
 				status: 200,
-				headers: {
-					set: sandbox.stub(),
-				},
+				headers: new Headers(),
 			});
 		});
 
@@ -364,6 +370,23 @@ describe('auth.ts - certificate verification integration', function () {
 			const errorCall = authEventLogStub.error.firstCall;
 			assert(errorCall.args[0].includes('Certificate verification failed'));
 			assert(errorCall.args[1] === 'revoked');
+		});
+	});
+
+	describe('handleApplication registers named middleware', function () {
+		it('registers the authentication listener under name "authentication" so other middleware can order relative to it', function () {
+			const httpStub = sandbox.stub();
+			const scope = {
+				server: { http: httpStub },
+				options: { getAll: () => ({}) },
+			};
+
+			authModule.handleApplication(scope);
+
+			assert(httpStub.calledOnce);
+			const [listener, options] = httpStub.firstCall.args;
+			assert.strictEqual(listener, authModule.authentication);
+			assert.strictEqual(options.name, 'authentication');
 		});
 	});
 });

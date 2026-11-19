@@ -1,0 +1,19 @@
+# Fixture for the SQL engine A/B benchmark.
+# Indexed columns give the new engine index-servable predicates; `name`/`payload`
+# are deliberately unindexed so non-indexable shapes can be measured too.
+type sqlbench @table @export {
+	id: Int @primaryKey
+	category: String @indexed
+	region: String @indexed
+	status: String @indexed
+	qty: Int @indexed
+	label: String @indexed
+	name: String
+	payload: String
+}
+
+type sqlorder @table @export {
+	id: Int @primaryKey
+	widget_id: Int @indexed
+	amt: Int @indexed
+}

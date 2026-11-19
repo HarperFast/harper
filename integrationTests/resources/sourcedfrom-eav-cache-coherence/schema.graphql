@@ -1,0 +1,27 @@
+# QA-595 — EAV product catalog fronted by a cache-sourced resource.
+#
+# Attribute is the EAV substrate: one row per (entity, attribute-name), keyed by a
+# composite string id `${entityId}:${attrName}`. entityId is @indexed so a product's
+# rows can also be range-scanned, but the cache-source resolver below reads the 5 known
+# per-product keys directly (deterministic assembly order).
+#
+# Product is the cache-sourced resource: a 3s TTL @table whose sourcedFrom resolver
+# (resources.js) assembles a product's view by reading all of its Attribute rows. The
+# EAV substrate's unit of write (one row) and the cache's unit of consistency (one
+# assembled product) disagree — that's exactly the seam under test.
+
+type Attribute @table @export {
+	id: ID @primaryKey
+	entityId: String @indexed
+	name: String
+	value: String
+	gen: Int
+}
+
+type Product @table(expiration: 3) @export {
+	id: ID @primaryKey
+	attrs: Any
+	gens: Any
+	fillSeq: Int
+	assembledAt: Long
+}

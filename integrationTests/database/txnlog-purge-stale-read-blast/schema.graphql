@@ -1,0 +1,11 @@
+# QA-782 — bound the blast radius of F-225 (in-process stale-read cache after a RocksDB
+# audit-purge). `bucket` is @indexed so the same delete can be probed via search_by_value,
+# a REST collection query, and SQL, all against the SAME contiguous key range that gets
+# bulk-deleted from the ordinary (non-audit) primary store. `audit: true` also lets the
+# same table run the KNOWN-reproducing audit-purge arm for direct in-process contrast.
+type Widget @table(audit: true) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}

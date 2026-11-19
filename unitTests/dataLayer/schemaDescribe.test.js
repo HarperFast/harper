@@ -7,7 +7,9 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const assert = require('assert');
 // need to rewire in order to override p_search_search_by_value
-const schema_describe = rewire('#src/dataLayer/schemaDescribe');
+const schema_describe = rewire('#js/dataLayer/schemaDescribe');
+const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');
+const { databases, getDatabases } = require('#src/resources/databases');
 const start_time = Date.now();
 
 const TEST_DATA_DOG = [
@@ -64,6 +66,25 @@ const DESCRIBE_TABLE_MESSAGE = {
 	schema: `${TEST_SCHEMA}`,
 	table: `${TEST_TABLE_DOG}`,
 };
+
+describe('describeAll authorization bypass state', function () {
+	it('ignores request body bypass_auth and trusts only internal dispatch context', async function () {
+		getDatabases();
+		databases.private_database = {};
+		try {
+			const request = { operation: 'describe_all', bypass_auth: true };
+			assert.strictEqual(Object.hasOwn(await schema_describe.describeAll(request), 'private_database'), false);
+			const internalResult = await operationAuthorizationState.runWithOperationAuthorizationBypass(true, () =>
+				schema_describe.describeAll(request)
+			);
+			// null-prototype, so compare contents: deepStrictEqual against `{}` also compares prototypes
+			assert.ok(Object.hasOwn(internalResult, 'private_database'));
+			assert.deepStrictEqual({ ...internalResult.private_database }, {});
+		} finally {
+			delete databases.private_database;
+		}
+	});
+});
 
 let test_envs;
 

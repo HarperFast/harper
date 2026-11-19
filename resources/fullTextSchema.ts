@@ -1,0 +1,344 @@
+import { ClientError } from '../utility/errors/hdbError.ts';
+
+const FULL_TEXT_ARGUMENTS = new Set([
+	'name',
+	'fields',
+	'analyzer',
+	'stopWords',
+	'positions',
+	'surfaceTerms',
+	'synonyms',
+	'highlighting',
+]);
+const SOURCE_ARGUMENTS = new Set(['name', 'weight', 'highlight', 'mediaType']);
+const SYNONYM_ARGUMENTS = new Set(['source', 'replacements']);
+const HIGHLIGHTING_ARGUMENTS = new Set(['maxFragments', 'fragmentLength']);
+
+const DEFAULT_ANALYZER = 'english@2';
+const DEFAULT_MAX_FRAGMENTS = 3;
+const DEFAULT_FRAGMENT_LENGTH = 160;
+
+export type FullTextSource = {
+	name: string;
+	weight: number;
+	highlight?: boolean;
+	mediaType?: 'text/plain';
+};
+
+export type FullTextSynonymRule = {
+	source: string;
+	replacements: string[];
+};
+
+export type FullTextHighlighting = {
+	maxFragments: number;
+	fragmentLength: number;
+};
+
+export type FullTextDefinition = {
+	name: string;
+	fields: FullTextSource[];
+	analyzer: 'english@2';
+	stopWords: boolean;
+	positions: boolean;
+	surfaceTerms: boolean;
+	synonyms: FullTextSynonymRule[];
+	highlighting?: FullTextHighlighting;
+};
+
+export type FullTextStorageDefinition = Pick<
+	FullTextDefinition,
+	'analyzer' | 'stopWords' | 'positions' | 'surfaceTerms' | 'synonyms'
+> & {
+	fields: Array<Pick<FullTextSource, 'name' | 'mediaType'>>;
+};
+
+export type FullTextIndexGenerations = Record<string, string>;
+
+/** Names are enough to locate native storage even when source attributes are missing or stale. */
+export function persistedFullTextIndexNames(values: unknown): string[] {
+	if (!Array.isArray(values)) return [];
+	const names = new Set<string>();
+	for (const value of values) {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+		const name = (value as { name?: unknown }).name;
+		if (typeof name === 'string' && name.length > 0) names.add(name);
+	}
+	return [...names].sort();
+}
+
+export function fullTextStorageDefinition(definition: FullTextDefinition): FullTextStorageDefinition {
+	return {
+		fields: definition.fields.map(({ name, mediaType }) => ({
+			name,
+			...(mediaType ? { mediaType } : null),
+		})),
+		analyzer: definition.analyzer,
+		stopWords: definition.stopWords,
+		positions: definition.positions,
+		surfaceTerms: definition.surfaceTerms,
+		synonyms: (definition.synonyms ?? []).map(({ source, replacements }) => ({
+			source,
+			replacements: [...replacements],
+		})),
+	};
+}
+
+export function reconcileFullTextIndexGenerations(
+	previousDefinitions: readonly FullTextDefinition[],
+	previousGenerations: unknown,
+	nextDefinitions: readonly FullTextDefinition[],
+	createGeneration: () => string
+): FullTextIndexGenerations {
+	const previousByName = new Map(previousDefinitions.map((definition) => [definition.name, definition]));
+	const durable =
+		previousGenerations && typeof previousGenerations === 'object' && !Array.isArray(previousGenerations)
+			? (previousGenerations as Record<string, unknown>)
+			: Object.create(null);
+	const generations: FullTextIndexGenerations = Object.create(null);
+	for (const definition of nextDefinitions) {
+		const previous = previousByName.get(definition.name);
+		const generation = durable[definition.name];
+		const storageUnchanged =
+			previous &&
+			JSON.stringify(fullTextStorageDefinition(previous)) === JSON.stringify(fullTextStorageDefinition(definition));
+		generations[definition.name] =
+			storageUnchanged && typeof generation === 'string' && generation.length > 0 ? generation : createGeneration();
+	}
+	return generations;
+}
+
+export type FullTextSchemaAttribute = {
+	name: string;
+	type?: string;
+	elements?: { type?: string };
+	computed?: unknown;
+	computedFromExpression?: unknown;
+	relationship?: unknown;
+};
+
+export function compileFullTextFields(
+	values: unknown,
+	definitions: readonly Pick<FullTextDefinition, 'name'>[],
+	attributes: readonly FullTextSchemaAttribute[],
+	requireAll = false
+): string[] {
+	if (!Array.isArray(values)) throw schemaError('fullTextFields must be a list of index names');
+	const indexes = new Set(definitions.map(({ name }) => name));
+	const stored = new Set(attributes.map(({ name }) => name));
+	const names = new Set<string>();
+	for (const name of values) {
+		if (typeof name !== 'string' || name.length === 0)
+			throw schemaError('fullTextFields must contain non-empty index names');
+		if (names.has(name)) throw schemaError(`Full-text field "${name}" is declared more than once`);
+		if (!indexes.has(name)) throw schemaError(`Full-text field "${name}" requires a declared @fullText index`);
+		if (stored.has(name)) throw schemaError(`Full-text field "${name}" conflicts with a stored attribute`);
+		names.add(name);
+	}
+	if (requireAll && names.size !== indexes.size)
+		throw schemaError('fullTextFields must include every declared @fullText index');
+	return [...names].sort();
+}
+
+export function compileFullTextDefinitions(
+	values: readonly unknown[],
+	attributes: readonly FullTextSchemaAttribute[]
+): FullTextDefinition[] {
+	const names = new Set<string>();
+	const definitions = values.map((value) => {
+		const definition = compileFullTextDefinition(value, attributes);
+		if (names.has(definition.name))
+			throw schemaError(`@fullText index "${definition.name}" is declared more than once`);
+		names.add(definition.name);
+		return definition;
+	});
+	return sortFullTextDefinitions(definitions);
+}
+
+export function compileValidFullTextDefinitions(
+	values: unknown,
+	attributes: readonly FullTextSchemaAttribute[],
+	onInvalid: (value: unknown, error: ClientError) => void
+): FullTextDefinition[] {
+	if (!Array.isArray(values)) {
+		onInvalid(values, schemaError('Persisted @fullText declarations must be a list'));
+		return [];
+	}
+	const names = new Set<string>();
+	const definitions: FullTextDefinition[] = [];
+	for (const value of values) {
+		try {
+			const definition = compileFullTextDefinition(value, attributes);
+			if (names.has(definition.name))
+				throw schemaError(`@fullText index "${definition.name}" is declared more than once`);
+			names.add(definition.name);
+			definitions.push(definition);
+		} catch (error) {
+			if (!(error instanceof ClientError)) throw error;
+			onInvalid(value, error);
+		}
+	}
+	return sortFullTextDefinitions(definitions);
+}
+
+export function sortFullTextDefinitions<T extends { name: string }>(definitions: T[]): T[] {
+	return definitions.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+}
+
+export function compileFullTextDefinition(
+	value: unknown,
+	attributes: readonly FullTextSchemaAttribute[]
+): FullTextDefinition {
+	const definition = requireObject(value, '@fullText');
+	assertKnownKeys(definition, FULL_TEXT_ARGUMENTS, '@fullText');
+	if (typeof definition.name !== 'string' || definition.name.length === 0)
+		throw schemaError('@fullText requires a non-empty string "name"');
+	const indexName = definition.name;
+	if (!Array.isArray(definition.fields) || definition.fields.length === 0)
+		throw schemaError(`@fullText index "${indexName}" requires a non-empty "fields" list`);
+	const attributesByName = new Map(attributes.map((attribute) => [attribute.name, attribute]));
+	if (attributesByName.has(indexName))
+		throw schemaError(`Full-text field "${indexName}" conflicts with a stored attribute`);
+	const sourceNames = new Set<string>();
+	const fields = definition.fields.map((entry, index) => {
+		const source = requireObject(entry, `@fullText fields[${index}] on index "${indexName}"`);
+		assertKnownKeys(source, SOURCE_ARGUMENTS, `@fullText fields[${index}] on index "${indexName}"`);
+		if (typeof source.name !== 'string' || source.name.length === 0)
+			throw schemaError(`@fullText fields[${index}] on index "${indexName}" requires a non-empty string "name"`);
+		if (sourceNames.has(source.name))
+			throw schemaError(`@fullText index "${indexName}" declares source field "${source.name}" more than once`);
+		const attribute = attributesByName.get(source.name);
+		if (!attribute)
+			throw schemaError(`@fullText index "${indexName}" references unknown source field "${source.name}"`);
+		if (attribute.computed || attribute.computedFromExpression || attribute.relationship)
+			throw schemaError(
+				`@fullText source field "${source.name}" must be stored record data and cannot use @computed or @relationship`
+			);
+		if (!isSupportedSource(attribute))
+			throw schemaError(
+				`@fullText source field "${source.name}" must be String, [String], or a declared text/plain Blob; got "${displayType(attribute)}"`
+			);
+		if (attribute.type === 'Blob' && source.mediaType !== 'text/plain')
+			throw schemaError(`@fullText Blob source field "${source.name}" requires mediaType: "text/plain"`);
+		if (attribute.type !== 'Blob' && source.mediaType !== undefined)
+			throw schemaError(`@fullText source field "${source.name}" only accepts mediaType for Blob attributes`);
+		const weight = source.weight === undefined ? 1 : source.weight;
+		if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0)
+			throw schemaError(`@fullText source field "${source.name}" requires a finite weight greater than zero`);
+		if (source.highlight !== undefined && source.highlight !== null && typeof source.highlight !== 'boolean')
+			throw schemaError(`@fullText source field "${source.name}" requires a Boolean "highlight" value`);
+		sourceNames.add(source.name);
+		return {
+			name: source.name,
+			weight,
+			...(typeof source.highlight === 'boolean' ? { highlight: source.highlight } : {}),
+			...(source.mediaType === 'text/plain' ? { mediaType: 'text/plain' as const } : {}),
+		};
+	});
+
+	const analyzer = definition.analyzer === undefined ? DEFAULT_ANALYZER : definition.analyzer;
+	if (analyzer !== DEFAULT_ANALYZER)
+		throw schemaError(`@fullText index "${indexName}" supports only the versioned analyzer "${DEFAULT_ANALYZER}"`);
+	const stopWords = booleanOption(definition, 'stopWords', true, indexName);
+	const positions = booleanOption(definition, 'positions', true, indexName);
+	const surfaceTerms = booleanOption(definition, 'surfaceTerms', true, indexName);
+	const synonyms = compileSynonyms(definition.synonyms, indexName);
+	const highlighting = compileHighlighting(definition.highlighting, indexName);
+	const highlightedFields = fields.filter(({ highlight }) => highlight === true);
+	if (highlighting && highlightedFields.length === 0)
+		throw schemaError(`@fullText index "${indexName}" requires at least one source field with highlight: true`);
+	if (highlighting && !surfaceTerms)
+		throw schemaError(`@fullText index "${indexName}" highlighting requires surfaceTerms: true`);
+
+	return {
+		name: indexName,
+		fields,
+		analyzer,
+		stopWords,
+		positions,
+		surfaceTerms,
+		synonyms,
+		...(highlighting ? { highlighting } : {}),
+	};
+}
+
+function compileSynonyms(value: unknown, targetName: string): FullTextSynonymRule[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw schemaError(`@fullText synonyms on "${targetName}" must be a list`);
+	const rules = new Set<string>();
+	return value.map((entry, index) => {
+		const rule = requireObject(entry, `@fullText synonyms[${index}] on "${targetName}"`);
+		assertKnownKeys(rule, SYNONYM_ARGUMENTS, `@fullText synonyms[${index}] on "${targetName}"`);
+		if (typeof rule.source !== 'string' || rule.source.length === 0)
+			throw schemaError(`@fullText synonyms[${index}] on "${targetName}" requires a non-empty string "source"`);
+		if (!Array.isArray(rule.replacements) || rule.replacements.length === 0)
+			throw schemaError(`@fullText synonyms[${index}] on "${targetName}" requires non-empty "replacements"`);
+		const replacements = rule.replacements.map((replacement) => {
+			if (typeof replacement !== 'string' || replacement.length === 0)
+				throw schemaError(`@fullText synonyms[${index}] on "${targetName}" requires string replacements`);
+			if (replacement === rule.source)
+				throw schemaError(`@fullText synonyms[${index}] on "${targetName}" cannot replace a term with itself`);
+			return replacement;
+		});
+		if (new Set(replacements).size !== replacements.length)
+			throw schemaError(`@fullText synonyms[${index}] on "${targetName}" contains duplicate replacements`);
+		const key = JSON.stringify([rule.source, [...replacements].sort()]);
+		if (rules.has(key)) throw schemaError(`@fullText on "${targetName}" declares a duplicate synonym rule`);
+		rules.add(key);
+		return { source: rule.source, replacements };
+	});
+}
+
+function compileHighlighting(value: unknown, targetName: string): FullTextHighlighting | undefined {
+	if (value == null) return;
+	const highlighting = requireObject(value, `@fullText highlighting on "${targetName}"`);
+	assertKnownKeys(highlighting, HIGHLIGHTING_ARGUMENTS, `@fullText highlighting on "${targetName}"`);
+	const maxFragments = highlighting.maxFragments === undefined ? DEFAULT_MAX_FRAGMENTS : highlighting.maxFragments;
+	const fragmentLength =
+		highlighting.fragmentLength === undefined ? DEFAULT_FRAGMENT_LENGTH : highlighting.fragmentLength;
+	if (typeof maxFragments !== 'number' || !Number.isSafeInteger(maxFragments) || maxFragments <= 0)
+		throw schemaError(`@fullText highlighting.maxFragments on "${targetName}" must be a positive integer`);
+	if (typeof fragmentLength !== 'number' || !Number.isSafeInteger(fragmentLength) || fragmentLength <= 0)
+		throw schemaError(`@fullText highlighting.fragmentLength on "${targetName}" must be a positive integer`);
+	return { maxFragments, fragmentLength };
+}
+
+function booleanOption(
+	definition: Record<string, unknown>,
+	name: 'stopWords' | 'positions' | 'surfaceTerms',
+	fallback: boolean,
+	targetName: string
+): boolean {
+	const value = definition[name];
+	if (value === undefined) return fallback;
+	if (typeof value !== 'boolean') throw schemaError(`@fullText ${name} on "${targetName}" must be a Boolean`);
+	return value;
+}
+
+function isSupportedSource(attribute: FullTextSchemaAttribute): boolean {
+	return (
+		attribute.type === 'String' ||
+		attribute.type === 'Blob' ||
+		(attribute.type === 'array' && attribute.elements?.type === 'String')
+	);
+}
+
+function displayType(attribute: FullTextSchemaAttribute): string {
+	return attribute.type === 'array' ? `[${attribute.elements?.type ?? '?'}]` : (attribute.type ?? '?');
+}
+
+function requireObject(value: unknown, label: string): Record<string, unknown> {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) throw schemaError(`${label} must be an object`);
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) throw schemaError(`${label} must be an object`);
+	return value as Record<string, unknown>;
+}
+
+function assertKnownKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>, label: string): void {
+	const unknown = Object.keys(value).find((name) => !allowed.has(name));
+	if (unknown) throw schemaError(`${label} does not support the "${unknown}" option`);
+}
+
+function schemaError(message: string): ClientError {
+	return new ClientError(message, 400);
+}

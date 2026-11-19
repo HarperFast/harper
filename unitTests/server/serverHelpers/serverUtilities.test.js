@@ -7,9 +7,20 @@ const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
-const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
+const serverUtilities = require('#js/server/serverHelpers/serverUtilities');
+const registeredOperations = require('#src/server/serverHelpers/registeredOperations');
+const manageThreads = require('#src/server/threads/manageThreads');
+const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');
 const operation_function_caller = require('#src/utility/OperationFunctionCaller');
 const logger = require('#src/utility/logging/harper_logger');
+const { contextStorage } = require('#src/resources/transaction');
+const { existsSync, readFileSync } = require('node:fs');
+const { pinLogConfig } = require('../../logConfigFixture.js');
+const { waitFor } = require('../../waitFor.js');
+const fastify = require('fastify');
+const { serverErrorHandler } = require('#src/server/serverHelpers/serverHandlers');
+const { HdbError } = require('#src/utility/errors/hdbError');
+const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
 
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
 const test_error = 'This is bad!';
@@ -50,6 +61,813 @@ describe('Test serverUtilities.js module ', () => {
 
 			assert.ok(test_result.statusCode === 400);
 			assert.ok(test_result.http_resp_msg === "Operation 'blah' not found");
+		});
+
+		it('does not trust own or inherited bypass_auth request properties', function () {
+			for (const inherited of [false, true]) {
+				const request = testUtils.deepClone(TEST_JSON_NON_SU);
+				request.operation = 'add_user';
+				if (inherited) Object.setPrototypeOf(request, { bypass_auth: true });
+				else request.bypass_auth = true;
+
+				assert.throws(() => serverUtilities.chooseOperation(request));
+			}
+		});
+
+		it('refuses replication directives from a non-super-user writer with 403 (harper#2898)', function () {
+			for (const directives of [{ replicateTo: 0 }, { replicatedConfirmation: 2 }]) {
+				const request = { ...testUtils.deepClone(TEST_JSON_NON_SU), ...directives };
+				assert.throws(
+					() => serverUtilities.chooseOperation(request),
+					(error) => error.statusCode === 403 && /replicateTo or replicatedConfirmation/.test(error.message)
+				);
+			}
+			const superUserRequest = { ...testUtils.deepClone(TEST_JSON_SUPER_USER), replicateTo: 0 };
+			assert.doesNotThrow(() => serverUtilities.chooseOperation(superUserRequest));
+		});
+
+		it('accepts authorization bypass only through separate trusted dispatch state', function () {
+			const request = testUtils.deepClone(TEST_JSON_NON_SU);
+			request.operation = 'add_user';
+			assert.doesNotThrow(() => serverUtilities.chooseOperation(request, true));
+		});
+
+		// The token scope's "can only ever subtract" invariant, asserted where it is ENFORCED rather
+		// than where it is computed (#2171/#2174). This is the front door for an export job carrying
+		// nested SQL: the job is gated here, before it is ever queued, and again inside the worker
+		// when it re-parses (#2202).
+		function exportJobRequest(tokenOperations, sql) {
+			const request = testUtils.deepClone(TEST_JSON_SUPER_USER);
+			request.operation = 'export_local';
+			request.search_operation = { operation: 'sql', sql };
+			request.hdb_user.tokenOperations = tokenOperations;
+			return request;
+		}
+
+		describe('a restart_service that activates a deployment on peers', function () {
+			const activation = {
+				project: 'web',
+				deployment_id: '11111111-1111-1111-1111-111111111111',
+				deployment_row: '22222222-2222-2222-2222-222222222222',
+			};
+			const restartRequest = (permission, extra = {}) => ({
+				operation: 'restart_service',
+				service: 'http_workers',
+				...extra,
+				hdb_user: { active: true, role: { permission, role: 'scoped' }, username: 'scoped_user', ...extra.user },
+			});
+
+			it('is refused to a caller allowed to restart but not to deploy', function () {
+				const allowed = { super_user: false, operations: ['restart_service'] };
+				assert.doesNotThrow(
+					() => serverUtilities.chooseOperation(restartRequest(allowed)),
+					'a plain restart is allowed'
+				);
+				assert.throws(
+					() => serverUtilities.chooseOperation(restartRequest(allowed, { activate_deployment: activation })),
+					(error) => (error.statusCode ?? error.http_code) === 403
+				);
+			});
+
+			it('is refused to a token scoped to restarting', function () {
+				const request = restartRequest(
+					{ super_user: true },
+					{ activate_deployment: activation, user: { tokenOperations: ['restart_service'] } }
+				);
+				assert.throws(
+					() => serverUtilities.chooseOperation(request),
+					(error) => (error.statusCode ?? error.http_code) === 403
+				);
+			});
+
+			it('is allowed to a caller allowed to deploy', function () {
+				const allowed = { super_user: false, operations: ['restart_service', 'deploy_component'] };
+				assert.doesNotThrow(() =>
+					serverUtilities.chooseOperation(restartRequest(allowed, { activate_deployment: activation }))
+				);
+				assert.doesNotThrow(() =>
+					serverUtilities.chooseOperation(restartRequest({ super_user: true }, { activate_deployment: activation }))
+				);
+			});
+		});
+
+		it('rejects write SQL nested in an export job', function () {
+			assert.throws(
+				() => serverUtilities.chooseOperation(exportJobRequest(undefined, 'DELETE FROM data.dog')),
+				(error) => {
+					assert.strictEqual(error.statusCode ?? error.http_code, 400, 'expected a bad-request status');
+					assert.strictEqual(error.http_resp_msg, "'search_operation.sql' must be a SELECT statement");
+					return true;
+				},
+				'an export job must not execute write SQL'
+			);
+		});
+
+		it('throws 403 for an export job when the export operation itself is outside the scope', function () {
+			assert.throws(() => serverUtilities.chooseOperation(exportJobRequest(['get_status'], 'SELECT * FROM data.dog')));
+		});
+
+		// The other direction, so this cannot pass by refusing everything: an in-scope export runs.
+		it('admits an export job whose nested SQL is inside the token scope', function () {
+			assert.doesNotThrow(() =>
+				serverUtilities.chooseOperation(exportJobRequest(['export_local'], 'SELECT * FROM data.dog'))
+			);
+		});
+
+		// evaluateSQL trusts a supplied parsed_sql_object verbatim, and export.ts hands the nested
+		// search_operation straight to it — so a body-supplied one carrying permissions_checked would
+		// execute an AST the worker never checked. The authorized `sql` string is what must survive.
+		it('discards a body-supplied parsed_sql_object on the nested search_operation', function () {
+			const request = exportJobRequest(['export_local'], 'SELECT * FROM data.dog');
+			request.search_operation.parsed_sql_object = {
+				variant: 'select',
+				permissions_checked: true,
+				ast: { statements: [{ forged: true }] },
+			};
+
+			serverUtilities.chooseOperation(request);
+
+			assert.strictEqual(
+				request.search_operation.parsed_sql_object,
+				undefined,
+				'a forged nested parsed_sql_object must not reach the job worker'
+			);
+			assert.strictEqual(request.search_operation.sql, 'SELECT * FROM data.dog');
+		});
+	});
+
+	describe('registered operation authorization envelope', function () {
+		it('forwards bypass state outside the operation body', async function () {
+			const operationName = 'test_remote_bypass_envelope';
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return false;
+				},
+			};
+			try {
+				registeredOperations.operationRegisteredHandler({
+					message: { name: operationName, originator: 9_000_017 },
+				});
+				const forward = registeredOperations.getRemoteOperationFunction(operationName, true);
+				assert.strictEqual(typeof forward, 'function');
+
+				await assert.rejects(
+					forward({ operation: operationName, bypass_auth: false }),
+					/no worker thread is available/
+				);
+
+				assert.strictEqual(sentMessages.length, 1);
+				assert.strictEqual(sentMessages[0].message.bypassAuth, true);
+				assert.strictEqual(sentMessages[0].message.body.bypass_auth, false);
+			} finally {
+				global.threads = originalThreads;
+			}
+		});
+
+		it('dispatches only the bypass state from the trusted worker envelope', async function () {
+			const calls = [];
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation(body, bypassAuth) {
+					calls.push({ body, bypassAuth });
+					return () => {};
+				},
+				async processLocalTransaction() {
+					return { bypassed: operationAuthorizationState.isOperationAuthorizationBypassed() };
+				},
+			});
+			try {
+				const body = { operation: 'test_worker_bypass_envelope', bypass_auth: true };
+				await registeredOperations.operationExecuteRequestHandler({
+					message: { requestId: 23, body, bypassAuth: false, originator: 1 },
+				});
+
+				assert.deepStrictEqual(calls, [{ body, bypassAuth: false }]);
+				assert.strictEqual(sentMessages[0].message.result.bypassed, false);
+			} finally {
+				registeredOperations.setLocalOperationDispatch({
+					chooseOperation: serverUtilities.chooseOperation,
+					processLocalTransaction: serverUtilities.processLocalTransaction,
+				});
+				global.threads = originalThreads;
+			}
+		});
+
+		it('exposes trusted worker bypass state to the operation without adding it to the body', async function () {
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction({ body }) {
+					return {
+						bypassed: operationAuthorizationState.isOperationAuthorizationBypassed(),
+						bodyHasBypass: Object.hasOwn(body, 'bypass_auth') || Object.hasOwn(body, 'bypassAuth'),
+					};
+				},
+			});
+			try {
+				await registeredOperations.operationExecuteRequestHandler({
+					message: {
+						requestId: 24,
+						body: { operation: 'test_worker_bypass_context' },
+						bypassAuth: true,
+						originator: 1,
+					},
+				});
+
+				assert.deepStrictEqual(sentMessages[0].message.result, { bypassed: true, bodyHasBypass: false });
+			} finally {
+				registeredOperations.setLocalOperationDispatch({
+					chooseOperation: serverUtilities.chooseOperation,
+					processLocalTransaction: serverUtilities.processLocalTransaction,
+				});
+				global.threads = originalThreads;
+			}
+		});
+
+		it('carries a sealed body’s log view beside the body, never in it', async function () {
+			const { setOperationLogView } = require('#src/utility/operationLogView');
+			const operationName = 'test_remote_log_view';
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return false;
+				},
+			};
+			const originalLevel = logger.logLevel;
+			// The fake worker never accepts the send, so each attempt drops the registration; re-announce it.
+			const announce = () =>
+				registeredOperations.operationRegisteredHandler({ message: { name: operationName, originator: 9_000_018 } });
+			try {
+				const body = { operation: operationName, records: [{ secret: 'forwarded-secret' }] };
+				let built = 0;
+				setOperationLogView(body, () => {
+					built++;
+					return { operation: operationName, encrypted_operation: { mode: 'sealed' } };
+				});
+
+				logger.logLevel = 'warn';
+				announce();
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				assert.deepStrictEqual(sentMessages[0].message.logView, { operation: operationName });
+				assert.strictEqual(built, 0, 'the full view was built although the operation log is off');
+
+				logger.logLevel = 'info';
+				announce();
+				await assert.rejects(registeredOperations.getRemoteOperationFunction(operationName)(body));
+				assert.deepStrictEqual(sentMessages[1].message.logView, {
+					operation: operationName,
+					encrypted_operation: { mode: 'sealed' },
+				});
+				assert.ok(!Object.hasOwn(sentMessages[1].message.body, 'logView'));
+			} finally {
+				logger.logLevel = originalLevel;
+				global.threads = originalThreads;
+			}
+		});
+
+		it('registers the forwarded log view on the worker’s copy of the body', async function () {
+			const { operationLogViewOf } = require('#src/utility/operationLogView');
+			const sentMessages = [];
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread(_threadId, message) {
+					sentMessages.push(message);
+					return true;
+				},
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction({ body }) {
+					return { view: operationLogViewOf(body)?.() ?? null };
+				},
+			});
+			try {
+				const logView = { operation: 'test_worker_log_view', encrypted_operation: { mode: 'fields' } };
+				await registeredOperations.operationExecuteRequestHandler({
+					message: { requestId: 25, body: { operation: 'test_worker_log_view' }, originator: 1, logView },
+				});
+				assert.deepStrictEqual(sentMessages[0].message.result, { view: logView });
+			} finally {
+				registeredOperations.setLocalOperationDispatch({
+					chooseOperation: serverUtilities.chooseOperation,
+					processLocalTransaction: serverUtilities.processLocalTransaction,
+				});
+				global.threads = originalThreads;
+			}
+		});
+	});
+
+	describe('forwarded operation dispatch', function () {
+		this.timeout(10_000);
+		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+		const REMOTE_THREAD = 9_000_091;
+		let originalThreads;
+		let sentMessages;
+
+		beforeEach(function () {
+			originalThreads = global.threads;
+			sentMessages = [];
+			global.threads = {
+				// postMessage clones, so a payload that cannot be cloned must fail here as it does there
+				sendToThread(_threadId, message) {
+					sentMessages.push(structuredClone(message));
+					return true;
+				},
+			};
+		});
+
+		afterEach(function () {
+			global.threads = originalThreads;
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation: serverUtilities.chooseOperation,
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+		});
+
+		it('never forwards a request that already crossed threads', function () {
+			const operationName = 'test_forwarded_stays_local';
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+
+			assert.strictEqual(typeof serverUtilities.chooseOperation({ operation: operationName }), 'function');
+			assert.throws(() => serverUtilities.chooseOperation({ operation: operationName }, false, true), /not found/);
+		});
+
+		it('marks the request it dispatches as forwarded', async function () {
+			const forwardedFlags = [];
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation(_body, _bypassAuth, forwarded) {
+					forwardedFlags.push(forwarded);
+					return () => {};
+				},
+				async processLocalTransaction() {
+					return {};
+				},
+			});
+
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 31, body: { operation: 'test_forwarded_flag' }, originator: 1 },
+			});
+
+			assert.deepStrictEqual(forwardedFlags, [true]);
+		});
+
+		it('carries an error code and retryable across the hop', async function () {
+			const operationName = 'test_forwarded_error_fields';
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					return () => {};
+				},
+				async processLocalTransaction() {
+					throw Object.assign(new Error('recorded but not run'), {
+						statusCode: 409,
+						code: 'AGENT_PROMPT_NOT_RUN',
+						retryable: false,
+					});
+				},
+			});
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 32, body: { operation: operationName }, originator: 1 },
+			});
+			const responseError = sentMessages[0].message.error;
+			assert.deepStrictEqual(responseError, {
+				message: 'recorded but not run',
+				statusCode: 409,
+				code: 'AGENT_PROMPT_NOT_RUN',
+				retryable: false,
+			});
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+			const pending = registeredOperations.getRemoteOperationFunction(operationName)({ operation: operationName });
+			const request = sentMessages[1].message;
+			await manageThreads.broadcast(
+				{
+					type: ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE,
+					message: { requestId: request.requestId, originator: REMOTE_THREAD, error: responseError },
+				},
+				true
+			);
+
+			await assert.rejects(pending, (error) => {
+				assert.strictEqual(error.message, 'recorded but not run');
+				assert.strictEqual(error.statusCode, 409);
+				assert.strictEqual(error.code, 'AGENT_PROMPT_NOT_RUN');
+				assert.strictEqual(error.retryable, false);
+				return true;
+			});
+		});
+
+		let forwardedCount = 0;
+		async function forwardedError(body) {
+			sentMessages.length = 0;
+			const operationName = `test_forwarded_denial_${forwardedCount++}`;
+			await registeredOperations.operationExecuteRequestHandler({
+				message: { requestId: 40 + forwardedCount, body, originator: 1 },
+			});
+			assert.strictEqual(sentMessages.length, 1, 'the receiving side answers exactly once');
+			const responseError = sentMessages[0].message.error;
+			registeredOperations.operationRegisteredHandler({
+				message: { name: operationName, originator: REMOTE_THREAD },
+			});
+			const pending = registeredOperations.getRemoteOperationFunction(operationName)({ operation: operationName });
+			await manageThreads.broadcast(
+				{
+					type: ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE,
+					message: { requestId: sentMessages[1].message.requestId, originator: REMOTE_THREAD, error: responseError },
+				},
+				true
+			);
+			return pending.then(
+				() => assert.fail('the forward resolved'),
+				(error) => error
+			);
+		}
+
+		async function clientResponse(error) {
+			const app = fastify();
+			app.setErrorHandler(serverErrorHandler);
+			app.post('/', async () => {
+				throw error;
+			});
+			try {
+				const response = await app.inject({ method: 'POST', url: '/' });
+				return { status: response.statusCode, body: response.json() };
+			} finally {
+				await app.close();
+			}
+		}
+
+		function localError(body) {
+			try {
+				serverUtilities.chooseOperation(body);
+			} catch (error) {
+				return error;
+			}
+			return assert.fail('the operation was not refused');
+		}
+
+		for (const [label, field, prepare] of [
+			['an operation restricted to super_user', 'unauthorized_access', (request) => (request.operation = 'add_user')],
+			['a database that does not exist', 'invalid_schema_items', () => {}],
+		]) {
+			it(`answers a forwarded denial like the same denial raised locally: ${label}`, async function () {
+				const request = () => {
+					const copy = testUtils.deepClone(TEST_JSON_NON_SU);
+					prepare(copy);
+					return copy;
+				};
+				const local = await clientResponse(localError(request()));
+				const forwarded = await clientResponse(await forwardedError(request()));
+
+				assert.strictEqual(local.status, 403);
+				assert.ok(local.body[field].length > 0, `the local denial carries ${field}: ${JSON.stringify(local.body)}`);
+				assert.deepStrictEqual(forwarded, local);
+			});
+		}
+
+		it('carries table and attribute denial detail, which are nested class instances', async function () {
+			const denial = () => {
+				const report = new PermissionResponseObject();
+				report.addUnauthorizedTable('dev', 'dog', ['read']);
+				report.addUnauthorizedAttributes(['name'], 'dev', 'dog', { name: ['read', 'update'] });
+				report.addUnauthorizedAttributes(['id'], 'dev', 'cat', { id: ['read'] });
+				return new HdbError(new Error(), report.getPermsResponse(), 403);
+			};
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw denial();
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const local = await clientResponse(denial());
+			const forwarded = await clientResponse(await forwardedError({ operation: 'test_nested_denial' }));
+
+			assert.strictEqual(local.body.unauthorized_access.length, 2);
+			assert.deepStrictEqual(forwarded, local);
+		});
+
+		it('keeps the report when the rejection is forwarded a second time', async function () {
+			const request = () => ({ ...testUtils.deepClone(TEST_JSON_NON_SU), operation: 'add_user' });
+			const local = await clientResponse(localError(request()));
+			const firstHop = await forwardedError(request());
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw firstHop;
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const secondHop = await forwardedError({ operation: 'test_second_hop' });
+
+			assert.ok(local.body.unauthorized_access.length > 0);
+			assert.deepStrictEqual(await clientResponse(secondHop), local);
+		});
+
+		it('keeps an object body that is not a permission report as a scalar message with its retry signals', async function () {
+			const failure = () =>
+				Object.assign(new Error('saved but not run'), {
+					statusCode: 409,
+					code: 'SAVED_NOT_RUN',
+					retryable: false,
+					http_resp_msg: { error: 'saved but not run', phase: 'queued' },
+				});
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw failure();
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const error = await forwardedError({ operation: 'test_object_body' });
+
+			assert.strictEqual(error.http_resp_msg, undefined);
+			assert.deepStrictEqual(await clientResponse(error), {
+				status: 409,
+				body: { error: 'saved but not run', code: 'SAVED_NOT_RUN', retryable: false },
+			});
+		});
+
+		it('keeps a string response message as it is raised locally', async function () {
+			const request = () => ({ ...testUtils.deepClone(TEST_JSON_NON_SU), operation: 'definitely_not_an_operation' });
+			const local = await clientResponse(localError(request()));
+			const forwardedRejection = await forwardedError(request());
+
+			assert.strictEqual(forwardedRejection.http_resp_msg, undefined);
+			assert.deepStrictEqual(await clientResponse(forwardedRejection), local);
+			assert.strictEqual(local.status, 400);
+		});
+
+		it('answers once, as a 500, when the operation rejects with nothing', async function () {
+			registeredOperations.setLocalOperationDispatch({
+				chooseOperation() {
+					throw undefined;
+				},
+				processLocalTransaction: serverUtilities.processLocalTransaction,
+			});
+			const error = await forwardedError({ operation: 'test_nullish_rejection' });
+
+			assert.strictEqual(error.statusCode, 500);
+		});
+	});
+
+	describe('main-thread operation names on a worker', function () {
+		const { Worker } = require('node:worker_threads');
+		const { join } = require('node:path');
+
+		async function askWorker(workerData, announce, names) {
+			const worker = new Worker(join(__dirname, 'fixtures', 'mainThreadOperationsWorker.js'), { workerData });
+			try {
+				return await new Promise((resolve, reject) => {
+					setTimeout(() => reject(new Error('the worker did not answer')), 30_000).unref();
+					worker.on('error', reject);
+					worker.on('exit', () => reject(new Error('the worker exited before answering')));
+					worker.on('message', (message) => {
+						if (message === 'ready') worker.postMessage({ announce, names });
+						else resolve(message);
+					});
+				});
+			} finally {
+				await worker.terminate();
+			}
+		}
+
+		it('forwards names from the spawn snapshot and from a main-thread announcement only', async function () {
+			const result = await askWorker(
+				{ mainThreadOperations: [['test_main_snapshot_op', true]] },
+				[
+					{ name: 'test_main_announced_op', grantable: false, originator: 0 },
+					{ name: 'test_sibling_announced_op', grantable: true, originator: 9_000_101 },
+				],
+				['test_main_snapshot_op', 'test_main_announced_op', 'test_sibling_announced_op', 'test_main_unknown_op']
+			);
+
+			assert.deepStrictEqual(result, {
+				test_main_snapshot_op: { forwards: true, grantable: true },
+				test_main_announced_op: { forwards: true, grantable: false },
+				test_sibling_announced_op: { forwards: false, grantable: false },
+				test_main_unknown_op: { forwards: false, grantable: false },
+			});
+		});
+
+		it('ignores announcements in a worker the main thread did not spawn', async function () {
+			const result = await askWorker(
+				{},
+				[{ name: 'test_main_announced_op', grantable: true, originator: 0 }],
+				['test_main_announced_op']
+			);
+
+			assert.deepStrictEqual(result, { test_main_announced_op: { forwards: false, grantable: false } });
+		});
+	});
+
+	// Only main's receiving half is reachable here; integrationTests/components/registered-operation.test.ts
+	// owns the real hop.
+	describe('cross-thread grantable operation mirroring', function () {
+		const {
+			validateOperations,
+			registerGrantableOperation,
+			unregisterGrantableOperation,
+			unregisterWorkerGrantableOperation,
+		} = require('#src/utility/operationPermissions');
+		const GRANTABLE = 'test_cross_thread_grantable_op';
+		const PLAIN = 'test_cross_thread_plain_op';
+		const SHARED = 'test_cross_thread_shared_op';
+		const ROLLED = 'test_cross_thread_rolled_op';
+		const RETRACTED = 'test_cross_thread_retracted_op';
+		const ZOMBIE = 'test_cross_thread_zombie_op';
+		const FAILED_SEND = 'test_cross_thread_failed_send_op';
+		// Thread-exit tombstones are permanent and process-global, so synthetic ids must be ones the
+		// runtime will never assign to a real worker.
+		const DECLARING_THREAD = 9_000_061;
+		const ROUTING_THREAD = 9_000_062;
+		const DEAD_THREAD = 9_000_071;
+		const SENDER_THREAD = 9_000_081;
+
+		after(function () {
+			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND]) {
+				unregisterWorkerGrantableOperation(op);
+				unregisterGrantableOperation(op);
+			}
+		});
+
+		it('makes a worker-announced declared op grantable on the main thread', function () {
+			assert.notEqual(validateOperations([GRANTABLE]), null);
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: GRANTABLE, grantable: true, originator: 9_000_031 },
+			});
+
+			assert.equal(validateOperations([GRANTABLE]), null, 'name should be grantable after the announcement');
+		});
+
+		it('leaves an op that declared no permission ungrantable', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: PLAIN, grantable: false, originator: 9_000_031 },
+			});
+
+			assert.notEqual(validateOperations([PLAIN]), null);
+			assert.equal(typeof registeredOperations.getRemoteOperationFunction(PLAIN), 'function');
+		});
+
+		it('keeps a main-thread registration of the same name independent of the worker mirror', function () {
+			// restartWorkers loads root components before draining old workers, so a startOnMainThread
+			// component can claim a name a retiring worker still offers.
+			registeredOperations.operationRegisteredHandler({
+				message: { name: SHARED, grantable: true, originator: 9_000_041 },
+			});
+			registerGrantableOperation(SHARED);
+
+			unregisterWorkerGrantableOperation(SHARED);
+			assert.equal(validateOperations([SHARED]), null, 'main-thread registration should survive worker revocation');
+
+			unregisterGrantableOperation(SHARED);
+			assert.notEqual(validateOperations([SHARED]), null, 'both marks gone should make it ungrantable again');
+		});
+
+		it('retracts grantability when a re-announcement drops the declared permission', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: RETRACTED, grantable: true, originator: 9_000_051 },
+			});
+			assert.equal(validateOperations([RETRACTED]), null);
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: RETRACTED, grantable: false, originator: 9_000_051 },
+			});
+			assert.notEqual(validateOperations([RETRACTED]), null, 'the same thread withdrawing must retract its claim');
+		});
+
+		it('stops being grantable once the last declaring worker is gone, even while another still routes it', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ROLLED, grantable: true, originator: DECLARING_THREAD },
+			});
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ROLLED, grantable: false, originator: ROUTING_THREAD },
+			});
+			assert.equal(validateOperations([ROLLED]), null, 'still declared by the first thread');
+
+			manageThreads.notifyThreadExit(DECLARING_THREAD);
+
+			assert.notEqual(validateOperations([ROLLED]), null, 'no live worker declares it grantable any more');
+			assert.equal(
+				typeof registeredOperations.getRemoteOperationFunction(ROLLED),
+				'function',
+				'the surviving worker still routes it'
+			);
+		});
+
+		it('retracts grantability when a failed send prunes the declaring worker', async function () {
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread() {
+					return false;
+				},
+			};
+			try {
+				registeredOperations.operationRegisteredHandler({
+					message: { name: FAILED_SEND, grantable: true, originator: SENDER_THREAD },
+				});
+				assert.equal(validateOperations([FAILED_SEND]), null);
+
+				const forward = registeredOperations.getRemoteOperationFunction(FAILED_SEND, true);
+				await assert.rejects(forward({ operation: FAILED_SEND }), /no worker thread is available/);
+
+				assert.notEqual(
+					validateOperations([FAILED_SEND]),
+					null,
+					'a dead port must retract the claim, not just the route'
+				);
+			} finally {
+				global.threads = originalThreads;
+			}
+		});
+
+		it('ignores an announcement that lost a race with its own thread exit', function () {
+			manageThreads.notifyThreadExit(DEAD_THREAD);
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ZOMBIE, grantable: true, originator: DEAD_THREAD },
+			});
+
+			assert.notEqual(validateOperations([ZOMBIE]), null, 'a dead thread must not install a grant');
+			assert.equal(
+				registeredOperations.getRemoteOperationFunction(ZOMBIE),
+				undefined,
+				'nor a route nothing will ever clean up'
+			);
+		});
+	});
+
+	describe('operation authorization state', function () {
+		it('is scoped across awaits and restores nested authorization', async function () {
+			assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
+			await operationAuthorizationState.runWithOperationAuthorizationBypass(true, async () => {
+				assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), true);
+				await Promise.resolve();
+				assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), true);
+				operationAuthorizationState.runWithOperationAuthorizationBypass(false, () => {
+					assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
+				});
+				assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), true);
+			});
+			assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
+		});
+
+		it('scopes the dispatched operation across awaits and concurrent runs', async function () {
+			const { runWithDispatchedOperation, getOperationAuthorizationState } = operationAuthorizationState;
+			const operationDuring = async (apiOperation) =>
+				runWithDispatchedOperation(apiOperation, async () => {
+					await Promise.resolve();
+					return getOperationAuthorizationState()?.apiOperation;
+				});
+
+			assert.deepStrictEqual(await Promise.all([operationDuring('export_local'), operationDuring('export_to_s3')]), [
+				'export_local',
+				'export_to_s3',
+			]);
+			assert.strictEqual(getOperationAuthorizationState()?.apiOperation, undefined);
+		});
+
+		it('keeps the dispatched operation across a nested enforced dispatch', async function () {
+			const { runWithDispatchedOperation, runWithOperationAuthorizationBypass, getOperationAuthorizationState } =
+				operationAuthorizationState;
+
+			// The enforced branch is not a bypass: a job handler dispatching a nested authorized
+			// operation must not lose the carrier, or its re-parsed SQL is judged as the inner `sql`.
+			const enforced = await runWithDispatchedOperation('export_local', () =>
+				runWithOperationAuthorizationBypass(false, () => getOperationAuthorizationState())
+			);
+			assert.strictEqual(enforced.bypassAuth, false);
+			assert.strictEqual(enforced.apiOperation, 'export_local');
+
+			const bypassed = await runWithDispatchedOperation('export_local', () =>
+				runWithOperationAuthorizationBypass(true, () => getOperationAuthorizationState())
+			);
+			assert.strictEqual(bypassed.bypassAuth, true);
+			assert.strictEqual(bypassed.apiOperation, 'export_local');
 		});
 	});
 
@@ -456,5 +1274,462 @@ describe('Test serverUtilities.js module ', () => {
 				assert.equal(loggedBody.schema, 'test', 'schema should be preserved');
 			}
 		});
+
+		it('Should run the operation function with an ambient context carrying hdb_user', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'ambient_user' };
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore?.user, hdbUser);
+		});
+
+		it('Should not establish an ambient context when hdb_user is absent', async function () {
+			op_func_caller_stub.callThrough();
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test' } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore, undefined);
+		});
+
+		it('Should preserve an existing ambient context for the same user', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'ambient_user' };
+			const outerContext = { user: hdbUser, someRequestState: true };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.equal(observedStore, outerContext);
+		});
+
+		it('Should merge ambient context, swapping only the user, when the request user differs', async function () {
+			// An explicitly different hdb_user must never silently ride the outer user's
+			// attribution, but the rest of the ambient context (open transaction, request
+			// state) is preserved so atomicity is unaffected. The outer context object
+			// itself must not be mutated.
+			op_func_caller_stub.callThrough();
+			const userX = { username: 'outer_user' };
+			const userY = { username: 'request_user' };
+			const outerTransaction = { open: true };
+			const outerContext = { user: userX, transaction: outerTransaction, someRequestState: true };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: userY } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.notEqual(observedStore, outerContext);
+			assert.equal(observedStore.user, userY);
+			assert.equal(observedStore.transaction, outerTransaction, 'outer transaction must be preserved');
+			assert.equal(observedStore.someRequestState, true, 'other request state must be preserved');
+			assert.equal(outerContext.user, userX, 'outer context object must not be mutated');
+		});
+
+		it('Should merge the user into a userless ambient context, preserving its transaction', async function () {
+			op_func_caller_stub.callThrough();
+			const hdbUser = { username: 'request_user' };
+			const outerTransaction = { open: true };
+			const outerContext = { transaction: outerTransaction };
+			let observedStore;
+			await contextStorage.run(outerContext, () =>
+				serverUtilities.processLocalTransaction(
+					{ body: { operation: 'create_schema', schema: 'test', hdb_user: hdbUser } },
+					async () => {
+						observedStore = contextStorage.getStore();
+						return test_func_data;
+					}
+				)
+			);
+			assert.notEqual(observedStore, outerContext);
+			assert.equal(observedStore.user, hdbUser);
+			assert.equal(observedStore.transaction, outerTransaction, 'outer transaction must be preserved');
+			assert.equal(outerContext.user, undefined, 'outer context object must not be mutated');
+		});
+
+		it('Should not establish an ambient context when hdb_user is null', async function () {
+			// serverHandlers.js sets req.body.hdb_user = null on the unauthenticated-allowed path
+			op_func_caller_stub.callThrough();
+			let observedStore;
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'create_schema', schema: 'test', hdb_user: null } },
+				async () => {
+					observedStore = contextStorage.getStore();
+					return test_func_data;
+				}
+			);
+			assert.equal(observedStore, undefined);
+		});
+	});
+
+	describe('registerOperation permission seam', function () {
+		const { server } = require('#src/server/Server');
+		const op_auth = require('#src/utility/operation_authorization');
+		const { validateOperations } = require('#src/utility/operationPermissions');
+		const SU_OP = 'test_registered_su_op';
+		const OPEN_OP = 'test_registered_open_op';
+
+		// A non-super_user request JSON for a given op, optionally carrying an `operations` grant.
+		const nonSuRequest = (op, operations) => ({
+			operation: op,
+			hdb_user: {
+				active: true,
+				role: { permission: { super_user: false, ...(operations ? { operations } : {}) }, role: 'scoped' },
+				username: 'scoped_user',
+			},
+		});
+		const suRequest = (op) => ({
+			operation: op,
+			hdb_user: { active: true, role: { permission: { super_user: true }, role: 'admin' }, username: 'su' },
+		});
+
+		before(function () {
+			server.registerOperation({ name: SU_OP, execute: async () => ({ ok: true }), requiresSuperUser: true });
+		});
+
+		it('keeps server.operation bypass state separate from the operation body', async function () {
+			const request = { operation: SU_OP };
+			const context = { user: nonSuRequest(SU_OP).hdb_user };
+
+			const result = await serverUtilities.operation(request, context, false);
+
+			assert.deepStrictEqual(result, { ok: true });
+			assert.strictEqual(Object.hasOwn(request, 'bypass_auth'), false);
+		});
+
+		it('does not let an operation body override server.operation authorization', async function () {
+			const request = { operation: SU_OP, bypass_auth: true };
+			const context = { user: nonSuRequest(SU_OP).hdb_user };
+			let denied = false;
+
+			try {
+				await serverUtilities.operation(request, context, true);
+			} catch {
+				denied = true;
+			}
+			assert.strictEqual(denied, true);
+		});
+
+		after(function () {
+			// Keep the process-global registries clean — these test-only ops shouldn't leak into other
+			// suites. registerOperation touches three globals (the op-function map plus verifyPerms'
+			// requiredPermissions and the grantable-ops set), so undo all three, not just the map.
+			for (const op of [
+				SU_OP,
+				OPEN_OP,
+				'test_name_pinning_op',
+				'shared_op_a',
+				'shared_op_b',
+				'dyn_grantable_op',
+				'test_redeclared_op',
+			]) {
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
+				op_auth.unregisterOperationPermission(op);
+			}
+		});
+
+		it('registers the handler under the op name for verifyPerms, without mutating the caller function', function () {
+			const original = async () => ({});
+			const def = { name: 'test_name_pinning_op', execute: original, requiresSuperUser: true };
+			server.registerOperation(def);
+			// The stored handler is a fresh wrapper named after the op (the key verifyPerms looks up)...
+			assert.equal(
+				serverUtilities.OPERATION_FUNCTION_MAP.get('test_name_pinning_op').operation_function.name,
+				'test_name_pinning_op'
+			);
+			// ...and the caller's own function object is left untouched.
+			assert.equal(def.execute, original);
+			assert.notEqual(original.name, 'test_name_pinning_op');
+		});
+
+		it('does not corrupt authz when one handler function is shared across two op names', function () {
+			const shared = async () => ({});
+			server.registerOperation({ name: 'shared_op_a', execute: shared, requiresSuperUser: true });
+			server.registerOperation({ name: 'shared_op_b', execute: shared, requiresSuperUser: true });
+			// Each registration gets its own named wrapper — the second registration does not rename the first.
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get('shared_op_a').operation_function.name, 'shared_op_a');
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get('shared_op_b').operation_function.name, 'shared_op_b');
+		});
+
+		it('makes a declared op grantable in a role operations allowlist, even a non-enum name', function () {
+			assert.notEqual(validateOperations(['dyn_grantable_op']), null); // unknown name before registration
+			server.registerOperation({ name: 'dyn_grantable_op', execute: async () => ({}), requiresSuperUser: true });
+			assert.equal(validateOperations(['dyn_grantable_op']), null); // grantable after registration
+		});
+
+		it('retracts the permission entry when a re-registration drops requiresSuperUser', function () {
+			// Declaration and enforcement must not disagree: main retracts the grantable mark on the
+			// re-announcement, so a role grant persisted while the op was declared must stop being
+			// honoured here too. Named after the op so verifyPerms resolves the stale entry if it
+			// survives — an anonymous handler would mask the bug rather than test it.
+			const op = 'test_redeclared_op';
+			// eslint-disable-next-line func-names
+			const named = {
+				[op]: async function () {
+					return {};
+				},
+			}[op];
+			server.registerOperation({ name: op, execute: named, requiresSuperUser: true });
+			assert.equal(validateOperations([op]), null, 'grantable while declared');
+			assert.equal(op_auth.verifyPerms(nonSuRequest(op, [op]), op), null, 'granted role may call it');
+
+			server.registerOperation({ name: op, execute: named });
+
+			assert.notEqual(validateOperations([op]), null, 'no longer grantable once undeclared');
+			let threw;
+			try {
+				op_auth.verifyPerms(nonSuRequest(op, [op]), op);
+			} catch (err) {
+				threw = err;
+			}
+			assert.ok(threw, 'a persisted grant must not survive the declaration being dropped');
+			assert.equal(threw.statusCode, 400);
+		});
+
+		it('does not strip a permission entry this API never registered', function () {
+			// Ownership protection, exercised against an independent registrant rather than a real
+			// built-in so the assertion does not depend on mutating shared dispatch state.
+			const op = 'test_independent_registrant_op';
+			op_auth.registerOperationPermission(op, { requiresSu: true });
+			try {
+				server.registerOperation({ name: op, execute: async () => ({}) });
+				assert.equal(validateOperations([op]), null, 'an entry this API did not create must survive');
+				assert.ok(op_auth.verifyPerms(nonSuRequest(op), op), 'and must still gate a non-super_user');
+			} finally {
+				op_auth.unregisterOperationPermission(op);
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
+			}
+		});
+
+		it('does not touch handler name or register perms when requiresSuperUser is omitted (opt-in)', function () {
+			const def = { name: OPEN_OP, execute: async () => ({}) };
+			server.registerOperation(def);
+			// Name is left as the arrow's inferred name ("execute" from the property), not forced to OPEN_OP.
+			assert.notEqual(def.execute.name, OPEN_OP);
+			// Unchanged behavior: with no central entry, a non-SU request to this op fails closed the same
+			// way any unregistered op does — verifyPerms throws OP_NOT_FOUND (400), it does not silently allow.
+			let threw;
+			try {
+				op_auth.verifyPerms(nonSuRequest(OPEN_OP), OPEN_OP);
+			} catch (err) {
+				threw = err;
+			}
+			assert.ok(threw, 'expected verifyPerms to throw for an unregistered op');
+			assert.equal(threw.statusCode, 400);
+		});
+
+		it('allows a super_user to call a declared SU op', function () {
+			assert.equal(op_auth.verifyPerms(suRequest(SU_OP), SU_OP), null);
+		});
+
+		it('denies a non-super_user without an operations grant', function () {
+			const result = op_auth.verifyPerms(nonSuRequest(SU_OP), SU_OP);
+			assert.ok(result, 'expected a permissions failure for a non-super_user without a grant');
+		});
+
+		it('allows a non-super_user whose role grants the op via the operations allowlist (SU-bypass)', function () {
+			assert.equal(op_auth.verifyPerms(nonSuRequest(SU_OP, [SU_OP]), SU_OP), null);
+		});
+	});
+});
+
+// processLocalTransaction builds `operationLog` from mainLogger at module load, so the logged body
+// cannot be intercepted after the fact — which is why the older redaction test above guards on
+// `if (info_log_stub.called)` and passes vacuously. Testing the redaction directly avoids that.
+describe('redactForOperationLog', () => {
+	const { UNLOGGABLE_OPERATION_FIELDS, redactForOperationLog } = serverUtilities;
+
+	// Redaction runs before the handler, so a rejected request logs a still-spendable credential.
+	const CREDENTIAL_FIELDS = {
+		hdb_user: { username: 'admin' },
+		hdbAuthHeader: 'Basic abc',
+		password: 'pw',
+		payload: 'blob',
+		credentials: [{ secret: 'deploy.app.github.com' }],
+		registryAuth: 'auth',
+		value: 'env-secret',
+		values: ['env-secret'],
+		envelope: 'enc:v1:sealed',
+		// login (#1876) and exchange_oidc_token (#2171) both carry a live token here.
+		token: 'eyJhbGciOiJSUzI1NiJ9.identity.signature',
+		// refresh_operation_token carries the 30-day credential.
+		refresh_token: 'eyJhbGciOiJSUzI1NiJ9.refresh.signature',
+	};
+
+	it('strips every credential-bearing field', () => {
+		const clean = redactForOperationLog({ operation: 'exchange_oidc_token', ...CREDENTIAL_FIELDS });
+		for (const field of Object.keys(CREDENTIAL_FIELDS)) {
+			assert.ok(!(field in clean), `${field} must not reach the operations log`);
+		}
+	});
+
+	it('leaves nothing JWT-shaped behind', () => {
+		const clean = redactForOperationLog({ operation: 'exchange_oidc_token', ...CREDENTIAL_FIELDS });
+		assert.ok(!/eyJ[A-Za-z0-9_-]/.test(JSON.stringify(clean)), 'no JWT-shaped value should survive');
+	});
+
+	it('leaves no private key behind for SSH-key operations', () => {
+		const key = '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-material\n-----END OPENSSH PRIVATE KEY-----';
+		for (const operation of ['add_ssh_key', 'update_ssh_key']) {
+			const clean = redactForOperationLog({ operation, name: 'deploy', key, Key: key });
+			assert.deepStrictEqual(clean, { operation, name: 'deploy' });
+			assert.ok(!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(JSON.stringify(clean)));
+		}
+	});
+
+	it('handles operation names that collide with object prototype properties', () => {
+		const body = { operation: 'valueOf', key: 'auditable-identifier' };
+		assert.deepStrictEqual(redactForOperationLog(body), body);
+	});
+
+	it('strips model blocks and JSON strings while preserving the configuration request', () => {
+		for (const models of [{ generative: { default: { apiKey: 'model-secret' } } }, '{"apiKey":"model-secret"}']) {
+			const body = { operation: 'set_configuration', models, MODELS: models, logging_level: 'info' };
+			assert.deepStrictEqual(redactForOperationLog(body), { operation: 'set_configuration', logging_level: 'info' });
+			assert.strictEqual(body.models, models);
+		}
+	});
+
+	it('strips the Studio settings, whose rejected values the 400 does not repeat either', () => {
+		const body = {
+			operation: 'set_configuration',
+			studio_navigation: { 'pasted-secret': 'hidden' },
+			STUDIO_LANDING: 'pasted-secret',
+			logging_level: 'info',
+		};
+		assert.deepStrictEqual(redactForOperationLog(body), { operation: 'set_configuration', logging_level: 'info' });
+	});
+
+	it('keeps environment variable names while stripping their values', () => {
+		const clean = redactForOperationLog({
+			operation: 'set_env_value',
+			project: 'application',
+			key: 'DATABASE_URL',
+			value: 'postgres://secret',
+		});
+		assert.deepStrictEqual(clean, { operation: 'set_env_value', project: 'application', key: 'DATABASE_URL' });
+	});
+
+	it('keeps the environment variable targeted for deletion', () => {
+		const body = { operation: 'delete_env_value', project: 'application', key: 'DATABASE_URL' };
+		assert.deepStrictEqual(redactForOperationLog(body), body);
+	});
+
+	it('preserves everything else', () => {
+		const clean = redactForOperationLog({ operation: 'create_schema', schema: 'test', database: 'data' });
+		assert.deepStrictEqual(clean, { operation: 'create_schema', schema: 'test', database: 'data' });
+	});
+
+	it('does not mutate the request body', () => {
+		const key = '-----BEGIN OPENSSH PRIVATE KEY-----';
+		const body = { operation: 'add_ssh_key', key, token: 'live-credential' };
+		redactForOperationLog(body);
+		assert.equal(body.key, key, 'the handler still needs the SSH key it was sent');
+		assert.equal(body.token, 'live-credential', 'the handler still needs the field it was sent');
+	});
+
+	// The list is the contract; pin the credential-bearing entries so a refactor cannot quietly drop
+	// one the way harper#1527 did for set_env_value.
+	it('pins the fields the list must contain', () => {
+		for (const field of Object.keys(CREDENTIAL_FIELDS)) {
+			assert.ok(UNLOGGABLE_OPERATION_FIELDS.includes(field), `${field} must stay in the redaction list`);
+		}
+	});
+});
+
+// operationLog is captured at serverUtilities module load, so it must be reloaded after
+// pinLogConfig() to bind against the pinned logger instead of whatever logger existed first.
+describe('processLocalTransaction call-site redaction (real log file)', function () {
+	const { server } = require('#src/server/Server');
+	const globals = require('#src/globals');
+	const modulePath = require.resolve('#src/server/serverHelpers/serverUtilities');
+
+	let restoreLogConfig;
+	let freshServerUtilities;
+	let logPath;
+	let originalLogLevel;
+	let realOperation;
+	let realRegisterOperation;
+	let realSetMcpQuotaHandler;
+	let realGlobalOperation;
+	let originalCacheEntry;
+
+	before(function () {
+		restoreLogConfig = pinLogConfig({ level: 'info' });
+		originalLogLevel = logger.logLevel;
+		logger.logLevel = 'info';
+		realOperation = server.operation;
+		realRegisterOperation = server.registerOperation;
+		realSetMcpQuotaHandler = server.setMcpQuotaHandler;
+		realGlobalOperation = globals.operation;
+		originalCacheEntry = require.cache[modulePath];
+		delete require.cache[modulePath];
+		freshServerUtilities = require('#src/server/serverHelpers/serverUtilities');
+		logPath = logger.getLogFilePath();
+	});
+
+	after(function () {
+		logger.logLevel = originalLogLevel;
+		restoreLogConfig?.();
+		server.operation = realOperation;
+		server.registerOperation = realRegisterOperation;
+		server.setMcpQuotaHandler = realSetMcpQuotaHandler;
+		global.operation = globals.operation = realGlobalOperation;
+		require.cache[modulePath] = originalCacheEntry;
+		const dispatch = {
+			chooseOperation: serverUtilities.chooseOperation,
+			processLocalTransaction: serverUtilities.processLocalTransaction,
+		};
+		registeredOperations.setLocalOperationDispatch(dispatch);
+		require('#src/components/encryptedOperation').setEncryptedOperationDispatch({
+			...dispatch,
+			isJobOperation: serverUtilities.isJobOperation,
+		});
+	});
+
+	it('fails if the call site stops redacting: neither the SSH key nor a global secret field reaches the log', async function () {
+		const secretKey =
+			'-----BEGIN OPENSSH PRIVATE KEY-----\nCALL-SITE-REDACTION-SECRET\n-----END OPENSSH PRIVATE KEY-----';
+		const marker = 'call-site-redaction-marker';
+		const body = { operation: 'add_ssh_key', name: marker, key: secretKey, password: 'CALL-SITE-REDACTION-PASSWORD' };
+		const offset = existsSync(logPath) ? readFileSync(logPath, 'utf8').length : 0;
+
+		await freshServerUtilities.processLocalTransaction({ body }, async () => ({ ok: true }));
+
+		const written = await waitFor(
+			() => {
+				if (!existsSync(logPath)) return undefined;
+				const tail = readFileSync(logPath, 'utf8').slice(offset);
+				return tail.includes(marker) ? tail : undefined;
+			},
+			{ message: 'operation log entry for call-site redaction test was never written' }
+		);
+
+		assert.ok(written.includes(marker), 'the operation log entry for this request must be present');
+		assert.ok(!written.includes('CALL-SITE-REDACTION-SECRET'), 'the raw SSH key must not reach the operation log');
+		assert.ok(
+			!written.includes('CALL-SITE-REDACTION-PASSWORD'),
+			'a global secret field must not reach the operation log'
+		);
 	});
 });

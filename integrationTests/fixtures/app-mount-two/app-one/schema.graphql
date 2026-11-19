@@ -1,0 +1,4 @@
+type MountOne @table @export {
+	id: ID @primaryKey
+	name: String
+}

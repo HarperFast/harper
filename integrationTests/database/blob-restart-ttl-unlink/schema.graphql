@@ -1,0 +1,21 @@
+# QA-672 — blob-backed page cache carried across an in-place version-upgrade restart, with
+# per-record TTL still running.
+#
+# PageCache672 uses per-record @expiresAt (indexed Float). Per known ground truth (F-174),
+# per-record @expiresAt eviction is dead on RocksDB (Table.ts's runRecordExpirationEviction()
+# calls the LMDB-only index.getValues()) — so this fixture is run under LMDB
+# (config.storage.engine: 'lmdb', set by the test). audit:false isolates the delete path from
+# audit-log retention effects (per prior QA guidance).
+#
+# body is a Blob, always written large enough (>8KB FILE_STORAGE_THRESHOLD) to be file-backed
+# under {dataRootDir}/blobs/data/{p}/{p}/{fileId}, so the "does the sweep unlink the file" and
+# "orphan file" questions are directly inspectable on disk.
+
+type PageCache672 @table(audit: false) @export {
+	id: ID @primaryKey
+	body: Blob!
+	sha256: String
+	contentType: String
+	renderedAt: String
+	expiresAt: Float @expiresAt @indexed
+}

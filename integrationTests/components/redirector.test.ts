@@ -6,7 +6,7 @@
  * versioning, time-based rules, edge cases, and table CRUD.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 

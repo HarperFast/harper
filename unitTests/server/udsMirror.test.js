@@ -8,16 +8,33 @@ const sinon = require('sinon');
 const path = require('path');
 const fs = require('fs');
 
-const env = require('#src/utility/environment/environmentManager');
+const env = require('#js/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
+const EventEmitter = require('events');
 const {
 	writeUdsMetadata,
+	publishUdsMetadata,
 	registerUdsCleanupPaths,
+	recordUdsBindSuccess,
 	cleanupUdsFiles,
 	cleanupSocketsDirectory,
+	enableProxyProtocol,
+	markUdsBindFailed,
 } = require('#src/server/http');
 
 const TEST_SOCKETS_DIR = path.join(testUtils.ENV_DIR_PATH, 'sockets');
+
+// Replace the file at `filePath` with one guaranteed to have a different inode, simulating a
+// replacement worker rebinding the same path (threadServer.js's unlink-before-listen). Writing the
+// replacement to a decoy path first (so both files briefly coexist) rather than unlinking `filePath`
+// and recreating it in place matters: some filesystems immediately reuse a just-freed inode number
+// for the very next file created at the same path, which would make the "different inode" premise
+// this test suite depends on flaky. Two simultaneously-live files can never share an inode.
+function replaceWithNewInode(filePath, contents) {
+	const decoyPath = filePath + '.decoy';
+	fs.writeFileSync(decoyPath, contents);
+	fs.renameSync(decoyPath, filePath);
+}
 
 // Build a mock secure server whose secureContexts mirrors the Map returned by createTLSSelector
 function makeSecureServer(certs = []) {
@@ -166,66 +183,805 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			const harperLogger = require('#src/utility/logging/harper_logger');
 			const errorStub = sandbox.stub(harperLogger, 'error');
 			// Use an invalid path that cannot be written
-			writeUdsMetadata('/nonexistent-dir/missing/0-9926.yaml', 9926, makeSecureServer());
+			assert.strictEqual(writeUdsMetadata('/nonexistent-dir/missing/0-9926.yaml', 9926, makeSecureServer()), false);
 			assert.ok(errorStub.calledOnce, 'should log the write error');
 			assert.ok(errorStub.firstCall.args[0].includes('Error writing UDS metadata'));
 		});
+
+		describe('network access scope (allowedSources)', () => {
+			const { databases } = require('#src/resources/databases');
+			const networkAccess = require('#src/security/networkAccess');
+			const TABLE = terms.SYSTEM_TABLE_NAMES.NETWORK_ACCESS_TABLE_NAME;
+			let rows, subscribers, prior;
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9925.yaml');
+			const read = () => fs.readFileSync(yamlPath, 'utf8');
+			const until = async (condition, what) => {
+				for (let i = 0; i < 200 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+				assert.ok(condition(), `timed out waiting for ${what}`);
+			};
+			const changeRow = (row) => {
+				if (row) rows.set('operations', row);
+				else rows.delete('operations');
+				for (const listener of subscribers) listener({ type: 'put' });
+			};
+
+			before(() => testUtils.ensureSystemTables());
+			beforeEach(() => {
+				networkAccess.resetNetworkAccessWatches();
+				rows = new Map();
+				subscribers = [];
+				prior = databases.system[TABLE];
+				databases.system[TABLE] = {
+					get: async (id) => rows.get(id),
+					subscribe: async ({ listener }) => {
+						subscribers.push(listener);
+						return { on() {}, end() {} };
+					},
+				};
+			});
+			afterEach(() => {
+				networkAccess.resetNetworkAccessWatches();
+				databases.system[TABLE] = prior;
+			});
+
+			it('writes nothing for a scoped server until its list has been read', () => {
+				const server = { ...makeSecureServer(), networkAccessScope: 'operations' };
+				assert.strictEqual(writeUdsMetadata(yamlPath, 9925, server), false);
+				assert.strictEqual(fs.existsSync(yamlPath), false);
+			});
+
+			it('publishes the list, rewrites it on change, and omits it once cleared', async () => {
+				rows.set('operations', { allow: ['10.0.0.0/8', '2001:db8::/32'] });
+				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
+				let ready;
+				publishUdsMetadata(new Promise((resolve) => (ready = resolve)), server, () =>
+					writeUdsMetadata(yamlPath, 9925, server)
+				);
+				server.secureContextsListeners.forEach((listener) => listener());
+				assert.strictEqual(fs.existsSync(yamlPath), false);
+				ready();
+				await until(() => fs.existsSync(yamlPath), 'the first write');
+				assert.match(read(), /^allowedSources:\n {2}- "10\.0\.0\.0\/8"\n {2}- "2001:db8::\/32"\n/m);
+
+				changeRow({ allow: ['192.168.0.0/16'] });
+				await until(() => read().includes('192.168.0.0/16'), 'the rewrite');
+				assert.ok(!read().includes('10.0.0.0/8'));
+
+				changeRow(undefined);
+				await until(() => !read().includes('allowedSources'), 'the cleared list');
+				assert.match(read(), /^certificates:/m);
+			});
+
+			it('still publishes after a rejected TLS readiness, on the next certificate change', async () => {
+				rows.set('operations', { allow: ['10.0.0.0/8'] });
+				const server = { ...makeSecureServer(), networkAccessScope: 'operations', secureContextsListeners: [] };
+				publishUdsMetadata(Promise.reject(new Error('boot TLS pass failed')), server, () =>
+					writeUdsMetadata(yamlPath, 9925, server)
+				);
+				await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(fs.existsSync(yamlPath), false);
+				server.secureContextsListeners.forEach((listener) => listener());
+				await until(() => fs.existsSync(yamlPath), 'the write after the certificate change');
+				assert.ok(read().includes('  - "10.0.0.0/8"'));
+			});
+
+			it('never adds allowedSources to a server outside a scope', async () => {
+				rows.set('operations', { allow: ['10.0.0.0/8'] });
+				const server = { ...makeSecureServer(), secureContextsListeners: [] };
+				publishUdsMetadata(Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
+				await until(() => fs.existsSync(yamlPath), 'the write');
+				assert.ok(!read().includes('allowedSources'));
+			});
+		});
 	});
 
-	// ─── registerUdsCleanupPaths + cleanupUdsFiles ────────────────────────────
+	// ─── enableProxyProtocol ──────────────────────────────────────────────────
 
-	describe('registerUdsCleanupPaths + cleanupUdsFiles', () => {
-		it('cleanupUdsFiles removes registered socket and yaml files', () => {
+	describe('enableProxyProtocol', () => {
+		// Plain EventEmitter plus the net.Socket surface enableProxyProtocol depends on
+		// (setTimeout/destroy), matching net.Socket.setTimeout's real semantics closely enough
+		// for tests: registers the callback as a 'timeout' listener; a 0ms call just disarms it.
+		function createSocket() {
+			const socket = new EventEmitter();
+			socket.setTimeout = sinon.stub().callsFake((ms, cb) => {
+				if (cb) socket.once('timeout', cb);
+			});
+			socket.destroy = sinon.stub();
+			return socket;
+		}
+
+		// Install the wrapper, then deliver one or more chunks as the fronting proxy would.
+		async function feed(socket, ...chunks) {
+			const server = new EventEmitter();
+			enableProxyProtocol(server);
+			const received = [];
+			socket.on('data', (c) => received.push(c)); // stand-in for the protocol parser
+			server.emit('connection', socket);
+			await new Promise((resolve) => process.nextTick(resolve));
+			for (const chunk of chunks) socket.emit('data', chunk);
+			return received;
+		}
+
+		it('strips the PROXY v1 header and forwards the remaining bytes', async () => {
+			const socket = createSocket();
+			const received = await feed(socket, Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
+			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
+			assert.strictEqual(socket.remoteAddress, '1.2.3.4');
+			assert.strictEqual(socket.remotePort, 1111);
+		});
+
+		it('forwards a non-PROXY first chunk unchanged (e.g. an MQTT CONNECT)', async () => {
+			const socket = createSocket();
+			const received = await feed(socket, Buffer.from('MQTTCONNECT'));
+			assert.strictEqual(Buffer.concat(received).toString(), 'MQTTCONNECT');
+		});
+
+		it('buffers a PROXY header split across data events (no partial leak to the parser)', async () => {
+			const socket = createSocket();
+			const received = await feed(
+				socket,
+				Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111'), // no CRLF yet
+				Buffer.from(' 2222\r\nHELLO')
+			);
+			// Nothing forwarded until the header completes; then only the payload.
+			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
+			assert.strictEqual(socket.remoteAddress, '1.2.3.4');
+		});
+
+		it('buffers when the first chunk is shorter than the "PROXY " prefix', async () => {
+			const socket = createSocket();
+			const received = await feed(socket, Buffer.from('PRO'), Buffer.from('XY TCP4 9.9.9.9 5.6.7.8 42 2222\r\nHI'));
+			assert.strictEqual(Buffer.concat(received).toString(), 'HI');
+			assert.strictEqual(socket.remoteAddress, '9.9.9.9');
+		});
+
+		it('forwards unchanged once the spec max length is exceeded without a CRLF', async () => {
+			const socket = createSocket();
+			const long = 'PROXY ' + 'x'.repeat(200); // > 108 bytes, no CRLF
+			const received = await feed(socket, Buffer.from(long));
+			assert.strictEqual(Buffer.concat(received).toString(), long);
+		});
+
+		// PROXY v2 (binary) — built the way a fronting proxy like symphony emits it
+		function buildV2Header(tlvBlock = Buffer.alloc(0)) {
+			const addresses = Buffer.from([203, 0, 113, 9, 127, 0, 0, 1, 0xb2, 0x6e /* 45678 */, 0, 0]);
+			const header = Buffer.alloc(16);
+			Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a]).copy(header, 0);
+			header[12] = 0x21; // v2, PROXY command
+			header[13] = 0x11; // TCP over IPv4
+			header.writeUInt16BE(addresses.length + tlvBlock.length, 14);
+			return Buffer.concat([header, addresses, tlvBlock]);
+		}
+
+		it('strips a PROXY v2 header and overrides remoteAddress/remotePort', async () => {
+			const socket = createSocket();
+			const received = await feed(socket, Buffer.concat([buildV2Header(), Buffer.from('HELLO')]));
+			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
+			assert.strictEqual(socket.remoteAddress, '203.0.113.9');
+			assert.strictEqual(socket.remotePort, 45678);
+		});
+
+		it('buffers a PROXY v2 header split across data events', async () => {
+			const socket = createSocket();
+			const full = Buffer.concat([buildV2Header(), Buffer.from('HELLO')]);
+			const received = await feed(socket, full.subarray(0, 7), full.subarray(7, 20), full.subarray(20));
+			assert.strictEqual(Buffer.concat(received).toString(), 'HELLO');
+			assert.strictEqual(socket.remoteAddress, '203.0.113.9');
+		});
+
+		it('exposes a forwarded client cert with TLSSocket semantics', async () => {
+			// SSL TLV (0x20): client = SSL|CERT_CONN, verify = 0; then a 0xE0 cert TLV
+			const ssl = Buffer.from([0x20, 0x00, 0x05, 0x03, 0, 0, 0, 0]);
+			const der = Buffer.from('not-a-real-der-but-forwarded-opaquely');
+			const certTlv = Buffer.concat([Buffer.from([0xe2, 0x00, der.length]), der]);
+			const socket = createSocket();
+			await feed(socket, Buffer.concat([buildV2Header(Buffer.concat([ssl, certTlv])), Buffer.from('APP')]));
+			assert.strictEqual(socket.authorized, true);
+			assert.strictEqual(typeof socket.getPeerCertificate, 'function');
+		});
+
+		it('gives non-proxied connections no-client-cert TLS defaults', async () => {
+			const socket = createSocket();
+			await feed(socket, Buffer.from('MQTTCONNECT'));
+			assert.strictEqual(socket.authorized, false);
+			assert.deepStrictEqual(socket.getPeerCertificate(), {});
+		});
+
+		it('destroys the connection if the peer stalls before completing the header', async () => {
+			const socket = createSocket();
+			const server = new EventEmitter();
+			enableProxyProtocol(server);
+			socket.on('data', () => {}); // stand-in for the HTTP parser's own listener
+			server.emit('connection', socket);
+			await new Promise((resolve) => process.nextTick(resolve));
+			socket.emit('data', Buffer.from('PROXY TCP4 1.2.3.4')); // no CRLF yet — still pending
+			socket.emit('timeout');
+			assert.strictEqual(socket.destroy.called, true);
+		});
+
+		it('clears the stall timeout once the header resolves', async () => {
+			const socket = createSocket();
+			await feed(socket, Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
+			socket.emit('timeout'); // an unrelated later timeout must be a no-op post-handoff
+			assert.strictEqual(socket.destroy.called, false);
+		});
+
+		it('uninstalls its wrapper and restores the original listeners once the header resolves', async () => {
+			// The wrapper must not outlive the header decision: Node's HTTP upgrade path
+			// removes the parser's 'data' listener by reference before ws takes over, so a
+			// lingering wrapper would keep feeding the freed (re-poolable) parser.
+			const socket = createSocket();
+			const server = new EventEmitter();
+			enableProxyProtocol(server);
+			const parserListener = () => {};
+			socket.on('data', parserListener);
+			server.emit('connection', socket);
+			await new Promise((resolve) => process.nextTick(resolve));
+			socket.emit('data', Buffer.from('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\nHELLO'));
+			assert.deepStrictEqual(socket.listeners('data'), [parserListener]);
+		});
+	});
+
+	// ─── WS upgrade through the UDS mirror path (real sockets) ────────────────
+
+	describe('WebSocket upgrade over a proxy-protocol UDS server', () => {
+		// End-to-end regression for the two defects that silently killed WS on the UDS
+		// mirrors: a mirror with no 'upgrade' listener destroys the socket with a
+		// zero-byte close, and the old enableProxyProtocol wrapper kept forwarding
+		// post-upgrade frames into the freed HTTP parser (which the pool can re-issue
+		// to another connection, corrupting it).
+		const http = require('node:http');
+		const net = require('node:net');
+		const crypto = require('node:crypto');
+		const os = require('node:os');
+		const { WebSocketServer } = require('ws');
+
+		// Short path: sun_path is limited to ~104 bytes on macOS
+		const sockPath = path.join(os.tmpdir(), `hdb-ws-uds-${process.pid}.sock`);
+		let server, wss;
+
+		before(async () => {
+			try {
+				fs.unlinkSync(sockPath);
+			} catch {}
+			server = http.createServer((request, response) => response.end('ok'));
+			wss = new WebSocketServer({ noServer: true });
+			wss.on('connection', (ws) => ws.on('message', (msg) => ws.send(`echo:${msg}`)));
+			server.on('upgrade', (request, socket, head) => {
+				wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
+			});
+			enableProxyProtocol(server);
+			await new Promise((resolve) => server.listen(sockPath, resolve));
+		});
+
+		after(async () => {
+			wss?.close();
+			server.closeAllConnections?.();
+			await new Promise((resolve) => server.close(resolve));
+			try {
+				fs.unlinkSync(sockPath);
+			} catch {}
+		});
+
+		function maskedTextFrame(text) {
+			const payload = Buffer.from(text);
+			const mask = crypto.randomBytes(4);
+			const masked = Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]));
+			return Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]);
+		}
+
+		function httpRequest() {
+			return new Promise((resolve, reject) => {
+				const client = net.connect(sockPath);
+				let data = '';
+				client.on('connect', () => {
+					client.write('PROXY TCP4 9.9.9.9 5.6.7.8 3333 2222\r\n');
+					client.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
+				});
+				client.on('data', (chunk) => (data += chunk));
+				client.on('close', () => resolve(data.split('\r\n')[0]));
+				client.on('error', reject);
+			});
+		}
+
+		it('completes the handshake, echoes frames, and leaves pooled parsers intact', async () => {
+			const client = net.connect(sockPath);
+			const key = crypto.randomBytes(16).toString('base64');
+			let clientError = null;
+			server.once('clientError', (error) => (clientError = error));
+
+			try {
+				const status = await new Promise((resolve, reject) => {
+					let data = Buffer.alloc(0);
+					client.on('connect', () => {
+						client.write('PROXY TCP4 1.2.3.4 5.6.7.8 1111 2222\r\n');
+						client.write(
+							`GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n` +
+								`Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`
+						);
+					});
+					client.on('data', function onHandshake(chunk) {
+						data = Buffer.concat([data, chunk]);
+						if (data.includes('\r\n\r\n')) {
+							client.removeListener('data', onHandshake);
+							resolve(data.toString().split('\r\n')[0]);
+						}
+					});
+					client.on('error', reject);
+					client.on('close', () => reject(new Error('connection closed before handshake response')));
+				});
+				assert.strictEqual(status, 'HTTP/1.1 101 Switching Protocols');
+
+				// Run another HTTP request first so the freed parser is re-issued from the
+				// pool; frames on the upgraded socket must not reach it.
+				assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
+
+				const echoed = new Promise((resolve, reject) => {
+					let frame = Buffer.alloc(0);
+					client.on('data', (chunk) => {
+						frame = Buffer.concat([frame, chunk]);
+						const length = frame[1] & 0x7f;
+						if (frame.length >= 2 + length) resolve(frame.subarray(2, 2 + length).toString());
+					});
+					setTimeout(() => reject(new Error('no echo received')), 3000).unref();
+				});
+				client.write(maskedTextFrame('hi'));
+				assert.strictEqual(await echoed, 'echo:hi');
+				assert.strictEqual(clientError, null, 'frames must not leak into pooled HTTP parsers');
+
+				// The server must serve plain HTTP cleanly after the upgraded connection exchanged frames
+				assert.strictEqual(await httpRequest(), 'HTTP/1.1 200 OK');
+			} finally {
+				client.destroy();
+			}
+		});
+	});
+
+	// ─── registerUdsCleanupPaths + recordUdsBindSuccess + cleanupUdsFiles ─────
+	//
+	// cleanupUdsFiles() is ownership-aware: it only unlinks a mirror's socket (and its yaml) when
+	// the inode currently on disk still matches the one recorded when THIS worker bound it. On an
+	// overlapping restart, the replacement worker rebinds the same path before the outgoing worker
+	// exits and cleans up, so an unqualified unlink-by-path would delete the replacement's live
+	// files (the production bug this test suite guards against).
+
+	describe('registerUdsCleanupPaths + recordUdsBindSuccess + cleanupUdsFiles', () => {
+		it('normal shutdown: removes the socket and yaml this worker bound and recorded', () => {
 			const sockPath = path.join(TEST_SOCKETS_DIR, 'test.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'test.yaml');
 			fs.writeFileSync(sockPath, '');
 			fs.writeFileSync(yamlPath, '');
 
 			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
 			cleanupUdsFiles();
 
 			assert.ok(!fs.existsSync(sockPath), 'socket file should be removed');
 			assert.ok(!fs.existsSync(yamlPath), 'yaml file should be removed');
 		});
 
-		it('cleanupUdsFiles does not throw when files are already gone', () => {
-			registerUdsCleanupPaths(path.join(TEST_SOCKETS_DIR, 'ghost.sock'), path.join(TEST_SOCKETS_DIR, 'ghost.yaml'));
+		it('THE REGRESSION: leaves both files in place when a replacement rebound the path with a different inode', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'replaced.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'replaced.yaml');
+			fs.writeFileSync(sockPath, 'outgoing worker');
+			fs.writeFileSync(yamlPath, 'outgoing worker metadata\n');
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			// Simulate the replacement worker's listenOnDomainSocket(): unlink the old file and bind
+			// a brand-new inode at the same path (see threadServer.js's unlink-before-listen).
+			replaceWithNewInode(sockPath, 'replacement worker');
+
+			cleanupUdsFiles();
+
+			assert.ok(fs.existsSync(sockPath), "the replacement's live socket must survive the outgoing worker's cleanup");
+			assert.ok(fs.existsSync(yamlPath), "the replacement's yaml must survive too — it owns the pair");
+		});
+
+		it('is idempotent across the two real-world calls per worker, even if a later generation reuses the exact recorded inode number', () => {
+			// cleanupUdsFiles() runs twice per worker (threadServer.js's SHUTDOWN handler, then
+			// again from process.on('exit') once closeServers() has released this worker's own
+			// socket). Inode numbers get reused once freed, so by the time the second call runs, an
+			// unrelated later generation can coincidentally occupy this path with the SAME inode
+			// number this worker originally recorded — the exact production race, replayed within
+			// one process. A hard link pins the original inode alive across the first cleanup call
+			// (standing in for the outgoing worker's own still-open fd in production) so the
+			// "later generation" file below is deterministically given that identical inode back,
+			// rather than depending on the OS's actual allocator timing.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.yaml');
+			const pinPath = path.join(TEST_SOCKETS_DIR, 'reused-inode.sock.pin');
+			fs.writeFileSync(sockPath, 'generation 1');
+			fs.writeFileSync(yamlPath, 'generation 1 metadata\n');
+			fs.linkSync(sockPath, pinPath);
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			cleanupUdsFiles(); // first pass (SHUTDOWN): owned, deletes both
+			assert.ok(!fs.existsSync(sockPath), 'first pass should remove the socket it owns');
+			assert.ok(!fs.existsSync(yamlPath), 'first pass should remove the yaml it owns');
+
+			// A later generation binds the same path and — per the scenario above — is handed the
+			// identical inode number this worker originally recorded (simulated deterministically
+			// via the pinned hard link rather than left to chance).
+			fs.renameSync(pinPath, sockPath);
+			fs.writeFileSync(yamlPath, 'later generation metadata\n');
+
+			cleanupUdsFiles(); // second pass (process.on('exit')): must be a no-op
+
+			assert.ok(fs.existsSync(sockPath), "a later generation's socket must survive the second cleanup pass");
+			assert.ok(fs.existsSync(yamlPath), "a later generation's yaml must survive the second cleanup pass");
+		});
+
+		it('an unconfirmed bind does not unlink a live file left by someone else at that path', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'never-bound.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'never-bound.yaml');
+			// Some other, unrelated process/state left files at this path; this worker registered
+			// cleanup for it but its own listen() never confirmed (no recordUdsBindSuccess call).
+			fs.writeFileSync(sockPath, '');
+			fs.writeFileSync(yamlPath, '');
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			cleanupUdsFiles();
+
+			assert.ok(fs.existsSync(sockPath), 'an unconfirmed bind must not be treated as owned');
+			assert.ok(fs.existsSync(yamlPath), 'an unconfirmed bind must not be treated as owned');
+		});
+
+		it('leaves a yaml in place when no socket is at that path either, unlike markUdsBindFailed', () => {
+			// Deliberately asymmetric with markUdsBindFailed's "absent is safe to retract": that
+			// function's only caller runs synchronously before any bind attempt, with no window for
+			// anyone else to be mid-flight. This function's second call (process.on('exit')) can land
+			// seconds after the first, while a concurrently-booting replacement (on non-overlapping
+			// restart platforms, started right after this worker's SHUTDOWN) may have already written
+			// its own fresh yaml without having bound its socket yet — 'absent' here doesn't reliably
+			// mean "no live owner." A stale yaml with no bind failure to explain it is left for
+			// markUdsBindFailed or the next full process start's cleanupSocketsDirectory() sweep.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'absent-yaml.yaml');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			cleanupUdsFiles();
+
+			assert.ok(fs.existsSync(yamlPath), 'an absent socket must not be treated as safe to retract here');
+		});
+
+		it('cleanupUdsFiles does not throw when files are already gone (ENOENT)', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'ghost.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'ghost.yaml');
+			fs.writeFileSync(sockPath, '');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+			fs.unlinkSync(sockPath); // gone before cleanup runs
+
 			assert.doesNotThrow(() => cleanupUdsFiles());
+		});
+
+		it('cleanupUdsFiles does not throw when nothing was ever registered for that path', () => {
+			registerUdsCleanupPaths(path.join(TEST_SOCKETS_DIR, 'ghost2.sock'), path.join(TEST_SOCKETS_DIR, 'ghost2.yaml'));
+			assert.doesNotThrow(() => cleanupUdsFiles());
+		});
+	});
+
+	// ─── markUdsBindFailed ─────────────────────────────────────────────────────
+
+	describe('markUdsBindFailed', () => {
+		it('removes a YAML metadata file for a socket this worker confirmed binding', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'failed.yaml');
+			fs.writeFileSync(sockPath, '');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(!fs.existsSync(yamlPath), 'yaml for a bind this worker owns should be removed');
+		});
+
+		it('removes a stale yaml when this worker never confirmed a bind and nothing is on disk', () => {
+			// Mirrors the real caller (threadServer.js's isDomainSocketPathTooLong check): listen()
+			// is skipped entirely, so this worker's own ino is never recorded. But since no socket
+			// exists at this path either, nothing else can be relying on this yaml — it's ours to
+			// retract (e.g. leftover from an earlier writeUdsMetadata() race against the bind check).
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'never-bound-failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'never-bound-failed.yaml');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(!fs.existsSync(yamlPath), 'an unclaimed path has no live owner, so its stale yaml should be removed');
+		});
+
+		it('leaves the yaml in place when a live socket at that path belongs to someone else', () => {
+			// A socket already exists at this path (e.g. a replacement worker's live mirror), but
+			// this worker never recorded a matching bind of its own — its failed-bind cleanup must
+			// not delete metadata that live socket depends on.
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'foreign-failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'foreign-failed.yaml');
+			fs.writeFileSync(sockPath, "someone else's socket");
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(fs.existsSync(yamlPath), "a live socket this worker never bound means its yaml isn't ours to delete");
+		});
+
+		it('leaves the yaml in place when stat fails for a reason other than ENOENT', () => {
+			// A stat failure that isn't "the file doesn't exist" (permissions, I/O, etc.) means we
+			// can't confirm the path is genuinely empty — treat it like 'foreign', not 'absent', so a
+			// transient stat error can't be misread as license to delete a live owner's yaml. Forced
+			// deterministically via ENOTDIR (treating a plain file as a path segment) rather than
+			// EACCES, which isn't reliably enforced when tests run as root (common in CI containers).
+			const blockingFile = path.join(TEST_SOCKETS_DIR, 'not-a-directory');
+			const sockPath = path.join(blockingFile, 'nested.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'enotdir-failed.yaml');
+			fs.writeFileSync(blockingFile, '');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(fs.existsSync(yamlPath), 'an inconclusive stat error must not be treated as a safe-to-retract absence');
+		});
+
+		it('leaves the yaml in place when a replacement worker now owns the socket at the same path', () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'replaced-failed.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'replaced-failed.yaml');
+			fs.writeFileSync(sockPath, 'outgoing worker');
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			recordUdsBindSuccess(sockPath);
+
+			replaceWithNewInode(sockPath, 'replacement worker');
+
+			markUdsBindFailed(sockPath);
+
+			assert.ok(fs.existsSync(yamlPath), "a replacement's yaml must survive the outgoing worker's cleanup");
+		});
+
+		it('does not throw when the socket was never registered or has no metadata file on disk', () => {
+			assert.doesNotThrow(() => markUdsBindFailed(path.join(TEST_SOCKETS_DIR, 'never-registered.sock')));
 		});
 	});
 
 	// ─── cleanupSocketsDirectory ──────────────────────────────────────────────
 
 	describe('cleanupSocketsDirectory', () => {
-		it('removes all files in the sockets directory when enabled', () => {
+		it('removes all files in the sockets directory, unconditionally (no TLS_UNIXDOMAINSOCKETS gate)', () => {
+			// The sockets directory is Harper-owned and only ever holds mirror files, so a crash that
+			// left files behind while UDS was enabled must still be cleared even if the operator has
+			// since turned the feature off (including disabling it *because of* a mirror problem) —
+			// the sweep must not inherit the current config's gate. No env stubbing needed to prove
+			// this: the function no longer reads that config at all.
 			const socketsDir = path.join(env.getHdbBasePath(), 'sockets');
 			fs.mkdirSync(socketsDir, { recursive: true });
 			fs.writeFileSync(path.join(socketsDir, '0-9926.sock'), '');
 			fs.writeFileSync(path.join(socketsDir, '0-9926.yaml'), '');
 			fs.writeFileSync(path.join(socketsDir, '1-9926.sock'), '');
 
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(true);
 			cleanupSocketsDirectory();
 
 			assert.strictEqual(fs.readdirSync(socketsDir).length, 0, 'sockets dir should be empty');
 			fs.rmdirSync(socketsDir);
 		});
 
-		it('does nothing when tls.unixDomainSockets is not enabled', () => {
-			const socketsDir = path.join(env.getHdbBasePath(), 'sockets');
-			fs.mkdirSync(socketsDir, { recursive: true });
-			fs.writeFileSync(path.join(socketsDir, '0-9926.sock'), '');
+		it('does not throw when the sockets directory does not exist', () => {
+			assert.doesNotThrow(() => cleanupSocketsDirectory());
+		});
+	});
 
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(undefined);
-			cleanupSocketsDirectory();
+	// ─── writeUdsMetadata protocol marker ─────────────────────────────────────
 
-			assert.strictEqual(fs.readdirSync(socketsDir).length, 1, 'file should remain when feature is disabled');
-			fs.rmSync(socketsDir, { recursive: true });
+	describe('writeUdsMetadata protocol parameter', () => {
+		it('writes a protocol line when given, omits it otherwise', () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9926-h2.yaml');
+			writeUdsMetadata(yamlPath, 9926, makeSecureServer(), 'h2');
+			assert.match(fs.readFileSync(yamlPath, 'utf8'), /^protocol: h2$/m);
+			writeUdsMetadata(yamlPath, 9926, makeSecureServer());
+			assert.doesNotMatch(fs.readFileSync(yamlPath, 'utf8'), /^protocol:/m);
+		});
+	});
+
+	describe('writeUdsMetadata mTLS advertisement', () => {
+		it('writes mtls flags when the mirrored port verifies client certs', () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9926.yaml');
+			const server = makeSecureServer();
+			server.verifiesClientCerts = true;
+			server.mtlsRequired = true;
+			writeUdsMetadata(yamlPath, 9926, server);
+			const content = fs.readFileSync(yamlPath, 'utf8');
+			assert.match(content, /^mtls: true$/m);
+			assert.match(content, /^mtlsRequired: true$/m);
 		});
 
-		it('does not throw when the sockets directory does not exist', () => {
-			sandbox.stub(env, 'get').withArgs(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS).returns(true);
-			assert.doesNotThrow(() => cleanupSocketsDirectory());
+		it('omits mtls flags otherwise', () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9926.yaml');
+			writeUdsMetadata(yamlPath, 9926, makeSecureServer());
+			const content = fs.readFileSync(yamlPath, 'utf8');
+			assert.doesNotMatch(content, /^mtls:/m);
+			assert.doesNotMatch(content, /^mtlsRequired:/m);
+		});
+
+		it('omits mtls flags when the mirror cannot decode PROXY v2 (mtlsForwarding=false)', () => {
+			const yamlPath = path.join(TEST_SOCKETS_DIR, '0-9926.yaml');
+			const server = makeSecureServer();
+			server.verifiesClientCerts = true;
+			writeUdsMetadata(yamlPath, 9926, server, undefined, false);
+			assert.doesNotMatch(fs.readFileSync(yamlPath, 'utf8'), /^mtls:/m);
+		});
+	});
+});
+
+// ─── createH2CProxyFront ──────────────────────────────────────────────────────
+// Real sockets: an h2c server behind the PROXY-stripping front on a UDS path.
+// These also pin the Node behavior the front depends on: bytes unshifted onto a
+// net.Socket must survive Http2Session's native handle consume.
+
+describe('createH2CProxyFront (h2c UDS mirror)', () => {
+	const http2 = require('node:http2');
+	const net = require('node:net');
+	const os = require('node:os');
+	const { createH2CProxyFront } = require('#src/server/http');
+
+	// h2 connection preface + empty SETTINGS frame (type 4, flags 0, stream 0, len 0)
+	const H2_PREFACE = Buffer.concat([
+		Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'),
+		Buffer.from([0, 0, 0, 4, 0, 0, 0, 0, 0]),
+	]);
+	const PROXY_LINE = 'PROXY TCP4 203.0.113.9 127.0.0.1 45678 443\r\n';
+
+	let h2srv, front, udsPath;
+
+	beforeEach((done) => {
+		udsPath = path.join(os.tmpdir(), `hdb-h2c-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`);
+		h2srv = http2.createServer((req, res) => {
+			res.writeHead(200, { 'content-type': 'text/plain' });
+			res.end(`addr=${req.socket.remoteAddress ?? 'none'} port=${req.socket.remotePort ?? 0} path=${req.url}`);
+		});
+		h2srv.on('sessionError', () => {});
+		front = createH2CProxyFront(h2srv);
+		front.listen(udsPath, done);
+	});
+
+	afterEach((done) => {
+		h2srv.close();
+		front.close(() => {
+			try {
+				fs.unlinkSync(udsPath);
+			} catch {}
+			done();
+		});
+	});
+
+	function h2Request(prepare) {
+		return new Promise((resolve, reject) => {
+			const session = http2.connect('http://localhost', {
+				createConnection: () => {
+					const socket = net.connect(udsPath);
+					prepare?.(socket);
+					return socket;
+				},
+			});
+			session.on('error', reject);
+			const req = session.request({ ':path': '/who' });
+			let body = '';
+			req.setEncoding('utf8');
+			req.on('data', (d) => (body += d));
+			req.on('end', () => {
+				session.close();
+				resolve(body);
+			});
+			req.on('error', reject);
+			req.end();
+		});
+	}
+
+	// Establish a session manually (PROXY/preface framing fully under test control)
+	// and resolve on the server's SETTINGS-ACK. The server sends its own SETTINGS
+	// unprompted on session creation, so only an ACK (type 0x4, flags & 0x1) proves
+	// the CLIENT preface survived stripping/unshift and reached the native session.
+	function rawSessionEstablishes(writes) {
+		return new Promise((resolve, reject) => {
+			const socket = net.connect(udsPath, async () => {
+				for (const w of writes) {
+					if (typeof w === 'number') await new Promise((r) => setTimeout(r, w));
+					else socket.write(w);
+				}
+			});
+			const timer = setTimeout(() => {
+				socket.destroy();
+				reject(new Error('no SETTINGS-ACK from server'));
+			}, 1500);
+			let buf = Buffer.alloc(0);
+			socket.on('data', (d) => {
+				buf = Buffer.concat([buf, d]);
+				// Walk complete frames: 3-byte length, 1-byte type, 1-byte flags, 4-byte stream id
+				let off = 0;
+				while (buf.length - off >= 9) {
+					const len = buf.readUIntBE(off, 3);
+					const type = buf[off + 3];
+					const flags = buf[off + 4];
+					if (type === 4 && flags & 0x1) {
+						clearTimeout(timer);
+						socket.destroy();
+						return resolve();
+					}
+					if (buf.length - off < 9 + len) break;
+					off += 9 + len;
+				}
+				buf = buf.subarray(off);
+			});
+			socket.on('error', reject);
+		});
+	}
+
+	it('strips the PROXY header and overrides remoteAddress/remotePort', async () => {
+		const body = await h2Request((socket) => socket.write(PROXY_LINE));
+		assert.match(body, /addr=203\.0\.113\.9 port=45678/);
+	});
+
+	it('passes a direct h2 connection (no PROXY header) through unchanged', async () => {
+		const body = await h2Request();
+		assert.match(body, /path=\/who/);
+		assert.doesNotMatch(body, /203\.0\.113\.9/);
+	});
+
+	it('handles the PROXY header coalesced with the preface in a single packet', async () => {
+		await rawSessionEstablishes([Buffer.concat([Buffer.from(PROXY_LINE), H2_PREFACE])]);
+	});
+
+	it('handles a PROXY header split across packets', async () => {
+		await rawSessionEstablishes([
+			Buffer.from('PROXY TCP4 203.0.'),
+			20,
+			Buffer.from('113.9 127.0.0.1 45678 443\r\n'),
+			H2_PREFACE,
+		]);
+	});
+
+	it('hands off unparseable long first packets without stalling', async () => {
+		// Starts with "PROXY " but never terminates: after 108 bytes the front must
+		// give up and forward — the h2 server then fails the session (never ACKs),
+		// rather than the front buffering forever.
+		const junk = Buffer.from('PROXY ' + 'x'.repeat(150));
+		await assert.rejects(rawSessionEstablishes([junk]), /no SETTINGS-ACK|ECONNRESET/);
+	});
+
+	it('close() sends GOAWAY to live sessions so shutdown drains gracefully', async () => {
+		// Establish a real session, then close the front: the session must receive
+		// GOAWAY and close promptly (well inside closeServers' 5s force-exit backstop).
+		const session = http2.connect('http://localhost', {
+			createConnection: () => net.connect(udsPath),
+		});
+		session.on('error', () => {});
+		await new Promise((resolve) => session.on('connect', resolve));
+		const sessionClosed = new Promise((resolve) => session.on('close', resolve));
+		const frontClosed = new Promise((resolve) => front.close(resolve));
+		await Promise.all([sessionClosed, frontClosed]);
+	});
+
+	it('destroys a connection that stalls before completing the PROXY header', async () => {
+		// Rebuild the front with a short pre-handoff timeout: a client that sends a
+		// partial header and stalls must be destroyed, not hold the fd forever.
+		// (net.Server unlinks the UDS file itself on close.)
+		await new Promise((resolve) => front.close(resolve));
+		front = createH2CProxyFront(h2srv, 100);
+		await new Promise((resolve) => front.listen(udsPath, resolve));
+
+		const socket = net.connect(udsPath, () => socket.write('PROXY TCP4 203.0.'));
+		socket.on('error', () => {});
+		await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error('stalled connection was not destroyed')), 2000);
+			socket.on('close', () => {
+				clearTimeout(timer);
+				resolve();
+			});
 		});
 	});
 });

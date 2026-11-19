@@ -1,0 +1,13 @@
+# Fixture for the invalidate() value-shape record-caching cross-worker test.
+#
+# Widget declares NO @indexed attributes, which matters: Table.ts's invalidate()
+# (`_writeInvalidate`) builds `partialRecord ??= null`, then only populates it into an
+# object if the table has indices to preserve. With no indices, invalidate() writes a REAL,
+# fully-versioned, literal `null` root value via the normal recordUpdater path — the one
+# genuinely reachable non-object value edge for the per-worker record cache (see
+# resources.js for why a bare scalar table row is not reachable through any supported path).
+type Widget @table @export {
+	id: ID @primaryKey
+	name: String
+	tag: String
+}

@@ -1,0 +1,9 @@
+# Shared fixture for the multi-worker record-caching coherence anchors.
+# `name` is @indexed so the scan-coherence suite can query it via
+# GET /CacheRecord/?name=X — the getRange/scan path, which does NOT consult the
+# per-worker point-read cache — and compare it against the cached PK point-GET.
+type CacheRecord @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	counter: Int
+}

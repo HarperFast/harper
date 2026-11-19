@@ -1,0 +1,7 @@
+# Regression anchor for harper 85f1c4b72 (#2134 reader half): an in-flight or late-opening blob
+# reader must survive a concurrent supersession/delete of the same record. See resources.js.
+
+type Asset @table(database: "blobreader", audit: false) @export {
+	id: ID @primaryKey
+	content: Blob
+}

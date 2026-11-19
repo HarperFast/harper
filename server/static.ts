@@ -1,7 +1,12 @@
 import { realpathSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { Scope } from '../components/Scope';
+import { basename, dirname, join } from 'node:path';
+import { Scope } from '../components/Scope.ts';
+import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
+import { convertToMS } from '../utility/common_utils.ts';
+import _typestrip_micromatch from 'micromatch';
+const { isMatch } = _typestrip_micromatch;
 import send from 'send';
+import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 /**
  * The static plugin handles serving static files from the respective application directory.
@@ -11,62 +16,302 @@ import send from 'send';
  * - `index`: If enabled, it will serve `index.html` files from directories.
  * - `extensions`: An array of file extensions to try when serving files. If a file is not found, it will try appending each extension in order. For example, if set to `['html'], and the request is `/page`, it will try `/page.html` if `/page` is not found.
  * - `fallthrough`: If true, it will fall through to the next handler if the file is not found. If false, it will return a 404 error.
+ * - `maxAge`: Freshness lifetime for served files — a number of seconds or a duration string
+ *   (`'5m'`, `'1d'`). Emitted as `Cache-Control: public, max-age=<seconds>`. Defaults to 0
+ *   (revalidate every request via the ETag/Last-Modified that are always emitted).
+ * - `immutable`: If true, adds the `immutable` directive to `Cache-Control` — for content-hashed
+ *   assets that never change under the same URL. Requires `maxAge` to be meaningful.
+ * - `cacheControl`: Full `Cache-Control` override string (takes precedence over `maxAge`/`immutable`),
+ *   or `false` to suppress the header entirely. Static files are served before authentication, so
+ *   they are public by construction — do not put per-user content behind this handler.
+ * - `cacheOverrides`: A map of glob pattern → partial cache options (`maxAge` / `immutable` /
+ *   `cacheControl`), letting specific files opt out of the top-level defaults. The typical case is
+ *   long-lived `immutable` defaults for content-hashed assets while `index.html` gets a short window
+ *   or `stale-while-revalidate`. Patterns are matched (via `micromatch`, same engine as `files`)
+ *   against the mount-relative URL path **and** the served file's basename — so `index.html` also
+ *   targets the directory-index (`/`) serve. Entries are tested in config order and the first match
+ *   wins; each is a partial (keys present replace the default, absent keys inherit), with the same
+ *   `cacheControl`-beats-`maxAge`/`immutable` precedence as the top level. Example:
+ *   ```yaml
+ *   static:
+ *     files: 'web/**'
+ *     maxAge: 1y
+ *     immutable: true
+ *     cacheOverrides:
+ *       'index.html': { cacheControl: 'public, max-age=0, stale-while-revalidate=60' }
+ *       '*.html': { maxAge: 5m, immutable: false }
+ *   ```
  * - `notFound`: Can be specified as a string to serve a custom 404 page, or an object with `file` and `statusCode` properties to serve a custom file with a specific status code. This is useful for hosting SPAs that use client-side routing. Make sure to set `fallthrough` to `false`!
+ * - `before` / `after`: Position this handler in the HTTP middleware chain relative to another named
+ *   handler. By default the handler runs `before: 'authentication'` — and therefore before the REST
+ *   handler — so plain file requests skip credential parsing. That default means a `fallthrough: false`
+ *   catch-all answers GETs for exported REST resources too; an SPA with history-mode routing should set
+ *   `after: 'rest'` so the API is matched first and only unmatched URLs receive the `notFound` fallback.
+ *   `before: false` clears the default without adding a new constraint (registration order applies).
+ *   Handler names are the component config keys as registered (e.g. `rest`, not the legacy `REST` alias);
+ *   a name that matches no registered handler is ignored, with a warning logged by the middleware chain.
+ *   Ordering is applied when the component loads; changing `before`/`after` triggers a component restart.
  *
  * This plugin dynamically updates its behavior based on the current configuration file. Users can make updates and immediately see the changes reflect in the next request.
  *
- * Updates to the `files` or `urlPath` options will clear the in-memory maps and allow them to regenerate based on the new configuration (since the default EntryHandler will regenerate anyways).
+ * Updates to the `files` option incrementally add newly matched paths and remove paths that no longer match while preserving common entries.
+ * Updates to `urlPath` request a restart: the HTTP route mount is registered once at load and cannot be re-registered on a live server (#1583).
  */
+/**
+ * Resolve the effective cache-header inputs for a given served file: the live top-level
+ * `maxAge`/`immutable`/`cacheControl` options, with the first matching `cacheOverrides` entry layered
+ * on top (a partial — keys present replace the default, absent keys inherit). Patterns are matched
+ * (via `micromatch`, same engine as `files`) against the mount-relative URL path and the file's
+ * basename, so `index.html` also targets the directory-index (`/`) serve.
+ */
+function resolveCacheOptions(scope: Scope, urlKey: string, basename: string) {
+	let maxAge = scope.options.get(['maxAge']);
+	let immutable = scope.options.get(['immutable']);
+	let cacheControl = scope.options.get(['cacheControl']);
+
+	const overrides = scope.options.get(['cacheOverrides']);
+	if (overrides !== undefined) {
+		if (typeof overrides !== 'object' || overrides === null || Array.isArray(overrides)) {
+			throw new Error(`Invalid cacheOverrides option: ${overrides}. Must be a map of glob pattern to cache options.`);
+		}
+		for (const pattern of Object.keys(overrides)) {
+			if (isMatch(urlKey, pattern) || isMatch(basename, pattern)) {
+				const override = overrides[pattern];
+				if (typeof override !== 'object' || override === null || Array.isArray(override)) {
+					throw new Error(
+						`Invalid cacheOverrides['${pattern}'] value: ${override}. Must be an object with maxAge/immutable/cacheControl.`
+					);
+				}
+				// partial merge: only keys present in the override replace the top-level default
+				if ('maxAge' in override) maxAge = override.maxAge;
+				if ('immutable' in override) immutable = override.immutable;
+				if ('cacheControl' in override) cacheControl = override.cacheControl;
+				break; // first match wins
+			}
+		}
+	}
+
+	immutable = immutable ?? false;
+	if (maxAge !== undefined && typeof maxAge !== 'number' && typeof maxAge !== 'string') {
+		throw new Error(`Invalid maxAge option: ${maxAge}. Must be a number of seconds or a duration string like '5m'.`);
+	}
+	const maxAgeMs = maxAge === undefined ? 0 : convertToMS(maxAge);
+	if (Number.isNaN(maxAgeMs)) {
+		throw new Error(`Invalid maxAge option: ${maxAge}. Must be a number of seconds or a duration string like '5m'.`);
+	}
+	if (typeof immutable !== 'boolean') {
+		throw new Error(`Invalid immutable option: ${immutable}. Must be a boolean.`);
+	}
+	if (cacheControl !== undefined && typeof cacheControl !== 'string' && cacheControl !== false) {
+		throw new Error(`Invalid cacheControl option: ${cacheControl}. Must be a string or false.`);
+	}
+	const customCacheControl = typeof cacheControl === 'string' ? cacheControl : undefined;
+	return { cacheControlDisabled: cacheControl === false, maxAgeMs, immutable, customCacheControl };
+}
+
+/**
+ * Serve a file through `send`, applying the plugin's cache-header options (read live from the
+ * component config, like `fallthrough`, and layered with any matching `cacheOverrides` entry).
+ * `cacheControl` as a string overrides `maxAge`/`immutable` via send's `headers` event;
+ * `cacheControl: false` suppresses the header entirely. Applied only to the main file serve — the
+ * `notFound` fallback keeps send's default `max-age=0`, which is the right policy for SPA index
+ * fallbacks.
+ */
+function serveFile(req, path: string, scope: Scope) {
+	// The staticFiles map keys are the mount-relative URL path (leading slash stripped for matching);
+	// for a directory-index serve req.pathname is the directory, so also match the served basename.
+	const urlKey = typeof req.pathname === 'string' ? req.pathname.replace(/^\//, '') : '';
+	const fileName = basename(path);
+	const { cacheControlDisabled, maxAgeMs, immutable, customCacheControl } = resolveCacheOptions(
+		scope,
+		urlKey,
+		fileName
+	);
+
+	// `send` URI-decodes its path argument and 404s any dot segment, as it does for a request path. A
+	// static entry is a filesystem path chosen by the `files` globs, so `send` gets only the file's own
+	// name, with its directory as `root`: an ancestor directory never reaches the decode or dot check.
+	const stream = send(req, encodeURIComponent(fileName), {
+		root: dirname(path),
+		// suppress send's own header when we set a full override below (or when disabled)
+		cacheControl: cacheControlDisabled || customCacheControl !== undefined ? false : true,
+		maxAge: maxAgeMs,
+		immutable,
+	});
+	// an empty-string override intentionally behaves like `false` (send's header is suppressed
+	// above and no override is written)
+	if (customCacheControl) {
+		stream.on('headers', (response) => {
+			response.setHeader('Cache-Control', customCacheControl);
+		});
+	}
+	return stream;
+}
+
 export function handleApplication(scope: Scope) {
 	// in-memory map of static files
-	// keys are the URL paths, values are the absolute paths to the files
+	// keys are the URL paths relative to the mount base, values are the absolute paths to the files
 	const staticFiles = new Map<string, string>();
-	const indexEntries = new Map<string, string>();
+	const indexEntries = new Map<string, string | null>();
+	const staticFileOwners = new Map<string, Map<string, string>>();
+	const indexEntryOwners = new Map<string, Map<string, string | null>>();
 
-	// If the `files` or `urlPath` options change, clear the maps and let them regenerate
+	function setOwnedPath<Path>(
+		paths: Map<string, Path>,
+		ownersByURL: Map<string, Map<string, Path>>,
+		urlPath: string,
+		owner: string,
+		path: Path
+	) {
+		let owners = ownersByURL.get(urlPath);
+		if (!owners) ownersByURL.set(urlPath, (owners = new Map()));
+		owners.delete(owner);
+		owners.set(owner, path);
+		paths.set(urlPath, path);
+	}
+
+	function removeOwnedPath<Path>(
+		paths: Map<string, Path>,
+		ownersByURL: Map<string, Map<string, Path>>,
+		urlPath: string,
+		owner: string
+	) {
+		const owners = ownersByURL.get(urlPath);
+		if (!owners?.delete(owner)) return;
+		const replacement = [...owners.values()].at(-1);
+		if (replacement === undefined) {
+			ownersByURL.delete(urlPath);
+			paths.delete(urlPath);
+		} else {
+			paths.set(urlPath, replacement);
+		}
+	}
+
+	// The HTTP route below is registered once, with the urlPath in effect at load time; the mount
+	// cannot be re-registered at runtime. Capture the matching base once so map keys always agree
+	// with the registered route (#1583).
+	const baseURLPath = resolveBaseURLPath(scope.pluginName, (scope.options.getAll() as any)?.urlPath);
+	// The same base as the client sees. `baseURLPath` is mount-relative — it must stay that way to
+	// keep agreeing with the entry URL paths the file map is keyed by — but a redirect Location has
+	// to carry the application's mount too, or it would point outside the mount (#1583).
+	const externalBaseURLPath = scope.externalBasePath(baseURLPath);
+	let urlPathRestartPending = false;
+	let fileSelectionChangePending = false;
+	const missingNotFoundWarned = new Set<string>();
+	let entryHandler: ReturnType<Scope['handleEntry']>;
+
+	// A bare `before:` / `after:` key in YAML parses as null — treat it as unset, like before this
+	// option was validated.
+	const before = scope.options.get(['before']) ?? undefined;
+	const after = scope.options.get(['after']) ?? undefined;
+	validateOrderingOption('before', before, true);
+	validateOrderingOption('after', after, false);
+	// Default to the pre-authentication hoist only when no ordering was configured at all.
+	const noOrderingConfigured = before === undefined && after === undefined;
+
+	// With the default ordering this handler answers unmatched GETs ahead of the REST handler, so a
+	// `fallthrough: false` catch-all makes any exported REST resources unreachable over GET.
+	// Reads the live option values (not the registration-time ones above): a config save can change
+	// the ordering options together with `fallthrough`, and this re-runs from the change listener.
+	const warnIfBlockingRest = () => {
+		const liveBefore = scope.options.get(['before']) ?? undefined;
+		const liveAfter = scope.options.get(['after']) ?? undefined;
+		if (
+			liveAfter === undefined &&
+			(liveBefore === undefined || liveBefore === 'authentication') &&
+			scope.options.get(['fallthrough']) === false
+		) {
+			scope.logger.warn(
+				`The static handler runs before authentication and REST by default, so \`fallthrough: false\` answers every unmatched GET itself — including GETs for any exported REST resources. If this application serves an API, add \`after: 'rest'\` to the static options so API requests are matched first, or remove \`fallthrough: false\`.`
+			);
+		}
+	};
+	warnIfBlockingRest();
+
 	scope.options.on('change', (key) => {
-		if (key[0] === 'files' || key[0] === 'urlPath') {
-			// If the files or urlPath options change, we need to reinitialize the static files map
-			staticFiles.clear();
-			indexEntries.clear();
-			scope.logger.info(`Static files reinitialized due to change in ${key.join('.')}`);
+		if (key[0] === 'files') {
+			fileSelectionChangePending = true;
+			const updateReady = entryHandler?.ready;
+			const clearPending = () => {
+				if (entryHandler?.ready === updateReady) fileSelectionChangePending = false;
+			};
+			updateReady?.then(clearPending, clearPending);
+			// EntryHandler updates are incremental: paths no longer matched emit unlink, newly matched
+			// paths emit add, and common unchanged paths remain valid in these maps.
+			scope.logger.info(`Static file matches updated due to change in ${key.join('.')}`);
 			return;
+		}
+		if (key[0] === 'urlPath') {
+			urlPathRestartPending = true;
+			scope.requestRestart();
+			return;
+		}
+		if (key[0] === 'fallthrough') {
+			warnIfBlockingRest();
+			return;
+		}
+		// `before`/`after` are consumed once at registration; the middleware chain can only pick
+		// up a new ordering by reloading the component. (Scope's own auto-restart on option
+		// changes is bypassed once a plugin registers its own 'change' listener, as we do above.)
+		if (key[0] === 'before' || key[0] === 'after') {
+			scope.requestRestart();
 		}
 	});
 
 	// Handle entry events for the default entry handler based on the `files` and `urlPath` options
-	scope.handleEntry((entry) => {
+	entryHandler = scope.handleEntry((entry) => {
+		if (
+			urlPathRestartPending &&
+			(!fileSelectionChangePending || (entry.eventType !== 'unlink' && entry.eventType !== 'unlinkDir'))
+		)
+			return;
+		// entry.urlPath includes the component's base URL path, but when a `urlPath` is configured
+		// the routing chain strips that mount prefix from req.pathname before this plugin's handler
+		// runs — so key the maps relative to the base (#1583)
+		const urlPath =
+			baseURLPath !== '/' && entry.urlPath.startsWith(baseURLPath)
+				? entry.urlPath.slice(baseURLPath.length - 1)
+				: entry.urlPath;
 		switch (entry.eventType) {
 			// Directories only matter for the `index` files
 			case 'addDir':
-			case 'unlinkDir':
 				// Handle `index.html` for directories for if/when the user enables the `index` option
 				const indexPath = join(entry.absolutePath, 'index.html');
-				if (existsSync(indexPath)) {
-					indexEntries[entry.eventType === 'addDir' ? 'set' : 'delete'](entry.urlPath, indexPath);
-				}
+				if (existsSync(indexPath)) setOwnedPath(indexEntries, indexEntryOwners, urlPath, entry.absolutePath, indexPath);
+				break;
+			case 'unlinkDir':
+				removeOwnedPath(indexEntries, indexEntryOwners, urlPath, entry.absolutePath);
 				break;
 			// Otherwise, user must specify pattern to match individual files
 			case 'add':
 				// Store the file in memory for serving
-				staticFiles.set(entry.urlPath, entry.absolutePath);
+				setOwnedPath(staticFiles, staticFileOwners, urlPath, entry.absolutePath, entry.absolutePath);
 				// If the file is an index.html, also store it in the index entries
-				if (entry.urlPath.endsWith('index.html')) {
+				if (urlPath.endsWith('index.html')) {
 					// Without trailing slash; null -> 301 redirect to trailing slash
-					let lastSlashIndex = entry.urlPath.lastIndexOf('/');
-					indexEntries.set(entry.urlPath.slice(0, lastSlashIndex), null);
+					let lastSlashIndex = urlPath.lastIndexOf('/');
+					setOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex), entry.absolutePath, null);
 					// With trailing slash; serves the index.html file
-					indexEntries.set(entry.urlPath.slice(0, lastSlashIndex + 1), entry.absolutePath);
+					setOwnedPath(
+						indexEntries,
+						indexEntryOwners,
+						urlPath.slice(0, lastSlashIndex + 1),
+						entry.absolutePath,
+						entry.absolutePath
+					);
 				}
 				break;
 			case 'unlink':
-				// Remove the file from memory when it is deleted
-				staticFiles.delete(entry.urlPath);
+				removeOwnedPath(staticFiles, staticFileOwners, urlPath, entry.absolutePath);
 				// If the file is an index.html, remove it from the index entries as well
-				if (entry.urlPath.endsWith('index.html')) {
-					let lastSlashIndex = entry.urlPath.lastIndexOf('/');
-					indexEntries.delete(entry.urlPath.slice(0, lastSlashIndex));
-					indexEntries.delete(entry.urlPath.slice(0, lastSlashIndex + 1));
+				if (urlPath.endsWith('index.html')) {
+					let lastSlashIndex = urlPath.lastIndexOf('/');
+					const directoryURLPath = urlPath.slice(0, lastSlashIndex);
+					const directoryOwner = dirname(entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, directoryURLPath, entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, directoryURLPath, directoryOwner);
+					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex + 1), entry.absolutePath);
+					removeOwnedPath(indexEntries, indexEntryOwners, urlPath.slice(0, lastSlashIndex + 1), directoryOwner);
 				}
 				break;
 		}
@@ -99,12 +344,30 @@ export function handleApplication(scope: Scope) {
 					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
 
-					// If `null`, redirect to trailing slash
-					if (staticFile === null) {
+					// Prefix stripping makes `originalPathname` necessary to distinguish mounted roots (#1583).
+					const originalPathname: string | undefined = (req as any).originalPathname;
+					const redirectsMountRoot = !!(
+						staticFile &&
+						req.pathname === '/' &&
+						externalBaseURLPath !== '/' &&
+						originalPathname &&
+						!originalPathname.endsWith('/')
+					);
+
+					if (redirectsMountRoot || staticFile === null) {
+						const settledCredentialRejection = settleDeferredCredentialRejection(req);
+						if (settledCredentialRejection) return settledCredentialRejection;
+						const queryIndex = (req.url as string).indexOf('?');
+						const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
+						const location = redirectsMountRoot
+							? externalBaseURLPath + query
+							: (externalBaseURLPath === '/' ? req.pathname : externalBaseURLPath.slice(0, -1) + req.pathname) +
+								'/' +
+								query;
 						return {
 							status: 301,
 							headers: {
-								Location: req.pathname + '/',
+								Location: location,
 							},
 						};
 					}
@@ -125,12 +388,25 @@ export function handleApplication(scope: Scope) {
 				}
 			}
 
-			// If an entry matched, serve it
+			// Entries are watcher snapshots that can lag the disk, so a missing file is a miss, not an error.
+			let resolvedFile: string | undefined;
 			if (staticFile) {
+				try {
+					resolvedFile = resolveExisting(staticFile);
+				} catch (error) {
+					// Failed credentials answered 401 before the file was resolved; keep that over a path-bearing 500.
+					const settledCredentialRejection = settleDeferredCredentialRejection(req);
+					if (settledCredentialRejection) return settledCredentialRejection;
+					throw error;
+				}
+			}
+			if (resolvedFile) {
+				const settledCredentialRejection = settleDeferredCredentialRejection(req);
+				if (settledCredentialRejection) return settledCredentialRejection;
 				// The benefit to using `send` is that it handles a lot of edge cases and headers for us.
 				return {
 					handlesHeaders: true,
-					body: send(req, realpathSync(staticFile)),
+					body: serveFile(req, resolvedFile, scope),
 				};
 			}
 
@@ -139,7 +415,8 @@ export function handleApplication(scope: Scope) {
 				return next(req);
 			}
 
-			// Otherwise, handle not found
+			const settledCredentialRejection = settleDeferredCredentialRejection(req);
+			if (settledCredentialRejection) return settledCredentialRejection;
 
 			const notFound = scope.options.get(['notFound']);
 
@@ -155,17 +432,52 @@ export function handleApplication(scope: Scope) {
 			const notFoundPath = join(scope.directory, typeof notFound === 'string' ? notFound : notFound.file);
 			const statusCode = typeof notFound === 'object' ? notFound.statusCode : 404;
 
-			if (!existsSync(notFoundPath)) {
-				throw new Error(`Not found file does not exist: ${notFoundPath}`);
+			const resolvedNotFound = resolveExisting(notFoundPath);
+			if (!resolvedNotFound) {
+				if (!missingNotFoundWarned.has(notFoundPath)) {
+					scope.logger.warn(`The static \`notFound\` file does not exist: ${notFoundPath}`);
+					missingNotFoundWarned.add(notFoundPath);
+				}
+				return {
+					status: 404,
+					body: 'File not found',
+				};
 			}
 
+			missingNotFoundWarned.delete(notFoundPath);
 			return {
 				status: statusCode,
 				handlesHeaders: true,
-				body: send(req, realpathSync(notFoundPath)),
+				body: send(req, encodeURIComponent(basename(resolvedNotFound)), { root: dirname(resolvedNotFound) }),
 			};
 		},
-		{ before: (scope.options.get(['before']) as string) ?? 'authentication' }
+		{
+			// `after` (e.g. `after: 'rest'`) must suppress the default pre-authentication hoist —
+			// combining the two constraints would be a cycle, which falls back to registration order.
+			before: typeof before === 'string' ? before : noOrderingConfigured ? 'authentication' : undefined,
+			after: after as string | undefined,
+		}
+	);
+}
+
+function resolveExisting(path: string): string | undefined {
+	try {
+		return realpathSync(path);
+	} catch (error) {
+		if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined;
+		throw error;
+	}
+}
+
+function validateOrderingOption(
+	name: string,
+	value: any,
+	allowFalse: boolean
+): asserts value is undefined | string | false {
+	if (value === undefined || (typeof value === 'string' && value.length > 0)) return;
+	if (allowFalse && value === false) return;
+	throw new Error(
+		`Invalid \`${name}\` option: ${value}. Must be the name of another handler${allowFalse ? ', or false to clear the default ordering' : ''}.`
 	);
 }
 

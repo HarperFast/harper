@@ -2,9 +2,23 @@ const assert = require('node:assert');
 const { Worker } = require('worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { CandidateKeySet } = require('#src/resources/search');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { waitFor } = require('../waitFor');
+
+/** mulberry32: pins a graph's level assignment so its shape is a fact rather than a draw. */
+function mulberry32(seed) {
+	let state = seed;
+	return () => {
+		state = (state + 0x6d2b79f5) | 0;
+		let t = Math.imul(state ^ (state >>> 15), 1 | state);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // don't try to test lmdb
@@ -86,6 +100,52 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		}
 		await verifySearch(all[55]);
 		verifyIntegrity();
+	});
+	// Inversions are a property of graph shape, and shape comes from level assignment —
+	// `Math.random()` in production — so a bound on them holds in distribution, not per run.
+	// Pinning the level stream, as the ROUTING_EF block below does, makes it a fact about named
+	// graphs; the tests above keep checking symmetry and orphans, which must hold at any shape.
+	it('keeps cross-level distance inversions bounded on graphs with a pinned level assignment', async function () {
+		this.timeout(30000);
+		for (const seed of [0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]) {
+			const name = (seed >>> 0).toString(16);
+			const pinned = table({
+				table: 'HNSWInversionTest' + name,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed: { type: 'HNSW', optimizeRouting: 0.6 }, type: 'Array' },
+				],
+			});
+			const level = mulberry32(seed);
+			let draws = 0;
+			pinned.indices.vector.customIndex.random = () => {
+				draws++;
+				return level();
+			};
+			const vectorFor = (i) => [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
+			for (let i = 0; i < 200; i++) await pinned.put(i, { vector: vectorFor(i) });
+			// A seed names a graph only while each node takes exactly one draw.
+			assert.strictEqual(draws, 200, `seed ${name} no longer names the graph it was measured on`);
+			let inversions = verifyIntegrity(pinned.indices.vector);
+			assert(
+				inversions <= 3,
+				`expected at most 3 distance inversions for seed ${name} after inserts, got ${inversions}`
+			);
+
+			// Re-puts of both a removed key (a fresh insert) and a surviving one (the update path,
+			// which carries the old level forward and rewrites reverse edges).
+			for (let i = 0; i < 200; i += 4) await pinned.delete(i);
+			for (let i = 0; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			for (let i = 2; i < 200; i += 8) await pinned.put(i, { vector: vectorFor(i * i + 1) });
+			// A surviving node's re-put carries its old level forward, so only the 25 re-inserts draw.
+			assert.strictEqual(draws, 225, `the mutation phase for seed ${name} no longer draws as measured`);
+			inversions = verifyIntegrity(pinned.indices.vector);
+			assert(
+				inversions <= 3,
+				`expected at most 3 distance inversions for seed ${name} after deletes and re-puts, got ${inversions}`
+			);
+		}
 	});
 	it('bad queries throw some errors', async () => {
 		assert.throws(
@@ -274,11 +334,20 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		// find the best matches through brute force comparison
 		let withDistance = all.map((vector) => ({ vector, distance: testInstance.distance(testVector, vector) }));
 		withDistance.sort((a, b) => a.distance - b.distance);
-		// verify the first 10 match
-		assert.deepEqual(
-			withDistance.slice(0, 5).map((obj) => obj.vector),
-			results.slice(0, 5).map((obj) => obj.vector)
-		);
+		// HNSW is an approximate algorithm; recall@K is not guaranteed to be 100%, especially with
+		// many near-duplicate vectors and after delete/update churn. Rather than asserting exact
+		// vector equality at each rank, verify that each returned result's distance is close to the
+		// brute-force optimum at that rank — close enough to be a useful neighbor.
+		const DISTANCE_TOLERANCE = 0.05;
+		assert(results.length >= 5, `expected at least 5 search results, got ${results.length}`);
+		for (let i = 0; i < 5; i++) {
+			const bruteDistance = withDistance[i].distance;
+			const hnswDistance = results[i].$distance;
+			assert(
+				hnswDistance <= bruteDistance + DISTANCE_TOLERANCE,
+				`HNSW result at position ${i} (distance ${hnswDistance}) is too far from the brute-force best at that rank (${bruteDistance})`
+			);
+		}
 		assert(results[0].$distance < 0.4);
 		results = await fromAsync(
 			HNSWTest.search({
@@ -300,10 +369,23 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			results
 		);
 	}
-	function verifyIntegrity() {
+	// Graph nodes may store vectors as Int8Array (int8 default) or number[] (float opt-out).
+	// Dequantize to a plain number[] so distance functions (which guard on Array.isArray) work.
+	function toFloatVec(node) {
+		if (!node || !node.vector) return null;
+		if (Array.isArray(node.vector)) return node.vector;
+		const buf = node.vector;
+		const i8 = new Int8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+		const scale = node.scale || 1;
+		const out = new Array(i8.length);
+		for (let i = 0; i < i8.length; i++) out[i] = i8[i] * scale;
+		return out;
+	}
+	/** Asserts the shape-independent graph properties and returns the cross-level inversion count. */
+	function verifyIntegrity(indexed = HNSWTest.indices.vector) {
 		// now verify integrity and proper distance/distancing across levels
 		let invertedSimiliarities = 0;
-		for (let { key, value } of HNSWTest.indices.vector.getRange({})) {
+		for (let { key, value } of indexed.getRange({})) {
 			let lastDistance = 0;
 			let l = 0;
 			let connections;
@@ -318,14 +400,14 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				let totalDistance = 0;
 				let asymmetries = 0;
 				for (let { id: neighborId } of connections) {
-					let neighborNode = HNSWTest.indices.vector.get(neighborId);
+					let neighborNode = indexed.get(neighborId);
 					// verify that the connection is symmetrical
 					let symmetrical = neighborNode?.[l].find(({ id }) => id === key);
 					if (!symmetrical) {
 						console.log('asymmetry in the graph', neighborNode?.[l], 'does not have key', key);
 						asymmetries++;
 					}
-					let distance = neighborNode ? testInstance.distance(value.vector, neighborNode.vector) : 0;
+					let distance = neighborNode ? testInstance.distance(toFloatVec(value), toFloatVec(neighborNode)) : 0;
 					totalDistance += distance;
 				}
 				assert(asymmetries < 5);
@@ -341,12 +423,9 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				l++;
 			}
 		}
-		if (invertedSimiliarities > 6)
-			console.log('found', invertedSimiliarities, 'inversions of distance, which is more than desirable');
-		assert(invertedSimiliarities <= 6, `expected at most 6 distance inversions, got ${invertedSimiliarities}`);
+		return invertedSimiliarities;
 	}
 });
-
 describe('HNSW concurrent PUT race condition (issue #386)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	const WORKER_COUNT = 4;
@@ -466,6 +545,3564 @@ describe('HNSW search result loading (searchByIndex)', () => {
 		});
 
 		assert(foundInTxn, 'record written in a transaction must be visible to a search in the same transaction');
+	});
+});
+
+describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	// One table per primary-key type for the reverse-seek fallback below; both are built up front so
+	// the suite never creates or drops a table between other describes' queries.
+	const keyed = {};
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const define = (name) =>
+			table({
+				table: name,
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+				],
+			});
+		T = define('HNSWNodeCountTest');
+		keyed.numeric = define('HNSWSeekNumericKeyTest');
+		keyed.string = define('HNSWSeekStringKeyTest');
+	});
+
+	after(() => {
+		T.dropTable();
+		keyed.numeric.dropTable();
+		keyed.string.dropTable();
+	});
+
+	// The size that feeds autoScaleEf must reflect how many vectors are in the graph. Building the
+	// graph rewrites each node repeatedly as its neighbours change, so any source that counts stored
+	// entries without reconciling overwrites reads far high — RocksDB's estimate-num-keys measured
+	// 9x the true count on a 2,000-record index, which would silently push ef to its cap.
+	it('tracks the number of indexed vectors, not the number of writes made to the graph', async () => {
+		const N = 300;
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const customIndex = T.indices.vector.customIndex;
+		const count = customIndex.resolveNodeCount();
+		assert(
+			count >= N && count <= N * 1.5,
+			`graph size ${count} should be close to the ${N} indexed vectors (each node is rewritten many times during construction)`
+		);
+	});
+
+	// Query-only workers never allocate a node id, so they never build the shared id counter and every
+	// resolution takes the reverse-seek fallback. Nothing else in the suite reaches it — indexing
+	// in-process always initializes the counter first. Both key types are here because review keeps
+	// raising them: the index store holds a primary-key mapping beside each graph node, and a
+	// `limit: 1` reverse seek would read wrong if a mapping key sorted into the numeric node-id range.
+	// The numeric keys start at 1,000,000 deliberately — with small ones the mapping keys and the node
+	// ids overlap, so the seek reads the same number either way and the test proves nothing.
+	for (const [label, key] of [
+		['numeric', (i) => 1_000_000 + i],
+		['string', (i) => `user-${String(i).padStart(3, '0')}`],
+	]) {
+		it(`resolves the same size from a reverse seek when the shared id counter is absent (${label} primary keys)`, async () => {
+			const Keyed = keyed[label];
+			for (let i = 0; i < 50; i++) {
+				const a = (i / 50) * Math.PI * 2;
+				await Keyed.put(key(i), { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+			}
+			const customIndex = Keyed.indices.vector.customIndex;
+			const fromCounter = customIndex.resolveNodeCount();
+			const idIncrementer = customIndex.idIncrementer;
+			customIndex.idIncrementer = undefined;
+			let fromSeek;
+			try {
+				fromSeek = customIndex.resolveNodeCount();
+			} finally {
+				customIndex.idIncrementer = idIncrementer;
+			}
+			assert(
+				fromCounter >= 50 && fromCounter < 200,
+				`precondition: the id counter should see about the 50 indexed vectors, got ${fromCounter}`
+			);
+			assert.strictEqual(fromSeek, fromCounter, 'the reverse-seek fallback must agree with the id counter');
+		});
+	}
+
+	it('does not truncate a limit against a memoized size taken before the table grew', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		// The first query memoizes the size below; the table then grows well past it inside the TTL.
+		// Widening ef for a limit must not be clamped by that stale size, or the limit comes back short.
+		const primed = customIndex.resolveNodeCount();
+		const before = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 250 })
+		);
+		assert.strictEqual(before.length, 250, `expected 250 rows at the primed size, got ${before.length}`);
+
+		for (let i = 300; i < 900; i++) {
+			const a = (i / 900) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const after = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 700 })
+		);
+		assert(primed < 700, `precondition: the memoized size (${primed}) must start below the limit under test`);
+		assert.strictEqual(after.length, 700, `stale memo truncated the limit: got ${after.length} of 700`);
+	});
+});
+
+describe('HNSW construction ef auto-scale (#2180)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	let Pinned;
+	let SearchPinned;
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWEfcAutoScaleTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		Pinned = table({
+			table: 'HNSWEfcPinnedTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine', efConstruction: 64 }, type: 'Array' },
+			],
+		});
+		SearchPinned = table({
+			table: 'HNSWSearchEfPinnedTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{
+					name: 'vector',
+					indexed: { type: 'HNSW', distance: 'cosine', efConstructionSearch: 1500 },
+					type: 'Array',
+				},
+			],
+		});
+	});
+
+	after(() => {
+		T.dropTable();
+		Pinned.dropTable();
+		SearchPinned.dropTable();
+	});
+
+	// The efs the connection pass actually searched with during one put. The routing descent runs at
+	// ROUTING_EF (1), so every ef > 1 seen during index() is the resolved efConstruction.
+	async function connectionEfsDuringPut(Table, id) {
+		const customIndex = Table.indices.vector.customIndex;
+		const original = Object.getPrototypeOf(customIndex).searchLayer;
+		const efs = new Set();
+		customIndex.searchLayer = function (queryVector, entryPointId, entryPoint, ef, level, ...rest) {
+			if (ef > 1) efs.add(ef);
+			return original.call(this, queryVector, entryPointId, entryPoint, ef, level, ...rest);
+		};
+		try {
+			const a = (id / 100) * Math.PI * 2;
+			await Table.put(id, { vector: [Math.cos(a), Math.sin(a), (id % 5) / 5] });
+		} finally {
+			delete customIndex.searchLayer;
+		}
+		return efs;
+	}
+
+	// Force the resolved node count (the write path reads it directly, not through the memo) so the
+	// scale point is exercised without building a 1M-node graph. Instance-level shadow; the count
+	// source itself is covered by the graph-size describe above.
+	async function withNodeCount(Table, count, run) {
+		const customIndex = Table.indices.vector.customIndex;
+		customIndex.resolveNodeCount = () => count;
+		try {
+			return await run();
+		} finally {
+			delete customIndex.resolveNodeCount;
+		}
+	}
+
+	async function captureFilteredSearch(Table, count, searchCondition = {}) {
+		const customIndex = Table.indices.vector.customIndex;
+		const originalSearchLayer = Object.getPrototypeOf(customIndex).searchLayer;
+		let layer0Ef = 0;
+		const budgets = [];
+		customIndex.searchLayer = function (v, epId, ep, ef, level, options, distanceFn, filter, filterState) {
+			if (level === 0) layer0Ef = ef;
+			if (filterState) budgets.push(filterState.maxVisits);
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, options, distanceFn, filter, filterState);
+		};
+		try {
+			await withNodeCount(Table, count, () => {
+				customIndex.nodeCountAt = 0;
+				customIndex.search(
+					{ target: [1, 0, 0], comparator: 'sort', ...searchCondition },
+					{ transaction: undefined },
+					{ filter: () => true }
+				);
+			});
+		} finally {
+			delete customIndex.searchLayer;
+		}
+		return { layer0Ef, budgets: [...new Set(budgets)] };
+	}
+
+	function captureLimitDerivedLayer0Ef(Table, minResults) {
+		const customIndex = Table.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		let layer0Ef = 0;
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			if (level === 0) layer0Ef = ef;
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+		};
+		try {
+			customIndex.search({ target: [1, 0, 0], comparator: 'sort' }, { transaction: undefined }, { minResults });
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+		return layer0Ef;
+	}
+
+	it('builds small graphs at the base efConstruction, unchanged', async () => {
+		for (let i = 0; i < 20; i++) {
+			const a = (i / 20) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const efs = await connectionEfsDuringPut(T, 20);
+		assert.deepStrictEqual([...efs], [100], `expected the base efConstruction below the scale point, got ${[...efs]}`);
+	});
+
+	it('scales the connection candidate list once the graph passes the reference size', async () => {
+		// base 100 * sqrt(1M / 250K) = 200 — the point measured in #2180 (recall 0.935 -> 0.985)
+		const efs = await withNodeCount(T, 1_000_000, () => connectionEfsDuringPut(T, 21));
+		assert.deepStrictEqual([...efs], [200], `expected the auto-scaled efConstruction at 1M nodes, got ${[...efs]}`);
+	});
+
+	it('caps the auto-scale at AUTO_EFC_MAX', async () => {
+		// 100 * sqrt(100M / 250K) = 2000, capped at 1024
+		const efs = await withNodeCount(T, 100_000_000, () => connectionEfsDuringPut(T, 22));
+		assert.deepStrictEqual([...efs], [1024], `expected the capped efConstruction, got ${[...efs]}`);
+	});
+
+	// The search-side scale resumes past AUTO_EF_LARGE_REF (the 512 plateau was measured sufficient
+	// through 1M nodes and short from 2M up — set-recall 0.997 -> 0.955 -> 0.935 across 1M/2M/5M).
+	// The second regime is anchored to pass through (1M, 512); the 5M point resolves 1,145, bracketed
+	// by the measured ef-1024 sweep there (0.985 set-recall).
+	for (const [nodes, expected] of [
+		[1_000_000, 512],
+		[2_000_000, 724],
+		[5_000_000, 1145],
+		[100_000_000, 2048],
+	]) {
+		it(`resolves search ef ${expected} at ${nodes.toLocaleString('en-US')} nodes`, async () => {
+			const efs = await withNodeCount(T, nodes, async () => {
+				const customIndex = T.indices.vector.customIndex;
+				customIndex.nodeCountAt = 0; // expire the memo so the search re-resolves through the shadow
+				const layer0Ef = await captureLayer0Ef(T, { limit: 10 });
+				return layer0Ef;
+			});
+			assert.strictEqual(efs, expected, `expected the auto-scaled search ef at ${nodes} nodes, got ${efs}`);
+		});
+	}
+
+	it('caps the filtered visit budget when the auto-scaled search ef exceeds AUTO_EF_MAX', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(T, 5_000_000);
+		assert.strictEqual(layer0Ef, 1145, 'the test must reach the second search-ef regime');
+		assert.deepStrictEqual(
+			budgets,
+			[512 * customIndex.filterExpansion],
+			'the automatic filtered budget must stay capped at AUTO_EF_MAX'
+		);
+	});
+
+	it('lets an explicit query ef raise the filtered visit budget', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(T, 5_000_000, { ef: 3000 });
+		assert.strictEqual(layer0Ef, 3000);
+		assert.deepStrictEqual(budgets, [3000 * customIndex.filterExpansion]);
+	});
+
+	it('lets an explicit schema ef raise the filtered visit budget', async () => {
+		for (let i = 0; i < 3; i++) await SearchPinned.put(i, { vector: [1, i / 10, 0] });
+		const customIndex = SearchPinned.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(SearchPinned, 5_000_000);
+		assert.strictEqual(layer0Ef, 1500);
+		assert.deepStrictEqual(budgets, [1500 * customIndex.filterExpansion]);
+	});
+
+	it('leaves an explicit schema ef authoritative over the limit-derived floor', async () => {
+		for (const [Table, expectedEf] of [
+			[Pinned, 64],
+			[SearchPinned, 1500],
+		]) {
+			for (let i = 0; i < 3; i++) await Table.put(i, { vector: [1, i / 10, 0] });
+			const layer0Ef = captureLimitDerivedLayer0Ef(Table, 3000);
+			assert.strictEqual(layer0Ef, expectedEf, 'a schema search-ef pin must cap limit-derived widening');
+		}
+	});
+
+	// The refactor's stated mechanism, not just the formula: an update-only worker (counter absent,
+	// as after a restart with no new inserts) must ensure the shared counter with ONE seek, then read
+	// it atomically — never a reverse seek per write, and never a failed write if the seek throws.
+	it('an update-only path ensures the shared counter once instead of seeking per write', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		customIndex.idIncrementer = undefined;
+		const store = customIndex.indexStore;
+		const originalGetKeys = store.getKeys;
+		let seeks = 0;
+		store.getKeys = function (opts, ...rest) {
+			if (opts?.reverse) seeks++;
+			return originalGetKeys.call(this, opts, ...rest);
+		};
+		try {
+			// ids 0 and 1 already exist in T, so both puts take the update path and never allocate an id
+			await T.put(0, { vector: [1, 0, 0.2] });
+			await T.put(1, { vector: [0.9, 0.1, 0.2] });
+			assert(customIndex.idIncrementer, 'the update path must ensure the shared counter');
+			assert.strictEqual(seeks, 1, `the counter seed should be the only reverse seek, got ${seeks}`);
+		} finally {
+			store.getKeys = originalGetKeys;
+			if (!customIndex.idIncrementer) customIndex.idIncrementer = saved;
+		}
+	});
+
+	it('falls back to a memoized count and backs off after a shared-counter attach failure', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		const savedNodeCount = customIndex.nodeCount;
+		const savedNodeCountAt = customIndex.nodeCountAt;
+		const savedRetryAt = customIndex.idIncrementerRetryAt;
+		const savedFailureLogged = customIndex.idIncrementerFailureLogged;
+		customIndex.idIncrementer = undefined;
+		customIndex.nodeCountAt = 0;
+		const store = customIndex.indexStore;
+		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		const originalGetKeys = store.getKeys;
+		let attachAttempts = 0;
+		const seekTransactions = [];
+		store.getKeys = function* (options) {
+			if (options?.reverse) {
+				seekTransactions.push(options.transaction);
+				yield 999_999;
+				return;
+			}
+			yield* originalGetKeys.call(this, options);
+		};
+		store.getUserSharedBuffer = () => {
+			attachAttempts++;
+			throw new Error('simulated shared-buffer attach failure');
+		};
+		try {
+			const firstEfs = await connectionEfsDuringPut(T, 0);
+			const secondEfs = await connectionEfsDuringPut(T, 1);
+			assert.strictEqual(customIndex.idIncrementer, undefined, 'a failed attach must not install a counter');
+			assert.deepStrictEqual([...firstEfs], [200], 'the fallback count must preserve the construction scale');
+			assert.deepStrictEqual([...secondEfs], [200], 'the memoized fallback must preserve the scale');
+			assert.strictEqual(attachAttempts, 1, 'the attach must not be retried on every update');
+			assert.strictEqual(seekTransactions.length, 1, 'the attach seed seek must also supply the fallback count');
+			assert(seekTransactions[0], 'the counter seed seek must use the write transaction');
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementerRetryAt = 0;
+			await T.put(1, { vector: [0.7, 0.3, 0.1] });
+			assert(customIndex.idIncrementer, 'the attach must be retryable once the backoff expires');
+			assert.strictEqual(customIndex.idIncrementerFailureLogged, false, 'recovery must re-arm the warning');
+		} finally {
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementer = saved;
+			customIndex.nodeCount = savedNodeCount;
+			customIndex.nodeCountAt = savedNodeCountAt;
+			customIndex.idIncrementerRetryAt = savedRetryAt;
+			customIndex.idIncrementerFailureLogged = savedFailureLogged;
+		}
+	});
+
+	it('keeps construction count resolution best-effort on the write path', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		customIndex.resolveConstructionNodeCount = () => {
+			throw new RangeError('simulated unusable counter');
+		};
+		try {
+			const efs = await connectionEfsDuringPut(T, 2);
+			assert.deepStrictEqual([...efs], [100], 'count resolution failure must retain the base efConstruction');
+		} finally {
+			delete customIndex.resolveConstructionNodeCount;
+		}
+	});
+
+	it('does not cache an unusable shared-counter buffer', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		const savedNodeCount = customIndex.nodeCount;
+		const savedNodeCountAt = customIndex.nodeCountAt;
+		const savedRetryAt = customIndex.idIncrementerRetryAt;
+		const savedFailureLogged = customIndex.idIncrementerFailureLogged;
+		customIndex.idIncrementer = undefined;
+		customIndex.nodeCountAt = 0;
+		const store = customIndex.indexStore;
+		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		const originalGetKeys = store.getKeys;
+		let seekCount = 0;
+		store.getKeys = function* (options) {
+			if (options?.reverse) {
+				seekCount++;
+				yield 999_999;
+				return;
+			}
+			yield* originalGetKeys.call(this, options);
+		};
+		store.getUserSharedBuffer = () => new ArrayBuffer(0);
+		try {
+			const efs = await connectionEfsDuringPut(T, 0);
+			assert.strictEqual(customIndex.idIncrementer, undefined);
+			assert.deepStrictEqual([...efs], [200]);
+			assert.strictEqual(seekCount, 1, 'the unusable buffer fallback must reuse the attach seed seek');
+		} finally {
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementer = saved;
+			customIndex.nodeCount = savedNodeCount;
+			customIndex.nodeCountAt = savedNodeCountAt;
+			customIndex.idIncrementerRetryAt = savedRetryAt;
+			customIndex.idIncrementerFailureLogged = savedFailureLogged;
+		}
+	});
+
+	it('leaves an explicitly configured efConstruction authoritative at any graph size', async () => {
+		for (let i = 0; i < 5; i++) {
+			const a = (i / 5) * Math.PI * 2;
+			await Pinned.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const efs = await withNodeCount(Pinned, 1_000_000, () => connectionEfsDuringPut(Pinned, 5));
+		assert.deepStrictEqual([...efs], [64], `expected the schema-configured efConstruction, got ${[...efs]}`);
+	});
+});
+
+describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const N = 600;
+	const ROUTING_EF = 1; // must track ROUTING_EF in resources/indexes/HierarchicalNavigableSmallWorld.ts
+	// Each graph's level assignment is pinned with a seeded PRNG (mulberry32) so a run is
+	// reproducible: greedy-vs-full equality is only statistically true over random graphs — ~2-3%
+	// of random 600-node graphs legitimately route to a different entry point and change the
+	// top-10 tail, which is what flaked on CI. One pinned graph samples that property once, so the
+	// assertion sweeps several: all of these are non-divergent at this head (measured over 40
+	// arbitrary seeds, 4 diverged, so a divergent seed here after an intentional index change is a
+	// re-pin rather than necessarily a regression — see DESIGN.md).
+	const SEEDS = [0x9e3779b9, 0x85ebca6b, 0xc2b2ae35, 0x27d4eb2f, 0x165667b1, 0x7feb352d, 0x846ca68b, 0xff51afd7];
+	const targets = [
+		[1, 0, 0, 0],
+		[0, 1, 0.5, 0.2],
+		[-0.6, 0.3, 0.9, 0.4],
+		[0.2, -0.8, 0.1, 0.7],
+	];
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	async function buildGraph(seed) {
+		const T = table({
+			table: 'HNSWRoutingTest' + (seed >>> 0).toString(16),
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		const level = mulberry32(seed);
+		let draws = 0;
+		T.indices.vector.customIndex.random = () => {
+			draws++;
+			return level();
+		};
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			const b = ((i * 7) % N) / N;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), b, (i % 11) / 11] });
+		}
+		// A seed only names a graph while each node takes exactly one draw: a second consumer of the
+		// stream shifts every level after it and silently re-pins all eight graphs to something the
+		// measurements below were never taken on.
+		assert.strictEqual(draws, N, 'the pinned stream must serve one level draw per node and nothing else');
+		return T;
+	}
+
+	async function topTenIds(T, target) {
+		return (
+			await fromAsync(
+				T.search({ sort: { attribute: 'vector', target, distance: 'cosine' }, select: ['id'], limit: 10 })
+			)
+		)
+			.map((r) => r.id)
+			.join(',');
+	}
+
+	// Layers above 0 only supply the next layer's entry point, so descending greedily must not cost
+	// accuracy. Compare against the same graph searched with the full ef at every layer — the
+	// pre-change behaviour — rather than against a fixed expectation.
+	it('returns the same neighbours as searching every layer at the full ef', async () => {
+		const descentSensitive = [];
+		for (const seed of SEEDS) {
+			const label = '0x' + (seed >>> 0).toString(16);
+			const T = await buildGraph(seed);
+			try {
+				const customIndex = T.indices.vector.customIndex;
+				const originalSearchLayer = customIndex.searchLayer;
+				const greedy = [];
+				const routingEfs = new Set();
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					if (level > 0) routingEfs.add(ef);
+					return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+				};
+				try {
+					for (const target of targets) {
+						greedy.push(await topTenIds(T, target));
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
+				// Hand the upper layers the full ef and both sides of the greedy-vs-full comparison
+				// below search identically, so only this assertion notices the optimization going away.
+				assert.deepStrictEqual(
+					[...routingEfs],
+					[ROUTING_EF],
+					`the layers above 0 must route at ROUTING_EF (seed ${label})`
+				);
+
+				// Every layer at the ef layer 0 actually resolves to — what search() passed down before
+				// greedy descent. Read it from a real query rather than efConstructionSearch, which is
+				// only the pre-change value when a schema configures one; this index takes the
+				// auto-scaled path.
+				const resolvedLayer0Ef = await captureLayer0Ef(T, { limit: 10 });
+				assert(resolvedLayer0Ef > 1, `expected an auto-scaled layer-0 ef, got ${resolvedLayer0Ef} (seed ${label})`);
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					return originalSearchLayer.call(this, v, epId, ep, level > 0 ? resolvedLayer0Ef : ef, level, ...rest);
+				};
+				try {
+					for (let i = 0; i < targets.length; i++) {
+						assert.strictEqual(
+							greedy[i],
+							await topTenIds(T, targets[i]),
+							`greedy descent changed the result set for target ${i} (seed ${label})`
+						);
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
+
+				// On many graphs layer 0 alone reaches the true neighbours from wherever it starts, and
+				// there the comparison above passes with the descent deleted outright. That is a
+				// property of the graph, not of this seed list, so the sweep as a whole has to contain
+				// at least one graph the descent decides — otherwise nothing here tests the descent.
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					return level > 0 ? [] : originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+				};
+				try {
+					for (let i = 0; i < targets.length; i++) {
+						if ((await topTenIds(T, targets[i])) !== greedy[i]) {
+							descentSensitive.push(label);
+							break;
+						}
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
+			} finally {
+				await T.dropTable();
+			}
+		}
+		assert(
+			descentSensitive.length > 0,
+			'no seed routes differently without the descent: check whether the graph still has a hierarchy worth descending (mL, MAX_LEVEL) before re-picking SEEDS against this control'
+		);
+	});
+});
+
+describe('HNSW entry-point level clamp', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWClampTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+	});
+	after(() => {
+		T.dropTable();
+	});
+
+	it('caps the first node of an empty index at MAX_LEVEL', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		// Number.MIN_VALUE draws an unclamped level of ~268 (-ln(5e-324) * mL). A finite draw keeps
+		// a clamp regression a fast assertion failure — random() === 0 (Infinity) would instead wedge
+		// the runner in the synchronous per-level init loop, which is worse than the flake this
+		// branch removes.
+		customIndex.random = () => Number.MIN_VALUE;
+		try {
+			await T.put(1, { vector: [1, 0, 0] });
+		} finally {
+			customIndex.random = Math.random;
+		}
+		let entryLevel;
+		for (const { value } of customIndex.indexStore.getRange({ start: 0, end: Infinity })) {
+			if (value?.level !== undefined) entryLevel = value.level;
+		}
+		assert.strictEqual(entryLevel, 10, `expected the entry point level to be clamped to MAX_LEVEL, got ${entryLevel}`);
+	});
+});
+
+describe('HNSW limit above the resolved search ef', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	const N = 700; // > AUTO_EF_BASE (100), so the auto-scaled ef is well below the limits tested here
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWLimitTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		// a spread-out ring in 3-space so every record is a distinct, reachable point
+		for (let i = 0; i < N; i++) {
+			const a = (i / N) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 7) / 7] });
+		}
+	});
+
+	after(() => {
+		T.dropTable();
+	});
+
+	// The layer-0 candidate list holds at most `ef` entries, and ef resolves from the auto-scale
+	// (100 at this table size) — not from the query. A limit above it used to come back silently
+	// short, which also made a limit larger than the table unusable for enumerating the graph.
+	it('returns the requested number of rows when limit exceeds the auto-scaled ef', async () => {
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 400 })
+		);
+		assert.strictEqual(results.length, 400, `expected 400 rows, got ${results.length}`);
+		assert.strictEqual(new Set(results.map((r) => r.id)).size, 400, 'rows must be distinct');
+	});
+
+	it('caps at the table size rather than the candidate list when limit exceeds both', async () => {
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], limit: 5000 })
+		);
+		assert.strictEqual(results.length, N, `expected the whole table (${N}), got ${results.length}`);
+	});
+
+	it('honors offset + limit together', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
+				select: ['id'],
+				offset: 250,
+				limit: 200,
+			})
+		);
+		assert.strictEqual(results.length, 200, `expected 200 rows after an offset of 250, got ${results.length}`);
+	});
+
+	// A per-query ef is an explicit cost ceiling, so it stays authoritative and bounds the result set;
+	// the limit-derived floor only applies when the caller has not said what to spend.
+	it('leaves an explicit per-query ef authoritative over the limit-derived floor', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine', ef: 20 },
+				select: ['id'],
+				limit: 400,
+			})
+		);
+		assert.strictEqual(results.length, 20, `an explicit ef should bound the result set, got ${results.length}`);
+	});
+
+	// ef sizes a synchronous traversal holding every admitted candidate, so a caller-supplied limit
+	// must not be able to derive an unbounded one — LIMIT_EF_MAX is the only thing bounding it, since
+	// clamping to the graph size would need a count that is exact as of the query.
+	for (const [label, query] of [
+		['deep pagination', { offset: 5_000_000, limit: 10 }],
+		['a first-page limit', { limit: 1_000_000 }],
+	]) {
+		it(`bounds the limit-derived ef at LIMIT_EF_MAX under ${label}`, async () => {
+			const layer0Ef = await captureLayer0Ef(T, query);
+			assert.strictEqual(layer0Ef, 2 * 2048, `layer-0 ef should be LIMIT_EF_MAX (${2 * 2048}), got ${layer0Ef}`);
+		});
+	}
+
+	// The ceiling is what bounds the work, not the graph size: resolving a size exact enough to clamp
+	// against would put a store lookup back on every query, and an ef above the node count is free —
+	// the traversal runs out of reachable nodes first. The memo's timestamp only moves when the size
+	// was actually resolved, so it reports whether the limit path went back to the store.
+	it('does not re-resolve the graph size for a limit past the end of the table', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		customIndex.approximateNodeCount(); // memoize the size, so only a re-resolution moves the timestamp
+		let memoAt = customIndex.nodeCountAt;
+		const resolvedAt = memoAt;
+		let reresolutions = 0;
+		for (let i = 0; i < 10; i++) {
+			await fromAsync(
+				T.search({
+					sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' },
+					select: ['id'],
+					limit: 5000,
+				})
+			);
+			if (customIndex.nodeCountAt !== memoAt) {
+				reresolutions++;
+				memoAt = customIndex.nodeCountAt;
+			}
+		}
+		// Counting rather than asserting none: the memo expires on its own schedule, at most once per
+		// NODE_COUNT_TTL since it was last resolved. The regression re-resolves per query instead.
+		const explainable = Math.floor((Date.now() - resolvedAt) / 10_000); // NODE_COUNT_TTL
+		assert(
+			reresolutions <= explainable,
+			`a limit past the graph size re-resolved the node count ${reresolutions} times; the TTL explains at most ${explainable}`
+		);
+	});
+
+	// The predicate-aware visit budget (#1241) is what stops a selective filter crawling the graph,
+	// loading and freezing a record per visit. It is calibrated against the ef the index chooses for
+	// itself, so a caller's limit must not multiply into it — a limit-derived ef widens the candidate
+	// list (a bounded array), but must not buy a bigger record-loading budget.
+	it('keeps the filtered-traversal visit budget off the limit-derived ef', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		const budgets = [];
+		customIndex.searchLayer = function (v, epId, ep, ef, level, options, distanceFn, filter, filterState) {
+			if (filterState) budgets.push(filterState.maxVisits);
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, options, distanceFn, filter, filterState);
+		};
+		try {
+			customIndex.search(
+				{ target: [1, 0, 0], comparator: 'sort' },
+				{ transaction: undefined },
+				{ filter: () => true, minResults: 100_000 } // a limit far above anything the index would choose for itself
+			);
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+		const ceiling = 512 * customIndex.filterExpansion; // AUTO_EF_MAX * filterExpansion
+		assert(budgets.length > 0, 'expected the filtered path to build a visit budget');
+		for (const budget of budgets) {
+			assert(
+				budget <= ceiling,
+				`visit budget ${budget} exceeds the index's own ceiling (${ceiling}) — a caller's limit inflated it`
+			);
+		}
+	});
+});
+
+/** Run a query and report the ef layer 0 was actually searched at. */
+async function captureLayer0Ef(T, query) {
+	const customIndex = T.indices.vector.customIndex;
+	const originalSearchLayer = customIndex.searchLayer;
+	let layer0Ef = 0;
+	customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+		if (level === 0) layer0Ef = ef;
+		return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+	};
+	try {
+		await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], ...query })
+		);
+	} finally {
+		customIndex.searchLayer = originalSearchLayer;
+	}
+	return layer0Ef;
+}
+
+describe('HNSW post-sort distance', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const distanceCalculator = new HierarchicalNavigableSmallWorld();
+	let T;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWPostSortDistanceTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'rank' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean' }, type: 'Array' },
+			],
+		});
+		await T.put(1, { group: 'single', vector: [2, 0] });
+		await T.put(2, { group: 'metric', rank: 1, vector: [0.1, 0.1] });
+		await T.put(3, { group: 'metric', rank: 1, vector: [1.2, 0.8] });
+		await T.put(4, { group: 'metric', rank: 2, vector: [7, 8] });
+		await T.put(5, { group: 'missing' });
+		await T.put(6, { group: 'missing', vector: [2, 0] });
+	});
+
+	after(() => T.dropTable());
+
+	it('returns $distance when a selective condition leaves one result', async () => {
+		const query = {
+			conditions: [{ attribute: 'group', value: 'single' }],
+			sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+			select: ['id', '$distance'],
+		};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+
+		for (let i = 0; i < 2; i++) {
+			const results = await fromAsync(T.search(query));
+			assert.equal(results.length, 1);
+			assert(Number.isFinite(results[0].$distance));
+			assert.equal(results[0].$distance, 2);
+		}
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('returns the index-provided distance without post-ordering', async () => {
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target: [7, 8], distance: 'euclidean' },
+				limit: 1,
+				select: ['id', 'vector', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 4);
+		assert.deepEqual(results[0].vector, [7, 8]);
+		assert.equal(results[0].$distance, 0);
+	});
+
+	it('sorts a missing vector last among records with vectors', async () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'missing' }],
+				sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.deepEqual(
+			results.map(({ id, $distance }) => [id, $distance]),
+			[
+				[6, 2],
+				[5, Infinity],
+			]
+		);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('resolves an object-form $distance select', async () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'single' }],
+				sort: { attribute: 'vector', target: [1, 1], distance: 'euclidean' },
+				select: ['id', { name: '$distance' }],
+			})
+		);
+
+		assert.equal(results.length, 1);
+		assert.equal(results[0].$distance, 2);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('does not reuse distances across targets in the same context', async () => {
+		const context = {};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const search = (target) =>
+			fromAsync(
+				T.search(
+					{
+						conditions: [{ attribute: 'group', value: 'metric' }],
+						sort: { attribute: 'vector', target, distance: 'euclidean' },
+						select: ['id', '$distance'],
+					},
+					context
+				)
+			);
+
+		const first = await search([0, 0]);
+		const second = await search([7, 8]);
+		assert.equal(first[0].id, 2);
+		assert.equal(second[0].id, 4);
+		assert.equal(second[0].$distance, 0);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('does not share the active sort between concurrent searches', async () => {
+		const context = {};
+		const search = (target) =>
+			fromAsync(
+				T.search(
+					{
+						conditions: [{ attribute: 'group', value: 'metric' }],
+						sort: { attribute: 'vector', target, distance: 'euclidean' },
+						select: ['id', '$distance'],
+					},
+					context
+				)
+			);
+
+		const [nearOrigin, nearFarVector] = await Promise.all([search([0, 0]), search([7, 8])]);
+		assert.equal(nearOrigin[0].id, 2);
+		assert.equal(nearFarVector[0].id, 4);
+		assert.equal(nearFarVector[0].$distance, 0);
+	});
+
+	it('caches distance by vector when an entry is unavailable', () => {
+		const sort = { attribute: 'vector', target: [1, 1], distance: 'euclidean' };
+		const context = {};
+		const vector = [2, 0];
+		const distance = T.indices.vector.customIndex.propertyResolver(vector, context, null, sort);
+
+		assert.equal(distance, 2);
+		assert.equal(context.vectorDistanceCaches.get(sort).get(vector), 2);
+	});
+
+	it('calculates distance without caching when context is unavailable', () => {
+		const sort = { attribute: 'vector', target: [1, 1], distance: 'euclidean' };
+		assert.equal(T.indices.vector.customIndex.propertyResolver([2, 0], undefined, null, sort), 2);
+	});
+
+	it('rejects a targetless post-sort query', () => {
+		assert.throws(
+			() =>
+				T.search({
+					conditions: [{ attribute: 'group', value: 'metric' }],
+					sort: { attribute: 'vector' },
+					select: ['id', '$distance'],
+				}),
+			{ message: 'A target vector must be provided for an HNSW query' }
+		);
+	});
+
+	it('rejects a targetless vector sort before reading an empty result set', () => {
+		assert.throws(
+			() =>
+				T.search({
+					conditions: [{ attribute: 'group', value: 'empty' }],
+					sort: { attribute: 'vector' },
+					select: ['id', '$distance'],
+				}),
+			{ message: 'A target vector must be provided for an HNSW query' }
+		);
+	});
+
+	it('does not resolve $distance or the vector from a stale sort', async () => {
+		const context = {};
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const sorted = await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'group', value: 'single' }],
+					sort: { attribute: 'vector', target: [1, 1] },
+					select: ['id', 'vector', '$distance'],
+				},
+				context
+			)
+		);
+		assert.deepEqual(sorted[0].vector, [2, 0]);
+		assert.equal(sorted[0].$distance, 2);
+		const unsorted = await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'group', value: 'single' }],
+					select: ['id', 'vector', '$distance'],
+				},
+				context
+			)
+		);
+		assert.equal(unsorted[0].$distance, undefined);
+		assert.deepEqual(unsorted[0].vector, [2, 0]);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('uses the full secondary vector sort definition during post-ordering', async () => {
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: {
+					attribute: 'group',
+					next: { attribute: 'vector', target: [7, 8], distance: 'euclidean' },
+				},
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 4);
+		assert.equal(results[0].$distance, 0);
+	});
+
+	it('returns $distance for a secondary vector sort after an unindexed sort', async () => {
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: {
+					attribute: 'rank',
+					next: { attribute: 'vector', target: [1.2, 0.8], distance: 'euclidean' },
+				},
+				select: ['id', 'vector', '$distance'],
+			})
+		);
+
+		assert.equal(results[0].id, 3);
+		assert.deepEqual(results[0].vector, [1.2, 0.8]);
+		assert.equal(results[0].$distance, 0);
+	});
+
+	it('rejects an unknown metric on the exact post-sort path', () => {
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		assert.throws(
+			() =>
+				T.search({
+					conditions: [{ attribute: 'group', value: 'metric' }],
+					sort: { attribute: 'vector', target: [1, 1], distance: 'manhattan' },
+					select: ['id', '$distance'],
+				}),
+			{ message: 'Unknown distance function' }
+		);
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+
+	it('uses the requested metric when a selective condition triggers post-sorting', async () => {
+		const target = [1, 1];
+		const vectors = new Map([
+			[2, [0.1, 0.1]],
+			[3, [1.2, 0.8]],
+			[4, [7, 8]],
+		]);
+		const nodesVisitedBefore = T.indices.vector.customIndex.nodesVisitedCount;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'group', value: 'metric' }],
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id', '$distance'],
+			})
+		);
+
+		assert.equal(results.length, 3);
+		assert.equal(results[0].id, 2);
+		for (const result of results) {
+			const expected = distanceCalculator.distance(target, vectors.get(result.id));
+			assert(Number.isFinite(result.$distance));
+			assert(Math.abs(result.$distance - expected) < 1e-9);
+		}
+		assert.equal(T.indices.vector.customIndex.nodesVisitedCount, nodesVisitedBefore);
+	});
+});
+
+describe('HNSW int8 quantization (quantization: "int8")', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	const testInstance = new HierarchicalNavigableSmallWorld();
+	const DIMS = 32;
+	const CLUSTERS = 12;
+	let T;
+	let all = [];
+
+	// Deterministic clustered unit-ish vectors so genuine near-neighbours exist
+	// (purely random high-dim vectors are near-orthogonal and make recall meaningless).
+	function vec(seed) {
+		let s = (seed * 2654435761) >>> 0;
+		const rand = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+		const cluster = seed % CLUSTERS;
+		let cs = (cluster * 40503 + 1) >>> 0;
+		const crand = () => (cs = (cs * 1664525 + 1013904223) >>> 0) / 4294967296;
+		const out = new Array(DIMS);
+		let mag = 0;
+		for (let i = 0; i < DIMS; i++) {
+			const v = crand() * 2 - 1 + 0.15 * (rand() * 2 - 1);
+			out[i] = v;
+			mag += v * v;
+		}
+		const inv = 1 / (Math.sqrt(mag) || 1);
+		for (let i = 0; i < DIMS; i++) out[i] = out[i] * inv;
+		return out;
+	}
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWInt8Test',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+	});
+	after(() => {
+		T.dropTable();
+	});
+
+	it('stores the vector as a compact int8 bin + scale, not a float array', async () => {
+		for (let i = 0; i < 300; i++) {
+			const v = vec(i);
+			await T.put(i, { vector: v });
+			all.push({ id: i, v });
+		}
+		let raw;
+		for (const { key, value } of T.indices.vector.getRange({})) {
+			if (typeof key === 'number' && value && value.vector) {
+				raw = value;
+				break;
+			}
+		}
+		assert(raw, 'expected at least one stored graph node');
+		assert(!Array.isArray(raw.vector), 'int8 vector must be stored as a bin, not a number[]');
+		assert.equal(typeof raw.scale, 'number', 'int8 node must carry a dequant scale');
+	});
+
+	it('finds near-optimal neighbours through the int8 graph ($distance stays exact)', async () => {
+		// $distance is recomputed from the record's full-precision vector, so it is exact;
+		// only WHICH records the int8 graph navigates to is approximate.
+		const target = vec(7); // lands in a populated cluster
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id', '$distance'],
+				limit: 10,
+			})
+		);
+		assert(results.length >= 5, `expected >=5 results, got ${results.length}`);
+		const brute = all.map(({ id, v }) => ({ id, d: testInstance.distance(target, v) })).sort((a, b) => a.d - b.d);
+		// Top results must be close to the brute-force optimum at each rank. Slightly looser
+		// tolerance than the float test to allow for quantization-induced ranking wobble.
+		const TOL = 0.1;
+		for (let i = 0; i < 3; i++) {
+			assert(Number.isFinite(results[i].$distance), `result ${i} distance not finite`);
+			assert(
+				results[i].$distance <= brute[i].d + TOL,
+				`int8 result at rank ${i} (${results[i].$distance}) too far from brute optimum (${brute[i].d})`
+			);
+		}
+		// recall@10 should remain high on this clustered set despite quantization
+		const truthTop = new Set(brute.slice(0, 10).map((t) => t.id));
+		const hits = results.filter((r) => truthTop.has(r.id)).length;
+		assert(hits >= 5, `int8 recall@10 unexpectedly low: ${hits}/10`);
+	});
+
+	it('handles update and delete on an int8 index without corruption', async () => {
+		await T.put(0, { vector: vec(50000) }); // move id 0 to a new location
+		await T.delete(5);
+		const results = await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: vec(50000), distance: 'cosine' }, select: ['id'], limit: 10 })
+		);
+		assert(
+			results.some((r) => r.id === 0),
+			'updated record should be findable near its new vector'
+		);
+		assert(!results.some((r) => r.id === 5), 'deleted record must not be returned');
+	});
+
+	it('ranks correctly across cosine/euclidean/dotProduct on an int8 index (incl. cosine fallback)', async () => {
+		// Default distance is euclidean, so nodes are stored WITHOUT a cached invMag — a cosine
+		// query then exercises the int8 cosine-fallback magnitude path. The three queries also
+		// exercise the inline asymmetric euclidean and dotProduct int8 distance paths.
+		const records = [
+			{ id: 0, vector: [0.1, 0.1] }, // best cosine (direction match to [1,1])
+			{ id: 1, vector: [1.2, 0.8] }, // best euclidean (closest in space)
+			{ id: 2, vector: [7.0, 8.0] }, // best dot product (max projection)
+		];
+		const M = table({
+			table: 'HNSWInt8MetricTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+		for (const r of records) await M.put(r.id, r);
+		const target = [1, 1];
+		const top = async (distance) =>
+			(await fromAsync(M.search({ sort: { attribute: 'vector', target, distance }, select: ['id'], limit: 1 })))[0]?.id;
+		assert.equal(await top('cosine'), 0, 'cosine fallback should rank the direction match first');
+		assert.equal(await top('euclidean'), 1, 'euclidean should rank the closest-in-space first');
+		assert.equal(await top('dotProduct'), 2, 'dotProduct should rank the max-projection first');
+		M.dropTable();
+	});
+
+	it('reranks int8 results so returned $distance is exact (recomputed from the record), sorted', async () => {
+		// The graph navigates on quantized distances, but the search layer reranks the candidates
+		// against each record's full-precision vector. So the returned $distance must equal the exact
+		// float distance to that record's own vector (within float epsilon), not the quantized value.
+		const target = vec(7);
+		const results = await fromAsync(
+			T.search({
+				sort: { attribute: 'vector', target, distance: 'cosine' },
+				select: ['id', 'vector', '$distance'],
+				limit: 8,
+			})
+		);
+		assert(results.length >= 1, 'expected results');
+		for (const r of results) {
+			const exact = testInstance.distance(target, r.vector); // exact cosine over the record's full vector
+			assert(
+				Math.abs(r.$distance - exact) < 1e-6,
+				`$distance ${r.$distance} should equal the exact full-precision distance ${exact} (reranked)`
+			);
+		}
+		for (let i = 1; i < results.length; i++)
+			assert(
+				results[i].$distance >= results[i - 1].$distance - 1e-9,
+				'results must be sorted ascending by exact distance'
+			);
+	});
+});
+
+// mocha has no `{ skip }` options arg like node:test (`it(title, {skip}, fn)` throws), so use
+// describe.skip to make the lmdb skip explicit rather than a silent early return.
+const describeUnlessLmdb = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
+describeUnlessLmdb('HNSW int8 cold/frozen node reads (#1161)', () => {
+	const DIMS = 16;
+	const N = 250;
+	let T;
+	const all = [];
+
+	function vec(seed) {
+		let s = (seed * 2654435761) >>> 0;
+		const rand = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+		let cs = ((seed % 16) * 40503 + 1) >>> 0;
+		const crand = () => (cs = (cs * 1664525 + 1013904223) >>> 0) / 4294967296;
+		const out = new Array(DIMS);
+		let mag = 0;
+		for (let i = 0; i < DIMS; i++) {
+			const v = crand() * 2 - 1 + 0.15 * (rand() * 2 - 1);
+			out[i] = v;
+			mag += v * v;
+		}
+		const inv = 1 / (Math.sqrt(mag) || 1);
+		for (let i = 0; i < DIMS; i++) out[i] *= inv;
+		return out;
+	}
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWInt8Cold',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < N; i++) {
+			const v = vec(i);
+			await T.put(i, { vector: v });
+			all.push(v);
+		}
+	});
+	after(() => T.dropTable());
+
+	// The index store sets freezeData, so a node decoded from disk (a cache miss — which happens for
+	// older nodes once a table outgrows the object cache, ~3-4k rows) is a FROZEN record whose int8
+	// `vector` is an unsigned Uint8Array. safeGetSync must produce a signed Int8Array without mutating
+	// the frozen record; mutating it throws, the node is silently dropped, and the graph fragments so
+	// records become unfindable. Forcing every read to look like a freezeData disk decode makes this
+	// deterministic without depending on cache eviction timing.
+	it('still finds records when graph nodes are read cold/frozen', async () => {
+		const store = T.indices.vector.customIndex.indexStore;
+		const realGetSync = store.getSync.bind(store);
+		// Return a STABLE frozen object per key, mirroring the store's object cache returning the same
+		// decoded-from-disk (frozen, unsigned-bin) node reference on repeated hits.
+		const coldByKey = new Map();
+		store.getSync = function (key, opts) {
+			const node = realGetSync(key, opts);
+			if (node && typeof node === 'object' && node.vector != null && !Array.isArray(node.vector)) {
+				let cold = coldByKey.get(key);
+				if (!cold) {
+					const v = node.vector;
+					cold = { ...node, vector: new Uint8Array(v.buffer, v.byteOffset, v.byteLength).slice() };
+					for (let level = 0; Array.isArray(cold[level]); level++) cold[level] = Object.freeze(cold[level].slice());
+					cold = Object.freeze(cold);
+					coldByKey.set(key, cold);
+				}
+				return cold;
+			}
+			return node;
+		};
+		try {
+			let misses = 0;
+			for (let i = 0; i < N; i++) {
+				const results = await fromAsync(
+					T.search({ sort: { attribute: 'vector', target: all[i], distance: 'cosine' }, select: ['id'], limit: 5 })
+				);
+				if (!results.some((r) => r.id === i)) misses++;
+			}
+			assert.equal(misses, 0, `${misses}/${N} int8 records unfindable when graph nodes are read cold/frozen`);
+		} finally {
+			store.getSync = realGetSync;
+		}
+	});
+});
+
+// ─── Data-integrity fixes (5.1 GA) ──────────────────────────────────────────
+describeUnlessLmdb('HNSW data-integrity fixes (5.1 GA)', () => {
+	// Minimal mock store used by several tests below. Supports put/get/remove with
+	// optional numeric-range scan (getRange), and a shared-buffer allocator.
+	function makeMockStore() {
+		const nodes = new Map();
+		let ep;
+		return {
+			encoder: { useFloat32: false },
+			getSync(key, _opts) {
+				if (key === Symbol.for('entryPoint')) return ep;
+				const k = typeof key === 'number' ? key : JSON.stringify(key);
+				return nodes.get(k);
+			},
+			put(key, value, _opts) {
+				if (key === Symbol.for('entryPoint')) {
+					ep = value;
+					return;
+				}
+				const k = typeof key === 'number' ? key : JSON.stringify(key);
+				nodes.set(k, value);
+			},
+			remove(key, _opts) {
+				if (key === Symbol.for('entryPoint')) {
+					ep = undefined;
+					return;
+				}
+				const k = typeof key === 'number' ? key : JSON.stringify(key);
+				nodes.delete(k);
+			},
+			*getRange({ start = 0, end = Infinity } = {}) {
+				for (const [k, v] of nodes) {
+					if (typeof k === 'number' && k >= start && k <= end) yield { key: k, value: v };
+				}
+			},
+			getKeys({ transaction: _t } = {}) {
+				return [];
+			},
+			getUserSharedBuffer(_name, buffer) {
+				return buffer;
+			},
+			// For test assertions: iterate all numeric-key (node) entries
+			_nodes() {
+				return nodes.entries();
+			},
+		};
+	}
+
+	// ── non-finite vector guard ────────────────────────────────────────────
+	describe('non-finite vector guard', () => {
+		it('throws ClientError for a vector containing NaN', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, {});
+			// Insert a valid first node so the graph is not empty.
+			hnsw.index('a', [1, 0, 0], null, {});
+			assert.throws(
+				() => hnsw.index('b', [0, NaN, 1], null, {}),
+				(err) => {
+					assert(err.message.includes('non-finite'), `expected "non-finite" in: ${err.message}`);
+					assert(err.message.includes('1'), `expected component index in: ${err.message}`);
+					return true;
+				}
+			);
+		});
+
+		it('throws ClientError for a vector containing Infinity', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, {});
+			hnsw.index('a', [1, 0, 0], null, {});
+			assert.throws(
+				() => hnsw.index('b', [Infinity, 0, 0], null, {}),
+				(err) => {
+					assert(err.message.includes('non-finite'), `expected "non-finite" in: ${err.message}`);
+					return true;
+				}
+			);
+		});
+
+		it('index remains searchable after a rejected NaN insert', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean' });
+			hnsw.index('good', [1, 0, 0], null, {});
+			// Swallow the expected error
+			try {
+				hnsw.index('bad', [NaN, 0, 0], null, {});
+			} catch {}
+			// The good node must still be reachable
+			const results = hnsw.search(
+				{ target: [1, 0, 0], comparator: 'sort', descending: false },
+				{ transaction: undefined }
+			);
+			assert(Array.isArray(results), 'search must return an array');
+			assert(
+				results.some((r) => r.key === 'good'),
+				'valid node must be findable after rejected NaN insert'
+			);
+		});
+	});
+
+	// ── `le` boundary inclusion ──────────────────────────────────────────────
+	describe('le comparator includes the boundary distance', () => {
+		it('le returns records at exactly the threshold distance', () => {
+			const store = makeMockStore();
+			// euclidean: distance([0], [d]) = d^2  — use 1D so we can predict exact distances
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', quantization: 'none' });
+			// Insert vectors at known euclidean-squared distances from [0]: 0.04, 0.09, 0.16, 0.25
+			hnsw.index('d0.04', [0.2], null, {});
+			hnsw.index('d0.09', [0.3], null, {});
+			hnsw.index('d0.16', [0.4], null, {});
+			hnsw.index('d0.25', [0.5], null, {});
+
+			const target = [0];
+			// lt with value 0.09: should exclude the d0.09 record
+			const lt = hnsw.search({ target, comparator: 'lt', value: 0.09, descending: false }, { transaction: undefined });
+			assert(
+				lt.every((r) => r.distance < 0.09),
+				'lt should exclude exact boundary'
+			);
+			assert(!lt.some((r) => r.key === 'd0.09'), 'lt must not include d0.09 (distance == threshold)');
+
+			// le with value 0.09: must include the d0.09 record
+			const le = hnsw.search({ target, comparator: 'le', value: 0.09, descending: false }, { transaction: undefined });
+			assert(
+				le.some((r) => r.key === 'd0.09'),
+				'le must include d0.09 (distance == threshold)'
+			);
+			assert(
+				le.every((r) => r.distance <= 0.09),
+				'le must not include records beyond threshold'
+			);
+		});
+
+		it('le with a threshold of 0 filters to exact matches (0 is a valid threshold)', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', quantization: 'none' });
+			hnsw.index('exact', [0.2], null, {});
+			hnsw.index('near', [0.3], null, {});
+			hnsw.index('far', [0.9], null, {});
+
+			// le 0: only the exact-distance-0 record. A falsy-0 sentinel would skip the
+			// filter entirely and return all three.
+			const le0 = hnsw.search(
+				{ target: [0.2], comparator: 'le', value: 0, descending: false },
+				{ transaction: undefined }
+			);
+			assert.strictEqual(le0.length, 1, `le 0 must return only the exact match, got ${le0.length}`);
+			assert.strictEqual(le0[0].key, 'exact');
+
+			// lt 0: no distance can be negative for euclidean — must return nothing.
+			const lt0 = hnsw.search(
+				{ target: [0.2], comparator: 'lt', value: 0, descending: false },
+				{ transaction: undefined }
+			);
+			assert.strictEqual(lt0.length, 0, 'lt 0 must return no records');
+		});
+	});
+
+	// ── delete-entry-point, remaining records still findable ──────────────────
+	describe('delete-entry-point leaves remaining records findable', () => {
+		it('search returns remaining records after deleting the entry-point node', () => {
+			// Use the mock store so this test is self-contained and immune to DB state.
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', optimizeRouting: 0 });
+
+			// Insert N records with spread-out vectors.
+			const N = 12;
+			for (let i = 0; i < N; i++) hnsw.index(String(i), [i, i * 0.5, i % 3], null, {});
+
+			// Identify the entry-point's primaryKey and delete it.
+			const epNodeId = store.getSync(Symbol.for('entryPoint'));
+			const epPrimaryKey = store.getSync(epNodeId)?.primaryKey ?? '0';
+			hnsw.index(epPrimaryKey, null, null, {}); // deletion path (vector == null)
+
+			// All remaining records must still be reachable via search.
+			const results = hnsw.search(
+				{ target: [5, 2.5, 2], comparator: 'sort', descending: false },
+				{ transaction: undefined }
+			);
+			assert(Array.isArray(results), 'search must return an array');
+			assert(!results.some((r) => r.key === epPrimaryKey), 'deleted entry-point must not appear in results');
+			// Most remaining nodes must be reachable.
+			assert(
+				results.length >= N - 3,
+				`expected at least ${N - 3} results after entry-point deletion, got ${results.length}`
+			);
+		});
+
+		it('bulk-delete 50% including entry point still returns the remainder', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', optimizeRouting: 0 });
+
+			const N = 14;
+			for (let i = 0; i < N; i++) hnsw.index(String(i), [i, i % 3], null, {});
+
+			// Collect the first half of node primary keys (including the entry point).
+			const epNodeId = store.getSync(Symbol.for('entryPoint'));
+			const deleteKeys = new Set();
+			deleteKeys.add(store.getSync(epNodeId)?.primaryKey ?? '0');
+			for (let i = 0; i < Math.floor(N / 2) - 1; i++) deleteKeys.add(String(i));
+
+			for (const pk of deleteKeys) hnsw.index(pk, null, null, {});
+
+			const results = hnsw.search(
+				{ target: [10, 1], comparator: 'sort', descending: false },
+				{ transaction: undefined }
+			);
+			// Deleted keys must not appear.
+			for (const pk of deleteKeys) {
+				assert(!results.some((r) => r.key === pk), `deleted key ${pk} must not appear in results`);
+			}
+		});
+	});
+
+	// ── update-then-search reachability ───────────────────────────────────────
+	describe('update-then-search reachability (sweep-levels fix)', () => {
+		it('repeatedly-updated record and its neighbors remain findable', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', optimizeRouting: 0.5 });
+
+			// Build a small graph.
+			const N = 20;
+			for (let i = 0; i < N; i++) {
+				hnsw.index(String(i), [Math.cos(i * 0.5), Math.sin(i * 0.5), 0.1 * (i % 3)], null, {});
+			}
+			// Update key '5' ten times — exercises the level-targeted reverse-edge sweep.
+			for (let round = 0; round < 10; round++) {
+				const newVec = [Math.cos(round * 0.7), Math.sin(round * 0.7), 0.2];
+				// existingVector triggers the update path in index()
+				hnsw.index('5', newVec, [Math.cos((round - 1) * 0.7) || 1, 0.2, 0.2], {});
+			}
+			// All N records must still be reachable via a broad search.
+			const results = hnsw.search(
+				{ target: [1, 0, 0], comparator: 'sort', descending: false },
+				{ transaction: undefined }
+			);
+			// HNSW is approximate; allow up to 2 misses on a small graph.
+			assert(
+				results.length >= N - 2,
+				`expected at least ${N - 2} results after repeated updates, got ${results.length}`
+			);
+		});
+
+		it('symmetry check: fewer than 5 asymmetries after repeated updates', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', optimizeRouting: 0.5 });
+
+			const N = 16;
+			for (let i = 0; i < N; i++) {
+				hnsw.index(String(i), [Math.cos(i * 0.5), Math.sin(i * 0.5)], null, {});
+			}
+			for (let round = 0; round < 8; round++) {
+				const newVec = [Math.cos(round * 0.7), Math.sin(round * 0.7)];
+				hnsw.index('3', newVec, [Math.cos((round - 1) * 0.7) || 1, 0.1], {});
+			}
+
+			// Check symmetry directly on the mock store.
+			let asymmetries = 0;
+			for (const [k, node] of store._nodes()) {
+				if (typeof k !== 'number' || node?.level === undefined) continue;
+				for (let l = 0; l <= node.level; l++) {
+					for (const { id: neighborId } of node[l] || []) {
+						const neighborNode = store.getSync(neighborId);
+						if (!neighborNode) continue;
+						const sym = (neighborNode[l] || []).find(({ id }) => id === k);
+						if (!sym) asymmetries++;
+					}
+				}
+			}
+			assert(asymmetries < 5, `expected < 5 asymmetries after repeated updates, got ${asymmetries}`);
+		});
+	});
+
+	// ── backfill idempotency (re-feeding existing key) ────────────────────────
+	describe('backfill resume idempotency', () => {
+		it('calling index() twice with the same key preserves symmetric connections', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', optimizeRouting: 0 });
+
+			// First insert: establishes the node and its connections.
+			for (let i = 0; i < 8; i++) {
+				hnsw.index(String(i), [i, i * 0.5], null, {});
+			}
+
+			// Second call for key '0' with no existingVector (simulates a backfill re-feed).
+			// Should behave as an update, not a fresh insert.
+			hnsw.index('0', [0, 0], null, {});
+
+			// Verify symmetry: for every connection a→b, b→a must also exist at the same level.
+			let asymmetries = 0;
+			for (const [k, node] of store._nodes()) {
+				if (typeof k !== 'number' || node?.level === undefined) continue;
+				let l = 0;
+				while (node[l]) {
+					for (const { id: neighborId } of node[l]) {
+						const neighbor = store.getSync(neighborId);
+						if (!neighbor) continue;
+						const sym = (neighbor[l] || []).find(({ id }) => id === k);
+						if (!sym) asymmetries++;
+					}
+					l++;
+				}
+			}
+			assert(asymmetries < 3, `expected < 3 asymmetries after backfill re-feed, got ${asymmetries}`);
+		});
+
+		it('level is preserved when re-feeding an existing node without existingVector', () => {
+			const store = makeMockStore();
+			const hnsw = new HierarchicalNavigableSmallWorld(store, { distance: 'euclidean', optimizeRouting: 0 });
+			// Seed a few nodes so the graph is non-trivial.
+			for (let i = 0; i < 6; i++) hnsw.index(String(i), [i, 0], null, {});
+
+			// Capture the level of node '0' after first insert.
+			const safeKey0 = '0';
+			const nodeId0 = store.getSync(safeKey0);
+			const levelBefore = store.getSync(nodeId0)?.level;
+
+			// Re-feed with same vector, no existingVector (backfill scenario).
+			hnsw.index('0', [0, 0], null, {});
+
+			const levelAfter = store.getSync(nodeId0)?.level;
+			assert.equal(levelAfter, levelBefore, 'level must be preserved on backfill re-feed');
+		});
+	});
+});
+
+// Benchmark: int8 recall on unnormalized high-dynamic-range vectors (euclidean distance).
+// The per-vector scale = max|component|/127 squashes small components when one dimension
+// dominates. This suite measures whether recall stays acceptable in that worst-case shape,
+// and serves as a regression baseline for default-on quantization decisions.
+describeUnlessLmdb('HNSW int8 recall — unnormalized euclidean (high dynamic range)', () => {
+	const DIMS = 16;
+	const N = 300;
+	let TFloat, TInt8;
+	const allFloat = [];
+
+	// Vectors with one large outlier component so the per-vector max-abs scale is set by that
+	// outlier, leaving most other components at only a few quantization levels.
+	function hdrVec(seed) {
+		let s = (seed * 2654435761) >>> 0;
+		const rand = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
+		const out = new Array(DIMS);
+		// first component is the outlier (range ±10), the rest are small (range ±0.1)
+		out[0] = rand() * 10;
+		for (let i = 1; i < DIMS; i++) out[i] = rand() * 0.1;
+		return out;
+	}
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		TFloat = table({
+			table: 'HNSWHdrFloat',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		TInt8 = table({
+			table: 'HNSWHdrInt8',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < N; i++) {
+			const v = hdrVec(i);
+			allFloat.push({ id: i, v });
+			await TFloat.put(i, { vector: v });
+			await TInt8.put(i, { vector: v });
+		}
+	});
+	after(() => {
+		TFloat.dropTable();
+		TInt8.dropTable();
+	});
+
+	it('int8 recall@10 on HDR euclidean is at least 0.5 (documenting known lossy case)', async () => {
+		// HDR vectors where small components are quantized to 0 represent a worst-case for int8.
+		// A floor of 0.5 is deliberately lenient — this test documents current behavior and gives
+		// us a regression signal, not a quality guarantee. If we raise this floor, that's progress.
+		const K = 10;
+		const QUERIES = 20;
+		let totalHits = 0;
+		for (let q = 0; q < QUERIES; q++) {
+			const target = hdrVec(N + q);
+			const brute = allFloat
+				.map(({ id, v }) => ({ id, d: euclideanDist(target, v) }))
+				.sort((a, b) => a.d - b.d)
+				.slice(0, K);
+			const truth = new Set(brute.map((x) => x.id));
+			const results = await fromAsync(
+				TInt8.search({ sort: { attribute: 'vector', target, distance: 'euclidean' }, select: ['id'], limit: K })
+			);
+			totalHits += results.filter((r) => truth.has(r.id)).length;
+		}
+		const recall = totalHits / (QUERIES * K);
+		console.log(`int8 HDR euclidean recall@${K} over ${QUERIES} queries: ${(recall * 100).toFixed(1)}%`);
+		assert(recall >= 0.5, `int8 HDR euclidean recall@${K} too low: ${(recall * 100).toFixed(1)}%`);
+	});
+
+	it('float baseline recall@10 on same HDR euclidean vectors is at least 0.8', async () => {
+		// The float index is the control: if it also underperforms, the issue is graph quality,
+		// not quantization. Failure here means the HDR vectors create a hard graph structure.
+		const K = 10;
+		const QUERIES = 20;
+		let totalHits = 0;
+		for (let q = 0; q < QUERIES; q++) {
+			const target = hdrVec(N + q);
+			const brute = allFloat
+				.map(({ id, v }) => ({ id, d: euclideanDist(target, v) }))
+				.sort((a, b) => a.d - b.d)
+				.slice(0, K);
+			const truth = new Set(brute.map((x) => x.id));
+			const results = await fromAsync(
+				TFloat.search({ sort: { attribute: 'vector', target, distance: 'euclidean' }, select: ['id'], limit: K })
+			);
+			totalHits += results.filter((r) => truth.has(r.id)).length;
+		}
+		const recall = totalHits / (QUERIES * K);
+		console.log(`float HDR euclidean recall@${K} over ${QUERIES} queries: ${(recall * 100).toFixed(1)}%`);
+		assert(recall >= 0.8, `float HDR euclidean recall@${K} too low: ${(recall * 100).toFixed(1)}%`);
+	});
+
+	function euclideanDist(a, b) {
+		let sum = 0;
+		for (let i = 0; i < a.length; i++) sum += (a[i] - b[i]) ** 2;
+		return Math.sqrt(sum);
+	}
+});
+
+// int8 threshold queries now over-fetch from HNSW (suppressing the approximate distance filter)
+// and re-filter on exact full-precision distances after loading records. All boundary assertions
+// are exact: every record whose true distance satisfies the predicate must appear, and every
+// record outside must not.
+//
+// Note: the euclidean distance function (vector.ts) returns SQUARED euclidean for ranking
+// efficiency — threshold values and $distance are in that same squared space.
+describeUnlessLmdb('HNSW int8 threshold queries (lt/le) — exact boundary after rerank', () => {
+	let T;
+	const records = [];
+
+	// Vectors on the x-axis: target=[0,0], record at [d,0] has squared-euclidean distance d².
+	// Choosing d² values that are exactly representable in float64 makes boundary assertions
+	// unambiguous (no floating-point fuzz to worry about).
+	// id 0: d=0.5  → sq_dist=0.25
+	// id 1: d=0.75 → sq_dist=0.5625
+	// id 2: d=1.0  → sq_dist=1.0   ← used as exact le/lt boundary
+	// id 3: d=1.5  → sq_dist=2.25
+	// id 4: d=2.0  → sq_dist=4.0
+	const VECTORS = [0.5, 0.75, 1.0, 1.5, 2.0];
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWInt8Threshold',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'int8' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < VECTORS.length; i++) {
+			const d = VECTORS[i];
+			records.push({ id: i, sqDist: d * d, vector: [d, 0] });
+			await T.put(i, { vector: [d, 0] });
+		}
+	});
+	after(() => T.dropTable());
+
+	it('lt returns exactly the records whose squared-euclidean distance is strictly less than the threshold', async () => {
+		// threshold=1.5 → includes id=0 (sq=0.25) and id=1 (sq=0.5625), excludes id=2 (sq=1.0)..id=4
+		const threshold = 1.5;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'vector', comparator: 'lt', value: threshold, target: [0, 0] }],
+				select: ['id'],
+			})
+		);
+		const ids = new Set(results.map((r) => r.id));
+		for (const { id, sqDist } of records) {
+			if (sqDist < threshold)
+				assert(ids.has(id), `record id=${id} (sq_dist=${sqDist}) must appear with lt ${threshold}`);
+			else assert(!ids.has(id), `record id=${id} (sq_dist=${sqDist}) must not appear with lt ${threshold}`);
+		}
+	});
+
+	it('le includes the record at exactly the threshold; lt excludes it', async () => {
+		// id=2 has sq_dist=1.0; threshold=1.0 sits exactly on the boundary.
+		const threshold = 1.0;
+		const ltResults = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'vector', comparator: 'lt', value: threshold, target: [0, 0] }],
+				select: ['id'],
+			})
+		);
+		const leResults = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'vector', comparator: 'le', value: threshold, target: [0, 0] }],
+				select: ['id'],
+			})
+		);
+		const ltIds = new Set(ltResults.map((r) => r.id));
+		const leIds = new Set(leResults.map((r) => r.id));
+
+		assert(!ltIds.has(2), 'lt must exclude the record at exactly sq_dist=threshold');
+		assert(leIds.has(2), 'le must include the record at exactly sq_dist=threshold');
+
+		// Records strictly inside are in both
+		for (const { id, sqDist } of records) {
+			if (sqDist < threshold) {
+				assert(ltIds.has(id), `record id=${id} (sq_dist=${sqDist}) must appear in lt`);
+				assert(leIds.has(id), `record id=${id} (sq_dist=${sqDist}) must appear in le`);
+			}
+		}
+	});
+
+	it('$distance on threshold results is the exact squared-euclidean from the full-precision record vector', async () => {
+		const threshold = 2.0;
+		const results = await fromAsync(
+			T.search({
+				conditions: [{ attribute: 'vector', comparator: 'lt', value: threshold, target: [0, 0] }],
+				select: ['id', 'vector', '$distance'],
+			})
+		);
+		assert(results.length > 0, 'expected results');
+		for (const r of results) {
+			// euclideanDistance returns squared distance (see vector.ts)
+			const exact = r.vector[0] ** 2 + r.vector[1] ** 2;
+			assert(
+				Math.abs(r.$distance - exact) < 1e-10,
+				`$distance ${r.$distance} should equal exact sq-euclidean ${exact} for record id=${r.id}`
+			);
+		}
+	});
+});
+
+// A self-contained in-memory index store, mirroring the one used by the 5.1 GA fixes above, so the
+// predicate-aware traversal mechanism (#1241) can be exercised at the index level without a real DB.
+function newMockIndexStore() {
+	const nodes = new Map();
+	let ep;
+	return {
+		encoder: { useFloat32: false },
+		getSync(key) {
+			if (key === Symbol.for('entryPoint')) return ep;
+			const k = typeof key === 'number' ? key : JSON.stringify(key);
+			return nodes.get(k);
+		},
+		put(key, value) {
+			if (key === Symbol.for('entryPoint')) return void (ep = value);
+			const k = typeof key === 'number' ? key : JSON.stringify(key);
+			nodes.set(k, value);
+		},
+		remove(key) {
+			if (key === Symbol.for('entryPoint')) return void (ep = undefined);
+			const k = typeof key === 'number' ? key : JSON.stringify(key);
+			nodes.delete(k);
+		},
+		*getRange({ start = 0, end = Infinity } = {}) {
+			for (const [k, v] of nodes) if (typeof k === 'number' && k >= start && k <= end) yield { key: k, value: v };
+		},
+		getKeys() {
+			return [];
+		},
+		getUserSharedBuffer(_name, buffer) {
+			return buffer;
+		},
+	};
+}
+
+const describeUnlessLmdbFilter = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? describe.skip : describe;
+
+describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
+	// 1D euclidean vectors [i] put euclidean distance from [0] at i^2 — nearest neighbor is the smallest key.
+	function buildLine(count, options = { distance: 'euclidean', quantization: 'none', optimizeRouting: 0 }) {
+		const hnsw = new HierarchicalNavigableSmallWorld(newMockIndexStore(), options);
+		for (let i = 0; i < count; i++) hnsw.index(i, [i], null, {});
+		return hnsw;
+	}
+
+	it('admits only matching nodes at layer 0, while non-matching nodes still route', () => {
+		const hnsw = buildLine(100);
+		const even = (pk) => Number(pk) % 2 === 0;
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: even }
+		);
+		assert(results.length > 0, 'expected matching results');
+		assert(
+			results.every((r) => Number(r.key) % 2 === 0),
+			'every admitted node must satisfy the filter'
+		);
+		// key 1 is the 2nd-nearest overall but odd: it must route (help reach 0/2/…) yet never be admitted.
+		assert(!results.some((r) => r.key === 1), 'a non-matching nearest node must not be admitted');
+		assert.strictEqual(results[0].key, 0, 'nearest matching node first');
+		assert.strictEqual(results[1].key, 2, 'then the next matching node');
+	});
+
+	it('keeps traversing until it has the k nearest MATCHING nodes (no under-fill)', () => {
+		const hnsw = buildLine(100);
+		const everyTenth = (pk) => Number(pk) % 10 === 0; // matches 0,10,20,…,90 — sparse near the target
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: everyTenth }
+		);
+		assert(
+			results.every((r) => Number(r.key) % 10 === 0),
+			'all results match'
+		);
+		// The five nearest matching nodes, in order — a fixed-candidate post-filter would miss most of these.
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((r) => r.key),
+			[0, 10, 20, 30, 40]
+		);
+	});
+
+	it('bounds work with a visit budget and returns partial results, not an error', () => {
+		const hnsw = buildLine(200);
+		const matchesNothing = () => false;
+		// ef 10 * filterExpansion 2 = 20-node budget; 200 nodes, none matching → budget must stop it.
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false, ef: 10, filterExpansion: 2 },
+			{ transaction: undefined },
+			{ filter: matchesNothing }
+		);
+		assert.strictEqual(results.length, 0, 'no matches yields an empty result, not an error');
+		assert(results.nodesVisited > 0, 'some nodes were visited');
+		assert(results.nodesVisited <= 20, `visit budget must bound traversal, got ${results.nodesVisited}`);
+	});
+
+	it('exposes nodesVisited and filterEvaluations for tuning', () => {
+		const hnsw = buildLine(50);
+		const even = (pk) => Number(pk) % 2 === 0;
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: even }
+		);
+		assert.strictEqual(typeof results.nodesVisited, 'number');
+		assert.strictEqual(typeof results.filterEvaluations, 'number');
+		assert(results.nodesVisited > 0 && results.filterEvaluations > 0, 'counters populated');
+		assert(results.filterEvaluations >= results.length, 'at least one evaluation per admitted result');
+	});
+
+	it('excludes deleted nodes from filtered results', () => {
+		const hnsw = buildLine(50);
+		hnsw.index(10, null, null, {}); // delete two matching nodes
+		hnsw.index(20, null, null, {});
+		const even = (pk) => Number(pk) % 2 === 0;
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: even }
+		);
+		assert(!results.some((r) => r.key === 10 || r.key === 20), 'deleted nodes must not be returned');
+		assert(
+			results.some((r) => r.key === 0) && results.some((r) => r.key === 2),
+			'surviving matching nodes remain findable'
+		);
+	});
+
+	it('works on an int8 (quantized) index', () => {
+		const hnsw = buildLine(50, { distance: 'euclidean' }); // int8 quantization on by default
+		const even = (pk) => Number(pk) % 2 === 0;
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: even }
+		);
+		assert(
+			results.every((r) => Number(r.key) % 2 === 0),
+			'quantized graph still honors the filter'
+		);
+		assert.strictEqual(results[0].key, 0, 'nearest matching node first on the int8 graph');
+	});
+});
+
+describeUnlessLmdbFilter('HNSW filtered search via Table.search (#1241)', () => {
+	let T, Tq;
+	before(async () => {
+		T = table({
+			table: 'HNSWFilter',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'ownerId', indexed: true },
+				{ name: 'active', indexed: true, type: 'Boolean' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < 60; i++) {
+			await T.put(i, {
+				group: i % 2 === 0 ? 'blue' : 'red',
+				ownerId: i % 3,
+				active: i % 5 !== 0,
+				vector: [i, 0],
+			});
+		}
+		Tq = table({
+			table: 'HNSWFilterInt8',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean' }, type: 'Array' }, // int8 default
+			],
+		});
+		for (let i = 0; i < 40; i++) {
+			await Tq.put(i, { group: i % 2 === 0 ? 'blue' : 'red', vector: [i, 0.5] });
+		}
+	});
+	after(() => {
+		T.dropTable();
+		Tq.dropTable();
+	});
+
+	it('vectorFilter returns the k nearest MATCHING records', async () => {
+		const results = await fromAsync(
+			T.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					vectorFilter: (record) => record.group === 'blue',
+					select: ['id', 'group'],
+					limit: 5,
+				},
+				{}
+			)
+		);
+		assert.strictEqual(results.length, 5, 'limit is filled with matching records, not under-filled');
+		assert(
+			results.every((r) => r.group === 'blue'),
+			'every returned record matches the vectorFilter'
+		);
+		assert.deepStrictEqual(
+			results.map((r) => r.id),
+			[0, 2, 4, 6, 8],
+			'the five nearest blue records'
+		);
+	});
+
+	it('rowFilter returns the nearest records accepted by the application predicate', async () => {
+		const context = { user: { id: 1 } };
+		const results = await fromAsync(
+			T.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					select: ['id', 'ownerId'],
+					limit: 5,
+					rowFilter: (record, requestContext) => record.ownerId === requestContext.user.id,
+				},
+				context
+			)
+		);
+		assert(results.every((r) => r.ownerId === 1));
+		assert.deepStrictEqual(
+			results.map((r) => r.id),
+			[1, 4, 7, 10, 13]
+		);
+	});
+
+	it('allowRead remains a one-shot operation gate before row filtering', async () => {
+		let allowReadCalls = 0;
+		let rowFilterCalls = 0;
+		class Denied extends T {
+			allowRead() {
+				allowReadCalls++;
+				return false;
+			}
+			search(target) {
+				target.rowFilter = () => {
+					rowFilterCalls++;
+					return true;
+				};
+				return super.search(target);
+			}
+		}
+		await assert.rejects(
+			async () =>
+				fromAsync(
+					Denied.search(
+						{
+							sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+							limit: 5,
+							checkPermission: true,
+						},
+						{ user: { id: 1, role: { permission: {} } } }
+					)
+				),
+			(err) => /unauthorized/i.test(err.message) || err.statusCode === 403
+		);
+		assert.strictEqual(allowReadCalls, 1);
+		assert.strictEqual(rowFilterCalls, 0, 'no query candidate is loaded before the operation gate');
+	});
+
+	it('a throwing rowFilter aborts the query instead of returning partial results', async () => {
+		await assert.rejects(
+			async () =>
+				fromAsync(
+					T.search(
+						{
+							sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+							rowFilter() {
+								throw new Error('policy bug');
+							},
+							limit: 5,
+						},
+						{}
+					)
+				),
+			/policy bug/
+		);
+	});
+
+	it('a promise-returning rowFilter aborts instead of passing on promise truthiness', async () => {
+		await assert.rejects(
+			async () =>
+				fromAsync(
+					T.search(
+						{
+							conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }],
+							rowFilter: () => Promise.resolve(false),
+						},
+						{}
+					)
+				),
+			/rowFilter must be synchronous/
+		);
+	});
+
+	it('rowFilter applies to OR unions', async () => {
+		const results = await fromAsync(
+			T.search(
+				{
+					conditions: [
+						{ attribute: 'active', comparator: 'equals', value: true },
+						{ attribute: 'active', comparator: 'equals', value: false },
+					],
+					operator: 'or',
+					select: ['id', 'ownerId'],
+					rowFilter: (record) => record.ownerId === 2,
+				},
+				{}
+			)
+		);
+		assert(results.length > 0);
+		assert(results.every((record) => record.ownerId === 2));
+	});
+
+	it('re-checks rowFilter on the source-revalidated record, not the stale cached copy', async () => {
+		// A caching table: the query filters evaluate the LOCAL (possibly stale) copy, but the
+		// returned record may be revalidated from source. The authorization verdict must hold on
+		// the record actually returned (transformEntryForSelect recordGuard), or ownership changes
+		// at the source would leak through the stale-copy verdict.
+		const sourceRecords = new Map();
+		const C = table({
+			table: 'RBACCachingTest',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'kind', indexed: true }, { name: 'ownerId' }],
+		});
+		C.sourcedFrom({
+			get(id) {
+				return sourceRecords.get(id);
+			},
+		});
+		try {
+			sourceRecords.set(1, { kind: 'doc', ownerId: 1 });
+			// 10ms — expiry retains the stale value (unlike invalidate), which is the vulnerable path; the long scan
+			// interval keeps the cleanup scan from evicting it first
+			C.setTTLExpiration({ expiration: 0.01, scanInterval: 3600 });
+			const cached = await C.get(1, { user: { id: 1 } });
+			assert.strictEqual(cached.ownerId, 1, 'cache populated with the original owner');
+			// Ownership changes at the source; let the cached copy expire so the next query revalidates
+			// while the STALE value (ownerId 1) is still what the query filters evaluate.
+			sourceRecords.set(1, { kind: 'doc', ownerId: 2 });
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.strictEqual(C.primaryStore.getEntry(1)?.value?.ownerId, 1, 'the stale copy is still stored');
+			const results = await fromAsync(
+				C.search(
+					{
+						conditions: [{ attribute: 'kind', value: 'doc' }],
+						rowFilter: (record, requestContext) => record.ownerId === requestContext.user.id,
+					},
+					{ user: { id: 1 } }
+				)
+			);
+			assert.strictEqual(results.length, 0, 'a record now owned by another user must not be returned');
+		} finally {
+			C.dropTable();
+		}
+	});
+
+	it('id-prefix search applies rowFilter to every match', async () => {
+		const P = table({
+			table: 'PrefixAuth',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'ownerId' }],
+		});
+		try {
+			await P.put('doc-1', { ownerId: 1 });
+			await P.put('doc-2', { ownerId: 2 });
+			await P.put('doc-3', { ownerId: 1 });
+			const results = await fromAsync(
+				P.search(
+					{
+						id: 'doc-',
+						select: ['id', 'ownerId'],
+						rowFilter: (record, requestContext) => record.ownerId === requestContext.user.id,
+					},
+					{ user: { id: 1 } }
+				)
+			);
+			assert.deepStrictEqual(
+				results.map((r) => r.id).sort(),
+				['doc-1', 'doc-3'],
+				'prefix scan returns only records the user may see'
+			);
+		} finally {
+			P.dropTable();
+		}
+	});
+
+	it('async allowRead remains an awaited one-shot operation gate', async () => {
+		class AsyncDenies extends T {
+			async allowRead() {
+				return false; // collection-scope deny
+			}
+		}
+		await assert.rejects(
+			async () => {
+				const iterable = await AsyncDenies.search(
+					{ conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }], checkPermission: true },
+					{ user: { id: 1, role: { permission: {} } } }
+				);
+				return fromAsync(iterable);
+			},
+			(err) => err.name === 'AccessViolation' || err.statusCode === 403
+		);
+	});
+
+	it('composes the operation-level column gate with an explicit rowFilter', async () => {
+		const user = {
+			id: 1,
+			role: {
+				permission: {
+					test: {
+						tables: {
+							HNSWFilter: {
+								read: true,
+								attribute_permissions: [
+									{ attribute_name: 'id', read: true },
+									{ attribute_name: 'ownerId', read: true },
+									{ attribute_name: 'group', read: false }, // column denied
+								],
+							},
+						},
+					},
+				},
+			},
+		};
+		const results = await fromAsync(
+			T.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					select: ['id', 'group', 'ownerId'],
+					limit: 3,
+					checkPermission: true,
+					rowFilter: (record, requestContext) => record.ownerId === requestContext.user.id,
+				},
+				{ user }
+			)
+		);
+		assert(results.length > 0, 'row-filtered results expected');
+		for (const r of results) {
+			assert.strictEqual(r.ownerId, 1, 'explicit row filter applies');
+			assert.notStrictEqual(r.id, undefined, 'permitted column returned');
+			assert.strictEqual(r.group, undefined, 'column denied by attribute_permissions must be stripped');
+		}
+	});
+
+	it('subscription delivery applies an explicit rowFilter', async () => {
+		class Restricted extends T {
+			subscribe(request) {
+				request.rowFilter = (record, requestContext) => record.ownerId === requestContext.user.id;
+				return super.subscribe(request);
+			}
+		}
+		// subscribe's arg normalization only recognizes a context carrying transaction/getContext
+		const subscription = await Restricted.subscribe(
+			{ omitCurrent: true },
+			{
+				user: { id: 1, username: 'u1', role: { permission: {} } },
+				getContext() {
+					return this;
+				},
+			}
+		);
+		const received = [];
+		const collector = (async () => {
+			for await (const event of subscription) {
+				if (event.type === 'end_txn') continue;
+				received.push(event);
+			}
+		})();
+		try {
+			// ownerId = i % 3 → id 100 (100%3=1) visible to user 1; id 101 (101%3=2) is not.
+			await T.put(100, { group: 'blue', ownerId: 1, active: true, vector: [100, 0] });
+			await T.put(101, { group: 'red', ownerId: 2, active: true, vector: [101, 0] });
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert(
+				received.some((e) => e.id === 100),
+				'subscriber receives events for records they may read'
+			);
+			assert(!received.some((e) => e.id === 101), 'events for records the user may NOT read are filtered out');
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
+	it('subscription rowFilter receives the live context', async () => {
+		// The override keys on a MUTABLE claim (tier), not a stable record field, so a re-auth that
+		// swaps context.user mid-stream must change the verdict. A snapshot regression would keep
+		// delivering with the pre-downgrade user and this test would catch it.
+		const context = {
+			user: { id: 1, username: 'u1', tier: 'gold', role: { permission: {} } },
+			getContext() {
+				return this;
+			},
+		};
+		class TierGated extends T {
+			subscribe(request) {
+				request.rowFilter = (_record, requestContext) => requestContext.user.tier === 'gold';
+				return super.subscribe(request);
+			}
+		}
+		const subscription = await TierGated.subscribe({ omitCurrent: true }, context);
+		const received = [];
+		const collector = (async () => {
+			for await (const event of subscription) {
+				if (event.type !== 'end_txn') received.push(event);
+			}
+		})();
+		try {
+			await T.put(140, { group: 'blue', ownerId: 1, active: true, vector: [140, 0] });
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert(
+				received.some((e) => e.id === 140),
+				'gold-tier user receives the event'
+			);
+			// #1414 re-auth replaces context.user in place with the refreshed principal — here downgraded.
+			context.user = { id: 1, username: 'u1', tier: 'silver', role: { permission: {} } };
+			const before = received.length;
+			await T.put(141, { group: 'blue', ownerId: 1, active: true, vector: [141, 0] });
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.strictEqual(received.length, before, 'after the live downgrade, further events are dropped');
+			assert(!received.some((e) => e.id === 141), 'the post-downgrade event is not delivered');
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
+	it('subscribe still runs allowRead once as the connection grant', async () => {
+		let calls = 0;
+		class DeniesConnection extends T {
+			allowRead() {
+				calls++;
+				return false; // deny at the connection/collection grant
+			}
+		}
+		await assert.rejects(
+			async () =>
+				DeniesConnection.subscribe(
+					{ checkPermission: true, omitCurrent: true },
+					{
+						user: { id: 1, username: 'u1', role: { permission: {} } },
+						getContext() {
+							return this;
+						},
+					}
+				),
+			(err) => err.name === 'AccessViolation' || /unauthorized/i.test(err.message) || err.statusCode === 403
+		);
+		assert.strictEqual(calls, 1);
+	});
+
+	it('an operation override can attach rowFilter to a QUERY body before delegating', async () => {
+		class Restricted extends T {
+			allowRead() {
+				return true;
+			}
+			search(target) {
+				target.rowFilter = (record, requestContext) => record.ownerId === requestContext.user.id;
+				return super.search(target);
+			}
+		}
+		const results = await fromAsync(
+			await Restricted.query(
+				{ checkPermission: true, isCollection: true },
+				{ conditions: [{ attribute: 'group', comparator: 'equals', value: 'blue' }], select: ['id', 'ownerId'] },
+				{ user: { id: 1 } }
+			)
+		);
+		assert(results.length > 0, 'expected some visible rows');
+		assert(
+			results.every((r) => r.ownerId === 1),
+			'QUERY results must be filtered by the application operation override'
+		);
+	});
+
+	it('subscription delivery freezes the record before rowFilter sees it', async () => {
+		let sawFrozen;
+		class FreezeProbe extends T {
+			subscribe(request) {
+				request.rowFilter = (record) => {
+					sawFrozen = Object.isFrozen(record);
+					return true;
+				};
+				return super.subscribe(request);
+			}
+		}
+		const subscription = await FreezeProbe.subscribe(
+			{ omitCurrent: true },
+			{
+				user: { id: 1, username: 'u1', role: { permission: {} } },
+				getContext() {
+					return this;
+				},
+			}
+		);
+		const collector = (async () => {
+			for await (const _ of subscription) {
+				/* drain */
+			}
+		})();
+		try {
+			await T.put(130, { group: 'blue', ownerId: 1, active: true, vector: [130, 0] });
+			await waitFor(() => sawFrozen);
+			assert.strictEqual(sawFrozen, true, 'the record handed to rowFilter during delivery must be frozen');
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
+	it('a promise-returning subscription filter closes the stream without continuing replay', async () => {
+		class InvalidFilter extends T {
+			subscribe(request) {
+				request.rowFilter = () => Promise.reject(new Error('async policy failure'));
+				return super.subscribe(request);
+			}
+		}
+		const subscription = await InvalidFilter.subscribe(
+			{ isCollection: true },
+			{
+				user: { id: 1 },
+				getContext() {
+					return this;
+				},
+			}
+		);
+		assert.strictEqual(subscription.closed, true, 'invalid predicate is a terminal stream failure');
+		assert.strictEqual(subscription.subscriptions, null, 'failed stream is removed from transaction broadcast');
+		const iterator = subscription[Symbol.asyncIterator]();
+		const terminal = await iterator.next();
+		assert.match(terminal.value.message, /rowFilter must be synchronous/);
+		assert.deepStrictEqual(await iterator.next(), { value: undefined, done: true });
+	});
+
+	it('eventFilter can explicitly route a delete tombstone', async () => {
+		class FilteredSubscription extends T {
+			subscribe(request) {
+				request.rowFilter = (record, context) => record.ownerId === context.user.id;
+				request.eventFilter = (event) => event.id === 160;
+				return super.subscribe(request);
+			}
+		}
+		const subscription = await FilteredSubscription.subscribe(
+			{ omitCurrent: true },
+			{
+				user: { id: 1 },
+				getContext() {
+					return this;
+				},
+			}
+		);
+		const received = [];
+		const collector = (async () => {
+			for await (const event of subscription) {
+				if (event.type !== 'end_txn') received.push(event);
+			}
+		})();
+		try {
+			await T.put(160, { group: 'blue', ownerId: 1, active: true, vector: [160, 0] });
+			await waitFor(() => received.some((event) => event.id === 160 && event.type === 'put'));
+			await T.delete(160);
+			await waitFor(() => received.some((event) => event.id === 160 && event.type === 'delete'));
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
+	it('loadAsInstance=false search authorizes once on the collection receiver', async () => {
+		let allowReadCalls = 0;
+		class CollectionSearch extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				allowReadCalls++;
+				return true;
+			}
+		}
+		const iterable = await CollectionSearch.search(new RequestTarget('?group=blue&select(id,ownerId)'), {
+			user: { id: 1, role: { permission: {} } },
+			authorize: true,
+		});
+		assert.strictEqual(typeof iterable.map, 'function');
+		assert.strictEqual(typeof iterable.slice, 'function');
+		assert.strictEqual(iterable.selectApplied, true);
+		assert.deepStrictEqual(iterable.getColumns(), ['id', 'ownerId']);
+		const results = await fromAsync(iterable.map((record) => record));
+		assert(results.length > 1);
+		assert.strictEqual(allowReadCalls, 1);
+	});
+
+	it('loadAsInstance=false async authorization reserves the read snapshot before returning', async () => {
+		class SnapshotSearch extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				return true;
+			}
+		}
+		await T.delete(162);
+		const iterable = await SnapshotSearch.search(new RequestTarget('?group=blue&select(id)'), {
+			user: { id: 1, role: { permission: {} } },
+			authorize: true,
+		});
+		await T.put(162, { group: 'blue', ownerId: 1, active: true, vector: [162, 0] });
+		try {
+			const results = await fromAsync(iterable);
+			assert(!results.some((record) => record.id === 162));
+		} finally {
+			await T.delete(162);
+		}
+	});
+
+	it('loadAsInstance=false search awaits and fails closed on Promise<false> before row filtering', async () => {
+		let allowReadCalls = 0;
+		let rowFilterCalls = 0;
+		class DeniedCollectionSearch extends T {
+			static loadAsInstance = false;
+			allowRead() {
+				allowReadCalls++;
+				return Promise.resolve(false);
+			}
+		}
+		const target = new RequestTarget('?group=blue');
+		target.rowFilter = () => {
+			rowFilterCalls++;
+			return true;
+		};
+		await assert.rejects(
+			DeniedCollectionSearch.search(target, {
+				user: { id: 1, role: { permission: {} } },
+				authorize: true,
+			}),
+			(err) => err.name === 'AccessViolation' || err.statusCode === 403
+		);
+		assert.strictEqual(allowReadCalls, 1);
+		assert.strictEqual(rowFilterCalls, 0);
+	});
+
+	it('loadAsInstance=false denial stays pre-response through async and mapped overrides', async () => {
+		class AsyncDelegatingSearch extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				return false;
+			}
+			async search(target) {
+				return super.search(target);
+			}
+		}
+		class MappingSearch extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				return false;
+			}
+			search(target) {
+				return super.search(target).map((record) => record);
+			}
+		}
+		for (const TableClass of [AsyncDelegatingSearch, MappingSearch]) {
+			const target = new RequestTarget('?group=blue');
+			await assert.rejects(
+				TableClass.search(target, {
+					user: { id: 1, role: { permission: {} } },
+					authorize: true,
+				}),
+				(error) => error.name === 'AccessViolation' || error.statusCode === 403
+			);
+		}
+	});
+
+	it('loadAsInstance=false subscriptions authorize once without per-event checks', async () => {
+		let allowReadCalls = 0;
+		class CollectionSubscription extends T {
+			static loadAsInstance = false;
+			async allowRead() {
+				allowReadCalls++;
+				return true;
+			}
+		}
+		const subscription = await CollectionSubscription.subscribe(
+			{ omitCurrent: true },
+			{
+				user: { id: 1, username: 'u1', role: { permission: {} } },
+				authorize: true,
+				getContext() {
+					return this;
+				},
+			}
+		);
+		const received = [];
+		const collector = (async () => {
+			for await (const event of subscription) {
+				if (event.type !== 'end_txn') received.push(event);
+			}
+		})();
+		try {
+			await T.put(161, { group: 'blue', ownerId: 2, active: true, vector: [161, 0] });
+			await waitFor(() => received.some((event) => event.id === 161));
+			assert.strictEqual(allowReadCalls, 1);
+		} finally {
+			subscription.return?.();
+			await Promise.race([collector, new Promise((resolve) => setTimeout(resolve, 100))]);
+		}
+	});
+
+	it('loadAsInstance=false subscribe denies before audit setup', async () => {
+		let allowReadCalls = 0;
+		const NoAudit = table({
+			table: 'DeniedSubscriptionBeforeAudit',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+			audit: false,
+		});
+		class DeniedCollectionSubscription extends NoAudit {
+			static loadAsInstance = false;
+			async allowRead() {
+				allowReadCalls++;
+				return false;
+			}
+		}
+		try {
+			await assert.rejects(
+				() =>
+					DeniedCollectionSubscription.subscribe(
+						{ omitCurrent: true },
+						{
+							user: { id: 1, role: { permission: {} } },
+							authorize: true,
+							getContext() {
+								return this;
+							},
+						}
+					),
+				(err) => err.name === 'AccessViolation' || err.statusCode === 403
+			);
+			assert.strictEqual(allowReadCalls, 1);
+		} finally {
+			NoAudit.dropTable();
+		}
+	});
+
+	it('custom loadAsInstance=false handlers retain ownership of authorization', async () => {
+		let allowReadCalls = 0;
+		const sentinel = {};
+		class CustomGet extends T {
+			static loadAsInstance = false;
+			allowRead() {
+				allowReadCalls++;
+				return false;
+			}
+			get() {
+				return sentinel;
+			}
+		}
+		const result = await CustomGet.get(0, {
+			user: { id: 1, role: { permission: {} } },
+			authorize: true,
+		});
+		assert.strictEqual(result, sentinel);
+		assert.strictEqual(allowReadCalls, 0);
+	});
+
+	it('honors a companion AND condition during the vector query', async () => {
+		const results = await fromAsync(
+			T.search(
+				{
+					conditions: [{ attribute: 'active', comparator: 'equals', value: true }],
+					sort: { attribute: 'vector', target: [0, 0], distance: 'euclidean' },
+					select: ['id', 'active'],
+					limit: 5,
+				},
+				{}
+			)
+		);
+		assert.strictEqual(results.length, 5);
+		assert(
+			results.every((r) => r.active === true),
+			'every result satisfies the companion condition'
+		);
+		// active === (i % 5 !== 0) → inactive at 0,5,10,… so nearest active are 1,2,3,4,6.
+		assert.deepStrictEqual(
+			results.map((r) => r.id),
+			[1, 2, 3, 4, 6]
+		);
+	});
+
+	it('combines int8 quantization + vectorFilter + exact rerank', async () => {
+		const results = await fromAsync(
+			Tq.search(
+				{
+					sort: { attribute: 'vector', target: [0, 0.5], distance: 'euclidean' },
+					vectorFilter: (record) => record.group === 'blue',
+					select: ['id', 'group', 'vector', '$distance'],
+					limit: 5,
+				},
+				{}
+			)
+		);
+		assert.strictEqual(results.length, 5);
+		assert(
+			results.every((r) => r.group === 'blue'),
+			'filter honored on the quantized graph'
+		);
+		for (const r of results) {
+			// $distance is recomputed from the full-precision record vector (exact), not the int8 approximation.
+			const exact = (r.vector[0] - 0) ** 2 + (r.vector[1] - 0.5) ** 2;
+			assert(Math.abs(r.$distance - exact) < 1e-9, `$distance ${r.$distance} should equal exact ${exact}`);
+		}
+	});
+});
+
+describeUnlessLmdbFilter('HNSW candidate-key allow-sets (#2688)', () => {
+	// The vector condition is supplied explicitly and `enforceExecutionOrder` keeps it first, so every
+	// test here reaches the filterable-pushdown branch regardless of what the planner estimates. The
+	// companion conditions stay under half the graph, which is where an allow-set beats loading a
+	// record per visited node.
+	let A;
+	before(async () => {
+		A = table({
+			table: 'HNSWAllow',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tenant', indexed: true },
+				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'shard', indexed: true },
+				{ name: 'mixedNumber', indexed: true, type: 'Any' },
+				{ name: 'note' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		for (let i = 0; i < 300; i++) {
+			const record = {
+				tenant: i % 3 === 0 ? 'a' : 'b',
+				shard: i < 290 ? 'wide' : 'narrow',
+				mixedNumber: i === 0 ? 1n : i === 1 ? 1 : i,
+				note: i % 2 === 0 ? 'keep' : 'drop',
+				vector: [i, 0],
+			};
+			// id 0 has no rank and id 1 a null one. The record predicate's compareKeys ranks both below
+			// every number, so `rank < n` admits them, and the index holds only the null.
+			if (i > 0) record.rank = i === 1 ? null : i;
+			await A.put(i, record);
+		}
+	});
+	after(() => A.dropTable());
+
+	/**
+	 * Capture what search.ts hands the index, and the traversal counters it hands back. The plan is
+	 * also run directly — that has to happen inside the spy, since its scans read the query's
+	 * transaction, which is released once the results are consumed.
+	 */
+	async function searchWithSpy(target, conditions, extra = {}, probe = (plan) => plan.collect(100_000)) {
+		const customIndex = A.indices.vector.customIndex;
+		const original = customIndex.search;
+		const calls = [];
+		customIndex.search = function (condition, context, options) {
+			const probed = options.candidateKeys ? probe(options.candidateKeys) : undefined;
+			const entries = original.call(this, condition, context, options);
+			calls.push({ options, entries, probed });
+			return entries;
+		};
+		const sort = { attribute: 'vector', target, distance: 'euclidean' };
+		try {
+			const results = await fromAsync(
+				A.search(
+					{
+						conditions: [{ attribute: 'vector', comparator: 'sort', ...sort }, ...conditions],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['id'],
+						...extra,
+					},
+					{}
+				)
+			);
+			assert.strictEqual(calls.length, 1, 'the vector condition must be the query lead');
+			return { results, options: calls[0].options, stats: calls[0].entries, probed: calls[0].probed };
+		} finally {
+			customIndex.search = original;
+		}
+	}
+
+	it('answers an indexed equality from the allow-set, with no record loaded to admit', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(probed.complete, true, 'no residual predicate is needed');
+		assert.strictEqual(probed.keys.size, 100, 'the allow-set is every tenant-a record');
+		assert.strictEqual(stats.candidateKeys, 100);
+		assert.strictEqual(stats.filterEvaluations, 0, 'admission never loads a record');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6, 9, 12]
+		);
+	});
+
+	it('keeps strict equality behind an Any numeric candidate set', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'mixedNumber', comparator: 'equals', value: 1 }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(probed.complete, false);
+		assert(probed.keys.has(0), 'the storage range includes the BigInt value');
+		assert(probed.keys.has(1), 'the storage range includes the Number value');
+		assert(stats.filterEvaluations > 0, 'the strict record predicate decides admission');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[1]
+		);
+	});
+
+	it('does not inspect point-probe capabilities unless the lead index opts in', async () => {
+		const tenantIndex = A.indices.tenant;
+		const ownDescriptor = Object.getOwnPropertyDescriptor(tenantIndex, 'hasIndexEntry');
+		Object.defineProperty(tenantIndex, 'hasIndexEntry', {
+			configurable: true,
+			get() {
+				throw new Error('the HNSW planner must not inspect point-probe capabilities');
+			},
+		});
+		try {
+			const { results, options } = await searchWithSpy(
+				[0, 0],
+				[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+				{ limit: 1 }
+			);
+			assert.strictEqual(options.candidateKeys.probe, undefined);
+			assert.strictEqual(results[0].id, 0);
+		} finally {
+			if (ownDescriptor) Object.defineProperty(tenantIndex, 'hasIndexEntry', ownDescriptor);
+			else delete tenantIndex.hasIndexEntry;
+		}
+	});
+
+	it('composes equality point probes across AND, OR, and residual conditions', async () => {
+		const customIndex = A.indices.vector.customIndex;
+		customIndex.candidateKeyProbe = true;
+		const inspect = (keys) => (plan) => ({
+			complete: plan.probe?.complete,
+			estimatedCount: plan.probe?.estimatedCount,
+			maxReadsPerCandidate: plan.probe?.maxReadsPerCandidate,
+			matches: keys.map((key) => plan.probe?.has(key)),
+		});
+		try {
+			const and = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+				],
+				{ limit: 1 },
+				inspect([0, 1, 291])
+			);
+			assert.deepStrictEqual(and.probed, {
+				complete: true,
+				estimatedCount: 100,
+				maxReadsPerCandidate: 2,
+				matches: [true, false, false],
+			});
+
+			const or = await searchWithSpy(
+				[0, 0],
+				[
+					{
+						operator: 'or',
+						conditions: [
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+							{ attribute: 'rank', comparator: 'equals', value: 7 },
+						],
+					},
+				],
+				{ limit: 1 },
+				inspect([3, 7, 8])
+			);
+			assert.deepStrictEqual(or.probed, {
+				complete: true,
+				estimatedCount: 101,
+				maxReadsPerCandidate: 2,
+				matches: [true, true, false],
+			});
+
+			const residual = await searchWithSpy(
+				[0, 0],
+				[
+					{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+					{ attribute: 'note', comparator: 'equals', value: 'keep' },
+				],
+				{ limit: 1 },
+				inspect([0, 1])
+			);
+			assert.deepStrictEqual(residual.probed, {
+				complete: false,
+				estimatedCount: 100,
+				maxReadsPerCandidate: 1,
+				matches: [true, false],
+			});
+		} finally {
+			delete customIndex.candidateKeyProbe;
+		}
+	});
+
+	it('builds the allow-set from each range comparator a missing value cannot satisfy', async () => {
+		for (const [comparator, value, target, expected] of [
+			['ge', 200, [200, 0], [200, 201, 202, 203, 204]],
+			['gt', 199, [200, 0], [200, 201, 202, 203, 204]],
+			['between', [100, 199], [150.3, 0], [150, 151, 149, 152, 148]],
+		]) {
+			// The allow-set gate reads this estimate, and a memtable range estimate is a skip-list sample
+			// that can land past the 150-key budget.
+			const { results, stats } = await searchWithSpy(
+				target,
+				[{ attribute: 'rank', comparator, value, estimated_count: 100 }],
+				{ limit: 5 }
+			);
+			assert.strictEqual(stats.filterEvaluations, 0, `${comparator} must be answered by the allow-set`);
+			assert.strictEqual(stats.candidateKeys, 100, `${comparator} selects 100 records`);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				expected,
+				`unexpected results for ${comparator}`
+			);
+		}
+	});
+
+	it('clears the allow-set gate with an unpinned planner estimate on a narrow range', async () => {
+		const { results, stats } = await searchWithSpy(
+			[104.3, 0],
+			[{ attribute: 'rank', comparator: 'between', value: [100, 109] }],
+			{ limit: 5 }
+		);
+		assert.strictEqual(stats.filterEvaluations, 0, 'the estimate must not decline the allow-set');
+		assert.strictEqual(stats.candidateKeys, 10);
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[104, 105, 103, 106, 102]
+		);
+	});
+
+	it('returns what the predicate path returns when a condition admits a record the index does not hold', async () => {
+		const customIndex = A.indices.vector.customIndex;
+		for (const [condition, planned] of [
+			// Satisfied by a rank of 0, which a record written as -0 holds and its index entry cannot supply.
+			[{ attribute: 'rank', comparator: 'between', value: [null, 60] }, false],
+			[{ attribute: 'rank', comparator: 'lt', value: 100 }, false],
+			[{ attribute: 'rank', comparator: 'le', value: 99 }, false],
+			[{ attribute: 'rank', comparator: 'equals', value: 0 }, false],
+			[{ attribute: 'rank', comparator: 'between', value: [-0, 60] }, false],
+			// -0 encodes above every number, so an unnormalized lower bound would scan an empty range.
+			[{ attribute: 'rank', comparator: 'gtlt', value: [-0, 60] }, true],
+		]) {
+			const label = `${condition.comparator} ${JSON.stringify(condition.value)}`;
+			const { results, probed } = await searchWithSpy([0, 0], [condition], { limit: 5 });
+			assert.strictEqual(Boolean(probed), planned, `${label}: planned`);
+			customIndex.candidateKeyFilter = false;
+			let unplanned;
+			try {
+				unplanned = await searchWithSpy([0, 0], [condition], { limit: 5 });
+			} finally {
+				customIndex.candidateKeyFilter = true;
+			}
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				unplanned.results.map((record) => record.id),
+				`${label}: the allow-set must not change the results`
+			);
+		}
+	});
+
+	it('leaves a range admitting 0 to the predicate, since a -0 written there is indexed unreadably', async () => {
+		const Z = table({
+			table: 'HNSWAllowNegativeZero',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true, type: 'Int' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			for (let i = 1; i <= 40; i++) await Z.put(i, { rank: i, vector: [i, 0] });
+			// Math.round(-0.3) is -0. The record reads back as 0, but its index entry sorts past every
+			// number and decodes to a different primary key.
+			await Z.put(100, { rank: Math.round(-0.3), vector: [0, 0] });
+			const customIndex = Z.indices.vector.customIndex;
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const run = async (planned) => {
+				customIndex.candidateKeyFilter = planned;
+				try {
+					const results = await fromAsync(
+						Z.search(
+							{
+								conditions: [
+									{ attribute: 'vector', comparator: 'sort', ...sort },
+									{ attribute: 'rank', comparator: 'between', value: [-5, 5] },
+								],
+								sort,
+								enforceExecutionOrder: true,
+								select: ['id'],
+								limit: 3,
+							},
+							{}
+						)
+					);
+					return results.map((record) => record.id);
+				} finally {
+					customIndex.candidateKeyFilter = true;
+				}
+			};
+			assert.deepStrictEqual(await run(true), [100, 1, 2]);
+			assert.deepStrictEqual(await run(false), [100, 1, 2]);
+		} finally {
+			Z.dropTable();
+		}
+	});
+
+	it('skips the null block a lt/le range cannot match, so null ranks neither fill the allow-set nor the limit', async () => {
+		const N = table({
+			table: 'HNSWAllowNulls',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true, type: 'BigInt' },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			for (let i = 0; i < 300; i++) await N.put(i, { rank: i < 200 ? null : BigInt(i), vector: [i, 0] });
+			const customIndex = N.indices.vector.customIndex;
+			const original = customIndex.search;
+			let plan;
+			customIndex.search = function (condition, context, options) {
+				plan = options.candidateKeys && options.candidateKeys.collect(100_000);
+				return original.call(this, condition, context, options);
+			};
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			let results;
+			try {
+				results = await fromAsync(
+					N.search(
+						{
+							conditions: [
+								{ attribute: 'vector', comparator: 'sort', ...sort },
+								{ attribute: 'rank', comparator: 'lt', value: 250n },
+							],
+							sort,
+							enforceExecutionOrder: true,
+							select: ['id'],
+							limit: 1,
+						},
+						{}
+					)
+				);
+			} finally {
+				customIndex.search = original;
+			}
+			assert.strictEqual(plan.keys.size, 50, 'ranks 200-249, and none of the 200 nulls');
+			assert.strictEqual(plan.complete, true);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				[200]
+			);
+		} finally {
+			N.dropTable();
+		}
+	});
+
+	it('leaves a range on an untyped attribute to the predicate, which nested arrays and BigInts can defeat', async () => {
+		const M = table({
+			table: 'HNSWAllowUntypedRange',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'rank', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// -2n has the index key of -2 but fails `< -1`; [[-2]] passes it but has no index entry
+			await M.put(1, { rank: -2n, vector: [0, 0] });
+			await M.put(2, { rank: [[-2]], vector: [0.25, 0] });
+			await M.put(3, { rank: 5, vector: [0.5, 0] });
+			await M.put(4, { rank: -2, vector: [1, 0] });
+			for (let i = 10; i < 60; i++) await M.put(i, { rank: i, vector: [i, 0] });
+			const customIndex = M.indices.vector.customIndex;
+			const original = customIndex.search;
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			try {
+				for (const [comparator, value, expected] of [
+					['lt', -1, [2, 4]],
+					['le', -1, [2, 4]],
+					['between', [null, -1], [2, 4]],
+					// the zero probe does not decline this one
+					['gt', 1],
+				]) {
+					let candidateKeys;
+					customIndex.search = function (condition, context, options) {
+						candidateKeys = options.candidateKeys;
+						return original.call(this, condition, context, options);
+					};
+					const results = await fromAsync(
+						M.search(
+							{
+								conditions: [
+									{ attribute: 'vector', comparator: 'sort', ...sort },
+									{ attribute: 'rank', comparator, value },
+								],
+								sort,
+								enforceExecutionOrder: true,
+								select: ['id'],
+								limit: 2,
+							},
+							{}
+						)
+					);
+					assert.strictEqual(candidateKeys, undefined, `${comparator}: no allow-set`);
+					if (expected)
+						assert.deepStrictEqual(
+							results.map((record) => record.id),
+							expected,
+							comparator
+						);
+				}
+			} finally {
+				customIndex.search = original;
+			}
+		} finally {
+			M.dropTable();
+		}
+	});
+
+	it('unions a nested OR group into one allow-set', async () => {
+		const { results, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{
+					operator: 'or',
+					conditions: [
+						{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						{ attribute: 'rank', comparator: 'equals', value: 7 },
+					],
+				},
+			],
+			{ limit: 6 }
+		);
+		assert.strictEqual(stats.filterEvaluations, 0);
+		assert.strictEqual(stats.candidateKeys, 101, 'rank 7 joins the 100 tenant-a records');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6, 7, 9, 12]
+		);
+	});
+
+	it('keeps a non-indexed sibling residual and gates it behind the allow-set', async () => {
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'note', comparator: 'equals', value: 'keep' },
+			],
+			{ limit: 4, select: ['id', 'note'] }
+		);
+		assert.strictEqual(probed.complete, false, 'an unindexed sibling stays residual');
+		assert(stats.filterEvaluations > 0, 'the residual predicate still runs');
+		assert(
+			stats.filterEvaluations <= stats.candidateKeys,
+			`the allow-set gates the residual (${stats.filterEvaluations} loads for ${stats.candidateKeys} keys)`
+		);
+		// note 'keep' is even, tenant 'a' is a multiple of 3 — so the multiples of 6.
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 6, 12, 18]
+		);
+	});
+
+	it('drops a term too wide for the scan budget instead of abandoning the whole set', async () => {
+		// `shard = 'wide'` matches 290 of 300, past what is left of a 150-entry budget once the tenant
+		// term is scanned. Abandoning the set there would spend the scan AND run the full predicate.
+		const { results, probed, stats } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'shard', comparator: 'equals', value: 'wide' },
+			],
+			{ limit: 3, select: ['id', 'shard'] },
+			(plan) => ({ capped: plan.collect(150), full: plan.collect(100_000) })
+		);
+		assert.strictEqual(probed.capped.complete, false, 'a dropped term leaves the set incomplete');
+		assert.strictEqual(probed.capped.keys.size, 100, 'only the tenant term was scanned');
+		assert.strictEqual(probed.full.complete, true, 'given the whole budget both terms are scanned');
+		assert.strictEqual(probed.full.keys.size, 97, 'tenant a minus the three narrow-shard multiples of 3');
+		assert(
+			stats.filterEvaluations > 0 && stats.filterEvaluations <= stats.candidateKeys,
+			'the dropped shard term is evaluated only behind the allow-set'
+		);
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[0, 3, 6]
+		);
+	});
+
+	it('a record guard forces the residual path and still fills the limit', async () => {
+		const { results, probed } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 3, rowFilter: (record) => record.rank % 30 === 21 }
+		);
+		assert.strictEqual(probed.complete, false, 'an opaque guard can never be covered');
+		assert.deepStrictEqual(
+			results.map((record) => record.id),
+			[21, 51, 81]
+		);
+	});
+
+	it('collect() aborts rather than overrunning the budget it was given', async () => {
+		const { probed } = await searchWithSpy(
+			[0, 0],
+			[{ attribute: 'tenant', comparator: 'equals', value: 'a' }],
+			{ limit: 1 },
+			(plan) => ({ capped: plan.collect(1), full: plan.collect(100_000) })
+		);
+		assert.strictEqual(probed.capped, null, 'the narrowest term overrunning gives up instead of reading on');
+		assert.strictEqual(probed.full.keys.size, 100);
+		assert.strictEqual(probed.full.complete, true);
+	});
+
+	it('leaves a comparator no index range answers exactly unplanned', async () => {
+		const { probed } = await searchWithSpy(
+			[0, 0],
+			[
+				{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+				{ attribute: 'rank', comparator: 'ne', value: 3 },
+			],
+			{ limit: 1 }
+		);
+		assert.strictEqual(probed.complete, false, 'ne is answered by a scan plus a filter, so it stays residual');
+		assert.strictEqual(probed.keys.size, 100, 'only the equality became a scan');
+	});
+
+	it('composite primary keys that flatten alike are both admitted', async () => {
+		const C = table({
+			table: 'HNSWAllowComposite',
+			database: 'test',
+			attributes: [
+				{ name: 'left', isPrimaryKey: true },
+				{ name: 'right', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'tenant', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// ['a', 'b\0c'] and ['a\0b', 'c'] join to the same string under flattenKey; only storage key
+			// identity keeps them apart, and collapsing them would lose one real match.
+			await C.put(['a', 'b\0c'], { name: 'first', tenant: 'a', vector: [1, 0] });
+			await C.put(['a\0b', 'c'], { name: 'second', tenant: 'a', vector: [2, 0] });
+			await C.put(['z', 'z'], { name: 'other', tenant: 'b', vector: [3, 0] });
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const results = await fromAsync(
+				C.search(
+					{
+						conditions: [
+							{ attribute: 'vector', comparator: 'sort', ...sort },
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['name'],
+						limit: 5,
+					},
+					{}
+				)
+			);
+			assert.deepStrictEqual(
+				results.map((record) => record.name),
+				['first', 'second']
+			);
+		} finally {
+			C.dropTable();
+		}
+	});
+
+	it('a string key and a composite key encoding to that string are both admitted', async () => {
+		const M = table({
+			table: 'HNSWAllowMixedKeys',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tenant', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'euclidean', quantization: 'none' }, type: 'Array' },
+			],
+		});
+		try {
+			// A string key is matched by value and ['a', 'b'] by writeKeyId, which is the string 'a\0b':
+			// one identity map for both would keep only one of the two.
+			await M.put('a\0b', { tenant: 'a', vector: [1, 0] });
+			await M.put(['a', 'b'], { tenant: 'a', vector: [2, 0] });
+			await M.put('other', { tenant: 'b', vector: [3, 0] });
+			const sort = { attribute: 'vector', target: [0, 0], distance: 'euclidean' };
+			const results = await fromAsync(
+				M.search(
+					{
+						conditions: [
+							{ attribute: 'vector', comparator: 'sort', ...sort },
+							{ attribute: 'tenant', comparator: 'equals', value: 'a' },
+						],
+						sort,
+						enforceExecutionOrder: true,
+						select: ['id'],
+						limit: 5,
+					},
+					{}
+				)
+			);
+			assert.deepStrictEqual(
+				results.map((record) => record.id),
+				['a\0b', ['a', 'b']]
+			);
+		} finally {
+			M.dropTable();
+		}
+	});
+});
+
+describeUnlessLmdbFilter('HNSW allow-set admission (#2688)', () => {
+	function buildLine(count) {
+		const hnsw = new HierarchicalNavigableSmallWorld(newMockIndexStore(), {
+			distance: 'euclidean',
+			quantization: 'none',
+			optimizeRouting: 0,
+		});
+		for (let i = 0; i < count; i++) hnsw.index(i, [i], null, {});
+		return hnsw;
+	}
+	function keySet(keys) {
+		const set = new CandidateKeySet();
+		for (const key of keys) set.add(key);
+		return set;
+	}
+	function plan(keys, complete = true, collect) {
+		return {
+			estimatedCount: keys.length,
+			collect: collect ?? (() => ({ keys: keySet(keys), complete })),
+		};
+	}
+	const even = (primaryKey) => Number(primaryKey) % 2 === 0;
+	function search(hnsw, options) {
+		return hnsw.search({ target: [0], comparator: 'sort', descending: false }, { transaction: undefined }, options);
+	}
+
+	it('a complete plan replaces the predicate entirely', () => {
+		const hnsw = buildLine(200);
+		const allowed = [];
+		for (let i = 0; i < 200; i += 2) allowed.push(i);
+		let predicateCalls = 0;
+		const results = search(hnsw, {
+			filter: (primaryKey) => {
+				predicateCalls++;
+				return even(primaryKey);
+			},
+			candidateKeys: plan(allowed),
+		});
+		assert.strictEqual(predicateCalls, 0, "the caller's predicate is never reached");
+		assert.strictEqual(results.filterEvaluations, 0, 'no record is loaded to admit');
+		assert.strictEqual(results.candidateKeys, 100);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[0, 2, 4, 6, 8]
+		);
+	});
+
+	it('an empty allow-set returns nothing under the unwidened visit budget', () => {
+		const hnsw = buildLine(200);
+		let predicateCalls = 0;
+		const results = search(hnsw, {
+			filter: () => {
+				predicateCalls++;
+				return true;
+			},
+			candidateKeys: plan([]),
+		});
+		assert.strictEqual(results.length, 0, 'a zero-match filter admits nothing');
+		assert.strictEqual(predicateCalls, 0);
+		assert.strictEqual(results.candidateKeys, 0);
+		assert.strictEqual(results.filterEvaluations, 0);
+	});
+
+	it('declines a plan too broad to pay for itself', () => {
+		const hnsw = buildLine(200);
+		let collected = false;
+		const results = search(hnsw, {
+			filter: even,
+			candidateKeys: {
+				estimatedCount: 150,
+				collect() {
+					collected = true;
+					return { keys: keySet([]), complete: true };
+				},
+			},
+		});
+		assert.strictEqual(collected, false, 'a plan over half the graph is not worth scanning');
+		assert(results.filterEvaluations > 0, 'the predicate path ran instead');
+		assert(results.every((entry) => even(entry.key)));
+	});
+
+	it('takes the predicate path when the candidate scan overruns or fails', () => {
+		for (const collect of [
+			() => null,
+			() => {
+				throw new Error('the sibling index started rebuilding');
+			},
+		]) {
+			const hnsw = buildLine(200);
+			const results = search(hnsw, { filter: even, candidateKeys: plan([0, 2, 4], true, collect) });
+			assert(results.length > 0, 'a failed allow-set build must not fail the query');
+			assert(
+				results.every((entry) => even(entry.key)),
+				'the predicate still decides admission'
+			);
+			assert(results.filterEvaluations > 0, 'the predicate path ran');
+		}
+	});
+
+	it('admits a key the two sides of the query decode differently', () => {
+		// The index scan decodes an int64 as the number ordered-binary encodes it as, while the
+		// traversal reports the BigInt its own decoder produced. Only storage identity matches the
+		// two, so a by-value allow-set has to fall through to it rather than rejecting the node.
+		const nodes = new Map();
+		let entryPoint;
+		const bigIntSafeStore = {
+			encoder: { useFloat32: false },
+			getSync(key) {
+				if (key === Symbol.for('entryPoint')) return entryPoint;
+				return nodes.get(typeof key === 'number' ? key : `k${String(key)}`);
+			},
+			put(key, value) {
+				if (key === Symbol.for('entryPoint')) return void (entryPoint = value);
+				nodes.set(typeof key === 'number' ? key : `k${String(key)}`, value);
+			},
+			remove(key) {
+				if (key === Symbol.for('entryPoint')) return void (entryPoint = undefined);
+				nodes.delete(typeof key === 'number' ? key : `k${String(key)}`);
+			},
+			*getRange({ start = 0, end = Infinity } = {}) {
+				for (const [k, v] of nodes) if (typeof k === 'number' && k >= start && k <= end) yield { key: k, value: v };
+			},
+			getKeys: () => [],
+			getUserSharedBuffer: (_name, buffer) => buffer,
+		};
+		const hnsw = new HierarchicalNavigableSmallWorld(bigIntSafeStore, {
+			distance: 'euclidean',
+			quantization: 'none',
+			optimizeRouting: 0,
+		});
+		for (let i = 0; i < 60; i++) hnsw.index(BigInt(i), [i], null, {});
+		const results = hnsw.search(
+			{ target: [0], comparator: 'sort', descending: false },
+			{ transaction: undefined },
+			{ filter: () => true, candidateKeys: plan([2, 4, 6, 8, 10]) }
+		);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[2, 4, 6, 8, 10],
+			'a number allow-set must match the BigInt keys the graph reports'
+		);
+	});
+
+	it('CandidateKeySet matches keys by storage identity', () => {
+		const keys = keySet([4n, 7, 0, ['a', 'b'], 'x']);
+		assert(keys.has(4), 'a number matches the BigInt it encodes as');
+		assert(keys.has(7n), 'a BigInt matches the number it encodes as');
+		assert(keySet([2 ** 60]).has(2n ** 60n));
+		assert(!keySet([2 ** 53]).has(2n ** 53n + 1n), 'a BigInt does not match the number it rounds to');
+		assert(keys.has(0));
+		assert(!keys.has(-0), '-0 and 0 are different stored keys');
+		assert(keys.has(['a', 'b']));
+		assert(!keys.has('a\0b'), 'a string is not the composite key whose encoding it spells');
+		assert(!keySet(['a\0b']).has(['a', 'b']));
+		assert(keys.has('x'));
+		assert.strictEqual(keys.size, 5);
+	});
+
+	it('an incomplete plan keeps the predicate behind the allow-set', () => {
+		const hnsw = buildLine(200);
+		const allowed = [];
+		for (let i = 0; i < 40; i++) allowed.push(i);
+		let evaluated = 0;
+		const results = search(hnsw, {
+			filter: (primaryKey) => {
+				evaluated++;
+				return even(primaryKey);
+			},
+			candidateKeys: plan(allowed, false),
+		});
+		assert(evaluated > 0 && evaluated <= 40, `the predicate saw only allow-set members, got ${evaluated}`);
+		assert.strictEqual(results.filterEvaluations, evaluated);
+		assert.deepStrictEqual(
+			results.slice(0, 5).map((entry) => Number(entry.key)),
+			[0, 2, 4, 6, 8]
+		);
 	});
 });
 

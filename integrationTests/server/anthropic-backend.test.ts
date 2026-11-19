@@ -14,7 +14,7 @@
  * pre-existing CJS require cycle (`harper_logger` ↔ `common_utils`).
  */
 import { suite, test, before } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 
 type AnthropicBackendCtor = new (
 	config: { apiKey: string; model?: string; baseUrl?: string; requestTimeoutMs?: number },

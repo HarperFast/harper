@@ -4,7 +4,6 @@ import * as insert from '../dataLayer/insert.ts';
 import * as search from '../dataLayer/search.ts';
 import * as delete_ from '../dataLayer/delete.ts';
 import * as validation from '../validation/role_validation.ts';
-import * as signalling from '../utility/signalling.ts';
 import * as util from 'util';
 import * as terms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -16,8 +15,8 @@ import SearchObject from '../dataLayer/SearchObject.ts';
 import SearchByHashObject from '../dataLayer/SearchByHashObject.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
-
-import { UserEventMsg } from '../server/threads/itc.js';
+import { assertActiveSuperUserRemains } from './user.ts';
+import { withoutSystemGrants } from './systemRolePermissions.ts';
 
 function scrubRoleDetails(role) {
 	try {
@@ -87,8 +86,6 @@ export async function addRole(role: any) {
 
 	await insert.insert(insertObject);
 
-	signalling.signalUserChange(new UserEventMsg(process.pid));
-
 	role = scrubRoleDetails(role);
 	return role;
 }
@@ -101,6 +98,12 @@ export async function alterRole(role: any) {
 
 	role = scrubRoleDetails(role);
 
+	if (role.permission) {
+		await assertActiveSuperUserRemains((user) =>
+			user.role?.id === role.id ? { ...user, role: { ...user.role, permission: role.permission } } : user
+		);
+	}
+
 	let updateObject = {
 		operation: 'update',
 		schema: 'system',
@@ -112,6 +115,8 @@ export async function alterRole(role: any) {
 	try {
 		updateResponse = await insert.update(updateObject);
 	} catch (err) {
+		const statusCode = (err as any)?.statusCode;
+		if (statusCode >= 400 && statusCode < 500) throw err;
 		throw handleHDBError(err as any, undefined, undefined, undefined, undefined, undefined);
 	}
 
@@ -119,7 +124,6 @@ export async function alterRole(role: any) {
 		throw handleHDBError(new Error(), 'Invalid role id', HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	await signalling.signalUserChange(new UserEventMsg(process.pid));
 	return role;
 }
 
@@ -186,13 +190,12 @@ export async function dropRole(role: any) {
 
 	await pDeleteDelete(deleteObject);
 
-	signalling.signalUserChange(new UserEventMsg(process.pid));
 	return `${roleName[0].role} successfully deleted`;
 }
 
 export async function getRoleByName(roleName: string) {
 	for await (const role of databases.system.hdb_role.search([{ attribute: 'role', value: roleName } as any])) {
-		return role;
+		return withoutSystemGrants(role);
 	}
 	return null;
 }
@@ -207,5 +210,5 @@ export async function listRoles() {
 		get_attributes: ['*'],
 	};
 
-	return pSearchSearchByValue(searchObj);
+	return Array.from((await pSearchSearchByValue(searchObj)) ?? [], (role) => withoutSystemGrants(role));
 }

@@ -1,14 +1,20 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 // Importing databases first primes Harper's module graph in the order other unit tests
 // (e.g. Resource-get-context.test.js) load it; otherwise the transaction.ts ↔
 // DatabaseTransaction/blob require chain hits a cycle when loaded ESM-first by mocha.
 require('#src/resources/databases');
 const { contextStorage } = require('#src/resources/transaction');
-const { setEmbedding, setGenerative, clearRegistry } = require('#src/resources/models/backendRegistry');
+const { setEmbedding, setGenerative, clearRegistry, defineBackend } = require('#src/resources/models/backendRegistry');
+const { registerRouter, clearRouting } = require('#src/resources/models/routing');
 const { TestBackend } = require('#src/resources/models/TestBackend');
-const { Models, ModelCapabilityError, ModelPendingNotSupportedError } = require('#src/resources/models/Models');
+const {
+	Models,
+	ModelCapabilityError,
+	ModelPendingNotSupportedError,
+	models: modelsSingleton,
+} = require('#src/resources/models/Models');
 
 function makeMockWriter() {
 	const records = [];
@@ -20,14 +26,45 @@ function makeMockWriter() {
 	};
 }
 
+describe('models singleton', () => {
+	it('is a live Models instance', () => {
+		assert.ok(modelsSingleton instanceof Models);
+	});
+
+	it('_assignPackageExport wires global.models to the same object', () => {
+		assert.strictEqual(global.models, modelsSingleton);
+	});
+
+	it('exposes registerBackend / defineBackend / registerRouter as methods on the singleton, not free globals (#1534)', () => {
+		assert.strictEqual(typeof modelsSingleton.registerBackend, 'function');
+		assert.strictEqual(typeof modelsSingleton.defineBackend, 'function');
+		assert.strictEqual(typeof modelsSingleton.registerRouter, 'function');
+		// The generic free globals were removed — only `models` is exported.
+		assert.strictEqual(global.registerBackend, undefined);
+		assert.strictEqual(global.defineBackend, undefined);
+	});
+});
+
+// Captures (value, metric, path) tuples that Models passes to recordAction.
+// Production wires the module-scoped recordAction; tests pass this spy so we can
+// assert exactly which aggregate metrics are emitted without touching the global
+// analytics pipeline.
+function makeMetricSpy() {
+	const calls = [];
+	const emitter = (value, metric, path) => calls.push({ value, metric, path });
+	return { calls, emitter };
+}
+
 describe('Models facade', () => {
 	let writer;
+	let metricSpy;
 	let models;
 
 	beforeEach(() => {
 		clearRegistry();
 		writer = makeMockWriter();
-		models = new Models(writer);
+		metricSpy = makeMetricSpy();
+		models = new Models(writer, metricSpy.emitter);
 		const test = new TestBackend();
 		setEmbedding('default', test);
 		setGenerative('default', test);
@@ -42,6 +79,16 @@ describe('Models facade', () => {
 			const vectors = await models.embed('hello');
 			assert.ok(Array.isArray(vectors));
 			assert.ok(vectors[0] instanceof Float32Array);
+		});
+
+		it('embedWithUsage preserves the result-level usage that embed() drops (internal gateway path)', async () => {
+			const { vectors, usage } = await models.embedWithUsage('hello');
+			assert.ok(vectors[0] instanceof Float32Array);
+			// TestBackend reports embeddingTokens = total input length.
+			assert.strictEqual(usage.embeddingTokens, 'hello'.length);
+			// Same analytics path as embed(): one success row, not a new code path.
+			assert.strictEqual(writer.records.length, 1);
+			assert.strictEqual(writer.records[0].method, 'embed');
 		});
 
 		it('writes an analytics record with backend=test, method=embed, success=true', async () => {
@@ -183,6 +230,115 @@ describe('Models facade', () => {
 		});
 	});
 
+	describe('aggregate analytics emission (recordAction)', () => {
+		it('emits model-embed count=1 with backend name as path on successful embed', async () => {
+			await models.embed('hello');
+			const countCall = metricSpy.calls.find((c) => c.metric === 'model-embed');
+			assert.ok(countCall, 'expected a model-embed metric to be emitted');
+			assert.strictEqual(countCall.value, 1);
+			assert.strictEqual(countCall.path, 'test');
+		});
+
+		it('emits model-embed-tokens with the sum from usage.embeddingTokens', async () => {
+			setEmbedding('default', {
+				name: 'tokenful-embed',
+				capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+				async embed() {
+					return { status: 'completed', output: [new Float32Array(1)], usage: { embeddingTokens: 17 } };
+				},
+			});
+			await models.embed('x');
+			const tokenCall = metricSpy.calls.find((c) => c.metric === 'model-embed-tokens');
+			assert.ok(tokenCall, 'expected model-embed-tokens to be emitted');
+			assert.strictEqual(tokenCall.value, 17);
+			assert.strictEqual(tokenCall.path, 'tokenful-embed');
+		});
+
+		it('omits the tokens metric entirely when usage is absent or zero', async () => {
+			setEmbedding('default', {
+				name: 'no-usage',
+				capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+				async embed() {
+					return { status: 'completed', output: [new Float32Array(1)] };
+				},
+			});
+			await models.embed('x');
+			assert.ok(
+				!metricSpy.calls.some((c) => c.metric.endsWith('-tokens')),
+				'no -tokens metric should be emitted when backend reports no usage'
+			);
+			// Count metric should still be there though.
+			assert.ok(metricSpy.calls.some((c) => c.metric === 'model-embed'));
+		});
+
+		it('sums prompt + completion tokens for generate into a single model-generate-tokens metric', async () => {
+			setGenerative('default', {
+				name: 'tokenful-gen',
+				capabilities: () => ({ embed: false, generate: true, stream: false, tools: false, adapters: false }),
+				async generate() {
+					return {
+						status: 'completed',
+						output: { content: 'hi', finishReason: 'stop' },
+						usage: { promptTokens: 12, completionTokens: 8 },
+					};
+				},
+			});
+			await models.generate('x');
+			const tokenCall = metricSpy.calls.find((c) => c.metric === 'model-generate-tokens');
+			assert.ok(tokenCall, 'expected model-generate-tokens to be emitted');
+			assert.strictEqual(tokenCall.value, 20);
+		});
+
+		it('emits a model-generateStream count + tokens at the end of a successful stream', async () => {
+			setGenerative('default', {
+				name: 'stream-with-usage',
+				capabilities: () => ({ embed: false, generate: true, stream: true, tools: false, adapters: false }),
+				async *generateStream() {
+					yield { deltaContent: 'one ' };
+					yield { deltaContent: 'two' };
+					yield { finishReason: 'stop' };
+				},
+			});
+			for await (const _chunk of models.generateStream('x')) {
+				// drain
+			}
+			// stream backend reports no usage in this test, so only the count metric
+			assert.ok(metricSpy.calls.some((c) => c.metric === 'model-generateStream' && c.value === 1));
+		});
+
+		it('does NOT emit aggregate metrics on failed calls (forensics row still goes to hdb_model_calls)', async () => {
+			setEmbedding('default', {
+				name: 'failing',
+				capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+				async embed() {
+					throw new Error('upstream boom');
+				},
+			});
+			await assert.rejects(() => models.embed('x'));
+			assert.strictEqual(metricSpy.calls.length, 0, 'no aggregate metrics should fire on failure');
+			// But the per-call writer row IS there for forensics.
+			assert.strictEqual(writer.records.length, 1);
+			assert.strictEqual(writer.records[0].success, false);
+		});
+
+		it('does NOT emit aggregate metrics on pre-call backend-not-found (no billable work happened)', async () => {
+			await assert.rejects(() => models.embed('x', { model: 'no-such-name' }));
+			assert.strictEqual(metricSpy.calls.length, 0);
+		});
+
+		it('does NOT emit aggregate metrics when the backend returns status=pending', async () => {
+			setEmbedding('default', {
+				name: 'pending',
+				capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+				async embed() {
+					return { status: 'pending', operationId: 'op-1' };
+				},
+			});
+			await assert.rejects(() => models.embed('x'), ModelPendingNotSupportedError);
+			assert.strictEqual(metricSpy.calls.length, 0);
+		});
+	});
+
 	describe('generate', () => {
 		it('returns unwrapped GenerateResult with content', async () => {
 			const result = await models.generate('hello');
@@ -210,6 +366,48 @@ describe('Models facade', () => {
 			assert.strictEqual(r.method, 'generate');
 			assert.strictEqual(r.success, false);
 			assert.strictEqual(r.error_code, 'backend_error');
+		});
+
+		describe("toolMode: 'auto' (entry dispatch)", () => {
+			// Loop behavior lives in `agentLoop.test.js`. Tests here cover the dispatch
+			// branch in `Models.generate` itself — that the entry point picks the right
+			// path and that `'return'` is unaffected.
+
+			it("toolMode: 'return' still flows the single-shot path", async () => {
+				const result = await models.generate('hello', { toolMode: 'return' });
+				assert.strictEqual(typeof result.content, 'string');
+				assert.strictEqual(writer.records.length, 1);
+				assert.strictEqual(writer.records[0].method, 'generate');
+				assert.strictEqual(writer.records[0].success, true);
+			});
+
+			it('still-gated modes throw 501 at the loop entry (sanity — full matrix in agentLoop.test.js)', async () => {
+				// Spot-check that the dispatch branch reaches the guarded loop body. Each
+				// deferred mode has its own assertion in `agentLoop.test.js`.
+				await assert.rejects(
+					() => models.generate('hello', { toolMode: 'auto', toolArgValidation: 'strict' }),
+					(err) => err.statusCode === 501
+				);
+			});
+
+			it('auto + tools against a tools-incapable backend fails loud (no silent no-op)', async () => {
+				// TestBackend is tools:false. Declaring tools for an auto loop against it would
+				// otherwise run as a plain generation, silently ignoring the tools.
+				await assert.rejects(
+					() =>
+						models.generate(
+							{ messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 't', description: '', parameters: {} }] },
+							{ toolMode: 'auto', toolHandlers: { t: () => ({}) } }
+						),
+					(err) => err instanceof ModelCapabilityError && /tools/.test(err.message)
+				);
+			});
+
+			it('auto WITHOUT tools is unaffected by the tools guard', async () => {
+				const result = await models.generate('hi', { toolMode: 'auto' });
+				assert.strictEqual(typeof result.content, 'string');
+				assert.strictEqual(result.finishReason, 'stop');
+			});
 		});
 	});
 
@@ -292,5 +490,231 @@ describe('Models facade', () => {
 			assert.strictEqual(writer.records[0].error_code, 'capability_unsupported');
 			assert.strictEqual(writer.records[0].method, 'generateStream');
 		});
+
+		describe("toolMode: 'auto' (entry dispatch)", () => {
+			// Streaming auto-loop behavior is in `agentLoop.test.js`. Tests here cover
+			// the dispatch branch in `Models.generateStream` itself.
+
+			it("toolMode: 'return' still flows the single-shot stream", async () => {
+				const chunks = [];
+				for await (const chunk of models.generateStream('hello', { toolMode: 'return' })) {
+					chunks.push(chunk);
+				}
+				assert.ok(chunks.length > 1);
+				assert.strictEqual(writer.records.length, 1);
+				assert.strictEqual(writer.records[0].method, 'generateStream');
+				assert.strictEqual(writer.records[0].success, true);
+			});
+
+			it('auto + tools against a tools-incapable backend throws synchronously (before iteration)', () => {
+				// The guard runs in the synchronous body of generateStream, before the iterable
+				// is returned — so it throws on call, not on first `next()`.
+				assert.throws(
+					() =>
+						models.generateStream(
+							{ messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 't', description: '', parameters: {} }] },
+							{ toolMode: 'auto', toolHandlers: { t: () => ({}) } }
+						),
+					(err) => err instanceof ModelCapabilityError && /tools/.test(err.message)
+				);
+			});
+		});
+	});
+});
+
+describe('logical model name is not forwarded as the wire model (#1593)', () => {
+	let models;
+
+	beforeEach(() => {
+		clearRegistry();
+		models = new Models(makeMockWriter(), makeMetricSpy().emitter);
+	});
+
+	afterEach(() => {
+		clearRegistry();
+	});
+
+	it('embed: the backend call receives no model option', async () => {
+		let seenOpts;
+		setEmbedding('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: true, generate: false, stream: false, tools: false, adapters: false }),
+			async embed(_input, opts) {
+				seenOpts = opts;
+				return { status: 'completed', output: [new Float32Array(1)] };
+			},
+		});
+		await models.embed('x', { model: 'logical-name' });
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+
+	it('generate: the backend call receives no model option', async () => {
+		let seenOpts;
+		setGenerative('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: false, generate: true, stream: false, tools: false, adapters: false }),
+			async generate(_input, opts) {
+				seenOpts = opts;
+				return { status: 'completed', output: { content: 'hi', finishReason: 'stop' } };
+			},
+		});
+		await models.generate('x', { model: 'logical-name' });
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+
+	it('generateStream: the backend call receives no model option', async () => {
+		let seenOpts;
+		setGenerative('logical-name', {
+			name: 'spy',
+			capabilities: () => ({ embed: false, generate: true, stream: true, tools: false, adapters: false }),
+			async *generateStream(_input, opts) {
+				seenOpts = opts;
+				yield { deltaContent: 'chunk' };
+				yield { finishReason: 'stop' };
+			},
+		});
+		for await (const _chunk of models.generateStream('x', { model: 'logical-name' })) {
+			// drain
+		}
+		assert.ok(seenOpts, 'backend was called');
+		assert.ok(!('model' in seenOpts), 'the logical model name must not reach the backend as a wire model override');
+	});
+});
+
+describe('required capabilities are checked on the candidate about to be invoked (#2842)', () => {
+	const genOut = (content) => ({ status: 'completed', output: { content, finishReason: 'stop' } });
+	let writer;
+	let models;
+
+	beforeEach(() => {
+		clearRegistry();
+		clearRouting();
+		writer = makeMockWriter();
+		models = new Models(writer, () => {});
+	});
+
+	afterEach(() => {
+		clearRegistry();
+		clearRouting();
+	});
+
+	it('skips a candidate a custom router returned without the required capability and serves from the next one', async () => {
+		let promptOnlyCalls = 0;
+		const promptOnly = defineBackend({
+			name: 'prompt-only',
+			generate: async () => {
+				promptOnlyCalls++;
+				return genOut('nope');
+			},
+		});
+		const strict = defineBackend({ name: 'strict', generate: async () => genOut('ok'), structuredOutput: true });
+		registerRouter({ route: () => [promptOnly, strict] });
+		const result = await models.generate('hi', { requires: ['structuredOutput'] });
+		assert.strictEqual(result.content, 'ok');
+		assert.strictEqual(promptOnlyCalls, 0);
+		assert.deepStrictEqual(
+			writer.records.map((r) => [r.backend, r.success, r.error_code]),
+			[
+				['prompt-only', false, 'capability_unsupported'],
+				['strict', true, undefined],
+			]
+		);
+	});
+
+	it('surfaces the primary capability error when every routed candidate lacks it', async () => {
+		let calls = 0;
+		const backend = defineBackend({
+			name: 'prompt-only',
+			generate: async () => {
+				calls++;
+				return genOut('nope');
+			},
+		});
+		registerRouter({ route: () => [backend] });
+		await assert.rejects(
+			models.generate('hi', { requires: ['structuredOutput'] }),
+			(err) => err instanceof ModelCapabilityError && /structuredOutput/.test(err.message)
+		);
+		assert.strictEqual(calls, 0);
+	});
+
+	it('applies to decide and to generateStream, which throws before the iterable is returned', async () => {
+		const noDecide = defineBackend({ name: 'no-decide', generate: async () => genOut('x') });
+		registerRouter({ route: () => [noDecide] });
+		await assert.rejects(models.decide('x', { enum: ['a', 'b'] }), ModelCapabilityError);
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
+		// Synchronous: a stream over HTTP must be a 400, not an error frame inside a 200.
+		assert.throws(() => models.generateStream('hi', { requires: ['structuredOutput'] }), ModelCapabilityError);
+		assert.strictEqual(writer.records.at(-1).method, 'generateStream');
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
+	});
+
+	it('a router that mutates the requirements it was handed cannot empty the check at call time', async () => {
+		const promptOnly = defineBackend({ name: 'prompt-only', generate: async () => genOut('nope') });
+		registerRouter({
+			route: ({ requires }) => {
+				requires.length = 0;
+				return [promptOnly];
+			},
+		});
+		await assert.rejects(models.generate('hi', { requires: ['structuredOutput'] }), ModelCapabilityError);
+	});
+
+	it('reads one frozen capabilities object per candidate on the default path', async () => {
+		setGenerative('default', new TestBackend());
+		const result = await models.generate('hi');
+		assert.match(result.content, /TestBackend/);
+		assert.strictEqual(writer.records.length, 1);
+		assert.strictEqual(writer.records[0].success, true);
+	});
+
+	it('built-in providers return one frozen capabilities object, so the check allocates nothing', () => {
+		const { OpenAIBackend } = require('#src/components/openai/index');
+		const { OllamaBackend } = require('#src/components/ollama/index');
+		const { AnthropicBackend } = require('#src/components/anthropic/index');
+		const { BedrockBackend } = require('#src/components/bedrock/index');
+		for (const backend of [
+			new OpenAIBackend({ apiKey: 'k', model: 'm' }),
+			new OllamaBackend({ model: 'm' }),
+			new AnthropicBackend({ apiKey: 'k', model: 'm' }),
+			new BedrockBackend({ region: 'us-east-1', model: 'anthropic.m' }),
+		]) {
+			assert.strictEqual(backend.capabilities(), backend.capabilities());
+			assert.ok(Object.isFrozen(backend.capabilities()));
+		}
+	});
+
+	it('checks the stream candidate when the stream is first pulled, not when the iterable is built', async () => {
+		let reported = {
+			embed: false,
+			generate: true,
+			stream: true,
+			tools: false,
+			adapters: false,
+			structuredOutput: true,
+		};
+		const mutable = {
+			name: 'mutable',
+			capabilities: () => reported,
+			async *generateStream() {
+				yield { deltaContent: 'x' };
+				yield { finishReason: 'stop' };
+			},
+		};
+		registerRouter({ route: () => [mutable] });
+		const stream = models.generateStream('hi', { requires: ['structuredOutput'] });
+		reported = { ...reported, structuredOutput: false };
+		await assert.rejects(
+			(async () => {
+				for await (const _chunk of stream) {
+					// never reached
+				}
+			})(),
+			ModelCapabilityError
+		);
+		assert.strictEqual(writer.records.at(-1).method, 'generateStream');
+		assert.strictEqual(writer.records.at(-1).error_code, 'capability_unsupported');
 	});
 });

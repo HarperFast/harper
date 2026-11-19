@@ -1,0 +1,144 @@
+name: Perf Benchmarks Nightly (self-hosted)
+
+# Runs the three storage/throughput benchmarks (ST-1 TTL-churn, ST-2 indexed-write,
+# ST-5 concurrent read+write) at `--scale=nightly` on a FIXED self-hosted runner
+# (label `harper-bench`) so the numbers are comparable night to night — shared
+# GitHub runners are too small/variable to be a meaningful perf baseline, and the
+# TTL-churn run alone is ~30 min.
+#
+# Records throughput/latency trends via github-action-benchmark (pushed to the
+# gh-pages branch, same dashboard the ycsb-nightly job uses; enable GitHub Pages on
+# gh-pages to view it). Only pushed for `--scale=nightly` runs on main — a
+# `quick`-scale manual dispatch uses far smaller record counts and would read as a
+# false regression against the nightly baseline.
+#
+# Regression alerting is off: on this host the night-to-night spread of these metrics on
+# unchanged code exceeds any threshold that would still catch a regression. Each nightly
+# run's job summary carries the comparison instead.
+#
+# Triggers are schedule + manual dispatch ONLY (never pull_request): the job runs
+# on a self-hosted machine, so untrusted PR code must never execute here.
+#
+# NOTE: runs on the `harper-bench` self-hosted host, which serves both harper and
+# harper-pro via a repo-scoped just-in-time supervisor (one job at a time across
+# repos, so perf numbers stay comparable). If the job stays queued, the supervisor
+# on the bench host is down or can't reach this repo — org/enterprise-level runners
+# are intentionally not used (they aren't routed jobs for these repos).
+
+permissions:
+  contents: write # github-action-benchmark pushes trend history to the gh-pages branch
+
+on:
+  schedule:
+    - cron: '20 8 * * *' # :20 avoids GitHub's scheduler backlog; slot order in harper-pro benchmarks/ycsb/runner/README.md
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: 'Benchmark scale'
+        required: true
+        type: choice
+        default: 'nightly'
+        options:
+          - 'quick'
+          - 'nightly'
+
+jobs:
+  perf-benchmarks:
+    name: Storage perf benchmarks (Node.js v24)
+    runs-on: [self-hosted, linux, harper-bench]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install # plain install (builds native deps) — matches the self-hosted cluster-nightly job
+
+      # `npm install` above can rewrite package-lock.json (e.g. when it lags a version
+      # bump in package.json), dirtying the working tree. The auto-push benchmark steps
+      # below `git checkout gh-pages`, which aborts on a dirty tree. Discard the lockfile
+      # churn so the checkout succeeds.
+      - name: Restore lockfile churn
+        run: git checkout -- package-lock.json
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify build output
+        run: test -f dist/bin/harper.js || { echo "dist/bin/harper.js missing — build failed"; exit 1; }
+
+      - name: Run benchmarks
+        # Inputs via env, not ${{ }} shell interpolation, to avoid script injection.
+        env:
+          SCALE: ${{ github.event.inputs.scale || 'nightly' }}
+        run: |
+          mkdir -p benchmarks/_results
+          set -o pipefail
+          for bench in indexed-write ttl-churn concurrent-rw; do
+            echo "::group::$bench ($SCALE)"
+            node "benchmarks/$bench/run.mts" --scale="$SCALE" 2>&1 | tee "benchmarks/_results/$bench.log"
+            echo "::endgroup::"
+          done
+
+      - name: Summarize RESULT lines
+        if: always()
+        run: |
+          {
+            echo "## Perf benchmark results (scale=${SCALE:-nightly})"
+            echo '```'
+            grep -hE '_RESULT ' benchmarks/_results/*.log || echo 'no RESULT lines captured'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          SCALE: ${{ github.event.inputs.scale || 'nightly' }}
+
+      - name: Convert results to benchmark format
+        run: node benchmarks/storage-to-benchmark-json.mts benchmarks/_results benchmarks/_bench-out
+
+      # Two suites: opposite "better" directions. Quick-scale dispatches are kept out of both
+      # the trend history and the comparison summary — their record counts make the numbers
+      # incomparable against the nightly baseline. Alert comments stay off because that POST
+      # would fail the step after the trend was already recorded.
+      - name: Track throughput trend
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
+        with:
+          name: Storage Benchmarks Throughput (ST-1/ST-2/ST-5)
+          tool: customBiggerIsBetter
+          output-file-path: benchmarks/_bench-out/throughput.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.ref == 'refs/heads/main' && (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          summary-always: ${{ (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          comment-on-alert: false
+          fail-on-alert: false
+
+      - name: Reset local gh-pages ref before second benchmark step
+        run: |
+          git switch --detach
+          git branch -D gh-pages 2>/dev/null || true
+
+      - name: Track latency/size trend
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
+        with:
+          name: Storage Benchmarks Latency/Size (ST-1/ST-2/ST-5)
+          tool: customSmallerIsBetter
+          output-file-path: benchmarks/_bench-out/latency.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.ref == 'refs/heads/main' && (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          summary-always: ${{ (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          comment-on-alert: false
+          fail-on-alert: false
+
+      - name: Upload raw benchmark logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-benchmark-logs
+          path: benchmarks/_results/
+          retention-days: 30

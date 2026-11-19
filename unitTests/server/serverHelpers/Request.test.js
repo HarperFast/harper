@@ -1,16 +1,22 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
+const http = require('node:http');
+const net = require('node:net');
 const sinon = require('sinon');
+const { EventEmitter, once } = require('node:events');
+const { waitFor } = require('../../waitFor.js');
 
 describe('Request class', function () {
-	let Request;
+	let Request, UwsRequest;
+	let ResponseHeaders;
 
 	before(function () {
 		// Clear the module from cache to ensure fresh load
 		const modulePath = require.resolve('../../../server/serverHelpers/Request.ts');
 		delete require.cache[modulePath];
-		Request = require('#src/server/serverHelpers/Request').Request;
+		({ Request, UwsRequest } = require('#js/server/serverHelpers/Request'));
+		ResponseHeaders = require('#src/server/serverHelpers/Headers').Headers;
 	});
 
 	afterEach(function () {
@@ -208,6 +214,31 @@ describe('Request class', function () {
 			assert.strictEqual(request.protocol, 'http');
 		});
 
+		it('reports https on the UDS mirror when a PROXY v2 SSL TLV was forwarded', function () {
+			// UDS mirror is a plain node:http server → encrypted is undefined; the forwarded
+			// TLS facts (connectionInfo.tls) tell us the client connection was really TLS.
+			mockNodeRequest.socket.encrypted = undefined;
+			mockNodeRequest.socket.connectionInfo = { tls: { version: 'TLSv1.3' } };
+			assert.strictEqual(request.protocol, 'https');
+
+			// No forwarded TLS facts (v1 header / bare connection) keeps today's behavior.
+			mockNodeRequest.socket.connectionInfo = { ja4: 't13d1516h2_x_y' };
+			assert.strictEqual(request.protocol, 'http');
+		});
+
+		it('exposes forwarded connectionInfo, undefined when absent', function () {
+			assert.strictEqual(request.connectionInfo, undefined);
+			const info = {
+				alpn: 'h2',
+				authority: 'api.example.com',
+				ja4: 't13d1516h2_a_b',
+				tls: { version: 'TLSv1.3', verified: true },
+			};
+			mockNodeRequest.socket.connectionInfo = info;
+			assert.strictEqual(request.connectionInfo, info);
+			assert.strictEqual(request.connectionInfo.ja4, 't13d1516h2_a_b');
+		});
+
 		it('should return correct IP address', function () {
 			assert.strictEqual(request.ip, '192.168.1.100');
 		});
@@ -265,7 +296,7 @@ describe('Request class', function () {
 	});
 
 	describe('signal (AbortSignal)', function () {
-		const { EventEmitter } = require('node:events');
+		const { EventEmitter, getMaxListeners } = require('node:events');
 
 		function makeNodeRequest() {
 			return {
@@ -293,6 +324,17 @@ describe('Request class', function () {
 			assert.strictEqual(request.isAborted, false);
 		});
 
+		it('allows concurrent transactions to listen without warnings', function () {
+			assert.strictEqual(getMaxListeners(new Request(makeNodeRequest()).signal), 0);
+			assert.strictEqual(getMaxListeners(new Request(makeNodeRequest(), makeNodeResponse()).signal), 0);
+			const ac = new AbortController();
+			assert.strictEqual(
+				getMaxListeners(new UwsRequest({ method: 'GET', url: '/', headers: {}, signal: ac.signal }).signal),
+				0
+			);
+			assert.strictEqual(getMaxListeners(new UwsRequest({ method: 'GET', url: '/', headers: {} }).signal), 0);
+		});
+
 		it('aborts the signal on nodeResponse close before write is finished', function () {
 			const nodeResponse = makeNodeResponse({ writableFinished: false });
 			const request = new Request(makeNodeRequest(), nodeResponse);
@@ -311,7 +353,20 @@ describe('Request class', function () {
 		it('aborts on socket close when no nodeResponse is provided (WebSocket-upgrade path)', function () {
 			const nodeRequest = makeNodeRequest();
 			const request = new Request(nodeRequest);
+			const signal = request.signal;
+			assert.strictEqual(signal.aborted, false);
+			nodeRequest.socket.destroyed = true;
 			nodeRequest.socket.emit('close');
+			assert.strictEqual(signal.aborted, true);
+			assert.strictEqual(request.isAborted, true);
+		});
+
+		it('aborts a request with no nodeResponse whose socket closed before the first signal read', function () {
+			const nodeRequest = makeNodeRequest();
+			const request = new Request(nodeRequest);
+			assert.strictEqual(request.isAborted, false);
+			nodeRequest.socket.destroyed = true;
+			assert.strictEqual(request.isAborted, true);
 			assert.strictEqual(request.signal.aborted, true);
 		});
 
@@ -319,6 +374,250 @@ describe('Request class', function () {
 			const request = new Request(makeNodeRequest(), makeNodeResponse());
 			request._abort();
 			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('publishes the signal before registering the socket listener', function () {
+			const nodeRequest = makeNodeRequest();
+			const request = new Request(nodeRequest);
+			let seen;
+			nodeRequest.socket.on('newListener', (event) => {
+				if (event === 'close') seen = request.signal;
+			});
+			const signal = request.signal;
+			assert.strictEqual(seen, signal);
+			request._abort();
+			assert.strictEqual(signal.aborted, true);
+		});
+
+		it('_abort() before the first signal read yields an aborted signal, and again after it', function () {
+			const request = new Request(makeNodeRequest(), makeNodeResponse());
+			assert.strictEqual(request.isAborted, false);
+			request._abort();
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+			request._abort();
+			assert.strictEqual(request.signal.aborted, true);
+
+			const later = new Request(makeNodeRequest(), makeNodeResponse());
+			const signal = later.signal;
+			assert.strictEqual(signal.aborted, false);
+			later._abort();
+			assert.strictEqual(signal.aborted, true);
+			assert.strictEqual(later.signal, signal);
+		});
+
+		it('returns the same signal on every read', function () {
+			const request = new Request(makeNodeRequest(), makeNodeResponse());
+			assert.strictEqual(request.signal, request.signal);
+		});
+	});
+
+	describe('signal on a real node:http exchange', function () {
+		let open = [];
+		const next = (emitter, event) => once(emitter, event, { signal: AbortSignal.timeout(5000) });
+		// Node 26.2 reports an end() after a close as finished and some builds do not; pin the case being tested.
+		const finishedOnceEnded = (res) =>
+			Object.defineProperty(res, 'writableFinished', { configurable: true, get: () => res.writableEnded });
+
+		async function exchange() {
+			let arrived;
+			const handles = {};
+			open.push(handles);
+			const server = (handles.server = http.createServer((req, res) => (arrived = { req, res })));
+			server.listen(0, '127.0.0.1');
+			await next(server, 'listening');
+			const client = (handles.client = net.connect(server.address().port, '127.0.0.1'));
+			await next(client, 'connect');
+			client.write('GET / HTTP/1.1\r\nHost: test\r\n\r\n');
+			const { req, res } = await waitFor(() => arrived, 5000);
+			return {
+				req,
+				res,
+				async disconnect() {
+					const closed = res.closed ? Promise.resolve() : next(res, 'close');
+					client.destroy();
+					await closed;
+				},
+			};
+		}
+
+		afterEach(function () {
+			for (const { client, server } of open) {
+				client?.destroy();
+				server?.close();
+				server?.closeAllConnections();
+			}
+			open = [];
+		});
+
+		it('creates no AbortController until the signal is first read', async function () {
+			const { req, res } = await exchange();
+			const Original = globalThis.AbortController;
+			let created = 0;
+			globalThis.AbortController = class extends Original {
+				constructor() {
+					super();
+					created++;
+				}
+			};
+			try {
+				const request = new Request(req, res);
+				assert.strictEqual(request.isAborted, false);
+				assert.strictEqual(created, 0);
+				request.signal;
+				request.signal;
+				assert.strictEqual(created, 1);
+			} finally {
+				globalThis.AbortController = Original;
+			}
+		});
+
+		it('registers one close listener per request, and no more when the signal is read', async function () {
+			const { req, res } = await exchange();
+			const before = res.listenerCount('close');
+			const request = new Request(req, res);
+			assert.strictEqual(res.listenerCount('close'), before + 1);
+			request.signal;
+			assert.strictEqual(res.listenerCount('close'), before + 1);
+		});
+
+		it('aborts a disconnect that happened before the first signal read', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			await ex.disconnect();
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('aborts a disconnect that happens after the first signal read', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			const signal = request.signal;
+			assert.strictEqual(signal.aborted, false);
+			const aborted = next(signal, 'abort');
+			await ex.disconnect();
+			await aborted;
+			assert.strictEqual(request.isAborted, true);
+		});
+
+		it('aborts a disconnect that came before end(), however late the first read is', async function () {
+			const ex = await exchange();
+			finishedOnceEnded(ex.res);
+			const request = new Request(ex.req, ex.res);
+			await ex.disconnect();
+			ex.res.end();
+			// end() after the close reports a finished response, which a clean completion also reports.
+			assert.strictEqual(ex.res.writableFinished, true);
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('records a disconnect ahead of a close listener registered before the Request that ends the response', async function () {
+			const ex = await exchange();
+			finishedOnceEnded(ex.res);
+			ex.res.on('close', () => ex.res.end());
+			const request = new Request(ex.req, ex.res);
+			await ex.disconnect();
+			assert.strictEqual(ex.res.writableFinished, true);
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('aborts from the recorded disconnect when a close handler ends the response first', async function () {
+			const ex = await exchange();
+			finishedOnceEnded(ex.res);
+			const request = new Request(ex.req, ex.res);
+			ex.res.on('close', () => ex.res.end());
+			const signal = request.signal;
+			await ex.disconnect();
+			assert.strictEqual(ex.res.writableFinished, true);
+			assert.strictEqual(signal.aborted, true);
+		});
+
+		it('aborts the signal of every Request built on the same response', async function () {
+			const ex = await exchange();
+			const first = new Request(ex.req, ex.res);
+			const second = new Request(ex.req, ex.res);
+			const signals = [first.signal, second.signal];
+			await ex.disconnect();
+			assert.deepStrictEqual(
+				signals.map((signal) => signal.aborted),
+				[true, true]
+			);
+		});
+
+		it('aborts a signal first read from a close listener that runs ahead of the recorded disconnect', async function () {
+			const ex = await exchange();
+			const request = new Request(ex.req, ex.res);
+			let seen;
+			ex.res.prependListener('close', () => {
+				seen = { isAborted: request.isAborted, signal: request.signal };
+			});
+			await ex.disconnect();
+			assert.strictEqual(seen.isAborted, true);
+			assert.strictEqual(seen.signal.aborted, true);
+			assert.strictEqual(request.isAborted, true);
+		});
+
+		it('keeps a disconnect it has reported after a later listener ends the response', async function () {
+			const ex = await exchange();
+			finishedOnceEnded(ex.res);
+			const request = new Request(ex.req, ex.res);
+			let reported;
+			ex.res.prependListener('close', () => ex.res.end());
+			ex.res.prependListener('close', () => (reported = request.isAborted));
+			await ex.disconnect();
+			assert.strictEqual(reported, true);
+			assert.strictEqual(ex.res.writableFinished, true);
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('aborts a request whose response closed before the Request was created', async function () {
+			const ex = await exchange();
+			await ex.disconnect();
+			const request = new Request(ex.req, ex.res);
+			assert.strictEqual(request.isAborted, true);
+			assert.strictEqual(request.signal.aborted, true);
+		});
+
+		it('leaves the signal live after a clean completion, whenever it is read and whatever the socket does next', async function () {
+			const read = await exchange();
+			const readRequest = new Request(read.req, read.res);
+			const before = readRequest.signal;
+			const late = await exchange();
+			const lateRequest = new Request(late.req, late.res);
+			for (const ex of [read, late]) {
+				const closed = next(ex.res, 'close');
+				ex.res.end('ok');
+				await closed;
+			}
+			const after = lateRequest.signal;
+			for (const ex of [read, late]) {
+				const socketClosed = next(ex.req.socket, 'close');
+				ex.req.socket.destroy();
+				await socketClosed;
+			}
+			assert.strictEqual(before.aborted, false);
+			assert.strictEqual(after.aborted, false);
+			assert.strictEqual(readRequest.isAborted, false);
+			assert.strictEqual(lateRequest.isAborted, false);
+		});
+
+		it('watches the socket when there is no response, before and after the first read', async function () {
+			const reader = await exchange();
+			const readerRequest = new Request(reader.req);
+			const signal = readerRequest.signal;
+			const late = await exchange();
+			const lateRequest = new Request(late.req);
+			assert.strictEqual(lateRequest.isAborted, false);
+			const aborted = next(signal, 'abort');
+			reader.req.socket.destroy();
+			late.req.socket.destroy();
+			await aborted;
+			await waitFor(() => late.req.socket.destroyed);
+			assert.strictEqual(lateRequest.isAborted, true);
+			assert.strictEqual(lateRequest.signal.aborted, true);
 		});
 	});
 
@@ -549,17 +848,29 @@ describe('Request class', function () {
 				assert.strictEqual(resolved.headers.get('content-type'), 'application/json');
 			});
 
-			it('is idempotent — second writeHead call is a no-op', async function () {
+			it('throws ERR_HTTP_HEADERS_SENT on a second writeHead call, as Node does', async function () {
 				const request = makeRequest();
 				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.writeHead(200, { 'x-first': 'yes' });
-					res.writeHead(500, { 'x-first': 'overwritten' });
+					assert.throws(() => res.writeHead(500, { 'x-first': 'overwritten' }), { code: 'ERR_HTTP_HEADERS_SENT' });
 					res.end();
 				});
 
 				const { status, headers } = await responsePromise;
 				assert.strictEqual(status, 200);
 				assert.strictEqual(headers.get('x-first'), 'yes');
+			});
+
+			it('keeps the third-argument headers when the status message is omitted, as Node does', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.writeHead(302, undefined, { Location: '/login' });
+					res.end();
+				});
+
+				const { status, headers } = await responsePromise;
+				assert.strictEqual(status, 302);
+				assert.strictEqual(headers.get('location'), '/login');
 			});
 
 			it('accepts array-of-pairs header format', async function () {
@@ -823,6 +1134,203 @@ describe('Request class', function () {
 			});
 		});
 
+		describe('nodeResponse — ServerResponse contract', function () {
+			it('reports finished with writableEnded, before writableFinished', async function () {
+				const request = makeRequest();
+				let capturedRes;
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					capturedRes = res;
+					assert.strictEqual(res.finished, false);
+					res.end('body');
+					assert.strictEqual(res.finished, true);
+					assert.strictEqual(res.writableFinished, false);
+				});
+
+				const { body } = await responsePromise;
+				if (!body.writableFinished) await new Promise((resolve) => body.once('finish', resolve));
+				assert.strictEqual(capturedRes.writableFinished, true);
+			});
+
+			it('marks headersSent and _header once headers are committed', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					assert.strictEqual(res.headersSent, false);
+					assert.strictEqual(res._header, null);
+					res.setHeader('X-A', '1');
+					res.writeHead(404, 'Gone Missing');
+					assert.strictEqual(res.headersSent, true);
+					assert.strictEqual(res.statusMessage, 'Gone Missing');
+					assert.strictEqual(res._header, 'HTTP/1.1 404 Gone Missing\r\nX-A: 1\r\n\r\n');
+					res.end();
+				});
+
+				const { status } = await responsePromise;
+				assert.strictEqual(status, 404);
+			});
+
+			it('getHeaders() and getHeaderNames() use lowercase names, as Node does', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					res.setHeader('Content-Type', 'text/html');
+					res.setHeader('Set-Cookie', ['a=1', 'b=2']);
+					const headers = res.getHeaders();
+					assert.strictEqual(Object.getPrototypeOf(headers), null);
+					assert.deepStrictEqual(headers, {
+						'__proto__': null,
+						'content-type': 'text/html',
+						'set-cookie': ['a=1', 'b=2'],
+					});
+					assert.deepStrictEqual(res.getHeaderNames(), ['content-type', 'set-cookie']);
+					res.end();
+				});
+			});
+
+			it('appendHeader sets a new header and grows an existing one into an array', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.appendHeader('X-Multi', 'one');
+					res.appendHeader('X-Multi', ['two', 'three']);
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				assert.deepStrictEqual(headers.get('x-multi'), ['one', 'two', 'three']);
+			});
+
+			it('setHeaders() applies Harper Headers and groups Map set-cookie entries', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.setHeaders(new ResponseHeaders({ 'X-A': '1' }));
+					res.setHeaders(
+						new Map([
+							['Set-Cookie', ['a=1', 'b=2']],
+							['set-cookie', 'c=3'],
+						])
+					);
+					assert.deepStrictEqual(res.getHeader('set-cookie'), ['a=1', 'b=2', 'c=3']);
+					res.setHeaders(new Map([['set-cookie', 'd=4']]));
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				assert.strictEqual(headers.get('x-a'), '1');
+				assert.deepStrictEqual(headers.get('set-cookie'), ['d=4']);
+			});
+
+			it('removeHeader is case-insensitive', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					res.setHeader('Content-Length', '10');
+					res.removeHeader('content-length');
+					assert.strictEqual(res.hasHeader('Content-Length'), false);
+					res.end();
+				});
+			});
+
+			it('setTimeout configures the Node response and delivers its timeout to this response only', async function () {
+				const nodeResponse = Object.assign(new EventEmitter(), {
+					timeouts: [],
+					setTimeout(msecs) {
+						this.timeouts.push(msecs);
+					},
+				});
+				const request = new Request({ ...mockNodeRequest }, nodeResponse);
+				let fired = 0;
+				let timeoutArgument;
+				const timeoutSocket = {};
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.setTimeout(250, (socket) => {
+						fired++;
+						timeoutArgument = socket;
+					});
+					nodeResponse.emit('timeout', timeoutSocket);
+					res.end();
+				});
+
+				assert.deepStrictEqual(nodeResponse.timeouts, [250]);
+				assert.strictEqual(fired, 1);
+				assert.strictEqual(timeoutArgument, timeoutSocket);
+				const { body } = await responsePromise;
+				for await (const chunk of body) void chunk;
+				if (!body.closed) await new Promise((resolve) => body.once('close', resolve));
+				assert.strictEqual(nodeResponse.listenerCount('timeout'), 0);
+			});
+
+			it('delivers the Node response timeout without an explicit setTimeout call', async function () {
+				const nodeResponse = new EventEmitter();
+				const request = new Request({ ...mockNodeRequest }, nodeResponse);
+				const timeoutSocket = {};
+				let timeoutArgument;
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.on('timeout', (socket) => (timeoutArgument = socket));
+					nodeResponse.emit('timeout', timeoutSocket);
+					res.end();
+				});
+
+				const { body } = await responsePromise;
+				assert.strictEqual(timeoutArgument, timeoutSocket);
+				for await (const chunk of body) void chunk;
+				if (!body.closed) await new Promise((resolve) => body.once('close', resolve));
+				assert.strictEqual(nodeResponse.listenerCount('timeout'), 0);
+			});
+
+			it('informational responses call back even when the transport has no Node response', function () {
+				const request = new Request({ ...mockNodeRequest }, {});
+				let calledBack = 0;
+				request.withNodeAdapter((req, res) => {
+					res.writeContinue(() => calledBack++);
+					res.writeProcessing(() => calledBack++);
+					res.writeEarlyHints({ link: '</style.css>; rel=preload' }, () => calledBack++);
+					res.end();
+				});
+				assert.strictEqual(calledBack, 3);
+			});
+
+			it('refuses trailers instead of dropping them', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					assert.throws(() => res.addTrailers({ Digest: 'x' }), /addTrailers\(\) is not supported/);
+					res.end();
+				});
+			});
+		});
+
+		describe('synchronous handler failure', function () {
+			it('rejects the response promise instead of throwing when the handler throws before headers', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter(() => {
+					throw new Error('sync failure');
+				});
+
+				await assert.rejects(() => responsePromise, /sync failure/);
+				request._abort();
+			});
+
+			it('errors the body when the handler throws after a partial write', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.write('partial');
+					throw new Error('sync failure');
+				});
+
+				const { body } = await responsePromise;
+				await assert.rejects(async () => {
+					for await (const chunk of body) void chunk;
+				}, /sync failure/);
+			});
+
+			it('keeps the completed response when the handler throws after ending it', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.end('done');
+					throw new Error('after end');
+				});
+
+				const { status } = await responsePromise;
+				assert.strictEqual(status, 200);
+			});
+		});
+
 		describe('async handler', function () {
 			it('rejects the response promise when async handler throws before writing headers', async function () {
 				const request = makeRequest();
@@ -832,6 +1340,20 @@ describe('Request class', function () {
 				});
 
 				await assert.rejects(() => responsePromise, /async handler failed/);
+			});
+
+			it('errors the body when an async handler rejects after headers were sent without ending', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter(async (req, res) => {
+					res.write('partial');
+					throw new Error('handler failed mid-stream');
+				});
+
+				const { body } = await responsePromise;
+				const chunks = [];
+				await assert.rejects(async () => {
+					for await (const chunk of body) chunks.push(chunk);
+				}, /handler failed mid-stream/);
 			});
 
 			it('does not double-reject after headers are flushed when async handler throws', async function () {

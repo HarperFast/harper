@@ -1,0 +1,4 @@
+# QA-328 — concurrent PATCH field-level merge correctness
+graphqlSchema:
+  files: '*.graphql'
+rest: true

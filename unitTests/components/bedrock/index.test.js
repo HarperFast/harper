@@ -1,8 +1,9 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	BedrockBackend,
+	BedrockBackendError,
 	registerBedrockBackend,
 	_resetSdkCacheForTests,
 	_injectSdkForTests,
@@ -73,6 +74,7 @@ describe('BedrockBackend', () => {
 				stream: true,
 				tools: true,
 				adapters: false,
+				structuredOutput: false,
 			});
 		});
 
@@ -107,6 +109,22 @@ describe('BedrockBackend', () => {
 			assert.strictEqual(body.anthropic_version, 'bedrock-2023-05-31');
 			assert.deepStrictEqual(body.messages, [{ role: 'user', content: 'hello' }]);
 			assert.ok(body.max_tokens > 0);
+		});
+
+		it('reports an Anthropic reply cut short by the context window or a refusal as not finished', async () => {
+			for (const [stopReason, finishReason] of [
+				['max_tokens', 'length'],
+				['model_context_window_exceeded', 'length'],
+				['refusal', 'content_filter'],
+			]) {
+				const { sdk } = fakeSdk(() =>
+					jsonBodyResponse({ content: [{ type: 'text', text: 'partial' }], stop_reason: stopReason, usage: {} })
+				);
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude-opus-4-v1:0' });
+				const result = await b.generate('hello', { accounting: ACCOUNTING });
+				assert.strictEqual(result.output.finishReason, finishReason, stopReason);
+			}
 		});
 
 		it('dispatches meta.* models to Llama prompt shape', async () => {
@@ -229,6 +247,104 @@ describe('BedrockBackend', () => {
 			assert.strictEqual(body.input_type, 'search_document');
 		});
 
+		describe('truncation', () => {
+			it('advertises truncate only for a configured Cohere embed v3 or v4 model', () => {
+				for (const [model, truncate] of [
+					['cohere.embed-english-v3', true],
+					['cohere.embed-multilingual-v3', true],
+					['cohere.embed-english-light-v3', true],
+					['cohere.embed-v4:0', true],
+					['us.cohere.embed-v4:0', true],
+					['amazon.titan-embed-text-v2:0', undefined],
+					['amazon.titan-embed-text-v1', undefined],
+					['cohere.command-r-v1:0', undefined],
+					['anthropic.claude-opus-4-v1:0', undefined],
+					[undefined, undefined],
+				]) {
+					const b = new BedrockBackend({ region: 'us-east-1', model });
+					assert.strictEqual(b.capabilities().truncate, truncate, model);
+					assert.ok(Object.isFrozen(b.capabilities()), model);
+				}
+			});
+
+			it("sends Cohere v4 truncate: 'RIGHT' with the text whole, only when asked", async () => {
+				const long = 'x'.repeat(5000);
+				for (const [truncate, expected] of [
+					[true, 'RIGHT'],
+					[false, undefined],
+					[undefined, undefined],
+				]) {
+					const { sdk, sent } = fakeSdk(() => jsonBodyResponse({ embeddings: [[0.4]] }));
+					_injectSdkForTests(sdk);
+					const b = new BedrockBackend({ region: 'us-east-1', model: 'cohere.embed-v4:0' });
+					await b.embed(long, { accounting: ACCOUNTING, truncate });
+					const body = JSON.parse(sent[0].command.body);
+					assert.strictEqual(body.truncate, expected, `truncate: ${truncate}`);
+					assert.strictEqual('truncate' in body, expected !== undefined, `truncate: ${truncate}`);
+					assert.strictEqual(body.texts[0], long, `truncate: ${truncate}`);
+				}
+			});
+
+			it("sends Cohere v3 truncate: 'END' with each text cut to Bedrock's 2,048-character limit, never splitting a surrogate pair", async () => {
+				const emoji = '\u{1F600}';
+				const cases = [
+					['short', 'hello', 'hello'],
+					['exactly the limit', 'a'.repeat(2048), 'a'.repeat(2048)],
+					['ASCII over the limit', 'b'.repeat(2047) + 'cd', 'b'.repeat(2047) + 'c'],
+					['pair straddling the limit', 'e'.repeat(2047) + emoji + 'f', 'e'.repeat(2047)],
+					['pair ending at the limit', 'g'.repeat(2046) + emoji + 'h', 'g'.repeat(2046) + emoji],
+					['all astral', emoji.repeat(1500), emoji.repeat(1024)],
+				];
+				const { sdk, sent } = fakeSdk(() => jsonBodyResponse({ embeddings: [[0.4]] }));
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'cohere.embed-english-v3' });
+				const input = Object.freeze(cases.map(([, text]) => text));
+				const result = await b.embed(input, { accounting: ACCOUNTING, inputType: 'query', truncate: true });
+				assert.strictEqual(result.output.length, cases.length);
+				cases.forEach(([label, , expected], i) => {
+					const body = JSON.parse(sent[i].command.body);
+					assert.deepStrictEqual(body, { texts: [expected], input_type: 'search_query', truncate: 'END' }, label);
+					assert.ok(body.texts[0].length <= 2048, label);
+				});
+				assert.deepStrictEqual(
+					input,
+					cases.map(([, text]) => text)
+				);
+			});
+
+			it('leaves a Cohere v3 body unchanged without truncate: true', async () => {
+				const long = 'z'.repeat(3000);
+				const { sdk, sent } = fakeSdk(() => jsonBodyResponse({ embeddings: [[0.4]] }));
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'cohere.embed-english-v3' });
+				await b.embed(long, { accounting: ACCOUNTING, truncate: false });
+				assert.deepStrictEqual(JSON.parse(sent[0].command.body), { texts: [long], input_type: 'search_document' });
+			});
+
+			it('refuses truncate: true for a model that cannot truncate before loading the SDK', async () => {
+				// No SDK injected: reaching the loader would fail with the install message instead.
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' });
+				await assert.rejects(
+					() => b.embed('hi', { accounting: ACCOUNTING, truncate: true }),
+					(err) => err instanceof BedrockBackendError && /cannot truncate/.test(err.message)
+				);
+			});
+
+			it('decides from the model the call uses, not the configured one', async () => {
+				const { sdk, sent } = fakeSdk(() => jsonBodyResponse({ embeddings: [[0.4]] }));
+				_injectSdkForTests(sdk);
+				const titan = new BedrockBackend({ region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' });
+				await titan.embed('hi', { accounting: ACCOUNTING, truncate: true, model: 'cohere.embed-v4:0' });
+				assert.strictEqual(JSON.parse(sent[0].command.body).truncate, 'RIGHT');
+				const cohere = new BedrockBackend({ region: 'us-east-1', model: 'cohere.embed-v4:0' });
+				await assert.rejects(
+					() => cohere.embed('hi', { accounting: ACCOUNTING, truncate: true, model: 'amazon.titan-embed-text-v2:0' }),
+					/cannot truncate/
+				);
+				assert.strictEqual(sent.length, 1);
+			});
+		});
+
 		it('throws on a generative-only family asked to embed', async () => {
 			const { sdk } = fakeSdk(() => jsonBodyResponse({}));
 			_injectSdkForTests(sdk);
@@ -343,6 +459,90 @@ describe('BedrockBackend', () => {
 			assert.notStrictEqual(seenSignal, ctrl.signal);
 		});
 	});
+
+	describe('upstream error mapping (#1596)', () => {
+		it('re-throws SDK ServiceExceptions as BedrockBackendError carrying upstreamStatus', async () => {
+			const { sdk } = fakeSdk(() => {
+				const err = new Error('The security token included in the request is invalid');
+				err.name = 'AccessDeniedException';
+				err.$metadata = { httpStatusCode: 403, requestId: 'req-123' };
+				throw err;
+			});
+			_injectSdkForTests(sdk);
+			const b = new BedrockBackend({ region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' });
+			await assert.rejects(
+				() => b.embed('hello', { accounting: ACCOUNTING }),
+				(err) => {
+					assert.ok(err instanceof BedrockBackendError);
+					assert.strictEqual(err.upstreamStatus, 403);
+					assert.match(err.message, /AccessDeniedException/);
+					// Raw SDK error preserved for the unsanitized server log.
+					assert.strictEqual(err.cause?.name, 'AccessDeniedException');
+					return true;
+				}
+			);
+		});
+
+		it('flags a ValidationException saying the input is too long, without surfacing its message', async () => {
+			for (const [message, flagged] of [
+				['Input is too long for requested model.', true],
+				['prompt is too long: 215000 tokens > 200000 maximum', true],
+				['Malformed input request: #: extraneous key [foo] is not permitted', false],
+			]) {
+				const { sdk } = fakeSdk(() => {
+					const err = new Error(message);
+					err.name = 'ValidationException';
+					err.$metadata = { httpStatusCode: 400 };
+					throw err;
+				});
+				_injectSdkForTests(sdk);
+				const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude' });
+				await assert.rejects(
+					() => b.generate('q', { accounting: ACCOUNTING }),
+					(err) => {
+						assert.ok(err instanceof BedrockBackendError);
+						assert.strictEqual(err.contextWindowExceeded === true, flagged, message);
+						assert.strictEqual(err.message, 'Bedrock request failed (ValidationException)');
+						return true;
+					}
+				);
+			}
+		});
+
+		it('leaves upstreamStatus undefined when the SDK error carries no HTTP status', async () => {
+			const { sdk } = fakeSdk(() => {
+				throw new Error('socket hang up');
+			});
+			_injectSdkForTests(sdk);
+			const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude' });
+			await assert.rejects(
+				() => b.generate('q', { accounting: ACCOUNTING }),
+				(err) => {
+					assert.ok(err instanceof BedrockBackendError);
+					assert.strictEqual(err.upstreamStatus, undefined);
+					return true;
+				}
+			);
+		});
+
+		it('propagates aborts untouched (not wrapped as an upstream failure)', async () => {
+			const { sdk } = fakeSdk(() => {
+				const err = new Error('Request aborted');
+				err.name = 'AbortError';
+				throw err;
+			});
+			_injectSdkForTests(sdk);
+			const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude' });
+			await assert.rejects(
+				() => b.generate('q', { accounting: ACCOUNTING }),
+				(err) => {
+					assert.strictEqual(err.name, 'AbortError');
+					assert.ok(!(err instanceof BedrockBackendError));
+					return true;
+				}
+			);
+		});
+	});
 });
 
 describe('registerBedrockBackend', () => {
@@ -364,5 +564,126 @@ describe('registerBedrockBackend', () => {
 			config: { region: 'us-east-1', model: 'amazon.titan-embed-text-v2:0' },
 		});
 		assert.strictEqual(resolveEmbedding('titan').name, 'bedrock');
+	});
+});
+
+// ---- finding 2: inference-profile model IDs + nova guard -------------------------
+
+describe('familyOf (cross-region inference-profile IDs + nova)', () => {
+	beforeEach(() => _resetSdkCacheForTests());
+
+	// us.* inference profile — Claude is now exclusively on-demand via inference profiles
+	it('resolves us.anthropic.claude-* to anthropic family', async () => {
+		const { sdk } = fakeSdk(() =>
+			jsonBodyResponse({
+				content: [{ type: 'text', text: 'hi' }],
+				stop_reason: 'end_turn',
+				usage: {},
+			})
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0' });
+		// Must not throw on family resolution; should succeed and produce Anthropic body shape
+		const result = await b.generate('q', { accounting: ACCOUNTING });
+		assert.strictEqual(result.output.content, 'hi');
+	});
+
+	it('resolves eu.anthropic.claude-* to anthropic family', async () => {
+		const { sdk, sent } = fakeSdk(() =>
+			jsonBodyResponse({ content: [{ type: 'text', text: 'bonjour' }], stop_reason: 'end_turn', usage: {} })
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'eu-west-1', model: 'eu.anthropic.claude-3-5-haiku-20241022-v1:0' });
+		const result = await b.generate('q', { accounting: ACCOUNTING });
+		assert.strictEqual(result.output.content, 'bonjour');
+		// Anthropic body shape: must have anthropic_version
+		const body = JSON.parse(sent[0].command.body);
+		assert.ok(body.anthropic_version, 'should use Anthropic body shape');
+	});
+
+	it('resolves global.anthropic.* to anthropic family', async () => {
+		const { sdk } = fakeSdk(() =>
+			jsonBodyResponse({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn', usage: {} })
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'global.anthropic.claude-3-opus-20240229-v1:0' });
+		// Should not throw on family dispatch
+		await b.generate('q', { accounting: ACCOUNTING });
+	});
+
+	it('resolves us.meta.llama3-* to meta family', async () => {
+		const { sdk } = fakeSdk(() =>
+			jsonBodyResponse({
+				generation: 'llama reply',
+				stop_reason: 'stop',
+				prompt_token_count: 1,
+				generation_token_count: 2,
+			})
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'us.meta.llama3-70b-instruct-v1:0' });
+		const result = await b.generate('q', { accounting: ACCOUNTING });
+		assert.strictEqual(result.output.content, 'llama reply');
+	});
+
+	it('still throws on a completely unknown vendor prefix', async () => {
+		const { sdk } = fakeSdk(() => jsonBodyResponse({}));
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'unknownco.something-v1' });
+		await assert.rejects(() => b.generate('q', { accounting: ACCOUNTING }), /not supported for model family 'unknown'/);
+	});
+
+	it('throws a descriptive error for amazon.nova-* models (not yet supported)', async () => {
+		const { sdk } = fakeSdk(() => jsonBodyResponse({}));
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'amazon.nova-pro-v1:0' });
+		await assert.rejects(
+			() => b.generate('q', { accounting: ACCOUNTING }),
+			/amazon\.nova models are not yet supported/
+		);
+	});
+
+	it('throws a descriptive error for us.amazon.nova-* inference-profile IDs', async () => {
+		const { sdk } = fakeSdk(() => jsonBodyResponse({}));
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'us.amazon.nova-micro-v1:0' });
+		await assert.rejects(
+			() => b.generate('q', { accounting: ACCOUNTING }),
+			/amazon\.nova models are not yet supported/
+		);
+	});
+});
+
+// ---- finding 5b: Bedrock streaming tool-call accumulator cardinality cap --------
+
+describe('Bedrock Anthropic-stream tool-call accumulator cardinality cap', () => {
+	beforeEach(() => _resetSdkCacheForTests());
+
+	it('throws BedrockBackendError when more than 128 distinct content-block indices accumulate', async () => {
+		// Build a stream that emits 129 content_block_start tool_use events with
+		// distinct indices but no content_block_stop events.
+		async function* bigStream() {
+			for (let i = 0; i < 129; i++) {
+				yield {
+					chunk: {
+						bytes: new TextEncoder().encode(
+							JSON.stringify({
+								type: 'content_block_start',
+								index: i,
+								content_block: { type: 'tool_use', id: `c${i}`, name: `fn${i}` },
+							})
+						),
+					},
+				};
+			}
+		}
+		const { sdk } = fakeSdk(() => ({ body: bigStream() }));
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude' });
+		await assert.rejects(async () => {
+			for await (const _c of b.generateStream('q', { accounting: ACCOUNTING })) {
+				/* drain */
+			}
+		}, /tool-call accumulator exceeded 128/);
 	});
 });

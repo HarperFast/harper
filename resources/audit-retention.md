@@ -1,0 +1,304 @@
+# Audit retention and cleanup
+
+Design notes for the audit/transaction-log retention lifecycle: the floor that makes a short replay
+detectable, the self-rearming cleanup cadence, and the removal-loop rules. Indexed from the root
+[DESIGN.md](../DESIGN.md). Moved out of `resources/DESIGN.md` intact (harper#2711) so that file stays
+under its 1000-line budget; no note's content changed in the move.
+
+## Audit retention floor
+
+`Table.subscribe`'s `startTime` replay just begins wherever the audit log now begins, so a consumer
+resuming below the retention horizon is silently handed a short replay. The floor records what
+pruning removed (harper#2447); it is internal, with deliberately no public accessor. **A resume is
+not checked against it** but against the database generation (next section): this floor also steers
+reconciliation, survives a restore, and absorbs at `Infinity`.
+
+**Its consumers are not resumes.** Where the out-of-order walk cannot reach a replicated write's own entry (missing
+history, the depth cap, the fully-superseded early-out), `isReDeliveredDuplicate` runs the keyed duplicate
+lookup for an origin log key at or above the floor, since no prune removed it. Elsewhere the lookup still skips a key
+below the origin log's first appended entry (`dedupVersionCouldBeRetained`), which does not bound the log: a
+late-relayed entry appends below it, and where the walk cannot reach it, skipping the lookup re-logs every
+re-delivery, which peers forward back (harper-pro#1306, `replicatedDeleteRedelivery.test.js`). `Table.commit`'s out-of-order reconciliation also
+reads the floor before entering the audit walk (harper#2642). The walk terminates at the incoming write only by
+reaching an audit entry at or below its version, so below the floor it cannot — it runs the whole
+retained chain, one RocksDB end-of-log scan per step, to an outcome the floor already determines.
+Two things that consumer does differently from a cursor check, and both are deliberate: it compares
+the write's record version rather than a log key, because that is what the walk's own loop condition
+compares; and it treats the `Infinity` unknown floor as **walk anyway** rather than as "not safe",
+because here the conservative direction is to do the work, not to skip it. Below the floor a write
+contributes only its commutative operations — a plain field's survival depends on what newer writes
+did to that key, which is exactly what the pruned history no longer answers.
+
+**The invariant: every path that prunes audit history raises the floor BEFORE removing anything.**
+There are five, and the ordering is the whole guarantee — a floor written after the removal is lost
+if the process dies in between, and the surviving lower floor then certifies a cursor whose history
+is gone. Over-reporting (a floor covering more than the prune actually removed) costs a consumer one
+unnecessary resync; under-reporting loses its data with no signal. So `raiseAuditFloor` is called
+first and a throw from it is what stops the prune.
+
+**On RocksDB the raise must also be durable before a log file is unlinked.** A commit reaches the WAL
+unsynced, and an unlink is not ordered behind it, so a power loss can keep the unlink and lose the raise. The
+retention pass and `delete_transaction_logs_before` await `syncWal`; `purgeAgedLogs` runs before a replay that
+runs synchronously at open (harper#1115), so it uses `flushSync`, and only when a log holds a file old enough
+to purge (`hasPurgeableLogFile`), so an ordinary boot writes no SST. A failed commit or barrier removes
+nothing, with one exception, the boot purge on a full disk (harper#2486): a flush needs a new SST, which a
+full disk cannot hold even when the floor's WAL append fit, and shedding these files is how a full node
+recovers, so `purgeBehindUnsyncedFloor` purges anyway. A failed flush leaves RocksDB refusing writes until
+free space reaches its reserve (the largest write buffer, 16 MiB by default), and replay writes next, so below
+that reserve `flushBootFloor` attempts no flush, and after a failed one the branch waits up to 10 s for writes
+to resume. The floor survives a crash there but not a power loss, until the boot purge calls a synchronous WAL
+sync (harper#4261). This covers the purges Harper requests while `auditRetention` does not exceed rocksdb-js's
+own retention: `purgeLogs` also applies that retention, which also unlinks segments when a log loads, before
+any raise (harper#4262).
+
+| Prune path                                                                   | Engine                                                                    |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `scheduleAuditCleanup` retention loop (`auditStore.ts`)                      | LMDB                                                                      |
+| `scheduleAuditCleanup` → `purgeLogs`                                         | RocksDB                                                                   |
+| `purgeAgedLogs` (boot/recovery, called from `replayLogs.ts`)                 | RocksDB                                                                   |
+| `Table.deleteHistory`                                                        | LMDB (RocksDB returns 0: a log every table shares loses only whole files) |
+| `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                   |
+
+Things that are easy to get wrong here:
+
+- **The floor cannot be derived from the surviving log.** For four of the five paths the oldest
+  surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
+  removes one table's entries from a database-scoped log, so a sibling's entry survives _below_ the
+  newest entry it removed, and a floor taken from that survivor certifies cursors over removed history.
+- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is not `last-removed`,
+  which the LMDB retention loop still maintains (#2338 — do not remove it): that one records where the
+  loop got to, after the fact, so a value there cannot be told apart from a write-ahead, verified floor.
+- **A store with no floor record is one whose retention history we cannot account for** (the empty
+  audit store a migration leaves, a table-scoped backup without `include_audit`), so `openAuditStore`
+  stamps `max(Date.now(), newest retained key)` as a one-time resync epoch. There is no
+  permissive-baseline case: creating the audit DBI proves only that it was absent.
+- **That epoch is a guess, and it is recorded as one.** Surviving state cannot see history a legacy
+  selective prune removed, so a rolled-back clock can stamp it below entries that are gone (#2458).
+  Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing — so `establishAuditFloor` writes the
+  epoch under `Symbol.for('audit-floor-bootstrap')` first, then stamps the floor from that record.
+
+  **The record's presence is the signal; comparing it against the floor is not.** Worked example: a
+  v4-era `deleteHistory` removes tableA up to t=1000 while tableB's newest survivor is 900; a
+  rolled-back clock stamps bootstrap=floor=900; a later pass raises the floor to 950 — and a cursor at
+  970 still sits over tableA's missing 950–1000. No timestamp can close that window, which is why
+  resumable positions are bound to a generation instead: a position naming one postdates tracking.
+
+  **Ordering:** the record is written first, so a crash between the two writes leaves a record with no
+  floor, which the next open retries. **Undecodable bytes are overwritten** (unlike the floor, where a
+  present record may be a deliberate unknown): keeping them pinned the store to unknown forever.
+
+- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key (`subscribe`'s
+  `localTime`); `getHistory` reports each entry's origin `version` under that name, which a backdated
+  or replicated write makes differ, so its cursors cannot be compared against the floor.
+- **History readers skip entries that describe no record's history.** `getHistory` and `getHistoryOfRecord` drop
+  `evict`, lock-control and `reload` entries through `isNonHistoryType` (`auditStore.ts`). Replay and the
+  `previousCount` backfill do not: they must see a `reload` to refuse or re-snapshot. A record with no audit
+  position (an LMDB entry without `localTime`) has an empty history, like an absent record; carrying history
+  across an audit-less base copy is harper#2212's design (`historyNonRecordEntries.test.js`).
+- **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file
+  purge granularity means the branch cannot know which entries a purge will drop, and the floor is
+  written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a
+  file was dropped or not. Entries below that horizon are often still on disk, and a cursor among
+  them is told to resync — conservative in the safe direction only. LMDB can see a single eligible
+  entry, so it raises off the first one it finds instead.
+- **A prune's clamped floor can sit past `Date.now() + 1`.** `boundedAuditPruneEnd` records `newest + 1`
+  when the newest log key is at or past the clock, and log keys are fractional `getNextMonotonicTime`
+  values, not `Date.now()`, so for the rest of that key's millisecond the floor exceeds the wall clock
+  by more than one. Bound it by the newest key, never the wall clock alone (`auditFloor.test.js`, the
+  far-future `deleteHistory` case — it failed twice on main that way).
+- **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
+  bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
+  spelling the check that way would read corrupt metadata as safe.
+- **A copy keeps this floor honest for the log it carried.** A restore carries its log, so the floor
+  stands; a branch or migration carries none, so its stamp raises a finite floor to the copy's epoch.
+  Which history the database is belongs to the generation.
+
+## Per-log purge bounds
+
+A replication source must tell a follower that missed purged entries from one whose source simply
+wrote nothing: an idle RocksDB log is purged empty, and an empty log cannot say whether its entries
+never existed or were removed. `getLogPurgeBounds` returns each named log's bound on what any prune
+removed, and `getLogPurgeTrackedFrom` where tracking began; a resume needs both, reading
+`getLogPurgeTrackedFrom` second so a prune between the reads errs toward a copy, and either returning
+undefined means the store cannot say. A name missing from `getLogPurgeBounds`'s map is a log whose
+watermark could not be read: unknown, never 0. A pass does not read such a log either: it keeps the log's
+record entry, raising its bound to the reach, and does not advance `observedAt`; a boot purge applies the
+record rule to it.
+
+- **A log with a purge watermark answers with it** (`purgeWatermark`). rocksdb-js 2.14 raises each log's
+  `txn.purged` to the largest key of every file it deletes, and syncs it before the unlink, on `purgeLogs`
+  and on its own retention at open, so the bound is exact for keys in any order, keys ahead of this node's
+  clock included, and survives power loss. No prune path reads such a log: a log query maps the files it
+  reads, and a mapping holds a purged file's disk space until garbage collection. Call `useLog` only for a
+  listed name; it creates the log it is asked for.
+- **Every other log answers from `Symbol.for('log-purge-bounds')`**, `{ epoch, unobserved, trackedFrom,
+cutoff, observedAt, positions, logs: { name: [bound, quietAt, maxKey] } }`: a log created before
+  rocksdb-js 2.14, which it reports unknown permanently (so this rule never retires on its own), and one
+  whose deleted file it could not read. The rest of this section is that rule.
+- **A watermarked log's entry is `[max(prior, watermark, cutoff), 0, UNKNOWN_MAXIMUM]`**, written ahead of
+  the purge. Only two readers use it: this build once the log loses its watermark, and a 5.4.0-beta.1–3 build
+  after a downgrade. Both bound the log at the cutoff, so a key ahead of the clock in that last purge escapes
+  them (harper#3953, those builds' own exposure). Keep entries 3-element: those builds distrust a record of
+  any other shape and fall back to comparing the follower's merged start, which misses a relayed origin's cursor.
+- **Raised inside `raiseAuditFloor`'s transaction**, so it shares the floor's write-ahead ordering on
+  every prune path. A retention pass (`observeLogs`) probes each listed log without a watermark with
+  `readUncommitted` against the furthest either purge reaches (the cutoff, or the native horizon when audit
+  retention is longer): a log with no entry at or past it is quiet, bounded by its largest key, and `quietAt`
+  becomes now; a recorded log with no files left is quiet too. Only a cutoff in the past is observed, since
+  anything appended after the probe then lands in a segment the prune cannot remove, and nothing is
+  observed while neither the cutoff nor the native horizon reaches past `unobserved` and the last pass is
+  within half the native retention. Any other prune (`deleteHistory`, `delete_transaction_logs_before`, a
+  cutoff ahead of the clock) raises `epoch` to its cutoff. `observedAt` advances on every pass that read each
+  log without a watermark, vacuously when there is none.
+- **RocksDB removes whole segments by mtime**, so a log written past the reach since its last quiet pass
+  is bounded by the reach. One written since a quiet pass at or past the reach keeps its bound: every
+  segment either purge can remove was last written before that pass. A key minted ahead of this node's
+  clock in a segment last written before the cutoff escapes the cutoff; a margin above the cutoff would
+  instead sit above a caught-up follower's position whenever a log has just gone idle.
+- **The boot purge reads no log** (`readLogs` false) and applies the rule above from the record alone,
+  keeping `observedAt`. A log that has appended nothing since the last pass read it keeps that pass's
+  largest key as its bound after downtime longer than `auditRetention` (harper-pro#1308): `positions[name]` is
+  its `getStats().nextLogPosition`, taken before that pass read it, and an equal position at boot means every
+  key it holds was there for the pass to see, whatever the clocks did since. Any other log not seen quiet
+  within the reach takes the reach. With no pass within the native retention, or one stamped ahead of the
+  clock, the boot purge observes nothing and `trackedFrom` answers, as below.
+- **rocksdb-js also purges on its own** (`transactionLogRetention`, default 3 days, which core does not set)
+  when a database opens, including the file being appended to. That cannot reach past `bound` while
+  `quietAt` is within the native retention; once it is not, `exposedBound` adds the native horizon, or the
+  log's largest key at the last pass if lower (every segment last written before that pass held keys up to
+  it, in whatever order they arrived). `scheduleAuditCleanup` runs a pass at least every quarter of that
+  retention, so an idle log on a running node never reaches the horizon.
+- **`trackedFrom` answers for what tracking never saw**: the floor, or the native horizon if later, when
+  the record was created, raised to the native horizon whenever no pass has read the logs within the native
+  retention (a node down that long resyncs each follower once: that retention can have removed what was
+  appended after the last pass), and to the cutoff of a boot purge that observed nothing. Both raises apply
+  only while a listed log has no watermark. Below it any log may have lost anything. It is a position on this
+  node, so a replication source compares it with the follower's own start here and never with a per-origin
+  cursor: a relayed log's keys are its origin's and can predate this node, and a copy cannot raise such a
+  cursor, so that comparison would force a copy on every reconnect with nothing pruned. A follower at or past
+  it missed nothing a purge before it took: every such segment was last written before that position, so its
+  entries were delivered, unless one landed behind the follower's scan (harper-pro#1251).
+- **`unobserved` bounds every log without a watermark, compared with each log's own start**: the cutoff of a
+  prune that observes no log, which may have removed keys still committing near it. The stored `epoch` is the
+  higher of this and `trackedFrom`, so a build that reads only `epoch` stays conservative after a rollback; a
+  record from before the split reads its `epoch` as `trackedFrom`, the only way its builds compared it. A copy
+  cannot raise a cursor past the keys a log held, so while a cursor's origin stays silent, that comparison
+  forces a copy on every reconnect.
+- **Trusted only while `cutoff` ≥ the floor.** A floor raised without the record (an older binary's
+  prune, a log-free copy's generation stamp) means a prune it did not see; the next tracked prune
+  restarts it from the floor.
+- Every purge path makes the record durable with the floor before it unlinks, under the floor's rule above.
+
+---
+
+## Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise
+
+`scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
+`delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Any loop
+that removes audit/primary-store entries in a batch must attach a rejection handler to every removal
+immediately and drain all tracked promises before returning — never stash a per-iteration promise in
+an outer variable to await only the last one: an overwritten promise's rejection is never awaited or
+caught, and surfaces later as an unhandled rejection with no log to explain it. `Table.deleteHistory`
+allows up to 1,000 LMDB removals in flight
+(ten for RocksDB) so storage writes batch without growing an unbounded pending
+set. Live removals are tracked in a `Set`, and each one removes itself and wakes at most one parked
+producer when it settles, so any completion releases the loop. In these removal loops, do not repeatedly
+race the live set: each race attaches another reaction to every long-pending removal. Both phases drain
+their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
+sequential because it is an automatic background loop, and it ends a pass at its first failed removal
+rather than continuing past it: its `deleted` count (the backoff input) and the `last-removed` marker it
+writes then cover a contiguous removed prefix — nothing above that marker was removed by the pass — and
+the next pass retries the failed entry first. Past a failure there is no key the marker can truthfully
+record, and counting failures as progress re-armed an all-failing pass at 10 ms. The guarantee is
+pass-local: the marker is written after its removals, `deleteHistory` never writes it, and a marker an
+older build persisted past a failed entry is not repaired; completeness is the audit floor's question.
+Stopping costs liveness only for an entry that fails on every pass, which is why `removeAuditEntry` must
+fail only when `auditStore.remove()` does (below). Regression: `auditLog.test.js` "ends a pass at a failed
+removal".
+
+Individual removal failures are logged and excluded from the returned count, but a purge that attempted
+at least one removal and completed none rejects with the first error after both phases have drained.
+Without that, `delete_transaction_logs_before` reports a successful `entries_deleted: 0` whether nothing
+was eligible or the store rejected every write, and an operator pruning to bound disk growth has no signal
+that pruning did nothing. Drain first, then decide: a failing store should still get every removal it can
+accept, and a single success means the purge made progress and reports normally.
+
+The optional primary-store cleanup snapshots each tombstone's key and version before yielding and passes
+that version to `remove()`. LMDB enforces the condition natively. Harper's RocksDB adapter re-reads and
+removes inside one native transaction, retrying a conflict once, because rocksdb-js's `remove()` accepts
+an options object rather than an LMDB-style version argument. Never replace this with a separate live read
+followed by an unconditional remove: a record recreated between those operations would be deleted.
+
+`removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
+also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding
+primary-store tombstone. That callback's promise must be returned and joined with the audit-store
+removal (currently via `Promise.all`, with the callback's own rejection — and a throwing tombstone
+lookup, such as lmdb-js `getEntry(undefined)` for an undecodable recordId — caught and logged through
+`warnContained`, so neither a failed tombstone cleanup nor a throwing log sink gets misreported as a failed
+audit-entry removal) — otherwise the tombstone removal is fire-and-forget and the same detached-rejection
+hazard reappears one level down.
+A tombstone whose cleanup fails this way is not swept automatically — `scheduleAuditCleanup`'s automatic
+pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
+in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
+
+## Audit retention cleanup is a self-rearming, engine-independent lifecycle
+
+One call to `scheduleAuditCleanup` establishes a retention cadence that ends when the root store closes
+(or immediately in process-wide read-only mode). Storage-engine selection changes the work inside each pass, not whether the timer,
+serialization barrier, error containment, and re-arm exist. LMDB removes bounded batches of audit
+entries; RocksDB asks rocksdb-js to purge conservatively eligible log segments before the same time
+cutoff. Disk-pressure callbacks may accelerate the next pass and shorten the effective window, but
+ordinary retention progress must not depend on pressure.
+
+The two engines do not share a cadence rule, because their units of progress differ. LMDB's adaptive
+backoff reads a per-entry delete count: it speeds up while entries are being removed and doubles while
+idle. Rocks reclaims whole segments whose eligibility changes only on rotation/flush, so the same
+signal would only make it rescan the same files — its delay is instead a pure function of the
+pressure-adjusted retention window (a tenth of it, floored at `DEFAULT_AUDIT_CLEANUP_DELAY`).
+
+Exactly one Rocks purge loop exists per store, and that is owned by the **arming** sites, not the
+re-arm: `onStorageReclamation` registers its handler only on the last worker (it takes no
+`skipThreadCheck`), and the store-open arm gates on the same index. The last-worker conjunct on the
+re-arm is therefore unreachable through either of those paths; it is a backstop for a direct caller
+of the exported `scheduleAuditCleanup`, because a store-wide segment purge looping on every worker is
+duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
+backstop — not the registration — becomes the thing keeping the loop single.
+
+Both re-arm guards are **Rocks-only**. The LMDB arm re-arms unconditionally, so it neither yields to
+an already-pending pass (a pressure-armed 100ms pass can be cancelled and replaced by the idle
+backoff) nor restricts itself to one worker — pre-existing LMDB behavior, not an invariant.
+
+Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
+Unlinking a segment a consumer has mapped is safe **on POSIX**: the inode outlives the unlink, and the
+mapping cache (`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is
+never purge-eligible — so nothing pins a purged inode and no cross-worker cache invalidation is
+required. Windows does not share that property: deleting a mapped segment raises a sharing violation,
+so the purge throws, is warn-logged, re-arms, and makes no progress for as long as a consumer holds the
+mapping. The continuous cadence therefore turns a Windows retention stall into a steady state rather
+than a one-off, and nothing covers it — the Rocks retention integration test skips win32.
+What is _not_ covered is the segment a lagging consumer has not mapped yet: `TransactionLog.query()`'s
+iterator returns `done` when its next segment cannot be mapped, indistinguishable from being caught up
+(rocksdb-js `src/transaction-log-reader.ts`). A consumer that far behind needs a full copy rather than
+log replay, so the gap is a missing escalation signal in the reader, not a reason to hold retention —
+tracked as HarperFast/rocksdb-js#805. Continuous retention is what moves it from unreachable-in-steady-state
+to routine: a peer offline longer than `logging.auditRetention` now resumes into a purged prefix and is
+recorded as caught up, and `txnlogReplayGapBytes` observes the gap without escalating on it.
+
+Retirement is two things, and teardown needs both. `stopAuditCleanup()` latches the loop closed and
+cancels the pending timer, and it **returns a drain barrier** — a promise that settles once the pass
+already running has finished. The barrier is what makes closing stores safe: lmdb-js stamps the DBI
+number into its write instruction synchronously and the native writer consumes it later
+(`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
+delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
+transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
+`closeDatabase()` and branch `close()` close commit admission, then drain tracked Rocks transactions,
+table maintenance, audit cleanup, and derived-index work before closing stores. Every environment
+touch remaining in a resumed cleanup pass — cursor advance, cursor release, marker write, re-arm —
+also re-checks `rootStore.status`. `resetDatabases()` closes LMDB roots with no retirement call at all,
+so that re-check is a routine
+path rather than a defensive one.
+
+The last-removed marker is retained until it commits. A rejected write is logged and carried to the
+next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
+transient failure would otherwise leave the recorded boundary permanently behind the entries that
+were already removed.

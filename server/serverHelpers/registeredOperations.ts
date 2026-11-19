@@ -1,0 +1,438 @@
+import { operationDispatchState, type LocalOperationDispatch } from './operationDispatchState.ts';
+/**
+ * Cross-thread bridge for `server.registerOperation()` (#1736).
+ *
+ * Components (jsResource `resources.js`, Plugin API `handleApplication`) load per-worker, so a
+ * `registerOperation()` call made there lands in that worker's module-local OPERATION_FUNCTION_MAP.
+ * The ops-API HTTP dispatcher runs only on the main thread and reads the main thread's copy of
+ * that map, so such operations were unreachable ("Operation '<name>' not found") for every caller.
+ *
+ * The bridge mirrors the RESOURCE_OPENAPI request/response pattern (operationsServer.ts /
+ * itc/serverHandlers.js), with one deliberate difference: executing an operation is side-effecting,
+ * so a request is sent to exactly ONE registering worker (never broadcast-first-wins).
+ *
+ *  - Worker: `registerOperation()` announces the name (OPERATION_REGISTERED) to all threads;
+ *    only the main thread records it, as name -> Set<threadId>, plus `grantable`.
+ *  - Main: on an OPERATION_FUNCTION_MAP miss, `getRemoteOperationFunction()` supplies a forwarding
+ *    function that sends the request body (OPERATION_EXECUTE_REQUEST) to one live registering
+ *    worker and awaits the correlated OPERATION_EXECUTE_RESPONSE.
+ *  - Worker: executes through the normal `chooseOperation` + `processLocalTransaction` path, so
+ *    permission checks run where the operation function (and its metadata) actually exists. The
+ *    main thread performs authentication only and forwards the resolved `hdb_user`.
+ *
+ * The same transport runs the other way for operations only the main thread registered (the
+ * built-in agent's, from `startOnMainThread`): main announces them, and a worker's local miss for
+ * an announced name is sent to thread 0 (#4134). A request that arrived over the bridge is
+ * dispatched locally only, so the two directions cannot chain into a loop.
+ */
+import { isMainThread, threadId, workerData } from 'node:worker_threads';
+import { Readable } from 'node:stream';
+import * as terms from '../../utility/hdbTerms.ts';
+import * as env from '../../utility/environment/environmentManager.ts';
+import harperLogger from '../../utility/logging/harper_logger.ts';
+import { ServerError } from '../../utility/errors/hdbError.ts';
+import PermissionResponseObject from '../../security/data_objects/PermissionResponseObject.ts';
+import { sendItcEvent } from '../threads/itc.ts';
+import {
+	hasThreadExited,
+	onMessageByType,
+	onThreadExit,
+	registerWorkerDataProvider,
+} from '../threads/manageThreads.ts';
+import {
+	registerWorkerGrantableOperation,
+	unregisterWorkerGrantableOperation,
+} from '../../utility/operationPermissions.ts';
+import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
+import { isOperationLogEnabled, operationLogViewOf, setOperationLogView } from '../../utility/operationLogView.ts';
+import { onStartup } from '../../utility/lifecycle.ts';
+
+const operationLog = harperLogger.loggerWithTag('operation');
+
+// The connected-ports array with `sendToThread` — assigned to the `threads` global by
+// manageThreads via _assignPackageExport (the same access pattern as itc/serverHandlers.js;
+// the globals.js `exports.threads` binding is reassigned after load, so it can't be imported).
+declare const threads: { sendToThread(threadId: number, message: any): boolean };
+
+// Fields attached to a request body by the HTTP/auth layer that must not (and often cannot)
+// cross the thread boundary via structured clone.
+const NON_FORWARDABLE_FIELDS = ['baseRequest', 'baseResponse', 'fastifyResponse', 'progress', 'parsed_sql_object'];
+
+// Bound how long the main thread waits for a worker to finish a forwarded operation. Past the
+// operations-API connection timeout the client socket is gone anyway; this just prevents a
+// wedged-but-alive worker from leaking pending forwards forever.
+let EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT) || 120_000;
+onStartup(() => {
+	EXECUTE_TIMEOUT_MS = env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT) || 120_000;
+});
+
+// Dispatch functions injected by serverUtilities at its module load (it statically imports this
+// module, so a plain import here would be a cycle; a runtime require of a .ts path doesn't
+// survive the dist build). A worker can only receive an execute request after announcing a
+// registration — which goes through serverUtilities — so these are always set on that path.
+export function setLocalOperationDispatch(dispatch: LocalOperationDispatch) {
+	operationDispatchState.local = dispatch;
+}
+
+/** name -> threadIds of workers that registered it (main thread only) */
+const registeredByWorker = new Map<string, Set<number>>();
+// Per originator, not per name: a rolling deploy whose new generation drops `requiresSuperUser`
+// must keep routing the name while retracting grantability, which a name-level flag cannot express.
+const grantableByWorker = new Map<string, Set<number>>();
+const pendingExecutions = new Map<
+	number,
+	{ targetThreadId: number; resolve: (result: any) => void; reject: (error: Error) => void }
+>();
+let nextRequestId = 1;
+let listenersAttached = false;
+
+const MAIN_THREAD_ID = 0;
+const mainThreadOperations = new Map<string, boolean>();
+// In a worker spawned by a worker, thread 0 addresses the parent, which could never answer, so
+// only a worker main spawned (the one that gets a snapshot) learns names to forward.
+const spawnedByMain = Array.isArray(workerData?.mainThreadOperations);
+if (isMainThread) {
+	// Main loads its components before it starts workers, so the snapshot covers boot with no
+	// window in which a worker serves requests without the names.
+	registerWorkerDataProvider('mainThreadOperations', () => [...mainThreadOperations]);
+} else if (spawnedByMain) {
+	for (const [name, grantable] of workerData.mainThreadOperations) recordMainThreadOperation(name, grantable);
+}
+
+function recordMainThreadOperation(name: string, grantable: boolean) {
+	if (!isMainThread && !spawnedByMain) return;
+	mainThreadOperations.set(name, grantable);
+	if (isMainThread) return;
+	if (grantable) registerWorkerGrantableOperation(name);
+	else unregisterWorkerGrantableOperation(name);
+}
+
+/**
+ * Announce a registration so the other side of the bridge can forward calls here. Fire-and-forget —
+ * a lost announcement just means the op stays unreachable from that thread, and the broadcast has
+ * its own ack timeout.
+ */
+export function announceRegisteredOperation(name: string, grantable = false) {
+	if (isMainThread) recordMainThreadOperation(name, grantable);
+	// Job workers are left out of ordinary gossip, but a job already running may call the operation.
+	sendItcEvent(
+		{
+			type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
+			message: { name, grantable },
+		},
+		isMainThread
+	).catch((error) => operationLog.error(`Failed to announce registered operation '${name}'`, error));
+}
+
+export function operationRegisteredHandler(event: {
+	message?: { name?: string; grantable?: boolean; originator?: number };
+}) {
+	const { name, grantable, originator } = event?.message ?? {};
+	if (typeof name !== 'string' || typeof originator !== 'number') return;
+	if (!isMainThread) {
+		if (originator === MAIN_THREAD_ID) recordMainThreadOperation(name, grantable === true);
+		return;
+	}
+	// An announcement can lose the race with its own thread's exit, and exit notification fires once
+	// per thread, so without this the entry would never be cleaned up. Reads manageThreads' tombstone
+	// rather than keeping a second one: job threads are one-shot workers, so a duplicate here would
+	// grow per completed job, not per worker restart.
+	if (hasThreadExited(originator)) {
+		operationLog.debug(`Ignoring operation '${name}' announced by exited worker thread ${originator}`);
+		return;
+	}
+	let workerIds = registeredByWorker.get(name);
+	if (!workerIds) registeredByWorker.set(name, (workerIds = new Set()));
+	workerIds.add(originator);
+	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's
+	// chooseOperation. A re-announcement that drops the permission retracts this thread's claim.
+	setWorkerGrantable(name, originator, grantable === true);
+	operationLog.debug(`Registered operation '${name}' announced by worker thread ${originator}`);
+}
+
+/**
+ * A worker that dies mid-execution can never respond, so fail its in-flight forwards rather than
+ * waiting out the timeout, and forget its registrations (a replacement re-registers on load).
+ */
+function handleThreadExit(deadThreadId: number) {
+	for (const [name, workerIds] of registeredByWorker) {
+		if (!workerIds.delete(deadThreadId)) continue;
+		// A surviving worker that never declared a permission must not keep the name admissible.
+		if (workerIds.size === 0) dropRegistration(name);
+		else setWorkerGrantable(name, deadThreadId, false);
+	}
+	for (const [requestId, pending] of pendingExecutions) {
+		if (pending.targetThreadId === deadThreadId) {
+			pendingExecutions.delete(requestId);
+			pending.reject(new ServerError('The worker thread executing this operation exited', 503));
+		}
+	}
+}
+
+function setWorkerGrantable(name: string, threadId: number, grantable: boolean) {
+	let grantableIds = grantableByWorker.get(name);
+	if (grantable) {
+		if (!grantableIds) grantableByWorker.set(name, (grantableIds = new Set()));
+		grantableIds.add(threadId);
+		registerWorkerGrantableOperation(name);
+	} else if (grantableIds?.delete(threadId) && grantableIds.size === 0) {
+		grantableByWorker.delete(name);
+		unregisterWorkerGrantableOperation(name);
+	}
+}
+
+/**
+ * Forget an operation no live worker offers any more. Both prune paths — thread exit, and a failed
+ * send discovering a dead port — route through here so a name can never keep a route without an
+ * owner. Grantability is dropped per owner instead, in `setWorkerGrantable`.
+ */
+function dropRegistration(name: string) {
+	registeredByWorker.delete(name);
+	grantableByWorker.delete(name);
+	unregisterWorkerGrantableOperation(name);
+}
+
+let rotation = 0;
+/**
+ * Dispatch fallback for a local miss: if the other side of the bridge registered `name`, return a
+ * forwarding operation function for it; otherwise undefined (caller falls through to the usual
+ * "not found" error). Permission checks are intentionally NOT run on the calling thread for
+ * forwarded operations — the function and metadata that `verifyPerms` needs only exist on the
+ * registering thread, which runs the full `chooseOperation` check with the forwarded `hdb_user`.
+ */
+export function getRemoteOperationFunction(
+	name: string,
+	bypassAuth = false
+): ((body: any) => Promise<any>) | undefined {
+	if (isMainThread) {
+		if (!registeredByWorker.has(name)) return undefined;
+		return (body: any) => executeRemoteOperation(name, body, bypassAuth);
+	}
+	if (!mainThreadOperations.has(name)) return undefined;
+	return (body: any) => executeMainThreadOperation(name, body, bypassAuth);
+}
+
+function attachListeners() {
+	if (listenersAttached) return;
+	listenersAttached = true;
+	onMessageByType(terms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, (event: any) => {
+		const { requestId, originator, result, error } = event.message ?? {};
+		const pending = pendingExecutions.get(requestId);
+		if (!pending) return;
+		// Defense-in-depth: only the thread the request was sent to may settle it.
+		if (originator !== pending.targetThreadId) return;
+		pendingExecutions.delete(requestId);
+		if (error) pending.reject(toForwardedError(error));
+		else pending.resolve(result);
+	});
+	if (!isMainThread) return;
+	onThreadExit(handleThreadExit);
+	// A registration broadcast while a worker was still loading can reach it before its ITC
+	// listener exists, and is then dropped; its snapshot predates the registration.
+	onMessageByType(terms.ITC_EVENT_TYPES.CHILD_STARTED, (_message: any, worker: any) => {
+		if (typeof worker?.threadId !== 'number') return;
+		for (const [name, grantable] of mainThreadOperations) {
+			threads.sendToThread(worker.threadId, {
+				type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
+				message: { name, grantable, originator: MAIN_THREAD_ID },
+			});
+		}
+	});
+}
+
+// Armed at load rather than on first use: serverUtilities imports this module during its own load,
+// before any worker exists. Thread-exit notification fires once per thread and is dropped outright
+// if no listener is attached yet, so a worker dying before its first announcement is processed
+// would otherwise leave a registration nothing could ever clean up.
+attachListeners();
+
+// `code` and `retryable` tell a caller whether resubmitting is safe (the agent's saved-but-not-run
+// prompt is not), so they survive the hop along with the status.
+function toForwardedError(error: {
+	message: string;
+	statusCode?: number;
+	code?: string;
+	retryable?: boolean;
+	permissionReport?: PermissionResponseObject;
+}) {
+	const forwarded: any = new ServerError(error.message, error.statusCode || 500);
+	if (error.code !== undefined) forwarded.code = error.code;
+	if (error.retryable !== undefined) forwarded.retryable = error.retryable;
+	// Structured clone left a plain object; a rebuilt instance is what the next hop's sender recognizes.
+	if (error.permissionReport !== undefined) {
+		forwarded.http_resp_msg = Object.assign(new PermissionResponseObject(), error.permissionReport);
+	}
+	return forwarded;
+}
+
+function withoutNonForwardableFields(body: any) {
+	const forwardBody = { ...body };
+	for (const field of NON_FORWARDABLE_FIELDS) delete forwardBody[field];
+	return forwardBody;
+}
+
+// The receiving thread needs a view whenever the body has one (its error logging keys off it), but the
+// full view only when the operation log will print it. A view never holds a sealed value.
+function forwardedLogView(body: any): Record<string, unknown> | undefined {
+	const view = operationLogViewOf(body);
+	return view && (isOperationLogEnabled() ? view() : { operation: body.operation });
+}
+
+/** Resolves with the correlated response; undefined when the target's port is gone. */
+function sendExecuteRequest(
+	name: string,
+	targetThreadId: number,
+	forwardBody: any,
+	bypassAuth: boolean,
+	logView: Record<string, unknown> | undefined
+): Promise<any> | undefined {
+	const requestId = nextRequestId++;
+	let sent;
+	try {
+		sent = threads.sendToThread(targetThreadId, {
+			type: terms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST,
+			message: { requestId, body: forwardBody, bypassAuth, originator: threadId, logView },
+		});
+	} catch (error) {
+		// Structured-clone failure (e.g. a function or native handle on the request body) is a
+		// server-side limitation, not a malformed client request — 500, not 400. No other thread
+		// will fare better with the same body.
+		operationLog.error(`Failed to forward operation '${name}' to thread ${targetThreadId}`, error);
+		throw new ServerError(
+			`Operation '${name}' request could not be forwarded to another thread: ${error.message}`,
+			500
+		);
+	}
+	if (!sent) return undefined;
+	return new Promise((promiseResolve, promiseReject) => {
+		const timer = setTimeout(() => {
+			pendingExecutions.delete(requestId);
+			promiseReject(new ServerError(`Timed out waiting for another thread to execute operation '${name}'`, 503));
+		}, EXECUTE_TIMEOUT_MS);
+		timer.unref();
+		pendingExecutions.set(requestId, {
+			targetThreadId,
+			resolve(result) {
+				clearTimeout(timer);
+				promiseResolve(result);
+			},
+			reject(error) {
+				clearTimeout(timer);
+				promiseReject(error);
+			},
+		});
+	});
+}
+
+async function executeMainThreadOperation(name: string, body: any, bypassAuth: boolean): Promise<any> {
+	const pending = sendExecuteRequest(
+		name,
+		MAIN_THREAD_ID,
+		withoutNonForwardableFields(body),
+		bypassAuth,
+		forwardedLogView(body)
+	);
+	if (!pending) throw new ServerError(`Operation '${name}' runs on the main thread, which is unreachable`, 503);
+	return pending;
+}
+
+async function executeRemoteOperation(name: string, body: any, bypassAuth: boolean): Promise<any> {
+	const workerIds = registeredByWorker.get(name);
+	const forwardBody = withoutNonForwardableFields(body);
+	const logView = forwardedLogView(body);
+
+	// Pick one live registering worker (rotating for spread), pruning ids whose port is gone.
+	// sendToThread returning false means the worker exited; try the next one.
+	while (workerIds?.size) {
+		const candidates = [...workerIds];
+		const targetThreadId = candidates[rotation++ % candidates.length];
+		const pending = sendExecuteRequest(name, targetThreadId, forwardBody, bypassAuth, logView);
+		if (pending) return pending;
+		// The port is gone, so this thread's claims go with it — grantability included, which
+		// handleThreadExit would otherwise not retract while other workers still route the name.
+		workerIds.delete(targetThreadId);
+		setWorkerGrantable(name, targetThreadId, false);
+	}
+	if (registeredByWorker.get(name)?.size === 0) dropRegistration(name);
+	throw new ServerError(
+		`Operation '${name}' is registered by a component but no worker thread is available to run it`,
+		503
+	);
+}
+
+/**
+ * ITC handler, receiving side: execute a forwarded operation through the normal dispatch path
+ * (permission check + processLocalTransaction) and send the result back to the requesting thread.
+ */
+export async function operationExecuteRequestHandler(event: {
+	message: {
+		requestId: number;
+		body: any;
+		bypassAuth?: boolean;
+		originator: number;
+		logView?: Record<string, unknown>;
+	};
+}) {
+	const { requestId, body, bypassAuth, originator, logView } = event.message;
+	if (logView) setOperationLogView(body, () => logView);
+	let response;
+	try {
+		const localDispatch = operationDispatchState.local;
+		if (!localDispatch) throw new ServerError('This worker thread cannot execute operations', 503);
+		// Authorization state travels in the trusted same-process ITC envelope, never in the
+		// caller-controlled operation body. This preserves server.operation(..., false) across
+		// worker forwarding without creating a client-spoofable request property.
+		const trustedBypassAuth = bypassAuth === true;
+		const result = await runWithOperationAuthorizationBypass(trustedBypassAuth, () => {
+			const operationFunction = localDispatch.chooseOperation(body, trustedBypassAuth, true);
+			return localDispatch.processLocalTransaction({ body }, operationFunction);
+		});
+		if (result instanceof Readable || typeof result?.pipe === 'function') {
+			// Streaming results would need MessagePort transfer plumbing — explicitly unsupported
+			// across threads for now (#1736), rather than failing opaquely.
+			// The handler already ran and the stream may hold an open fd/cursor/socket; destroy it
+			// rather than abandoning it to GC finalization.
+			result.destroy?.();
+			throw new ServerError(
+				`Operation '${body.operation}' returned a stream; streaming results are not supported for an operation that runs on another thread`,
+				501
+			);
+		}
+		response = { requestId, result };
+	} catch (error) {
+		const responseMessage = error?.http_resp_msg;
+		const wireError: any = {
+			message: responseMessage?.error ?? responseMessage ?? error?.message,
+			statusCode: error?.statusCode,
+			code: typeof error?.code === 'string' ? error.code : undefined,
+			retryable: typeof error?.retryable === 'boolean' ? error.retryable : undefined,
+		};
+		// Only a permission report: serverErrorHandler appends `code`/`retryable` to a scalar body but
+		// sends an object body as is, so any other object body must keep forwarding as a scalar message.
+		if (responseMessage instanceof PermissionResponseObject) wireError.permissionReport = responseMessage;
+		response = { requestId, error: wireError };
+	}
+	try {
+		sendExecuteResponse(originator, response);
+	} catch (error) {
+		// The result itself failed to structured-clone; report that instead of leaving the requester
+		// to time out.
+		operationLog.error(`Failed to send result of operation '${body?.operation}' back to its requester`, error);
+		sendExecuteResponse(originator, {
+			requestId,
+			error: {
+				message: `Operation '${body?.operation}' result could not be returned across threads: ${error.message}`,
+				statusCode: 500,
+			},
+		});
+	}
+}
+
+function sendExecuteResponse(requestOriginator: number, message: any) {
+	// Stamp this threadId so the requester can verify the response came from the thread the
+	// request was actually sent to.
+	message.originator = threadId;
+	if (!threads.sendToThread(requestOriginator, { type: terms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, message })) {
+		operationLog.trace(`Dropping operation execute response for request ${message.requestId}: requester unreachable`);
+	}
+}

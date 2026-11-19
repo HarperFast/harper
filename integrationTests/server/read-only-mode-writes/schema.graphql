@@ -1,0 +1,4 @@
+type Note @table(database: "readonlytest") @export {
+	id: ID @primaryKey
+	body: String
+}

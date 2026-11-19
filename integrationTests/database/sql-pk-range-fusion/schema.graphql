@@ -1,0 +1,4 @@
+type Item @table @export {
+	id: Int @primaryKey
+	filler: String
+}

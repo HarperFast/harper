@@ -7,10 +7,7 @@ const log = harperLogger.forComponent('models').conditional;
 const DEFAULT_FLUSH_INTERVAL_MS = 10_000; // 10s
 const DEFAULT_MAX_BUFFER_SIZE = 1000;
 const DEFAULT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1h
-// 90-day default tuned for billing windows. Operator-tunable config key will land
-// in Phase 2 alongside the YAML→registry bootstrapper (Harper's `getConfigValue`
-// only reads keys registered in `CONFIG_PARAM_MAP`, so we defer config plumbing
-// until the first real backend ships and the key has a documented owner).
+// 90-day default tuned for billing windows.
 const DEFAULT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 /**
@@ -23,7 +20,7 @@ export interface ModelCallRecord {
 	app?: string;
 	model?: string;
 	backend: string;
-	method: 'embed' | 'generate' | 'generateStream';
+	method: 'embed' | 'generate' | 'generateStream' | 'decide' | 'scoreChoices';
 	adapter?: string;
 	conversation_id?: string;
 	prompt_tokens?: number;
@@ -41,6 +38,35 @@ interface BufferedRecord extends ModelCallRecord {
 }
 
 let _table: any;
+
+/**
+ * Schema attributes for `hdb_model_calls`. Exported so tests can assert on
+ * the structural shape (e.g. no spurious `indexed: true`) without parsing
+ * TypeScript source.
+ *
+ * flush() writes via tbl.primaryStore.put and cleanup() removes via
+ * primaryStore.remove — both bypass updateIndices, so secondary indexes
+ * would stay permanently empty. Match hdb_raw_analytics (write.ts) which
+ * intentionally omits `indexed` from all non-PK attributes for the same reason.
+ */
+export const MODEL_CALL_ATTRIBUTES = [
+	{ name: 'id', isPrimaryKey: true },
+	{ name: 'tenant', type: 'string' },
+	{ name: 'app', type: 'string' },
+	{ name: 'model', type: 'string' },
+	{ name: 'backend', type: 'string' },
+	{ name: 'method', type: 'string' },
+	{ name: 'adapter', type: 'string' },
+	{ name: 'conversation_id', type: 'string' },
+	{ name: 'prompt_tokens', type: 'number' },
+	{ name: 'completion_tokens', type: 'number' },
+	{ name: 'embedding_tokens', type: 'number' },
+	{ name: 'gpu_ms', type: 'number' },
+	{ name: 'latency_ms', type: 'number' },
+	{ name: 'success', type: 'boolean' },
+	{ name: 'error_code', type: 'string' },
+];
+
 /**
  * Lazy-getter for `hdb_model_calls`. Matches the convention used by
  * `getRawAnalyticsTable()` / `getAnalyticsTable()` in
@@ -54,23 +80,7 @@ export function getModelCallsTable(): any {
 		database: 'system',
 		audit: true,
 		trackDeletes: false,
-		attributes: [
-			{ name: 'id', isPrimaryKey: true },
-			{ name: 'tenant', type: 'string', indexed: true },
-			{ name: 'app', type: 'string', indexed: true },
-			{ name: 'model', type: 'string', indexed: true },
-			{ name: 'backend', type: 'string', indexed: true },
-			{ name: 'method', type: 'string', indexed: true },
-			{ name: 'adapter', type: 'string', indexed: true },
-			{ name: 'conversation_id', type: 'string', indexed: true },
-			{ name: 'prompt_tokens', type: 'number' },
-			{ name: 'completion_tokens', type: 'number' },
-			{ name: 'embedding_tokens', type: 'number' },
-			{ name: 'gpu_ms', type: 'number' },
-			{ name: 'latency_ms', type: 'number', indexed: true },
-			{ name: 'success', type: 'boolean', indexed: true },
-			{ name: 'error_code', type: 'string' },
-		],
+		attributes: MODEL_CALL_ATTRIBUTES,
 	});
 	return _table;
 }
@@ -124,15 +134,17 @@ export class ModelCallAnalyticsWriter {
 		this.#cleanupTimer.unref?.();
 	}
 
-	write(record: ModelCallRecord): void {
-		if (this.#stopped) return;
+	write(record: ModelCallRecord): number {
+		const id = getNextMonotonicTime();
+		if (this.#stopped) return id;
 		// id last so a record that accidentally carries an `id` field can't override
 		// the monotonic primary key.
-		this.#buffer.push({ ...record, id: getNextMonotonicTime() });
+		this.#buffer.push({ ...record, id });
 		if (this.#buffer.length >= this.#maxBufferSize) {
 			// Out-of-cadence flush; swallow errors so a failing flush doesn't escape into the caller.
 			this.flush().catch((err) => log.warn?.(`Model-call analytics flush failed: ${err?.message ?? err}`));
 		}
+		return id;
 	}
 
 	async flush(): Promise<void> {

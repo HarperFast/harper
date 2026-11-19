@@ -14,6 +14,8 @@ http:
 threads:
   count: null
   debug: false
+  preload: null
+  preloadRequire: null
 authentication:
   authorizeLocal: false
   cacheTTL: 30000
@@ -24,8 +26,9 @@ analytics:
   aggregatePeriod: 60
   replicate: false
 applications:
-  lockdown: freeze-after-load
-  moduleLoader: vm
+  # Releases without the seal modes freeze eagerly on this value; set freeze-after-load before downgrading.
+  lockdown: seal-after-load
+  moduleLoader: vm-current-context
   dependencyLoader: auto
   allowedSpawnCommands:
     - npm
@@ -67,13 +70,30 @@ operationsApi:
     securePort: 9925
 rootPath: null
 storage:
+  fullText:
+    requestBudgetMilliseconds: 5000
+    maxRawHitsPerRequest: 10000
+    maxResultsPerRequest: 10000
+    runtime:
+      maxResidentIndexes: 128
+      maxIndexingThreads: 128
+      maxSearchThreads: 256
+      maxWriterMemoryBytes: 4294967296
+      maxQueuedBytes: 8589934592
+      maxExpensiveSearches: 8
   writeAsync: false
   caching: true
+  recordCacheSize: 32768
   compression: true
+  rocks:
+    compression: null
   noReadAhead: false
   path: null
+  backupPath: null
   prefetchWrites: true
+  maxLockClockSkew: 5s
 tls:
   privateKey: null
+  certificateWatchInterval: 300000
 node:
   hostname: null

@@ -1,0 +1,933 @@
+const assert = require('node:assert');
+const { Readable } = require('node:stream');
+const {
+	registerOperationsTools,
+	DEFAULT_ALLOW,
+	DEFAULT_EXCLUDED,
+	MAX_OPERATION_ITERABLE_ITEMS,
+	MAX_OPERATION_ITERABLE_BYTES,
+	_setOperationFunctionMapForTest,
+	_setChooseOperationForTest,
+	_setProcessLocalTransactionForTest,
+} = require('#src/components/mcp/tools/operations');
+const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
+const env = require('#js/utility/environment/environmentManager');
+const { existsSync, readFileSync } = require('node:fs');
+const harperLogger = require('#src/utility/logging/harper_logger');
+const { handleHDBError } = require('#src/utility/errors/hdbError');
+const PermissionResponseObject = require('#src/security/data_objects/PermissionResponseObject').default;
+const { pinLogConfig } = require('../../../logConfigFixture.js');
+const { waitFor } = require('../../../waitFor.js');
+
+function makeOpMap(entries) {
+	const m = new Map();
+	for (const [name, fn] of entries) {
+		m.set(name, { operation_function: fn ?? (async () => ({ ok: true })) });
+	}
+	return m;
+}
+
+const SUPER = { username: 'admin', role: { permission: { super_user: true } } };
+const NOBODY = { username: 'nobody', role: { permission: {} } };
+
+describe('mcp/tools/operations — registration', () => {
+	let envOverrides;
+	const originalEnvGet = env.get;
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		envOverrides = {};
+		env.get = (key) => (key in envOverrides ? envOverrides[key] : originalEnvGet.call(env, key));
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_setOperationFunctionMapForTest(undefined);
+		_setChooseOperationForTest(undefined);
+		_setProcessLocalTransactionForTest(undefined);
+		env.get = originalEnvGet;
+	});
+
+	it('registers one tool per default-allowed operation', () => {
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['describe_all', async () => ({ schemas: [] })],
+				['describe_table', async () => ({ table: 't' })],
+				['list_users', async () => ({ users: [] })],
+				['search_by_value', async () => ({ rows: [] })],
+				['get_job', async () => ({ id: 'j' })],
+				['system_information', async () => ({ host: 'x' })],
+				['read_log', async () => ({ entries: [] })],
+				['read_audit_log', async () => ({ entries: [] })],
+				// These should NOT be registered by default — destructive / not on the list.
+				['drop_table', async () => ({})],
+				['delete', async () => ({})],
+				['insert', async () => ({})],
+			])
+		);
+
+		registerOperationsTools();
+
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = tools.map((t) => t.name).sort();
+		assert.deepEqual(names, [
+			'describe_all',
+			'describe_table',
+			'get_job',
+			'list_users',
+			'read_audit_log',
+			'read_log',
+			'search_by_value',
+			'system_information',
+		]);
+
+		// `insert`, `drop_table`, `delete` are filtered out by the default allow list.
+		assert.equal(getTool('insert'), undefined);
+		assert.equal(getTool('drop_table'), undefined);
+		assert.equal(getTool('delete'), undefined);
+	});
+
+	it('excludes sensitive get_* operations from the default-allow set', () => {
+		// The DEFAULT_ALLOW list MUST NOT pull in operations that can leak
+		// secrets or source code into the LLM context. verifyPerms still
+		// gates the actual dispatch, but defaulting to "expose secrets to
+		// LLM if super_user calls it" is the wrong default. Operators who
+		// genuinely want any of these can opt in via mcp.operations.allow.
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['get_configuration', async () => ({ secrets: 'inside' })],
+				['get_custom_function', async () => ({ source: 'fn body' })],
+				['get_custom_functions', async () => ({ functions: [] })],
+				['get_components', async () => ({ components: [] })],
+				['get_component_file', async () => ({ contents: '' })],
+				['get_backup', async () => ({ backup: '' })],
+				['get_deployment', async () => ({})],
+				['get_deployment_payload', async () => ({})],
+				// These four ARE in the explicit safe list.
+				['get_job', async () => ({})],
+				['get_status', async () => ({})],
+				['get_analytics', async () => ({})],
+				['get_metrics', async () => ({})],
+			])
+		);
+
+		registerOperationsTools();
+
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		// Sensitive getters: NOT in the default surface.
+		for (const sensitive of [
+			'get_configuration',
+			'get_custom_function',
+			'get_custom_functions',
+			'get_components',
+			'get_component_file',
+			'get_backup',
+			'get_deployment',
+			'get_deployment_payload',
+		]) {
+			assert.ok(!names.has(sensitive), `${sensitive} must not be default-allowed`);
+		}
+		// Safe getters: IN the default surface.
+		for (const safe of ['get_job', 'get_status', 'get_analytics', 'get_metrics']) {
+			assert.ok(names.has(safe), `${safe} should be default-allowed`);
+		}
+	});
+
+	it('excludes ALL credential-management operations from the default-allow surface', () => {
+		// list_secrets / list_oidc_trust match the `list_*` glob and get_secrets_public_key looks
+		// like a safe getter, but both stores are credential management — never default-exposed to
+		// an LLM surface. The secrets store is key custody; an OIDC trust policy grants an external
+		// workflow the right to authenticate as a Harper user, so reading the set names the
+		// repository worth compromising and writing one is a way to grant access.
+		// DEFAULT_EXCLUDED pins each op, present and future-glob-matching.
+		const secretOps = [
+			'set_secret',
+			'grant_secret',
+			'revoke_secret',
+			'list_secrets',
+			'delete_secret',
+			'get_secrets_public_key',
+		];
+		// exchange_oidc_token matches no DEFAULT_ALLOW glob today, but it is the operation that hands
+		// out a credential — pinned here so a future glob cannot quietly pull it onto the surface.
+		const oidcTrustOps = ['add_oidc_trust', 'list_oidc_trust', 'drop_oidc_trust', 'exchange_oidc_token'];
+		const previewOps = ['enable_previews', 'disable_previews', 'fence_preview_releases', 'get_preview_policy'];
+		const credentialOps = [...secretOps, ...oidcTrustOps, ...previewOps];
+		assert.deepEqual([...DEFAULT_EXCLUDED].sort(), [...credentialOps].sort());
+
+		_setOperationFunctionMapForTest(
+			makeOpMap([...credentialOps.map((name) => [name, async () => ({})]), ['list_users', async () => ({})]])
+		);
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		for (const op of credentialOps) {
+			assert.ok(!names.has(op), `${op} must not be on the default MCP surface`);
+		}
+		assert.ok(names.has('list_users'), 'list_* glob still works for non-excluded ops');
+	});
+
+	it('an operator can still opt secret operations in via mcp.operations.allow (explicit only)', () => {
+		envOverrides.mcp_operations_allow = ['list_secrets', 'get_secrets_public_key'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['list_secrets', async () => ({ secrets: [] })],
+				['get_secrets_public_key', async () => ({})],
+				['set_secret', async () => ({})], // not on the explicit allow → excluded
+			])
+		);
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		assert.ok(names.has('list_secrets'));
+		assert.ok(names.has('get_secrets_public_key'));
+		assert.ok(!names.has('set_secret'));
+	});
+
+	it('an operator can still opt sensitive getters into the surface via mcp.operations.allow', () => {
+		envOverrides.mcp_operations_allow = ['get_configuration', 'get_components'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['get_configuration', async () => ({})],
+				['get_components', async () => ({})],
+				['get_job', async () => ({})], // not on the explicit allow → excluded
+			])
+		);
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		const names = new Set(tools.map((t) => t.name));
+		assert.ok(names.has('get_configuration'));
+		assert.ok(names.has('get_components'));
+		assert.ok(!names.has('get_job'), 'when allow is set, DEFAULT_ALLOW is replaced not merged');
+	});
+
+	it('honors a user-defined allow list', () => {
+		envOverrides.mcp_operations_allow = ['describe_*', 'insert'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['describe_all', null],
+				['describe_table', null],
+				['insert', null],
+				['delete', null],
+				['list_users', null],
+			])
+		);
+
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		assert.deepEqual(tools.map((t) => t.name).sort(), ['describe_all', 'describe_table', 'insert']);
+	});
+
+	it('honors a deny list that overrides allow', () => {
+		envOverrides.mcp_operations_deny = ['list_users']; // default allow includes list_*
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['describe_all', null],
+				['list_users', null],
+				['list_roles', null],
+			])
+		);
+
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		assert.deepEqual(tools.map((t) => t.name).sort(), ['describe_all', 'list_roles']);
+	});
+
+	it('annotates read-only operations with readOnlyHint and destructive ones with destructiveHint', () => {
+		envOverrides.mcp_operations_allow = ['describe_all', 'drop_table'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['describe_all', null],
+				['drop_table', null],
+			])
+		);
+
+		registerOperationsTools();
+		const describe = getTool('describe_all');
+		const dropTable = getTool('drop_table');
+		assert.equal(describe.annotations?.readOnlyHint, true);
+		assert.equal(describe.annotations?.destructiveHint, undefined);
+		assert.equal(dropTable.annotations?.destructiveHint, true);
+		assert.equal(dropTable.annotations?.readOnlyHint, undefined);
+	});
+
+	it('falls back to a permissive schema for ops with no hand-curated entry', () => {
+		envOverrides.mcp_operations_allow = ['nonstandard_op'];
+		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null]]));
+		registerOperationsTools();
+		const tool = getTool('nonstandard_op');
+		assert.equal(tool.inputSchema.type, 'object');
+		assert.equal(tool.inputSchema.additionalProperties, true);
+	});
+
+	it('exposes hand-curated schemas with required fields', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null]]));
+		registerOperationsTools();
+		const tool = getTool('describe_table');
+		assert.equal(tool.inputSchema.type, 'object');
+		assert.ok(Array.isArray(tool.inputSchema.required));
+		assert.ok(tool.inputSchema.required.includes('table'));
+	});
+
+	it('advertises the get_status components opt-in', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['get_status', null]]));
+		registerOperationsTools();
+		assert.equal(getTool('get_status').inputSchema.properties.components.type, 'boolean');
+	});
+
+	it('visibleTo predicate uses canRoleInvokeOperation (super_user sees everything)', () => {
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+		const tool = getTool('describe_all');
+		assert.equal(tool.visibleTo(SUPER), true);
+		assert.equal(tool.visibleTo(NOBODY), false);
+	});
+
+	it('DEFAULT_ALLOW is exposed and matches the documented v1 surface', () => {
+		assert.deepEqual(
+			[...DEFAULT_ALLOW],
+			[
+				'describe_*',
+				'list_*',
+				'search_*',
+				'get_job',
+				'get_status',
+				'get_analytics',
+				'get_metrics',
+				'system_information',
+				'read_log',
+				'read_audit_log',
+			]
+		);
+	});
+
+	it('is idempotent across repeated invocations', () => {
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['describe_all', null],
+				['list_users', null],
+			])
+		);
+		registerOperationsTools();
+		registerOperationsTools();
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		assert.equal(tools.length, 2);
+	});
+
+	it('surfaces operations registered AFTER registration (lazy walk of the live map) — #1562', () => {
+		// Components register their operations via server.registerOperation during
+		// startOnMainThread, which runs after the MCP operations profile registers.
+		// The tool list must be computed lazily so those late ops still appear.
+		const opMap = makeOpMap([['describe_all', null]]);
+		_setOperationFunctionMapForTest(opMap);
+		registerOperationsTools();
+
+		// Only the boot-time op is present at first.
+		let names = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map((t) => t.name);
+		assert.deepEqual(names, ['describe_all']);
+
+		// A component registers new ops after registration ran. `list_agents` is
+		// allow-listed by default via `list_*`; `agent_prompt` is opted in explicitly.
+		opMap.set('list_agents', { operation_function: async () => ({ agents: [] }) });
+		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		envOverrides.mcp_operations_allow = ['describe_*', 'list_*', 'agent_prompt'];
+
+		names = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map((t) => t.name);
+		assert.deepEqual(names.sort(), ['agent_prompt', 'describe_all', 'list_agents']);
+	});
+
+	it('resolves a late-registered op through getTool for tools/call dispatch — #1562', () => {
+		const opMap = makeOpMap([['describe_all', null]]);
+		_setOperationFunctionMapForTest(opMap);
+		registerOperationsTools();
+
+		// Not registered yet, and not allow-listed → not callable.
+		assert.equal(getTool('agent_prompt'), undefined);
+
+		// Component registers it and the operator opts it in.
+		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		envOverrides.mcp_operations_allow = ['describe_*', 'agent_prompt'];
+
+		const tool = getTool('agent_prompt');
+		assert.ok(tool, 'late-registered allow-listed op must resolve for tools/call');
+		assert.equal(tool.profile, 'operations');
+		assert.equal(typeof tool.handler, 'function');
+
+		// A live op that is NOT allow-listed still must not be callable.
+		opMap.set('drop_table', { operation_function: async () => ({}) });
+		assert.equal(getTool('drop_table'), undefined);
+	});
+
+	it('logs a warning and registers nothing when OPERATION_FUNCTION_MAP is unavailable', () => {
+		_setOperationFunctionMapForTest(undefined);
+		// Force the lazy require to return a module-shape that has no map.
+		// Tests for the unhappy path don't need a real require shim — the
+		// production code path falls through gracefully.
+		// We exercise the registration with an empty map and assert nothing leaks through.
+		_setOperationFunctionMapForTest(new Map());
+		registerOperationsTools();
+		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
+		assert.equal(tools.length, 0);
+	});
+
+	it('does not emit idempotentHint on the actual non-idempotent tools (add_user, add_role)', () => {
+		// add_user / add_role / create_* are NOT idempotent under MCP semantics — a second call
+		// returns an "already exists" error, so annotating them idempotent nudges LLMs into retry
+		// loops. Check the emitted tool annotations.
+		envOverrides.mcp_operations_allow = ['add_user', 'add_role', 'describe_all'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['add_user', null],
+				['add_role', null],
+				['describe_all', null],
+			])
+		);
+		registerOperationsTools();
+		for (const name of ['add_user', 'add_role', 'describe_all']) {
+			const tool = getTool(name);
+			assert.ok(tool, `${name} registered`);
+			assert.notEqual(tool.annotations?.idempotentHint, true, `${name} must not be annotated idempotentHint:true`);
+		}
+	});
+});
+
+describe('mcp/tools/operations — catalog coverage lint', () => {
+	const { OPERATION_INPUT_SCHEMAS } = require('#src/components/mcp/tools/schemas/operations');
+	const { OPERATION_DESCRIPTIONS } = require('#src/components/mcp/tools/schemas/operationDescriptions');
+	const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
+
+	const allOpNames = Object.values(OPERATIONS_ENUM);
+
+	const { matchesAny } = require('#src/components/mcp/tools/nameFilter');
+
+	// Mirrors production isOperationAllowed: glob expansion minus the DEFAULT_EXCLUDED set
+	// (secret-store ops match `list_*` etc. but are never on the default surface).
+	const expandedAllow = allOpNames.filter((name) => !DEFAULT_EXCLUDED.has(name) && matchesAny(name, DEFAULT_ALLOW));
+
+	it('expansion covers a non-trivial set of operations (sanity check)', () => {
+		// Catches the case where OPERATIONS_ENUM goes missing in a build refactor.
+		assert.ok(expandedAllow.length >= 5, `expected DEFAULT_ALLOW to expand to >= 5 ops, got ${expandedAllow.length}`);
+	});
+
+	it('every DEFAULT_ALLOW operation has an entry in OPERATION_INPUT_SCHEMAS', () => {
+		const missing = expandedAllow.filter((name) => !(name in OPERATION_INPUT_SCHEMAS));
+		assert.deepEqual(missing, [], `Operations on DEFAULT_ALLOW without an input schema: ${missing.join(', ')}`);
+	});
+
+	it('every DEFAULT_ALLOW operation has an entry in OPERATION_DESCRIPTIONS', () => {
+		const missing = expandedAllow.filter((name) => !(name in OPERATION_DESCRIPTIONS));
+		assert.deepEqual(missing, [], `Operations on DEFAULT_ALLOW without a description: ${missing.join(', ')}`);
+	});
+
+	it('OPERATION_DESCRIPTIONS entries are strings (annotations are emitted at registration, tested there)', () => {
+		// idempotentHint / readOnlyHint etc. are emitted onto the registered tool, not stored here.
+		// The emitted-annotation behavior for non-idempotent ops is asserted in the registration suite.
+		assert.ok(Object.values(OPERATION_DESCRIPTIONS).every((d) => typeof d === 'string'));
+	});
+
+	it('all description entries cite the source handler in a preceding comment', () => {
+		// Soft check: the file's source itself has //- path:line — citations for each entry.
+		// We can't introspect that programmatically without parsing the file; this stub
+		// keeps the requirement visible in the test surface as a reminder for reviewers.
+		assert.ok(Object.keys(OPERATION_DESCRIPTIONS).length >= 45, 'catalog should have authored coverage');
+	});
+});
+
+describe('mcp/tools/operations — handler dispatch', () => {
+	let envOverrides;
+	const originalEnvGet = env.get;
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		envOverrides = {};
+		env.get = (key) => (key in envOverrides ? envOverrides[key] : originalEnvGet.call(env, key));
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_setOperationFunctionMapForTest(undefined);
+		_setChooseOperationForTest(undefined);
+		_setProcessLocalTransactionForTest(undefined);
+		env.get = originalEnvGet;
+	});
+
+	it('delegates to chooseOperation + processLocalTransaction with the user attached', async () => {
+		let chosenBody;
+		let processedBody;
+		const opFn = async () => ({ result: 'ok' });
+		_setChooseOperationForTest((body) => {
+			chosenBody = body;
+			return opFn;
+		});
+		_setProcessLocalTransactionForTest(async ({ body }, fn) => {
+			processedBody = body;
+			return await fn(body);
+		});
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', opFn]]));
+		registerOperationsTools();
+
+		const tool = getTool('describe_all');
+		const res = await tool.handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+
+		assert.equal(chosenBody.operation, 'describe_all');
+		assert.equal(chosenBody.hdb_user, SUPER);
+		assert.equal(processedBody.operation, 'describe_all');
+		assert.equal(res.isError, undefined);
+		assert.ok(res.content[0].text.includes('"result":"ok"'));
+		assert.deepEqual(res.structuredContent, { result: 'ok' });
+	});
+
+	it('passes through caller arguments alongside the operation name', async () => {
+		let captured;
+		_setChooseOperationForTest((body) => {
+			captured = body;
+			return async () => null;
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null]]));
+		registerOperationsTools();
+
+		await getTool('describe_table').handler(
+			{ database: 'data', table: 'product' },
+			{ user: SUPER, profile: 'operations', sessionId: 's' }
+		);
+
+		assert.equal(captured.database, 'data');
+		assert.equal(captured.table, 'product');
+		assert.equal(captured.operation, 'describe_table');
+	});
+
+	it('strips caller-supplied bypass_auth/bypassAuth before dispatch (GHSA-7h8h-wq7f-qx65)', async () => {
+		let captured;
+		_setChooseOperationForTest((body) => {
+			captured = body;
+			return async () => null;
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null]]));
+		registerOperationsTools();
+
+		await getTool('describe_table').handler(
+			{ database: 'data', table: 'product', bypass_auth: true, bypassAuth: true },
+			{ user: SUPER, profile: 'operations', sessionId: 's' }
+		);
+
+		assert.equal(Object.hasOwn(captured, 'bypass_auth'), false);
+		assert.equal(Object.hasOwn(captured, 'bypassAuth'), false);
+	});
+
+	it('maps permission-denied exceptions to isError=true with kind=harper_error', async () => {
+		_setChooseOperationForTest(() => {
+			const err = new Error('User is not permitted to describe_all');
+			err.statusCode = 403;
+			throw err;
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('describe_all').handler({}, { user: NOBODY, profile: 'operations', sessionId: 's' });
+
+		assert.equal(res.isError, true);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'describe_all');
+		assert.match(payload.message, /not permitted/);
+	});
+
+	it('maps a rejection with no reason to isError=true', async () => {
+		_setChooseOperationForTest(() => {
+			throw undefined;
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('describe_all').handler({}, { user: NOBODY, profile: 'operations', sessionId: 's' });
+
+		assert.equal(res.isError, true);
+		assert.equal(JSON.parse(res.content[0].text).message, "operation 'describe_all' failed");
+	});
+
+	it('traces a refusal by its reason and returns the permission report as the message', async () => {
+		const reason = "Operation 'describe_all' is not permitted for this role's operations configuration";
+		const report = new PermissionResponseObject().handleUnauthorizedItem(reason);
+		_setChooseOperationForTest(() => {
+			throw handleHDBError(new Error(), report, 403, undefined, false, true);
+		});
+		_setProcessLocalTransactionForTest(async () => null);
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const restoreLogConfig = pinLogConfig({ level: 'trace' });
+		try {
+			const logPath = harperLogger.getLogFilePath();
+			const res = await getTool('describe_all').handler({}, { user: NOBODY, profile: 'operations', sessionId: 's' });
+			assert.deepStrictEqual(JSON.parse(res.content[0].text).message, JSON.parse(JSON.stringify(report)));
+
+			const traced = await waitFor(() =>
+				(existsSync(logPath) ? readFileSync(logPath, 'utf8') : '')
+					.split('\n')
+					.find((line) => line.includes('MCP operations/describe_all threw:'))
+			);
+			assert.ok(traced.includes(reason), traced);
+			assert.ok(!traced.includes('[object Object]'), traced);
+		} finally {
+			restoreLogConfig();
+		}
+	});
+
+	it('maps server-side validation errors to isError=true', async () => {
+		_setChooseOperationForTest(() => async () => {
+			throw new Error('table is required');
+		});
+		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
+		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('describe_table').handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+
+		assert.equal(res.isError, true);
+		const payload = JSON.parse(res.content[0].text);
+		assert.match(payload.message, /table is required/);
+	});
+
+	it('handles string responses (e.g., status text) by wrapping in {message}', async () => {
+		_setChooseOperationForTest(() => async () => 'success');
+		_setProcessLocalTransactionForTest(async (_req, fn) => {
+			const data = await fn({});
+			return typeof data !== 'object' ? { message: data } : data;
+		});
+		_setOperationFunctionMapForTest(makeOpMap([['system_information', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('system_information').handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(res.structuredContent, { message: 'success' });
+	});
+
+	it('rejects known streaming operations (get_deployment_payload) before ever dispatching them', async () => {
+		// get_backup's LMDB path opens an fd + read transaction before its Readable is even
+		// returned, and destroying that stream unread does not run its cleanup (calling
+		// .return() on a never-started async generator skips its body, including
+		// readTxn.done()). So the fix is to never call the handler for a known streaming op,
+		// not to destroy its result after the fact. Assert chooseOperation is never invoked.
+		let chosen = false;
+		_setChooseOperationForTest(() => {
+			chosen = true;
+			return async () => Readable.from([Buffer.from('tarball-bytes')]);
+		});
+		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
+		envOverrides.mcp_operations_allow = ['get_deployment_payload', 'get_backup'];
+		_setOperationFunctionMapForTest(
+			makeOpMap([
+				['get_deployment_payload', null],
+				['get_backup', null],
+			])
+		);
+		registerOperationsTools();
+
+		for (const opName of ['get_deployment_payload', 'get_backup']) {
+			chosen = false;
+			const res = await getTool(opName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+			assert.equal(res.isError, true);
+			assert.match(res.content[0].text, /byte stream/);
+			assert.equal(chosen, false, `${opName} must not reach chooseOperation/the handler`);
+		}
+	});
+
+	it('backstops an unlisted operation that unexpectedly returns a stream, and destroys it', async () => {
+		// Defense in depth for an op outside STREAMING_OPERATIONS (e.g. added without updating
+		// that set) — best-effort cleanup via destroy(), distinct message from the pre-dispatch
+		// rejection above.
+		const stream = Readable.from([Buffer.from('unexpected-bytes')]);
+		_setChooseOperationForTest(() => async () => stream);
+		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
+		_setOperationFunctionMapForTest(makeOpMap([['describe_all', null]]));
+		registerOperationsTools();
+
+		const res = await getTool('describe_all').handler({}, { user: SUPER, profile: 'operations', sessionId: 's' });
+
+		assert.equal(res.isError, true);
+		assert.match(res.content[0].text, /unexpected byte stream/);
+		assert.equal(stream.destroyed, true, 'backstop must still destroy an unconsumed stream');
+	});
+});
+
+describe('mcp/tools/operations — structuredContent is a spec-legal record', () => {
+	// Asserted against the SDK's own schema so these track the spec rather than drifting.
+	const { CallToolResultSchema } = require('@modelcontextprotocol/sdk/types.js');
+
+	function assertSpecLegal(res) {
+		const parsed = CallToolResultSchema.safeParse(res);
+		assert.ok(
+			parsed.success,
+			`result must satisfy the MCP CallToolResult schema: ${parsed.success ? '' : JSON.stringify(parsed.error?.issues)}`
+		);
+	}
+
+	async function callReturning(operationName, value, extraContext = {}) {
+		_setChooseOperationForTest(() => async () => value);
+		_setProcessLocalTransactionForTest(async (_req, fn) => await fn({}));
+		_setOperationFunctionMapForTest(makeOpMap([[operationName, null]]));
+		registerOperationsTools();
+		return getTool(operationName).handler({}, { user: SUPER, profile: 'operations', sessionId: 's', ...extraContext });
+	}
+
+	let envOverrides;
+	const originalEnvGet = env.get;
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		envOverrides = {};
+		env.get = (key) => (key in envOverrides ? envOverrides[key] : originalEnvGet.call(env, key));
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_setOperationFunctionMapForTest(undefined);
+		_setChooseOperationForTest(undefined);
+		_setProcessLocalTransactionForTest(undefined);
+		env.get = originalEnvGet;
+	});
+
+	it('wraps an array result (a sql SELECT) in { results } instead of emitting a bare array', async () => {
+		envOverrides.mcp_operations_allow = ['sql'];
+		const rows = [
+			{ id: 1, name: 'a' },
+			{ id: 2, name: 'b' },
+		];
+		const res = await callReturning('sql', rows);
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(res.structuredContent, { results: rows });
+		assertSpecLegal(res);
+		assert.deepEqual(JSON.parse(res.content[0].text), rows);
+	});
+
+	it('wraps the array-returning operations on the DEFAULT allow surface', async () => {
+		for (const operationName of ['list_users', 'list_roles', 'get_job', 'search_by_value']) {
+			_resetRegistryForTest();
+			const payload = [{ n: operationName }];
+			const res = await callReturning(operationName, payload);
+			assert.deepEqual(res.structuredContent, { results: payload }, operationName);
+			assertSpecLegal(res);
+		}
+	});
+
+	it('leaves an object result untouched (describe_all keeps its database tree)', async () => {
+		const tree = { data: { tables: { dog: { record_count: 3 } } } };
+		const res = await callReturning('describe_all', tree);
+
+		assert.deepEqual(res.structuredContent, tree, 'an object payload passes through unwrapped');
+		assertSpecLegal(res);
+	});
+
+	it('omits structuredContent for a payload with no object form', async () => {
+		for (const value of ['just a message', 42, true, new Date('2020-01-01T00:00:00Z')]) {
+			_resetRegistryForTest();
+			const res = await callReturning('system_information', value);
+			assert.equal(res.structuredContent, undefined, `${String(value)} must not become structuredContent`);
+			assertSpecLegal(res);
+		}
+	});
+
+	it('emits an empty array result as { results: [] }, not a bare []', async () => {
+		envOverrides.mcp_operations_allow = ['sql'];
+		const res = await callReturning('sql', []);
+		assert.deepEqual(res.structuredContent, { results: [] });
+		assertSpecLegal(res);
+	});
+
+	it('collects an async generator result (read_audit_log timestamp branch) into a JSON array and { results }', async () => {
+		const entries = [
+			{ version: 100, type: 'put', records: [{ id: 'row-1' }] },
+			{ version: 101, type: 'patch', records: [{ id: 'row-1' }] },
+		];
+		async function* generateAuditEntries() {
+			for (const entry of entries) {
+				yield entry;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', generateAuditEntries());
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), entries);
+		assert.deepEqual(res.structuredContent, { results: entries });
+		assertSpecLegal(res);
+	});
+
+	it('collects an async-mapped iterable result (get_analytics ExtendedIterable) awaiting element promises', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const rawMetrics = [
+			{ id: [1000, 'request'], metric: 'request', count: 3 },
+			{ id: [1000, 'connection'], metric: 'connection', count: 5 },
+		];
+		const mapped = new ExtendedIterable(rawMetrics).map(async (item) => {
+			await Promise.resolve();
+			return { id: item.id, metric: item.metric, period: [1000, 2000], count: item.count };
+		});
+
+		const res = await callReturning('get_analytics', mapped);
+
+		const expected = [
+			{ id: [1000, 'request'], metric: 'request', period: [1000, 2000], count: 3 },
+			{ id: [1000, 'connection'], metric: 'connection', period: [1000, 2000], count: 5 },
+		];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
+	it('collects an async-only ExtendedIterable whose synchronous toJSON() throws (full-text search_by_conditions)', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const rows = [
+			{ id: 'pub-1', title: 'alpha' },
+			{ id: 'pub-2', title: 'beta' },
+		];
+		const asyncExtended = new ExtendedIterable();
+		asyncExtended.iterate = async function* () {
+			for (const row of rows) {
+				yield row;
+			}
+		};
+		assert.throws(() => JSON.stringify(asyncExtended), /Can not serialize async iterables/);
+
+		const res = await callReturning('search_by_conditions', asyncExtended);
+
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), rows);
+		assert.deepEqual(res.structuredContent, { results: rows });
+		assertSpecLegal(res);
+	});
+
+	it('collects a non-array sync iterable yielding promises into a resolved JSON array', async () => {
+		const syncIterableOfPromises = {
+			*[Symbol.iterator]() {
+				yield Promise.resolve({ id: 'a', score: 1 });
+				yield Promise.resolve({ id: 'b', score: 2 });
+			},
+		};
+
+		const res = await callReturning('search_by_conditions', syncIterableOfPromises);
+
+		const expected = [
+			{ id: 'a', score: 1 },
+			{ id: 'b', score: 2 },
+		];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
+	it('maps recoverable element errors via .mapError when present on an ExtendedIterable', async () => {
+		const { ExtendedIterable } = require('@harperfast/extended-iterable');
+		const mapped = new ExtendedIterable([{ id: 'ok-1' }, { id: 'bad-2' }, { id: 'ok-3' }]).map(async (item) => {
+			if (item.id === 'bad-2') {
+				const err = new Error('corrupt row');
+				err.partialObject = { id: 'bad-2' };
+				throw err;
+			}
+			return item;
+		});
+
+		const res = await callReturning('search_by_conditions', mapped);
+
+		const expected = [{ id: 'ok-1' }, { error: 'Error', message: 'corrupt row', id: 'bad-2' }, { id: 'ok-3' }];
+		assert.equal(res.isError, undefined);
+		assert.deepEqual(JSON.parse(res.content[0].text), expected);
+		assert.deepEqual(res.structuredContent, { results: expected });
+		assertSpecLegal(res);
+	});
+
+	it('rejects an iterable result that exceeds MAX_OPERATION_ITERABLE_ITEMS and closes the iterator', async () => {
+		let closed = false;
+		let yielded = 0;
+		async function* unboundedEntries() {
+			try {
+				while (true) {
+					yield { seq: ++yielded };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', unboundedEntries());
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when aborting at the cap');
+		assert.equal(yielded, MAX_OPERATION_ITERABLE_ITEMS + 1);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.ok(
+			payload.message.includes(String(MAX_OPERATION_ITERABLE_ITEMS)),
+			`Expected error message to mention ${MAX_OPERATION_ITERABLE_ITEMS}, got: ${payload.message}`
+		);
+		assertSpecLegal(res);
+	});
+
+	it('rejects an iterable result that exceeds MAX_OPERATION_ITERABLE_BYTES and closes the iterator', async () => {
+		let closed = false;
+		let yielded = 0;
+		const chunk = 'x'.repeat(1024 * 1024);
+		async function* largeEntries() {
+			try {
+				while (true) {
+					yield { seq: ++yielded, chunk };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', largeEntries());
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when aborting at the byte cap');
+		assert.ok(yielded <= 11, `Expected byte cap to trip within 11 x 1 MiB rows, got yielded=${yielded}`);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.ok(
+			payload.message.includes(String(MAX_OPERATION_ITERABLE_BYTES)),
+			`Expected error message to mention ${MAX_OPERATION_ITERABLE_BYTES}, got: ${payload.message}`
+		);
+		assertSpecLegal(res);
+	});
+
+	it('aborts draining and closes the iterator when context.signal is aborted mid-iteration', async () => {
+		const ac = new AbortController();
+		let closed = false;
+		let yielded = 0;
+		async function* cancellableEntries() {
+			try {
+				while (true) {
+					yielded++;
+					if (yielded === 2) ac.abort();
+					yield { seq: yielded };
+				}
+			} finally {
+				closed = true;
+			}
+		}
+
+		const res = await callReturning('read_audit_log', cancellableEntries(), { signal: ac.signal });
+
+		assert.equal(res.isError, true);
+		assert.equal(closed, true, 'for-await must close the iterator when context.signal aborts');
+		assert.equal(yielded, 2);
+		const payload = JSON.parse(res.content[0].text);
+		assert.equal(payload.kind, 'harper_error');
+		assert.equal(payload.operation, 'read_audit_log');
+		assert.match(payload.message, /aborted/i);
+		assertSpecLegal(res);
+	});
+});

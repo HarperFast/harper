@@ -1,5 +1,25 @@
 # Harper Integration Tests
 
+## Directory Structure
+
+Directory structure mirrors the [Harper v5 reference docs](https://docs.harperdb.io/reference/v5):
+
+| Directory         | Coverage                                                      |
+| ----------------- | ------------------------------------------------------------- |
+| `database/`       | Schema types, TTL, blob, scale                                |
+| `resources/`      | Custom resources, REST API patterns                           |
+| `mqtt/`           | MQTT broker, JWT auth, ACL, topic patterns                    |
+| `server/`         | Caching (sourcedFrom, SWR), thread management, crash recovery |
+| `components/`     | Component deployment, lifecycle, fixtures                     |
+| `security/`       | TLS, certificates, auth                                       |
+| `operations-api/` | Operations API, CLI commands                                  |
+| `upgrade/`        | v4→v5 upgrade / migration tests                               |
+| `apiTests/`       | Legacy bucket — being migrated to the above (see #1215)       |
+
+New tests should go in the appropriate subdirectory, not `apiTests/`.
+
+---
+
 This directory contains the integration tests for Harper. They run against the built Harper distribution using the [`@harperfast/integration-testing`](https://github.com/HarperFast/integration-testing-framework) framework and the included Node.js test runner script.
 
 For full background on the testing philosophy, framework APIs, and runner configuration, see the **[`@harperfast/integration-testing` documentation](https://github.com/HarperFast/integration-testing-framework#readme)**. This document covers what is specific to running and writing tests in this repository.
@@ -14,6 +34,10 @@ Integration tests require a built distribution of Harper. Run this before execut
 npm run build
 ```
 
+The development dependency graph links `node_modules/harper` to this checkout, so `npx harper` uses its built CLI. The framework can select another build through `harperBinPath` or `HARPER_INTEGRATION_TEST_INSTALL_SCRIPT`; CI pins the latter to `dist/bin/harper.js`. Keep the build current before running tests.
+
+Use `npm ci` to clean dependencies. The local Harper link is a symlink (a junction on Windows); do not use cleanup or copy tools that follow directory links back into the checkout.
+
 ### Loopback Addresses
 
 Running tests concurrently requires multiple loopback addresses. Linux systems have these enabled by default; macOS and Windows do not.
@@ -25,6 +49,8 @@ npx harper-integration-test-setup-loopback
 This script requires `sudo`. Only needs to be run once per machine (or after a restart on macOS).
 
 ## Running Tests
+
+To run under Bun, use `HARPER_RUNTIME=bun npm run test:integration:all` (or `npm run test:integration:bun -- "<glob>"` for a subset) — never run test files directly with Bun's own test runner (`bun test <file>.test.ts` / `bunx bun test`). Bun's runner applies its own 5s default per-test timeout, which produces spurious timeouts/failures against suites whose `startHarper`/restart/teardown setup takes 30-120s.
 
 Run the full integration test suite:
 
@@ -70,7 +96,7 @@ This is how CI captures logs for failed jobs — the log directory is uploaded a
 
 ### Requirements
 
-- Files must use the Node.js `node:test` API (`suite`, `test`, `before`, `after`, etc.) with assertions from `node:assert/strict`
+- Files must use the Node.js `node:test` API (`suite`, `test`, `before`, `after`, etc.) with assertions from `node:assert` (plain, not `/strict` — `no-restricted-imports` rejects it; call `assert.strictEqual`/`deepStrictEqual` for strict checks, see AGENTS.md)
 - Files must end in `.test.ts` or `.test.mjs` (both extensions are picked up by `test:integration:all`)
 - Files must be implemented as ESM (TypeScript or JavaScript)
 - Each file must begin with a JSDoc comment describing exactly what it tests — include relevant GitHub issue or PR links if they exist
@@ -79,6 +105,34 @@ This is how CI captures logs for failed jobs — the log directory is uploaded a
 ### File independence
 
 The runner executes each file in its own process. For concurrent execution to be safe, every test file must be **independent** (no shared state with other files), **hermetic** (no external side-effects), and **deterministic** (same output for the same input, every time). See the [framework documentation](https://github.com/HarperFast/integration-testing-framework#testing-ethos) for more on why these properties matter.
+
+### Reading storage directly
+
+A test that reads the server's storage as an oracle must not open the **live** database directory.
+`RocksDatabase.open(dir, { readOnly: true })` maps to `rocksdb::DB::OpenForReadOnly`, which replays
+the MANIFEST into a file list and then opens those files holding no reference on any of them, so a
+compaction in the Harper process under test can unlink one inside that window. The open then fails
+naming the file that vanished, wrapped in RocksDB's generic "the MANIFEST may be corrupted" phrasing
+— nothing is corrupt, the reader raced a compaction ([rocksdb-js#812: `readOnly:true` open races a
+live writer's compaction](https://github.com/HarperFast/rocksdb-js/issues/812)). That was
+[#2500: delete-index-atomicity-rocksdb flakes](https://github.com/HarperFast/harper/issues/2500),
+and a loop measured it at 7% of opens against a directory under compaction.
+
+Have the fixture publish a checkpoint (`rootStore.createCheckpoint(path)`) and open that instead.
+Nothing writes to a checkpoint, so the window does not exist, and taking one flushes the memtable,
+which such a test needs anyway, since Harper opens table and index column families with `disableWAL`
+defaulting to true — a committed write can otherwise sit only in the writer's memtable and never
+reach an external reader.
+
+Two things the recipe depends on. Put the checkpoint outside every directory Harper scans for
+databases — the `storage.path` root, which is `database/` by default, and any per-database `path`
+the config sets: `resources/databases.ts` walks each of them and adopts any child holding a `CURRENT`
+and a `MANIFEST-*` as a database, so a checkpoint under one would be loaded as one. And close the
+handles and delete the previous checkpoint before taking the next — a checkpoint is hardlinked, so it
+is cheap to take but it also keeps every SST it names alive through the live database's compactions,
+and a suite that refreshes before each read would otherwise pin every historical file version for the
+length of the run.
+`database/delete-index-atomicity-rocksdb.test.ts` and its fixture are the worked example.
 
 ### Template
 
@@ -89,7 +143,7 @@ The runner executes each file in its own process. For concurrent execution to be
  * Link to relevant GitHub issues or PRs if applicable.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual } from 'node:assert/strict';
+import { strictEqual } from 'node:assert';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 suite('short description', (ctx: ContextWithHarper) => {

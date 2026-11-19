@@ -1,0 +1,13 @@
+# QA-802 — Blob GC vs audit-log expiry (harper#708).
+#
+# `scanInterval: 2` arms Table.ts's periodic cleanup scan (Table.ts scheduleCleanup(),
+# via setTTLExpiration) WITHOUT setting `expiration`, so live records never auto-evict —
+# only the periodic tombstone-removal / deleted-record sweep runs on a fast 2s cadence.
+# This is the scan that (per Table.ts:5824) always runs for RocksDB (`removeDeletedRecords
+# = !audit || isRocksDB`) independent of the auditStore.ts RocksDB bug under test.
+type Doc @table(audit: true, scanInterval: 2) @sealed @export {
+	key: ID! @primaryKey
+	payload: Blob
+	sha256: String
+	note: String
+}

@@ -1,0 +1,4 @@
+type Widget @table(audit: false) @export {
+	id: ID @primaryKey
+	note: String
+}

@@ -2,7 +2,7 @@
 
 import { assert } from 'chai';
 import axios from 'axios';
-import { setupTestApp } from './setupTestApp.mjs';
+import { setupTestApp, baseUrl } from './setupTestApp.mjs';
 
 // A common client bug is template-stringifying an `undefined` value into a URL
 // path: PATCH /<Resource>/undefined. Pre-fix behavior depended on the PK type:
@@ -23,7 +23,7 @@ describe('Invalid primary keys from URL paths return 400', () => {
 	const request = (method, path, body) =>
 		axios.request({
 			method,
-			url: `http://localhost:9926${path}`,
+			url: `${baseUrl}${path}`,
 			data: body,
 			validateStatus: () => true,
 		});

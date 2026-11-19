@@ -1,0 +1,26 @@
+# harper#1894 (F-149) regression — TTL eviction must not orphan secondary-index entries.
+#
+# Root cause: removing a record calls updateIndices(id, existingRecord, null). With record=null,
+# `updateIndices` used to resolve the new indexed value to `null` (rather than "absent"), and for an
+# `indexNulls` index (the DEFAULT for @indexed) it then RE-ADDED a [null, id] index entry right after
+# removing the real [value, id] one — leaving a dangling index entry with no backing record. The
+# blind search_by_value oracle can't see it (it joins index hits back through the now-gone primary
+# record), so this hid for a long time; a raw-index-DBI read exposes it.
+#
+# `bucket` is the @indexed attribute under test (indexNulls defaults to true). The TTL is set
+# generously (12s) relative to the sequential HTTP seeding so a slow runner cannot start evicting
+# the first rows before the pre-expiry assertion runs (the sweep fires every scanInterval).
+type Expiring @table(expiration: 12, scanInterval: 1) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+}
+
+# Control table with no expiration. Rows must survive the sweep AND stay indexed — including a row
+# whose `bucket` is genuinely null, which must remain indexed under null (the legitimate indexNulls
+# behavior the fix must preserve, distinct from the delete/evict re-index bug).
+type Permanent @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+}

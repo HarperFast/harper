@@ -1,0 +1,4 @@
+type BrokenTwo @table @export {
+	id: ID @primaryKey
+	quantity: !Int
+}

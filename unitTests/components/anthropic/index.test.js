@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const {
 	AnthropicBackend,
 	AnthropicBackendError,
@@ -59,6 +59,7 @@ describe('AnthropicBackend', () => {
 				stream: true,
 				tools: true,
 				adapters: false,
+				structuredOutput: false,
 			});
 		});
 
@@ -200,6 +201,18 @@ describe('AnthropicBackend', () => {
 			assert.strictEqual(result.output.finishReason, 'length');
 		});
 
+		it('reports a reply cut short by the context window or a refusal as not finished', async () => {
+			for (const [stopReason, finishReason] of [
+				['model_context_window_exceeded', 'length'],
+				['refusal', 'content_filter'],
+			]) {
+				const fetch = mockFetch(() => messagesResponse({ stopReason }));
+				const b = new AnthropicBackend({ apiKey: API_KEY, model: 'claude' }, fetch);
+				const result = await b.generate('q', { accounting: ACCOUNTING });
+				assert.strictEqual(result.output.finishReason, finishReason, stopReason);
+			}
+		});
+
 		it('honors opts.maxTokens', async () => {
 			const fetch = mockFetch(() => messagesResponse());
 			const b = new AnthropicBackend({ apiKey: API_KEY, model: 'claude' }, fetch);
@@ -218,6 +231,27 @@ describe('AnthropicBackend', () => {
 			);
 			const b = new AnthropicBackend({ apiKey: API_KEY, model: 'claude' }, fetch);
 			await assert.rejects(() => b.generate('q', { accounting: ACCOUNTING }), /returned HTTP 400: Invalid model: foo/);
+		});
+
+		it('flags a prompt-too-long rejection, and only that', async () => {
+			for (const [message, flagged] of [
+				['prompt is too long: 215000 tokens > 200000 maximum', true],
+				['input length and `max_tokens` exceed context limit: 188240 + 21333 > 200000', true],
+				['max_tokens: 300000 > 64000, which is the maximum allowed number of output tokens', false],
+			]) {
+				const fetch = mockFetch(() =>
+					jsonResponse({ type: 'error', error: { type: 'invalid_request_error', message } }, { status: 400 })
+				);
+				const b = new AnthropicBackend({ apiKey: API_KEY, model: 'claude' }, fetch);
+				await assert.rejects(
+					() => b.generate('q', { accounting: ACCOUNTING }),
+					(err) =>
+						err instanceof AnthropicBackendError &&
+						err.upstreamStatus === 400 &&
+						(err.contextWindowExceeded === true) === flagged,
+					message
+				);
+			}
 		});
 	});
 
@@ -372,6 +406,39 @@ describe('AnthropicBackend', () => {
 			await b.generate('q', { accounting: ACCOUNTING, signal: ctrl.signal });
 			assert.strictEqual(seen, ctrl.signal);
 		});
+	});
+});
+
+// ---- finding 5b: Anthropic streaming tool-call accumulator cardinality cap ------
+
+describe('Anthropic streaming tool-call accumulator cardinality cap', () => {
+	it('throws AnthropicBackendError when more than 128 distinct content-block indices accumulate', async () => {
+		// Emit 129 content_block_start events for distinct tool_use indices without
+		// any content_block_stop events, so the map grows past the cap.
+		function bigToolStream() {
+			const enc = new TextEncoder();
+			const stream = new ReadableStream({
+				start(controller) {
+					for (let i = 0; i < 129; i++) {
+						const event = {
+							type: 'content_block_start',
+							index: i,
+							content_block: { type: 'tool_use', id: `c${i}`, name: `fn${i}` },
+						};
+						controller.enqueue(enc.encode(`event: content_block_start\ndata: ${JSON.stringify(event)}\n\n`));
+					}
+					controller.close();
+				},
+			});
+			return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+		}
+		const fetch = mockFetch(() => bigToolStream());
+		const b = new AnthropicBackend({ apiKey: API_KEY, model: 'm' }, fetch);
+		await assert.rejects(async () => {
+			for await (const _c of b.generateStream('q', { accounting: ACCOUNTING })) {
+				/* drain */
+			}
+		}, /tool-call accumulator exceeded 128/);
 	});
 });
 

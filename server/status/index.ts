@@ -4,7 +4,12 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { validateStatus } from '../../validation/statusValidator.ts';
 import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
 import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';
+import type { ComponentStatusAbnormality } from '../../components/status/types.ts';
+import { buildHierarchy, type StatusNode } from '../../components/status/hierarchy.ts';
 import { restartNeeded } from '../../components/requestRestart.ts';
+import { sendItcEvent } from '../threads/itc.ts';
+import { onMessageByType, workers } from '../threads/manageThreads.ts';
+import { ITC_EVENT_TYPES, THREAD_TYPES } from '../../utility/hdbTerms.ts';
 
 export { clearStatus as clear, getStatus as get, setStatus as set };
 
@@ -14,10 +19,13 @@ export type { StatusId, StatusRecord, StatusValueMap } from './definitions.ts';
 export { STATUS_IDS, DEFAULT_STATUS_ID } from './definitions.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
-
 // For direct function calls, we don't need the operation fields
 type StatusRequestBody = {
 	id: StatusId;
+	components?: boolean;
+	// Opt in to the resolved HTTP/upgrade/WebSocket middleware chains in the aggregated (no-id)
+	// response (#1573). Off by default so routine polling avoids the cross-thread lookup.
+	middleware?: boolean;
 };
 
 type StatusWriteRequestBody<T extends StatusId = StatusId> = {
@@ -68,17 +76,100 @@ function clearStatus({ id }: StatusRequestBody): Promise<boolean> {
 	return getStatusTable().delete(id);
 }
 
-interface AggregatedComponentStatusWithName extends AggregatedComponentStatus {
+type SerializedComponentStatusAbnormality = Omit<ComponentStatusAbnormality, 'error'> & {
+	error?: string;
+};
+
+interface AggregatedComponentStatusWithName extends Omit<AggregatedComponentStatus, 'error' | 'abnormalities'> {
 	name: string;
+	error?: string;
+	abnormalities?: Record<string, SerializedComponentStatusAbnormality>;
+}
+
+function serializeAbnormalities(
+	abnormalities: Map<string, ComponentStatusAbnormality> | Record<string, ComponentStatusAbnormality>
+): Record<string, SerializedComponentStatusAbnormality> {
+	const entries = abnormalities instanceof Map ? abnormalities.entries() : Object.entries(abnormalities);
+	const serialized: Record<string, SerializedComponentStatusAbnormality> = {};
+	for (const [threadKey, abnormality] of entries) {
+		serialized[threadKey] = {
+			...abnormality,
+			...(abnormality.error !== undefined && {
+				error: statusInternal.serializeStatusError(abnormality.error),
+			}),
+		};
+	}
+	return serialized;
 }
 
 interface AllStatusSummary {
 	systemStatus: Promise<AsyncIterable<StatusRecord>>;
 	componentStatus: AggregatedComponentStatusWithName[];
+	components?: Record<string, StatusNode>;
 	restartRequired: boolean;
+	// Only present when the request opts in with `middleware: true`.
+	middlewareChains?: MiddlewareChainsSummary | null;
 }
 
-async function getAllStatus(): Promise<AllStatusSummary> {
+type MiddlewareChainsSummary = ReturnType<typeof import('../http.ts').describeMiddlewareChains>;
+
+let nextChainsRequestId = 1;
+let chainsResponseListenerAttached = false;
+const pendingChainsRequests = new Map<number, (chains: MiddlewareChainsSummary) => void>();
+
+function attachChainsResponseListener(): void {
+	if (chainsResponseListenerAttached) return;
+	onMessageByType(ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE, ({ message }: any) => {
+		const resolve = pendingChainsRequests.get(message.requestId);
+		if (resolve) {
+			pendingChainsRequests.delete(message.requestId);
+			resolve(message.chains);
+		}
+	});
+	chainsResponseListenerAttached = true;
+}
+
+// App HTTP middleware is only registered on worker threads, so when get_status runs on the main
+// thread we ask an HTTP worker for its resolved chains (all workers register identically). Returns
+// null if no worker answers within the timeout — mirrors queryWorkerForOpenApi in operationsServer.
+function queryWorkerForMiddlewareChains(): Promise<MiddlewareChainsSummary | null> {
+	attachChainsResponseListener();
+	const requestId = nextChainsRequestId++;
+	return new Promise((resolve) => {
+		const timeoutHandle = setTimeout(() => {
+			pendingChainsRequests.delete(requestId);
+			resolve(null);
+		}, 5000);
+		pendingChainsRequests.set(requestId, (chains) => {
+			clearTimeout(timeoutHandle);
+			resolve(chains);
+		});
+		sendItcEvent({ type: ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_REQUEST, message: { requestId } }).catch(() => {
+			clearTimeout(timeoutHandle);
+			pendingChainsRequests.delete(requestId);
+			resolve(null);
+		});
+	});
+}
+
+// Introspect the resolved HTTP/upgrade/WebSocket middleware order (#1573). In a multi-worker
+// deployment the app middleware is registered on the HTTP worker threads while the main thread
+// carries only the operations-API middleware, so when an HTTP worker exists we fetch the chains from
+// one over ITC. With no HTTP worker this thread is the app server itself (single-thread mode, or a
+// worker serving the request) and reports locally. Job workers don't serve HTTP, so they're ignored.
+async function getMiddlewareChains(): Promise<MiddlewareChainsSummary | null> {
+	try {
+		if (workers.some((worker: { name?: string }) => worker.name === THREAD_TYPES.HTTP))
+			return await queryWorkerForMiddlewareChains();
+		const { describeMiddlewareChains } = await import('../http.ts');
+		return describeMiddlewareChains();
+	} catch (error) {
+		statusLogger.debug?.('getMiddlewareChains failed', error);
+		return null;
+	}
+}
+
+async function getAllStatus({ components, middleware }: Partial<StatusRequestBody>): Promise<AllStatusSummary> {
 	statusLogger.debug?.('getAllStatus');
 	const statusRecords = getStatusTable().search([]);
 
@@ -88,23 +179,34 @@ async function getAllStatus(): Promise<AllStatusSummary> {
 		([name, status]) => ({
 			name,
 			...status,
+			...(status.error !== undefined && { error: statusInternal.serializeStatusError(status.error) }),
+			...(status.abnormalities !== undefined && {
+				abnormalities: serializeAbnormalities(status.abnormalities),
+			}),
 		})
 	);
 
 	// Get restart flag status
 	const restartRequired = restartNeeded();
 
-	return {
+	const summary: AllStatusSummary = {
 		systemStatus: statusRecords as Promise<AsyncIterable<StatusRecord>>,
 		componentStatus: componentStatusArray,
 		restartRequired,
 	};
+	if (components === true) summary.components = buildHierarchy(aggregatedStatuses);
+	if (middleware === true) summary.middlewareChains = await getMiddlewareChains();
+	return summary;
 }
 
-function getStatus({ id }: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
+function getStatus({
+	id,
+	components,
+	middleware,
+}: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
 	if (!id) {
 		statusLogger.debug?.('getStatus', 'all');
-		return getAllStatus();
+		return getAllStatus({ components, middleware });
 	}
 
 	statusLogger.debug?.('getStatus', id);

@@ -1,0 +1,786 @@
+/**
+ * MCP v1 — server-push SSE channel + list_changed delivery over real HTTP.
+ *
+ * Regression coverage for two bugs found on `main`:
+ *
+ *  - N1: the application-profile GET (Harper's own HTTP server) never flushed
+ *    response headers — the SSE stream's queue yields nothing until a push, and
+ *    Node defers header transmission until the first body byte, so the GET hung
+ *    until the client gave up. The fix frames the queue into a primed SSE
+ *    Readable (an initial comment flushes headers immediately).
+ *
+ *  - N2: `listChanged` was advertised and the dispatcher fired, but the
+ *    operations-profile SSE never streamed the pushed frames — `reply.send(queue)`
+ *    on Fastify sent headers then stopped draining, so `tools/list_changed` sat
+ *    in the queue undelivered. The fix hijacks the reply and pipes a framed SSE
+ *    stream to the raw socket.
+ *
+ * Both profiles are exercised end-to-end against a real booted Harper.
+ */
+import { suite, test, before, after } from 'node:test';
+import { ok, strictEqual } from 'node:assert';
+import { resolve, join } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { createConnection } from 'node:net';
+import { Agent, request as httpRequest } from 'node:http';
+
+import {
+	setupHarperWithFixture,
+	startHarper,
+	teardownHarper,
+	type ContextWithHarper,
+} from '@harperfast/integration-testing';
+
+const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/custom-resources');
+
+function basicAuth(user: string, pass: string): string {
+	return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+}
+
+function adminAuth(ctx: ContextWithHarper): string {
+	return basicAuth(ctx.harper.admin.username, ctx.harper.admin.password);
+}
+
+/** Call the operations API as admin (add_role / add_user / alter_user). */
+async function op(ctx: ContextWithHarper, operation: Record<string, unknown>): Promise<void> {
+	const res = await fetch(new URL('/', ctx.harper.operationsAPIURL), {
+		method: 'POST',
+		headers: { 'content-type': 'application/json', 'authorization': adminAuth(ctx) },
+		body: JSON.stringify(operation),
+	});
+	ok(res.ok, `operation ${operation.operation} failed: ${res.status} ${await res.text()}`);
+}
+
+/** POST an MCP `initialize` and return the negotiated session. */
+async function initialize(baseUrl: string, auth: string): Promise<{ sessionId: string; protocolVersion: string }> {
+	const res = await fetch(new URL('/mcp', baseUrl), {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': auth,
+		},
+		body: JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'sse-it', version: '0' } },
+		}),
+	});
+	// Read the body exactly once: an `await res.text()` inside the assertion
+	// message is evaluated eagerly (template args run before `strictEqual`), so it
+	// consumes the body even on a 200 and a later `res.json()` then throws
+	// "Body has already been read". Read the text up front and parse it.
+	const text = await res.text();
+	strictEqual(res.status, 200, `initialize should 200: ${text}`);
+	const sessionId = res.headers.get('mcp-session-id');
+	ok(sessionId, 'initialize returned an Mcp-Session-Id');
+	const json: any = JSON.parse(text);
+	return { sessionId: sessionId!, protocolVersion: json.result.protocolVersion };
+}
+
+async function toolsCount(
+	baseUrl: string,
+	auth: string,
+	session: { sessionId: string; protocolVersion: string }
+): Promise<number> {
+	const res = await fetch(new URL('/mcp', baseUrl), {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': auth,
+			'mcp-session-id': session.sessionId,
+			'mcp-protocol-version': session.protocolVersion,
+		},
+		body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+	});
+	const json: any = await res.json();
+	return json?.result?.tools?.length ?? -1;
+}
+
+/** Send a JSON-RPC POST to the MCP endpoint and return the parsed response. */
+async function mcpCall(
+	baseUrl: string,
+	auth: string,
+	session: { sessionId: string; protocolVersion: string },
+	method: string,
+	params: Record<string, unknown>,
+	id: number
+): Promise<any> {
+	const res = await fetch(new URL('/mcp', baseUrl), {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': auth,
+			'mcp-session-id': session.sessionId,
+			'mcp-protocol-version': session.protocolVersion,
+		},
+		body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+	});
+	return res.json();
+}
+
+async function requestWithAgent(
+	baseUrl: string,
+	agent: Agent,
+	path: string,
+	options: { method?: string; headers?: Record<string, string>; body?: string; localPort?: number } = {}
+): Promise<{ status: number; body: string }> {
+	return new Promise((resolveRequest, reject) => {
+		const request = httpRequest(
+			new URL(path, baseUrl),
+			{ method: options.method ?? 'GET', headers: options.headers, agent, localPort: options.localPort },
+			(response) => {
+				const chunks: Buffer[] = [];
+				response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+				response.on('end', () =>
+					resolveRequest({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString() })
+				);
+			}
+		);
+		request.on('error', reject);
+		if (options.body) request.end(options.body);
+		else request.end();
+	});
+}
+
+async function workerIdentity(baseUrl: string, auth: string, agent: Agent, localPort: number): Promise<number> {
+	const response = await requestWithAgent(baseUrl, agent, '/WorkerIdentity', {
+		headers: { authorization: auth },
+		localPort,
+	});
+	strictEqual(response.status, 200, `WorkerIdentity failed: ${response.status} ${response.body}`);
+	return JSON.parse(response.body).threadId;
+}
+
+async function mcpCallWithAgent(
+	baseUrl: string,
+	auth: string,
+	agent: Agent,
+	session: { sessionId: string; protocolVersion: string },
+	method: string,
+	params: Record<string, unknown>,
+	id: number,
+	localPort: number
+): Promise<any> {
+	const response = await requestWithAgent(baseUrl, agent, '/mcp', {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': auth,
+			'mcp-session-id': session.sessionId,
+			'mcp-protocol-version': session.protocolVersion,
+		},
+		body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+		localPort,
+	});
+	strictEqual(response.status, 200, `MCP ${method} failed: ${response.status} ${response.body}`);
+	return JSON.parse(response.body);
+}
+
+/** Upsert a WorkItem record by id through the application REST API. */
+async function putWorkItem(ctx: ContextWithHarper, id: string, body: Record<string, unknown>): Promise<void> {
+	const res = await fetch(new URL(`/WorkItem/${id}`, ctx.harper.httpURL), {
+		method: 'PUT',
+		headers: { 'content-type': 'application/json', 'authorization': adminAuth(ctx) },
+		body: JSON.stringify(body),
+	});
+	ok(res.ok, `PUT WorkItem/${id} failed: ${res.status} ${await res.text()}`);
+}
+
+/**
+ * Open a GET SSE stream and resolve with `{ status, contentType }` once headers
+ * arrive (rejecting if they never flush — the N1 hang), plus a
+ * `next(predicate, timeoutMs)` that resolves to the first parsed JSON-RPC frame
+ * matching the predicate (or undefined on timeout).
+ */
+async function openSse(
+	url: string,
+	auth: string,
+	session: { sessionId: string; protocolVersion: string },
+	headerTimeoutMs = 2500
+): Promise<{
+	status: number;
+	contentType: string | null;
+	next: (predicate: (msg: any) => boolean, timeoutMs: number) => Promise<any | undefined>;
+	close: () => void;
+}> {
+	const ac = new AbortController();
+	const resP = fetch(new URL('/mcp', url), {
+		method: 'GET',
+		headers: {
+			'accept': 'text/event-stream',
+			'authorization': auth,
+			'mcp-session-id': session.sessionId,
+			'mcp-protocol-version': session.protocolVersion,
+		},
+		signal: ac.signal,
+	});
+	// Guard against the N1 hang: if headers never arrive, fail fast rather than
+	// hang the whole test run.
+	const res = (await Promise.race([
+		resP,
+		new Promise((_, reject) =>
+			setTimeout(() => reject(new Error('SSE headers never flushed (hung)')), headerTimeoutMs)
+		),
+	])) as Response;
+
+	const reader = res.body!.getReader();
+	const decoder = new TextDecoder();
+	let buffer = '';
+	const parsed: any[] = [];
+	const waiters: Array<{ predicate: (m: any) => boolean; resolve: (m: any) => void }> = [];
+
+	function dispatch(frame: string): void {
+		const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+		if (!dataLine) return;
+		let msg: any;
+		try {
+			msg = JSON.parse(dataLine.slice(5).trim());
+		} catch {
+			return;
+		}
+		parsed.push(msg);
+		for (let i = waiters.length - 1; i >= 0; i--) {
+			if (waiters[i].predicate(msg)) {
+				waiters[i].resolve(msg);
+				waiters.splice(i, 1);
+			}
+		}
+	}
+
+	(async () => {
+		try {
+			for (;;) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				let idx;
+				while ((idx = buffer.indexOf('\n\n')) !== -1) {
+					dispatch(buffer.slice(0, idx));
+					buffer = buffer.slice(idx + 2);
+				}
+			}
+		} catch {
+			/* aborted on close */
+		}
+	})();
+
+	return {
+		status: res.status,
+		contentType: res.headers.get('content-type'),
+		next(predicate, timeoutMs) {
+			const existing = parsed.find(predicate);
+			if (existing) return Promise.resolve(existing);
+			return new Promise((resolve) => {
+				const t = setTimeout(() => resolve(undefined), timeoutMs);
+				waiters.push({
+					predicate,
+					resolve: (m) => {
+						clearTimeout(t);
+						resolve(m);
+					},
+				});
+			});
+		},
+		close: () => ac.abort(),
+	};
+}
+
+function workerAgent(socketDir: string, mirror: string): Agent {
+	const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+	agent.createConnection = () => createConnection(join(socketDir, mirror));
+	return agent;
+}
+
+/** Open SSE on the sole socket in `agent`, pinning the stream to that socket's worker. */
+async function openSseWithAgent(
+	baseUrl: string,
+	auth: string,
+	agent: Agent,
+	session: { sessionId: string; protocolVersion: string },
+	localPort: number,
+	headerTimeoutMs = 2500
+): Promise<{
+	status: number;
+	next: (predicate: (msg: any) => boolean, timeoutMs: number) => Promise<any | undefined>;
+	close: () => void;
+}> {
+	let request;
+	const response = (await Promise.race([
+		new Promise((resolveResponse, reject) => {
+			request = httpRequest(
+				new URL('/mcp', baseUrl),
+				{
+					method: 'GET',
+					agent,
+					localPort,
+					headers: {
+						'accept': 'text/event-stream',
+						'authorization': auth,
+						'mcp-session-id': session.sessionId,
+						'mcp-protocol-version': session.protocolVersion,
+					},
+				},
+				resolveResponse
+			);
+			request.on('error', reject);
+			request.end();
+		}),
+		new Promise((_, reject) =>
+			setTimeout(() => reject(new Error('pinned SSE headers never flushed (hung)')), headerTimeoutMs)
+		),
+	])) as import('node:http').IncomingMessage;
+
+	let buffer = '';
+	const parsed: any[] = [];
+	const waiters: Array<{ predicate: (message: any) => boolean; resolve: (message: any) => void }> = [];
+	response.on('data', (chunk) => {
+		buffer += chunk.toString();
+		let index;
+		while ((index = buffer.indexOf('\n\n')) !== -1) {
+			const frame = buffer.slice(0, index);
+			buffer = buffer.slice(index + 2);
+			const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+			if (!dataLine) continue;
+			let message;
+			try {
+				message = JSON.parse(dataLine.slice(5).trim());
+			} catch {
+				continue;
+			}
+			const waiting = waiters.findIndex((waiter) => waiter.predicate(message));
+			if (waiting === -1) parsed.push(message);
+			else waiters.splice(waiting, 1)[0].resolve(message);
+		}
+	});
+
+	return {
+		status: response.statusCode ?? 0,
+		next(predicate, timeoutMs) {
+			const existing = parsed.findIndex(predicate);
+			if (existing !== -1) return Promise.resolve(parsed.splice(existing, 1)[0]);
+			return new Promise((resolveNext) => {
+				const timer = setTimeout(() => {
+					const index = waiters.indexOf(waiter);
+					if (index !== -1) waiters.splice(index, 1);
+					resolveNext(undefined);
+				}, timeoutMs);
+				const waiter = {
+					predicate,
+					resolve: (message: any) => {
+						clearTimeout(timer);
+						resolveNext(message);
+					},
+				};
+				waiters.push(waiter);
+			});
+		},
+		close() {
+			response.destroy();
+			request?.destroy();
+		},
+	};
+}
+
+suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => {
+	before(async () => {
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+			config: {
+				threads: { count: 4 },
+				tls: { unixDomainSockets: true },
+				mcp: { operations: { mountPath: '/mcp' }, application: { mountPath: '/mcp' } },
+			},
+			env: {},
+		});
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	test('N1: application-profile GET opens an SSE stream with headers flushed immediately', async () => {
+		const session = await initialize(ctx.harper.httpURL, adminAuth(ctx));
+		const sse = await openSse(ctx.harper.httpURL, adminAuth(ctx), session, 2500);
+		try {
+			strictEqual(sse.status, 200, 'application GET SSE establishes (was: hung, headers never flushed)');
+			ok((sse.contentType ?? '').includes('text/event-stream'), `expected text/event-stream, got ${sse.contentType}`);
+		} finally {
+			sse.close();
+		}
+	});
+
+	test('N2: operations-profile delivers tools/list_changed when the visible surface changes', async () => {
+		const suffix = Date.now().toString(36);
+		const loRole = `sse_lo_${suffix}`;
+		const hiRole = `sse_hi_${suffix}`;
+		const username = `sse_user_${suffix}`;
+		const password = 'Abc1234!';
+		await op(ctx, { operation: 'add_role', role: loRole, permission: { super_user: false } });
+		await op(ctx, { operation: 'add_role', role: hiRole, permission: { super_user: true } });
+		await op(ctx, { operation: 'add_user', role: loRole, username, password, active: true });
+
+		const auth = basicAuth(username, password);
+		const session = await initialize(ctx.harper.operationsAPIURL, auth);
+		const before = await toolsCount(ctx.harper.operationsAPIURL, auth, session);
+		strictEqual(before, 0, 'restricted user starts with no operations tools (valid trigger)');
+
+		const sse = await openSse(ctx.harper.operationsAPIURL, auth, session, 2500);
+		try {
+			strictEqual(sse.status, 200, 'operations GET SSE establishes');
+			// Flip the user to a super_user role — changes its visible tool surface.
+			await op(ctx, { operation: 'alter_user', username, role: hiRole });
+			const evt = await sse.next((m) => m?.method === 'notifications/tools/list_changed', 5000);
+			ok(evt, 'tools/list_changed delivered on the SSE stream after the surface changed');
+
+			const after = await toolsCount(ctx.harper.operationsAPIURL, auth, session);
+			ok(after > 0, `surface actually changed (tools ${before} → ${after})`);
+		} finally {
+			sse.close();
+		}
+	});
+
+	test('N3: application-profile delivers notifications/resources/updated after a subscribed record changes', async () => {
+		const id = `sub_${Date.now().toString(36)}`;
+		const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
+		// Seed the record before subscribing — subscriptions use omitCurrent, so only
+		// changes after subscribe should notify (not this initial write).
+		await putWorkItem(ctx, id, { state: 'pending', payload: 'x' });
+
+		const session = await initialize(ctx.harper.httpURL, adminAuth(ctx));
+		const sse = await openSse(ctx.harper.httpURL, adminAuth(ctx), session, 2500);
+		try {
+			strictEqual(sse.status, 200, 'application GET SSE establishes');
+			const sub = await mcpCall(ctx.harper.httpURL, adminAuth(ctx), session, 'resources/subscribe', { uri }, 10);
+			strictEqual(sub.error, undefined, `resources/subscribe should succeed: ${JSON.stringify(sub.error)}`);
+			// Mutate the subscribed record → a committed change pushes resources/updated.
+			await putWorkItem(ctx, id, { state: 'done', payload: 'x', result: 'r' });
+			const evt = await sse.next((m) => m?.method === 'notifications/resources/updated', 5000);
+			ok(evt, 'notifications/resources/updated delivered after the subscribed record changed');
+			strictEqual(evt.params.uri, uri, 'notification carries the subscribed URI');
+		} finally {
+			sse.close();
+		}
+	});
+
+	test('N4: subscribing to a collection URI notifies on any record change in the table', async () => {
+		// The collection URI is what resources/list advertises (no record id). It must
+		// watch the whole table, not a phantom record named after the resource.
+		const uri = new URL('/WorkItem', ctx.harper.httpURL).href;
+		const session = await initialize(ctx.harper.httpURL, adminAuth(ctx));
+		const sse = await openSse(ctx.harper.httpURL, adminAuth(ctx), session, 2500);
+		try {
+			strictEqual(sse.status, 200, 'application GET SSE establishes');
+			const sub = await mcpCall(ctx.harper.httpURL, adminAuth(ctx), session, 'resources/subscribe', { uri }, 10);
+			strictEqual(sub.error, undefined, `collection resources/subscribe should succeed: ${JSON.stringify(sub.error)}`);
+			// A brand-new record in the table must trigger the collection subscription.
+			await putWorkItem(ctx, `coll_${Date.now().toString(36)}`, { state: 'pending', payload: 'z' });
+			const evt = await sse.next((m) => m?.method === 'notifications/resources/updated', 5000);
+			ok(evt, 'notifications/resources/updated delivered after a record changed in the subscribed collection');
+			strictEqual(evt.params.uri, uri, 'notification carries the subscribed collection URI');
+		} finally {
+			sse.close();
+		}
+	});
+
+	test('N5: resource subscription routes from a sibling POST worker to the GET-SSE owner', async (t) => {
+		if (process.platform === 'win32') {
+			t.skip('Harper forces one HTTP worker on Windows');
+			return;
+		}
+		const auth = adminAuth(ctx);
+		const session = await initialize(ctx.harper.httpURL, auth);
+		const socketDir = join(ctx.harper.dataRootDir, 'sockets');
+		const names = await readdir(socketDir);
+		const mirrors = names.filter((name) => /^\d+-.*9927\.sock$/.test(name)).sort();
+		ok(mirrors.length >= 2, `expected at least two application worker mirrors: ${JSON.stringify(names)}`);
+		const getAgent = workerAgent(socketDir, mirrors[0]);
+		const postAgent = workerAgent(socketDir, mirrors[1]);
+		const getThreadId = await workerIdentity(ctx.harper.httpURL, auth, getAgent, 0);
+		const postThreadId = await workerIdentity(ctx.harper.httpURL, auth, postAgent, 0);
+		ok(getThreadId !== postThreadId, 'the GET and POST mirrors select different HTTP workers');
+		let sse = await openSseWithAgent(ctx.harper.httpURL, auth, getAgent, session, 0);
+		try {
+			strictEqual(sse.status, 200, 'GET SSE establishes on its selected worker');
+			const id = `cross_worker_${Date.now().toString(36)}`;
+			const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
+			await putWorkItem(ctx, id, { state: 'pending', payload: 'cross-worker' });
+			const subscription = await mcpCallWithAgent(
+				ctx.harper.httpURL,
+				auth,
+				postAgent,
+				session,
+				'resources/subscribe',
+				{ uri },
+				20,
+				0
+			);
+			strictEqual(
+				subscription.error,
+				undefined,
+				`cross-worker resources/subscribe should succeed: ${JSON.stringify(subscription.error)}`
+			);
+			await putWorkItem(ctx, id, { state: 'done', payload: 'cross-worker' });
+			const event = await sse.next(
+				(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === uri,
+				5000
+			);
+			ok(event, 'the owner worker delivered resources/updated on the pinned GET stream');
+			sse.close();
+			sse = await openSseWithAgent(ctx.harper.httpURL, auth, postAgent, session, 0);
+			strictEqual(sse.status, 200, 'reconnect establishes on the other worker');
+			await putWorkItem(ctx, id, { state: 'reconnected' });
+			ok(
+				await sse.next(
+					(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === uri,
+					5000
+				),
+				'the new worker restores the persisted subscription'
+			);
+			const unsubscribed = await mcpCallWithAgent(
+				ctx.harper.httpURL,
+				auth,
+				getAgent,
+				session,
+				'resources/unsubscribe',
+				{ uri },
+				21,
+				0
+			);
+			strictEqual(
+				unsubscribed.error,
+				undefined,
+				`cross-worker unsubscribe succeeds: ${JSON.stringify(unsubscribed.error)}`
+			);
+			await putWorkItem(ctx, id, { state: 'unsubscribed' });
+			strictEqual(
+				await sse.next(
+					(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === uri,
+					1000
+				),
+				undefined,
+				'no resource notification arrives after unsubscribe succeeds'
+			);
+		} finally {
+			sse.close();
+			getAgent.destroy();
+			postAgent.destroy();
+		}
+	});
+	test('ordinary bearer expiry is enforced when subscribe and GET use distinct workers', async (t) => {
+		if (process.platform === 'win32') {
+			t.skip('Harper forces one HTTP worker on Windows');
+			return;
+		}
+		const auth = adminAuth(ctx);
+		const session = await initialize(ctx.harper.httpURL, auth);
+		const socketDir = join(ctx.harper.dataRootDir, 'sockets');
+		const mirrors = (await readdir(socketDir)).filter((name) => /^\d+-.*9927\.sock$/.test(name)).sort();
+		ok(mirrors.length >= 2);
+		const getAgent = workerAgent(socketDir, mirrors[0]);
+		const postAgent = workerAgent(socketDir, mirrors[1]);
+		try {
+			const getThread = await workerIdentity(ctx.harper.httpURL, auth, getAgent, 0);
+			const postThread = await workerIdentity(ctx.harper.httpURL, auth, postAgent, 0);
+			ok(getThread !== postThread);
+			const sse = await openSseWithAgent(ctx.harper.httpURL, auth, getAgent, session, 0);
+			try {
+				strictEqual(sse.status, 200);
+				const id = `bearer_expiry_${Date.now().toString(36)}`;
+				const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
+				await putWorkItem(ctx, id, { state: 'pending' });
+				const tokenResponse = await fetch(ctx.harper.operationsAPIURL, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json', 'authorization': auth },
+					body: JSON.stringify({
+						operation: 'create_authentication_tokens',
+						username: ctx.harper.admin.username,
+						password: ctx.harper.admin.password,
+						expires_in: '8s',
+					}),
+				});
+				strictEqual(tokenResponse.status, 200);
+				const { operation_token } = (await tokenResponse.json()) as { operation_token: string };
+				ok(operation_token);
+				const { exp } = JSON.parse(Buffer.from(operation_token.split('.')[1], 'base64url').toString());
+				ok(Number.isFinite(exp));
+				const subscribed = await mcpCallWithAgent(
+					ctx.harper.httpURL,
+					`Bearer ${operation_token}`,
+					postAgent,
+					session,
+					'resources/subscribe',
+					{ uri },
+					40,
+					0
+				);
+				strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
+				const matches = (message: any) =>
+					message?.method === 'notifications/resources/updated' && message?.params?.uri === uri;
+				await putWorkItem(ctx, id, { state: 'before-expiry' });
+				ok(await sse.next(matches, 5000), 'updates arrive before the POST bearer expires');
+				while (Date.now() < exp * 1000) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+				await putWorkItem(ctx, id, { state: 'after-expiry' });
+				strictEqual(await sse.next(matches, 1000), undefined, 'expired POST bearer cannot deliver updates');
+				sse.close();
+				const reconnected = await openSseWithAgent(ctx.harper.httpURL, auth, postAgent, session, 0);
+				try {
+					strictEqual(reconnected.status, 200);
+					await putWorkItem(ctx, id, { state: 'reconnected-after-expiry' });
+					strictEqual(await reconnected.next(matches, 1000), undefined, 'reconnect cannot extend bearer expiry');
+					const resubscribed = await mcpCallWithAgent(
+						ctx.harper.httpURL,
+						auth,
+						getAgent,
+						session,
+						'resources/subscribe',
+						{ uri },
+						41,
+						0
+					);
+					strictEqual(resubscribed.error, undefined, JSON.stringify(resubscribed.error));
+					await putWorkItem(ctx, id, { state: 'fresh-subscription' });
+					ok(await reconnected.next(matches, 5000), 'a fresh subscription restores delivery');
+				} finally {
+					reconnected.close();
+				}
+			} finally {
+				sse.close();
+			}
+		} finally {
+			getAgent.destroy();
+			postAgent.destroy();
+		}
+	});
+	test('an ordinary GET cannot inherit a scoped grant with the same attribution username', async () => {
+		const auth = adminAuth(ctx);
+		const username = `scoped_restore_${Date.now().toString(36)}`;
+		const role = `${username}_role`;
+		const password = 'ScopedRestore-credential!';
+		const minted = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'authorization': auth },
+			body: JSON.stringify({
+				operation: 'create_authentication_tokens',
+				username,
+				role: {
+					permission: {
+						data: {
+							tables: {
+								WorkItem: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+			}),
+		});
+		const mintedBody = await minted.text();
+		strictEqual(minted.status, 200, mintedBody);
+		const scopedAuth = `Bearer ${JSON.parse(mintedBody).operation_token}`;
+		const session = await initialize(ctx.harper.httpURL, scopedAuth);
+		const uri = new URL(`/WorkItem/${username}`, ctx.harper.httpURL).href;
+		const matches = (message: any) =>
+			message?.method === 'notifications/resources/updated' && message?.params?.uri === uri;
+		const initial = await openSse(ctx.harper.httpURL, scopedAuth, session, 2500);
+		try {
+			strictEqual(initial.status, 200);
+			const subscribed = await mcpCall(ctx.harper.httpURL, scopedAuth, session, 'resources/subscribe', { uri }, 50);
+			strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
+			await putWorkItem(ctx, username, { state: 'scoped' });
+			ok(await initial.next(matches, 5000), 'the scoped grant initially delivers');
+		} finally {
+			initial.close();
+		}
+		await op(ctx, { operation: 'add_role', role, permission: { super_user: false } });
+		await op(ctx, { operation: 'add_user', role, username, password, active: true });
+		const reconnected = await openSse(ctx.harper.httpURL, basicAuth(username, password), session, 2500);
+		try {
+			strictEqual(reconnected.status, 200);
+			await putWorkItem(ctx, username, { state: 'ordinary' });
+			const liveId = `${username}_live`;
+			const liveUri = new URL(`/WorkItem/${liveId}`, ctx.harper.httpURL).href;
+			const subscribed = await mcpCall(
+				ctx.harper.httpURL,
+				scopedAuth,
+				session,
+				'resources/subscribe',
+				{ uri: liveUri },
+				51
+			);
+			strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
+			await putWorkItem(ctx, liveId, { state: 'new-scoped-subscribe' });
+			ok(
+				await reconnected.next(
+					(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === liveUri,
+					5000
+				),
+				'an explicit live scoped subscribe can still deliver'
+			);
+			strictEqual(await reconnected.next(matches, 0), undefined, 'the removed URI has no late notification');
+		} finally {
+			reconnected.close();
+		}
+	});
+	test('N6: acknowledged subscription state is restored after a process crash and restart', async () => {
+		const auth = adminAuth(ctx);
+		const session = await initialize(ctx.harper.httpURL, auth);
+		const id = `crash_subscription_${Date.now().toString(36)}`;
+		const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
+		await putWorkItem(ctx, id, { state: 'before-crash' });
+		const first = await openSse(new URL('/mcp', ctx.harper.httpURL).href, auth, session);
+		let restored: Awaited<ReturnType<typeof openSse>> | undefined;
+		try {
+			strictEqual(first.status, 200);
+			const subscribed = await mcpCall(ctx.harper.httpURL, auth, session, 'resources/subscribe', { uri }, 30);
+			strictEqual(subscribed.error, undefined, JSON.stringify(subscribed.error));
+			const cancelledAfterCrash = await mcpCall(
+				ctx.harper.httpURL,
+				auth,
+				session,
+				'resources/subscribe',
+				{ uri: uri + '-cancelled' },
+				31
+			);
+			strictEqual(cancelledAfterCrash.error, undefined);
+			await new Promise<void>((resolveExit) => {
+				ctx.harper.process.once('exit', () => resolveExit());
+				ctx.harper.process.kill('SIGKILL');
+			});
+			first.close();
+			await startHarper(ctx, {
+				config: {
+					threads: { count: 4 },
+					tls: { unixDomainSockets: true },
+					mcp: { operations: { mountPath: '/mcp' }, application: { mountPath: '/mcp' } },
+				},
+			});
+			const unsubscribed = await mcpCall(
+				ctx.harper.httpURL,
+				auth,
+				session,
+				'resources/unsubscribe',
+				{ uri: uri + '-cancelled' },
+				32
+			);
+			strictEqual(unsubscribed.error, undefined, 'a previous process token does not delay unsubscribe');
+			const noStream = await mcpCall(ctx.harper.httpURL, auth, session, 'resources/subscribe', { uri }, 33);
+			strictEqual(noStream.error?.code, -32602, 'a previous process token is not a live GET');
+			restored = await openSse(new URL('/mcp', ctx.harper.httpURL).href, auth, session);
+			strictEqual(restored.status, 200, 'the durable MCP session survives the crash');
+			await putWorkItem(ctx, id, { state: 'after-restart' });
+			ok(
+				await restored.next(
+					(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === uri,
+					5000
+				),
+				'the reconnected GET delivers the persisted resource subscription'
+			);
+		} finally {
+			first.close();
+			restored?.close();
+		}
+	});
+});

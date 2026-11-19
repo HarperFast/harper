@@ -87,7 +87,7 @@ export const processSpawnTest = {
 		// Third call with higher version should spawn new process
 		const child3 = fork(childProcessPath, [], { name: 'test-version-process', version: 2 });
 		assert(child3.pid, 'Higher version should return a process with a PID');
-		assert.notEqual(child1.pid, child3.pid, 'Higher version should spawn a new process');
+		assert.notStrictEqual(child1.pid, child3.pid, 'Higher version should spawn a new process');
 
 		return { child1, child3 };
 	},

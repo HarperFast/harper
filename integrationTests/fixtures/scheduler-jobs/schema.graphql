@@ -1,0 +1,6 @@
+type SchedulerTick @table @export {
+	id: ID @primaryKey
+	jobName: String @indexed
+	catchUp: Boolean
+	firedAt: Date @createdTime
+}

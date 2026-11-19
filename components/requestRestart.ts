@@ -1,3 +1,4 @@
+import { workerHooks } from '../server/threads/threadMessageState.ts';
 import { Status } from '../server/status/index.ts';
 
 interface NotifyingArrayBuffer extends ArrayBuffer {
@@ -24,6 +25,17 @@ export function requestRestart() {
 	restartArrayBuffer.notify();
 }
 
+export function requestRestartAfterDeploy(
+	isNewComponent: boolean,
+	packageMetadataChanged: boolean,
+	wasIsolated: boolean,
+	isIsolated: boolean
+): boolean {
+	if (!isNewComponent && !packageMetadataChanged && wasIsolated === isIsolated) return false;
+	requestRestart();
+	return true;
+}
+
 export function restartNeeded() {
 	ensureInitialized();
 	return restartNeededArray[0] === 1;
@@ -33,6 +45,8 @@ export function resetRestartNeeded() {
 	ensureInitialized();
 	restartNeededArray[0] = 0;
 }
+
+workerHooks.resetRestartNeeded = resetRestartNeeded;
 
 export function subscribeToRestartRequests(callback: () => void) {
 	ensureInitialized();

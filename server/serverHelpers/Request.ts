@@ -1,9 +1,13 @@
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
-import { EventEmitter } from 'node:events';
-import { Readable, PassThrough } from 'node:stream';
+import { setMaxListeners } from 'node:events';
+import { Readable } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
+import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
+import type { ConnectionInfo } from './proxyProtocol.ts';
+import harperLogger from '../../utility/logging/harper_logger.ts';
+import type { ResourceBody } from '../../resources/ResourceInterface.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -14,6 +18,7 @@ interface IncomingMessage extends NodeIncomingMessage {
 		authorized?: boolean; // only for TLSSocket
 		encrypted?: boolean; // only for TLSSocket
 		getPeerCertificate?: (detailed?: boolean) => any; // only for TLSSocket
+		connectionInfo?: ConnectionInfo; // set by proxyProtocol on the UDS mirror from a PROXY v2 header
 		server?: {
 			mtlsConfig?: any;
 		};
@@ -24,10 +29,11 @@ interface IncomingMessage extends NodeIncomingMessage {
  * We define our own request class, to ensure that it has integrity against leaks in a secure environment
  * and for better conformance to WHATWG standards.
  */
-export class Request {
+export class Request<Body = any> {
 	#body: RequestBody | undefined;
 	#peerCertificate: any;
-	#abortController = new AbortController();
+	#abortController: AbortController | undefined;
+	#aborted = false;
 	public _nodeRequest: IncomingMessage;
 	public _nodeResponse?: NodeServerResponse;
 	public method: string;
@@ -56,7 +62,7 @@ export class Request {
 	public replicatedConfirmation?: number;
 	public replicateTo?: any;
 	public replicateFrom?: any;
-	public data?: any;
+	public data?: ResourceBody<Body>;
 	public authorize?: boolean;
 	public lastModified?: number;
 	public lastRefreshed?: number;
@@ -69,31 +75,59 @@ export class Request {
 		this.url = url;
 		this.headers = new RequestHeaders(nodeRequest.headers);
 		this.__harperRequestUpgraded = false;
-		// Abort the request's signal on premature client disconnect. nodeResponse 'close'
-		// also fires on clean completion; the writableFinished guard restricts to disconnect.
 		if (typeof nodeResponse?.on === 'function') {
-			nodeResponse.on('close', () => {
-				if (!nodeResponse.writableFinished) this.#abortController.abort();
-			});
-		} else if (typeof nodeRequest.socket?.once === 'function') {
-			// No response on this Request — typically the WebSocket-upgrade path
-			// (http.ts creates the Request before the ws library takes over). The TCP
-			// socket close is the fallback abort trigger; REST.ts's ws.on('close') hook
-			// also calls _abort() and is the primary signal in the WS case. The two
-			// are redundant by design (idempotent abort) so any future single-arg
-			// caller still gets disconnect semantics without relying on the WS layer.
-			nodeRequest.socket.once('close', () => this.#abortController.abort());
+			if (nodeResponse.closed) {
+				// It closed while this request waited in the throttle queue, so no 'close' is coming.
+				this.#aborted = !nodeResponse.writableFinished;
+			} else {
+				// 'close' also fires on clean completion, and an end() after a disconnect reports the response as
+				// finished, so a disconnect is recorded when it happens. Prepended so no earlier listener can end
+				// the response first.
+				nodeResponse.prependListener('close', () => {
+					if (nodeResponse.writableFinished) return;
+					this.#aborted = true;
+					this.#abortController?.abort();
+				});
+			}
 		}
 	}
 	get signal(): AbortSignal {
+		if (!this.#abortController) this.#createAbortController();
 		return this.#abortController.signal;
+	}
+	#createAbortController() {
+		const controller = (this.#abortController = new AbortController());
+		setMaxListeners(0, controller.signal);
+		if (this.#disconnected()) controller.abort();
+		else if (typeof this._nodeResponse?.on !== 'function') this.#abortOnSocketClose(controller);
+	}
+	#disconnected(): boolean {
+		if (this.#aborted) return true;
+		const response = this._nodeResponse;
+		// Node sets `closed` before it emits 'close', so a read from a listener that runs ahead of the one
+		// registered in the constructor sees it first.
+		if (typeof response?.on === 'function') {
+			if (response.closed === true && !response.writableFinished) this.#aborted = true;
+		} else if (this._nodeRequest.socket?.destroyed === true) this.#aborted = true;
+		return this.#aborted;
+	}
+	#abortOnSocketClose(controller: AbortController) {
+		// No response on this Request — typically the WebSocket-upgrade path
+		// (http.ts creates the Request before the ws library takes over). The TCP
+		// socket close is the fallback abort trigger; REST.ts's ws.on('close') hook
+		// also calls _abort() and is the primary signal in the WS case. The two
+		// are redundant by design (idempotent abort) so any future single-arg
+		// caller still gets disconnect semantics without relying on the WS layer.
+		const socket = this._nodeRequest.socket;
+		if (typeof socket?.once === 'function') socket.once('close', () => controller.abort());
 	}
 	/**
 	 * Abort this request's signal. Used by transports (e.g. WebSocket) that need to
 	 * signal client-side cancellation independently of the Node response lifecycle.
 	 */
 	_abort(): void {
-		this.#abortController.abort();
+		this.#aborted = true;
+		this.#abortController?.abort();
 	}
 	get absoluteURL() {
 		return this.protocol + '://' + this.host + this.url;
@@ -109,7 +143,11 @@ export class Request {
 		else this.url = pathname;
 	}
 	get protocol() {
-		return this._nodeRequest.socket.encrypted ? 'https' : 'http';
+		// A directly-terminated TLS socket reports `encrypted`. The UDS mirror is a plain
+		// node:http server, so a connection the client made over TLS shows encrypted=undefined;
+		// the fronting proxy's PROXY v2 SSL TLV (connectionInfo.tls) tells us it was really TLS.
+		if (this._nodeRequest.socket.encrypted || this._nodeRequest.socket.connectionInfo?.tls) return 'https';
+		return 'http';
 	}
 	get ip() {
 		return this._nodeRequest.socket.remoteAddress;
@@ -132,8 +170,18 @@ export class Request {
 	get mtlsConfig() {
 		return this._nodeRequest.socket.server.mtlsConfig;
 	}
+	/**
+	 * TLS facts a fronting proxy (e.g. symphony) forwarded over a PROXY v2 header on the
+	 * UDS mirror: negotiated ALPN, SNI authority, TLS version/cipher, the client's JA3/JA4
+	 * fingerprint, and the verified mTLS client certificate chain. `undefined` when the
+	 * connection carried no PROXY v2 header (direct connection, or a v1 header). Never
+	 * populated from a request header — only from the trusted proxy-protocol channel.
+	 */
+	get connectionInfo(): ConnectionInfo | undefined {
+		return this._nodeRequest.socket.connectionInfo;
+	}
 	get body() {
-		return this.#body || (this.#body = new RequestBody(this._nodeRequest));
+		return this.#body || (this.#body = new RequestBody(this._nodeRequest, this._nodeResponse));
 	}
 	get host() {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
@@ -145,7 +193,7 @@ export class Request {
 		return this._nodeRequest.httpVersion;
 	}
 	get isAborted() {
-		return this.#abortController.signal.aborted;
+		return this.#abortController ? this.#abortController.signal.aborted : this.#disconnected();
 	}
 	// Expose node request for cases that need direct access (e.g., replication)
 	get nodeRequest() {
@@ -162,10 +210,8 @@ export class Request {
 	 * status, headers, and body, resolving the returned promise as soon as headers are available with a
 	 * streaming body that can be piped back through the Harper middleware chain.
 	 *
-	 * **Important:** The resolved `body` PassThrough must have an `error` listener attached (or be piped
-	 * to a destination that handles errors) before it is consumed. If the underlying connection is reset
-	 * after headers are sent, the body stream is destroyed with an error — without a listener, Node.js
-	 * will throw an uncaught exception.
+	 * Consume the returned body with `pipeline()`, `finished()` or async iteration so stored stream errors
+	 * and premature closes are reported.
 	 *
 	 * Example:
 	 *   server.http((request, next) =>
@@ -174,11 +220,13 @@ export class Request {
 	 */
 	withNodeAdapter(
 		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void | Promise<void>
-	): Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }> {
-		// Flat headers object matching IncomingMessage.headers format (lowercase keys)
-		const reqHeaders: Record<string, string | string[]> = Object.create(null);
+	): Promise<AdaptedResponse> {
+		const reqHeaders: Record<string, string | string[]> = {};
 		for (const [key, value] of this.headers) {
-			reqHeaders[key.toLowerCase()] = value;
+			const lowerKey = key.toLowerCase();
+			if (lowerKey === '__proto__')
+				Object.defineProperty(reqHeaders, lowerKey, { value, configurable: true, enumerable: true, writable: true });
+			else reqHeaders[lowerKey] = value;
 		}
 
 		// Proxy the underlying IncomingMessage so body streaming works, but expose
@@ -193,131 +241,32 @@ export class Request {
 			},
 		}) as NodeIncomingMessage;
 
-		let resolveResponse!: (value: { status: number; headers: ResponseHeaders; body: PassThrough }) => void;
-		let rejectResponse!: (reason: unknown) => void;
-		const response = new Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }>((resolve, reject) => {
-			resolveResponse = resolve;
-			rejectResponse = reject;
+		let nodeRes!: NodeAdapterResponse;
+		const response = new Promise<AdaptedResponse>((resolve, reject) => {
+			nodeRes = new NodeAdapterResponse(nodeReq, this._nodeResponse, resolve, reject);
 		});
 
-		const responseBody = new PassThrough();
-		const capturedHeaders = new ResponseHeaders();
-		let headersFlushed = false;
-		let nodeRes: ReturnType<typeof Object.assign> & NodeServerResponse;
+		const signal = this.signal;
+		const onAbort = () => nodeRes.destroy(nodeRes.headersSent ? undefined : signal.reason);
+		if (signal.aborted) onAbort();
+		else {
+			signal.addEventListener('abort', onAbort, { once: true });
+			nodeRes.once('close', () => signal.removeEventListener('abort', onAbort));
+		}
 
-		const flushHeaders = () => {
-			if (!headersFlushed) {
-				headersFlushed = true;
-				nodeRes.headersSent = true;
-				resolveResponse({ status: nodeRes.statusCode as number, headers: capturedHeaders, body: responseBody });
-			}
+		const onHandlerFailure = (error: Error) => {
+			if (!nodeRes.writableEnded) nodeRes.destroy(error);
+			else harperLogger.warn('withNodeAdapter handler failed after ending its response', error);
 		};
-
-		const applyHeaders = (hdrs: object | unknown[]) => {
-			if (Array.isArray(hdrs)) {
-				if (hdrs.length > 0 && Array.isArray(hdrs[0])) {
-					for (const [name, value] of hdrs as [string, string][]) capturedHeaders.set(name, value);
-				} else {
-					for (let i = 0; i < hdrs.length; i += 2) capturedHeaders.set(hdrs[i] as string, hdrs[i + 1] as string);
-				}
-			} else {
-				for (const [k, v] of Object.entries(hdrs)) capturedHeaders.set(k, v as string);
-			}
-		};
-
-		nodeRes = Object.assign(new EventEmitter(), {
-			statusCode: 200 as number,
-			statusMessage: '',
-			headersSent: false,
-			writable: true,
-			writableEnded: false,
-			writableFinished: false,
-			socket: this._nodeRequest.socket,
-
-			setHeader(name: string, value: string | number | string[]) {
-				if (Array.isArray(value)) {
-					// Use set() for first value (overwrites any existing entry) then append() for
-					// the rest so multiple values — critical for Set-Cookie — are preserved as an
-					// array rather than collapsed into a single comma-joined string.
-					if (value.length > 0) {
-						capturedHeaders.set(name, String(value[0]));
-						for (let i = 1; i < value.length; i++) capturedHeaders.append(name, String(value[i]));
-					}
-				} else {
-					capturedHeaders.set(name, String(value));
-				}
-				return nodeRes;
-			},
-			getHeader(name: string) {
-				return capturedHeaders.get(name);
-			},
-			getHeaders() {
-				return Object.fromEntries(capturedHeaders);
-			},
-			hasHeader(name: string) {
-				return capturedHeaders.has(name);
-			},
-			removeHeader(name: string) {
-				capturedHeaders.delete(name);
-			},
-			flushHeaders() {
-				flushHeaders();
-			},
-			writeHead(statusCode: number, statusMessageOrHeaders?: string | object, maybeHeaders?: object) {
-				if (headersFlushed) return nodeRes;
-				nodeRes.statusCode = statusCode;
-				const hdrs = typeof statusMessageOrHeaders === 'string' ? maybeHeaders : statusMessageOrHeaders;
-				if (hdrs) applyHeaders(hdrs as object | unknown[]);
-				flushHeaders();
-				return nodeRes;
-			},
-			write(
-				chunk: unknown,
-				encoding?: BufferEncoding | ((error?: Error | null) => void),
-				callback?: (error?: Error | null) => void
-			) {
-				flushHeaders();
-				if (typeof encoding === 'function') return responseBody.write(chunk as any, encoding);
-				return responseBody.write(chunk as any, encoding, callback);
-			},
-			end(chunk?: unknown, encoding?: BufferEncoding | (() => void), callback?: () => void) {
-				flushHeaders();
-				nodeRes.writableEnded = true;
-				if (typeof chunk === 'function') responseBody.end(chunk as () => void);
-				else if (typeof encoding === 'function') responseBody.end(chunk as any, encoding);
-				else responseBody.end(chunk as any, encoding, callback);
-				return nodeRes;
-			},
-			destroy(error?: Error) {
-				if (!headersFlushed) {
-					if (error) rejectResponse(error);
-					else rejectResponse(new Error('Response destroyed before headers were sent'));
-					// The error has been forwarded to the response promise; suppress the
-					// PassThrough 'error' event for this one destroy call so Node doesn't
-					// throw due to having no other listeners.
-					responseBody.once('error', () => {});
-				}
-				responseBody.destroy(error);
-				return nodeRes;
-			},
-		}) as unknown as NodeServerResponse;
-
-		responseBody.on('finish', () => {
-			nodeRes.writableFinished = true;
-			(nodeRes as unknown as EventEmitter).emit('finish');
-		});
-		responseBody.on('drain', () => {
-			(nodeRes as unknown as EventEmitter).emit('drain');
-		});
-		responseBody.on('close', () => {
-			(nodeRes as unknown as EventEmitter).emit('close');
-		});
-
-		const handlerResult = handler(nodeReq, nodeRes);
-		if (handlerResult != null && typeof (handlerResult as unknown as Promise<void>).then === 'function') {
-			(handlerResult as unknown as Promise<void>).catch((err: unknown) => {
-				if (!headersFlushed) rejectResponse(err);
-			});
+		let handlerResult: void | Promise<void>;
+		try {
+			handlerResult = handler(nodeReq, nodeRes);
+		} catch (error) {
+			onHandlerFailure(error as Error);
+			return response;
+		}
+		if (typeof (handlerResult as Promise<void>)?.then === 'function') {
+			Promise.resolve(handlerResult).catch(onHandlerFailure);
 		}
 		return response;
 	}
@@ -403,6 +352,10 @@ export class BunRequest {
 	get mtlsConfig() {
 		return undefined;
 	}
+	get connectionInfo() {
+		// No PROXY v2 decoding on the Bun.serve() path
+		return undefined;
+	}
 	get body() {
 		return this.#body || (this.#body = new BunRequestBody(this._webRequest));
 	}
@@ -436,10 +389,158 @@ export class BunRequest {
 	}
 }
 
+/**
+ * uWebSockets.js Request adapter. Wraps the data extracted from a uWS HttpRequest/HttpResponse
+ * (which is only valid synchronously inside the route handler) into Harper's request interface,
+ * matching BunRequest. Intended for the plaintext-UDS-behind-symphony path: TLS/mTLS are
+ * terminated upstream, so peerCertificate/authorized are not available here and the real client
+ * IP arrives via the X-Forwarded-For header.
+ */
+export class UwsRequest {
+	#body: UwsRequestBody | undefined;
+	#isSecure: boolean;
+	#ip: string | undefined;
+	#signal: AbortSignal | undefined;
+	#abortController: AbortController | undefined;
+	#transportAborted = false;
+	public _nodeRequest: any = null;
+	public _nodeResponse: any = null;
+	public method: string;
+	public url: string;
+	public headers: RequestHeaders;
+	public isWebSocket?: boolean;
+	public user?: any;
+	public response: {
+		status?: number;
+		headers: ResponseHeaders;
+	};
+	public __harperRequestUpgraded: boolean;
+
+	constructor(source: {
+		method: string;
+		url: string;
+		headers: Record<string, string | string[]>;
+		ip?: string;
+		secure?: boolean;
+		body?: UwsRequestBody;
+		signal?: AbortSignal;
+	}) {
+		this.method = source.method;
+		this.url = source.url;
+		this.headers = new RequestHeaders(source.headers);
+		this.#isSecure = !!source.secure;
+		this.#ip = source.ip;
+		this.#body = source.body;
+		this.#signal = source.signal;
+		if (this.#signal) setMaxListeners(0, this.#signal);
+		this.__harperRequestUpgraded = false;
+	}
+	get absoluteURL() {
+		return this.protocol + '://' + this.host + this.url;
+	}
+	get pathname() {
+		const queryStart = this.url.indexOf('?');
+		if (queryStart > -1) return this.url.slice(0, queryStart);
+		return this.url;
+	}
+	set pathname(pathname) {
+		const queryStart = this.url.indexOf('?');
+		if (queryStart > -1) this.url = pathname + this.url.slice(queryStart);
+		else this.url = pathname;
+	}
+	get protocol() {
+		// Behind symphony the on-the-wire hop is plaintext; the original scheme is conveyed
+		// by the proxy (X-Forwarded-Proto) or assumed from the listener's secure flag.
+		const xfp = this.headers.get('x-forwarded-proto');
+		if (xfp) return Array.isArray(xfp) ? xfp[0] : xfp;
+		return this.#isSecure ? 'https' : 'http';
+	}
+	get ip() {
+		// A real peer address (direct-TCP path) is authoritative and unspoofable, so it wins. Only the
+		// symphony-UDS path — where the socket has no client address (#ip is left unset) and symphony is
+		// the trusted setter/stripper of X-Forwarded-For — falls back to XFF. This prevents a direct
+		// client from spoofing `X-Forwarded-For: 127.0.0.1` to satisfy local auth (security/auth.ts).
+		if (this.#ip) return this.#ip;
+		const xff = this.headers.get('x-forwarded-for');
+		if (xff) return (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
+		return '';
+	}
+	get authorized() {
+		// TLS terminated upstream — client authorization not available at this hop.
+		return undefined;
+	}
+	get peerCertificate() {
+		return null;
+	}
+	get mtlsConfig() {
+		return undefined;
+	}
+	get connectionInfo() {
+		// TLS terminated upstream — no PROXY v2 decoding at this hop.
+		return undefined;
+	}
+	get body() {
+		// Bodyless requests get an already-ended empty stream so consumers can still read it uniformly.
+		if (!this.#body) {
+			this.#body = new UwsRequestBody();
+			this.#body.push(null);
+		}
+		return this.#body;
+	}
+	get host() {
+		return this.headers.get('host') as string;
+	}
+	get hostname() {
+		return this.headers.get('host') as string;
+	}
+	get httpVersion() {
+		return '1.1';
+	}
+	get isAborted() {
+		return this.#transportAborted || (this.#signal?.aborted ?? false);
+	}
+	get signal(): AbortSignal {
+		if (!this.#signal) {
+			this.#abortController = new AbortController();
+			if (this.#transportAborted) this.#abortController.abort();
+			this.#signal = this.#abortController.signal;
+			setMaxListeners(0, this.#signal);
+		}
+		return this.#signal;
+	}
+	/**
+	 * The transport is gone (uWS res.onAborted) or refused the request (an oversized body): cancel it.
+	 * A signal supplied to the constructor (WebSocket upgrades, see server/http.ts's wsHandler) is
+	 * aborted by its own owner.
+	 */
+	_abort(): void {
+		this.#transportAborted = true;
+		this.#abortController?.abort();
+	}
+	get nodeRequest() {
+		return null;
+	}
+	sendEarlyHints(_link: string, _headers: Record<string, any> = {}) {
+		// Early hints not wired for the uWS path
+	}
+}
+
+// A push-based Readable: the uWS server pushes each request-body chunk (and the terminating null) in
+// as it arrives off the socket, so consumers (streamToBuffer, future streaming deserializers) see a
+// real stream instead of a pre-buffered blob. Extends Readable so it matches the RequestBody/
+// BunRequestBody contract — on/pipe, `for await` async iteration, destroy() for abort handling.
+// _read() is a no-op because flow is driven by push() from the uWS onData callback; uWS has no inbound
+// backpressure, so pushed-but-unread chunks queue here (bounded by the server's maxBodyBytes ceiling).
+export class UwsRequestBody extends Readable {
+	_read() {}
+}
+
 class RequestBody {
 	#nodeRequest: IncomingMessage;
-	constructor(nodeRequest: IncomingMessage) {
+	#nodeResponse?: NodeServerResponse;
+	constructor(nodeRequest: IncomingMessage, nodeResponse?: NodeServerResponse) {
 		this.#nodeRequest = nodeRequest;
+		this.#nodeResponse = nodeResponse;
 	}
 	on(event: string, listener: (...args: any[]) => void) {
 		this.#nodeRequest.on(event, listener);
@@ -447,6 +548,33 @@ class RequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#nodeRequest.pipe(destination, options);
+	}
+	destroy(error?: Error) {
+		this.#nodeRequest.destroy(error);
+	}
+	afterResponse(callback: () => void): () => void {
+		const response = this.#nodeResponse;
+		if (!response || response.writableFinished || response.destroyed) {
+			callback();
+			return () => {};
+		}
+		const detach = () => {
+			response.off('finish', done);
+			response.off('close', done);
+		};
+		const done = () => {
+			detach();
+			callback();
+		};
+		response.once('finish', done);
+		response.once('close', done);
+		return detach;
+	}
+	// Delegate async iteration to the underlying request, which is natively
+	// async-iterable. Without this, `for await (const chunk of request.body)`
+	// throws `TypeError: body is not async iterable` (#1317).
+	[Symbol.asyncIterator]() {
+		return this.#nodeRequest[Symbol.asyncIterator]();
 	}
 }
 
@@ -478,6 +606,14 @@ class BunRequestBody {
 	}
 	pipe(destination: any, options?: any) {
 		return this.#getReadable().pipe(destination, options);
+	}
+	destroy(error?: Error) {
+		this.#getReadable().destroy(error);
+	}
+	// Mirror RequestBody: delegate async iteration to the underlying Readable
+	// (natively async-iterable) so `for await` consumers work on Bun too (#1317).
+	[Symbol.asyncIterator]() {
+		return this.#getReadable()[Symbol.asyncIterator]();
 	}
 }
 

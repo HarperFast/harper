@@ -1,0 +1,557 @@
+/**
+ * Built-in Harper Agent component (#626).
+ *
+ * `startOnMainThread` is invoked once on the main thread by `componentLoader`.
+ * When `agent.enabled` is `false` (default) the component registers nothing
+ * and returns immediately — opt-in keeps surprise LLM costs at bay. When
+ * enabled, the six operations land on the operations API, the session table
+ * is realized lazily on first use, and the loop runs in-process.
+ *
+ * The component intentionally avoids `handleApplication`: it has nothing
+ * worker-thread-shaped to do. Two tool sources compose: operator-only tools
+ * (FS, schedule, fetch, and the V8 inspector) that are inline, and RBAC-filtered
+ * registry tools (#615/#617) drained for the agent's configured user via
+ * `registryTools.ts`.
+ */
+
+import { realpathSync, statSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { CONFIG_PARAMS, LICENSE_KEY_DIR_NAME, SSH_KEY_DIR_NAME } from '../utility/hdbTerms.ts';
+import * as env from '../utility/environment/environmentManager.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
+import { Models } from '../resources/models/Models.ts';
+import type { AuthedUser } from '../components/mcp/toolRegistry.ts';
+import { workers } from '../server/threads/manageThreads.ts';
+import { ALL_TOOL_SWITCHES_ON, composeToolset } from './toolset.ts';
+import { buildInspectorTools } from './tools/inspectorTool.ts';
+import { buildHttpFetchTool, operationsApiPortsFrom, resolveHttpFetchConfig } from './tools/httpFetchTool.ts';
+import { buildScheduleTool } from './tools/scheduleTool.ts';
+import { buildBestPracticeTool, loadBestPracticesOverview } from './bestPractices.ts';
+import { composeRegistryTools, ensureOperationsToolsRegistered } from './registryTools.ts';
+import { buildOperations } from './operations.ts';
+import { registerAgentMcpTools } from './mcpTools.ts';
+import {
+	admitRun,
+	DEFAULT_MAX_TOOL_RESULT_BYTES,
+	fenceRuns,
+	isRunInFlight,
+	isValidMaxToolResultBytes,
+	MAX_MAX_TOOL_RESULT_BYTES,
+	MIN_MAX_TOOL_RESULT_BYTES,
+	runAgent,
+	_resetInFlightForTests,
+} from './loop.ts';
+import { parseBudgetCap, parseMaxTurns } from './budget.ts';
+import { appendMessage, getSession } from './session.ts';
+import type { AgentConfig, AgentScopes, AgentTool, AgentToolSwitches, HttpFetchConfig } from './types.ts';
+
+const log = harperLogger.loggerWithTag('agent');
+
+const FOLLOWUP_RETRY_MS = 1000;
+const FOLLOWUP_RETRY_MAX_MS = 30_000;
+
+const DEFAULT_CONFIG: AgentConfig = {
+	enabled: false,
+	maxTurns: 50,
+	maxTokens: 16384,
+	maxToolResultBytes: DEFAULT_MAX_TOOL_RESULT_BYTES,
+	autoApprove: false,
+	allowDestructive: false,
+	user: 'hdb_agent',
+	httpFetch: true,
+	tools: ALL_TOOL_SWITCHES_ON,
+};
+
+interface StartOpts {
+	server: {
+		registerOperation: (def: { name: string; execute: (op: any) => any | Promise<any> }) => void;
+		/** Resolve a Harper user (with role/permissions) by username. Password/request unused here. */
+		getUser?: (username: string, password: string | null, request: unknown) => Promise<AuthedUser> | AuthedUser;
+	};
+	// Component-level config plumbed by componentLoader (`...componentConfig`).
+	enabled?: boolean;
+	provider?: string;
+	model?: string;
+	maxTurns?: unknown;
+	maxTokens?: unknown;
+	maxToolResultBytes?: unknown;
+	maxSessionTokens?: unknown;
+	maxCostUsd?: unknown;
+	autoApprove?: boolean;
+	allowDestructive?: boolean;
+	user?: string;
+	componentsScope?: string;
+	configScope?: string;
+	httpFetch?: unknown;
+	tools?: unknown;
+	systemPromptAppend?: string;
+}
+
+export async function startOnMainThread(opts: StartOpts): Promise<void> {
+	const config = mergeConfig(opts);
+	if (!config.enabled) {
+		log.info?.('Agent component disabled (agent.enabled=false); skipping registration');
+		return;
+	}
+	// A malformed limit fails the agent's start rather than running it uncapped or turnless.
+	if (opts.maxTurns !== undefined) config.maxTurns = parseMaxTurns(opts.maxTurns);
+	config.maxSessionTokens = parseBudgetCap('maxSessionTokens', opts.maxSessionTokens);
+	config.maxCostUsd = parseBudgetCap('maxCostUsd', opts.maxCostUsd);
+
+	// Lazily imported to avoid pulling configUtils at module-eval time for tests.
+	const { getConfigPath, getConfigFilePath } = await import('../config/configUtils.ts');
+	const scopes = resolveScopes(config, getConfigPath, getConfigFilePath);
+
+	const models = new Models();
+	const abortControllers = new Map<string, AbortController>();
+	let liveConfig: AgentConfig = config;
+
+	// Populate the Operations MCP profile on the main thread. `agentIdentity` resolves the enforcement
+	// identity fresh on each call (so a live role change is honored, and an unresolvable non-default
+	// user fails closed); the startup snapshot below is only for `visibleTo` listing.
+	ensureOperationsToolsRegistered();
+	const agentIdentity = () => resolveAgentIdentity(opts.server, liveConfig.user);
+	let registryTools = await composeRegistryToolsForListing(agentIdentity);
+
+	// Operator-only V8 inspector tools. Debug config is read once here — enabling threads_debug opens the
+	// worker inspector ports at thread boot, so it can't be toggled without a restart anyway. Worker
+	// count is a live closure over the pool, so attaches range-check against the current worker set.
+	const inspectorTools = buildInspectorTools({
+		debugEnabled: env.get(CONFIG_PARAMS.THREADS_DEBUG) !== false,
+		startingPort: (env.get(CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT) as number | undefined) ?? undefined,
+		host: (env.get(CONFIG_PARAMS.THREADS_DEBUG_HOST) as string | undefined) ?? '127.0.0.1',
+		getWorkerCount: () => workers.length,
+	});
+
+	// Harper best-practices skill (@harperfast/skills): the SKILL.md overview goes in the system prompt;
+	// the `harper_best_practice` tool serves the detailed rules on demand. Both degrade to nothing if the
+	// package isn't resolvable, so the agent still runs without it.
+	const bestPracticesOverview = config.tools.bestPractices ? loadBestPracticesOverview() : undefined;
+	const bestPracticeTool = config.tools.bestPractices ? buildBestPracticeTool() : undefined;
+
+	// Built from the boot config, never `liveConfig`: no runtime config change can widen what it reaches.
+	const httpFetchTool = buildHttpFetchTool(config.httpFetch, resolveOperationsApiPorts());
+
+	// Built once too: `setConfig` recomposes the toolset when `allowDestructive` changes, and a followup
+	// armed before that has to stay in the map `cancelRun` clears, or the cancel leaves its timer live.
+	const scheduleTool = config.tools.schedule
+		? buildScheduleTool({ onFollowup: (sessionId, prompt) => handleFollowup(sessionId, prompt) })
+		: undefined;
+
+	// The grounding + best-practices portion of the system prompt is static for the component's
+	// lifetime (scopes don't change), so build it once here; only the operator's per-run
+	// `systemPromptAppend` is folded on at run time in `startRun`.
+	const staticSystemPrompt = buildStaticSystemPrompt(
+		scopes,
+		httpFetchTool !== undefined,
+		bestPracticesOverview,
+		config.tools
+	);
+
+	function compose(): ReturnType<typeof composeToolset> {
+		return composeToolset({
+			allowDestructive: liveConfig.allowDestructive,
+			tools: config.tools,
+			httpFetchTool,
+			bestPracticeTool,
+			scheduleTool,
+			inspectorTools,
+			registryTools,
+		});
+	}
+
+	let composed = compose();
+
+	// Build the listing snapshot best-effort: if the configured user can't be resolved (and isn't the
+	// default bootstrap user), `agentIdentity` fails closed — the agent then runs with only its
+	// operator-only tools until the operator fixes `agent.user`. Never falls back to an escalated list.
+	async function composeRegistryToolsForListing(resolveIdentity: () => Promise<AuthedUser>): Promise<AgentTool[]> {
+		try {
+			const listingUser = await resolveIdentity();
+			return composeRegistryTools(listingUser, resolveIdentity);
+		} catch (err) {
+			log.error?.(
+				`Registry tools disabled — agent.user='${liveConfig.user}' could not be resolved: ${err instanceof Error ? err.message : String(err)}`
+			);
+			return [];
+		}
+	}
+
+	async function handleFollowup(
+		sessionId: string,
+		prompt: string,
+		admitted = admitRun(sessionId),
+		retryMs = FOLLOWUP_RETRY_MS
+	): Promise<void> {
+		const session = await getSession(sessionId);
+		if (!session) {
+			log.warn?.(`schedule_followup target session ${sessionId} not found`);
+			return;
+		}
+		if (admitRun(sessionId) !== admitted) return;
+		// A prompt appended mid-run or mid-approval would land between tool calls and their results, so it
+		// waits; the token makes a cancel drop the retry, as it clears the scheduled timer.
+		if (isRunInFlight(sessionId) || session.status === 'awaiting_approval') {
+			const next = Math.min(retryMs * 2, FOLLOWUP_RETRY_MAX_MS);
+			setTimeout(
+				() =>
+					handleFollowup(sessionId, prompt, admitted, next).catch((err) =>
+						log.error?.(`schedule_followup for ${sessionId} failed: ${(err as Error)?.message ?? err}`)
+					),
+				retryMs
+			).unref?.();
+			return;
+		}
+		await appendMessage(sessionId, { role: 'user', content: prompt, createdAt: Date.now() });
+		startRun(sessionId, admitted);
+	}
+
+	function currentTools(): AgentTool[] {
+		return composed.tools;
+	}
+
+	/** Returns false when a cancel since the request was admitted fenced the run out. */
+	function startRun(sessionId: string, admitted?: number): boolean {
+		if (admitted !== undefined && admitted !== admitRun(sessionId)) return false;
+		// A run is already active for this session. `runAgent` coalesces concurrent starts onto the
+		// existing in-flight promise (bound to the existing controller), so creating a second
+		// controller here would orphan it — `cancelRun` would then abort a controller nothing is
+		// listening to, leaving the live run uncancellable. Any message appended before this call
+		// (e.g. by a scheduled followup) is picked up by the in-flight loop on its next turn.
+		if (abortControllers.has(sessionId)) return true;
+		const controller = new AbortController();
+		abortControllers.set(sessionId, controller);
+		runAgent({
+			sessionId,
+			models,
+			tools: currentTools(),
+			scopes,
+			maxTurns: liveConfig.maxTurns,
+			maxSessionTokens: liveConfig.maxSessionTokens,
+			maxCostUsd: liveConfig.maxCostUsd,
+			autoApprove: liveConfig.autoApprove,
+			signal: controller.signal,
+			admitted,
+			generateOpts: { model: liveConfig.model, maxTokens: liveConfig.maxTokens },
+			systemPrompt: composeSystemPrompt(staticSystemPrompt, liveConfig.systemPromptAppend),
+			maxToolResultBytes: liveConfig.maxToolResultBytes,
+		})
+			.catch((err) => log.error?.(`Agent run failed for ${sessionId}: ${(err as Error)?.message ?? err}`))
+			.finally(() => {
+				if (abortControllers.get(sessionId) === controller) abortControllers.delete(sessionId);
+			});
+		return true;
+	}
+
+	function cancelRun(sessionId: string): boolean {
+		fenceRuns(sessionId);
+		// Clear any scheduled followups first. Without this, a timer set via `schedule_followup`
+		// would fire after the operator cancelled, silently re-injecting a user prompt and kicking
+		// the loop off again — surprising behavior and avoidable LLM cost.
+		for (const [id, followup] of composed.scheduled.entries()) {
+			if (followup.sessionId === sessionId) {
+				clearTimeout(followup.timer);
+				composed.scheduled.delete(id);
+			}
+		}
+		const controller = abortControllers.get(sessionId);
+		if (!controller) return false;
+		controller.abort(new Error('cancelled by operator'));
+		abortControllers.delete(sessionId);
+		return true;
+	}
+
+	function setConfig(patch: Partial<AgentConfig>): AgentConfig {
+		const previousAllowDestructive = liveConfig.allowDestructive;
+		liveConfig = { ...liveConfig, ...patch };
+		if (liveConfig.allowDestructive !== previousAllowDestructive) {
+			composed = compose();
+		}
+		// NOTE: an already in-flight run captured its toolset (and autoApprove) at start, so flipping
+		// allowDestructive here only affects subsequent runs — the live loop finishes on its existing
+		// toolset. Acceptable: the approval gate still applies on the next turn's run, and operators
+		// who need to halt a run immediately use cancel_agent_run. Tightening to per-turn re-evaluation
+		// would require threading a config getter into the loop; deferred until there's a need.
+		return liveConfig;
+	}
+
+	const operations = buildOperations({
+		getConfig: () => liveConfig,
+		setConfig,
+		startRun,
+		cancelRun,
+		admitRun,
+		isRunInFlight,
+	});
+	for (const op of operations) opts.server.registerOperation(op);
+
+	// Expose the agent over MCP: register curated agent tools into the registry AFTER the ops exist.
+	// (The generic operations-profile walk ran before this, so allow-listing the agent ops wouldn't
+	// surface them — see mcpTools.ts.) They only reach clients when the MCP surface is enabled.
+	registerAgentMcpTools(operations);
+
+	log.info?.(
+		`Agent component initialized with ${composed.tools.length} tools (http_fetch: ${describeHttpFetch(config.httpFetch)}${describeToolsOff(config.tools)})`
+	);
+}
+
+/**
+ * Grounding prompt so the agent knows what it is, where its files live, and how a Harper app is
+ * shaped. The filesystem tools take a `root` scope enum, so we describe the scopes rather than
+ * spelling out path-prefixing rules.
+ *
+ * We deliberately do NOT enumerate individual tool names here — the model already receives the full
+ * tool schema from the SDK, and duplicating names in the prompt drifts as tools are added/removed and
+ * invites hallucinated calls. This describes the tool *surface* at a category level only.
+ *
+ * The built-in grounding and best-practices overview are static for the component's lifetime, so the
+ * caller precomputes them once (`buildStaticSystemPrompt`) and only the operator
+ * `agent.systemPromptAppend` — which can change via `set_agent_config` without a restart — is folded
+ * in per run by `composeSystemPrompt`.
+ */
+export function buildStaticSystemPrompt(
+	scopes: AgentScopes,
+	httpFetchAvailable: boolean,
+	bestPracticesOverview?: string,
+	tools: AgentToolSwitches = ALL_TOOL_SWITCHES_ON
+): string {
+	const surfaces = [
+		'Harper database/cluster operations',
+		...(tools.filesystem ? ['scoped filesystem tools'] : []),
+		...(httpFetchAvailable ? ['HTTP fetch against this server'] : []),
+		...(tools.schedule ? ['followup scheduling'] : []),
+		...(tools.inspector ? ['(when available) V8 inspector tools for debugging worker threads'] : []),
+		...(tools.bestPractices ? ['a Harper best-practices lookup'] : []),
+	];
+	const surfaceList =
+		surfaces.length === 1 ? surfaces[0] : `${surfaces.slice(0, -1).join(', ')}, and ${surfaces.at(-1)}`;
+	const verifyStep = httpFetchAvailable
+		? 'verify by querying the REST endpoint via an HTTP fetch against this server'
+		: 'verify the result through the operations tools';
+	const configScope = !scopes.configDir
+		? 'unavailable (agent.configScope named no readable file or directory at startup)'
+		: scopes.configFile
+			? `read-only, a single file — address it as "${scopes.configFile}": ${join(scopes.configDir, scopes.configFile)}`
+			: `read-only: ${scopes.configDir}`;
+	const guidance = [
+		'Prefer the operations tools for database/cluster actions',
+		...(tools.filesystem ? ['use the filesystem tools for app source'] : []),
+	].join('; ');
+	const bestPracticeGuidance = tools.bestPractices
+		? ' When designing schemas or building app logic, consult the Harper best practices below and read the relevant rule via the best-practice tool.'
+		: '';
+	const parts = [
+		'You are the built-in Harper agent, running on the main thread inside a live Harper server.',
+		`You operate this instance for an operator through the tools provided to you: ${surfaceList}. Consult the provided tool schemas for the exact set and their parameters.`,
+		'',
+		...(tools.filesystem
+			? [
+					'Filesystem scopes (the fs tools take a `root` naming one of these; paths are relative to it):',
+					`- components — the app source directory, your only WRITE scope: ${scopes.componentsRoot}`,
+					`- logs — read-only: ${scopes.logDir}`,
+					`- config — ${configScope}`,
+					"Key material is refused in every scope: the fs tools never read *.pem, *.key or .jwtPass files, anything in Harper's keys or ssh directories, or text holding a PEM private key, and never write into those directories.",
+					'',
+				]
+			: []),
+		`A Harper app is a component directory under the components dir. Define tables/resources in a schema (GraphQL \`.graphql\` with \`@table\`/\`@export\`, or \`config.yaml\` + resource files). After writing or changing component files, deploy/restart as needed for them to load, then ${verifyStep}.`,
+		`${guidance}.${bestPracticeGuidance} Be concise and verify your work.`,
+	];
+	if (tools.bestPractices && bestPracticesOverview) {
+		parts.push('', '=== Harper best practices (overview) ===', bestPracticesOverview);
+	}
+	return parts.join('\n');
+}
+
+/** Fold the operator's per-run `systemPromptAppend` onto the precomputed static base. */
+function composeSystemPrompt(staticPrompt: string, append?: string): string {
+	if (typeof append === 'string' && append.trim()) {
+		return `${staticPrompt}\n\n=== Operator instructions ===\n${append.trim()}`;
+	}
+	return staticPrompt;
+}
+
+/**
+ * Resolve the identity the agent's tool calls run as. Registry tools are enforced
+ * (`hdb_user` at call time) against this user, so an operator who sets `agent.user`
+ * to a restricted role gets a narrowed surface — and a later role change is honored,
+ * because this runs per call rather than once at startup.
+ *
+ * Failure policy — fail closed, with one bounded exception:
+ *   - If `agent.user` resolves to a permissioned user, use it.
+ *   - If it can't be resolved AND it's the *default* `hdb_agent` bootstrap user,
+ *     fall back to a super_user identity (the system user isn't provisioned yet —
+ *     #626 defers creating it). This is the documented default-agent behavior.
+ *   - If it can't be resolved and the operator configured a *non-default* user,
+ *     throw. Silently escalating a misconfigured/transient restricted account to
+ *     super_user is the vulnerability we refuse to introduce.
+ */
+export async function resolveAgentIdentity(server: StartOpts['server'], username: string): Promise<AuthedUser> {
+	let resolved: AuthedUser | undefined;
+	if (typeof server.getUser === 'function') {
+		try {
+			const user = await server.getUser(username, null, null);
+			if (user?.role?.permission) resolved = user;
+		} catch (err) {
+			log.warn?.(`Failed to resolve agent.user='${username}': ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	if (resolved) return resolved;
+
+	if (username === DEFAULT_CONFIG.user) {
+		log.warn?.(`Default agent user '${username}' is not provisioned yet; using super_user bootstrap identity`);
+		return { username, role: { permission: { super_user: true } } };
+	}
+	throw new Error(`agent.user '${username}' could not be resolved to a permissioned user; failing closed`);
+}
+
+export function resolveScopes(
+	config: AgentConfig,
+	getConfigPath: (param: string) => string | undefined,
+	getConfigFilePath: () => string
+): AgentScopes {
+	const componentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT) ?? process.cwd();
+	const logDir = getConfigPath(CONFIG_PARAMS.LOGGING_ROOT) ?? process.cwd();
+	const rootPath = getConfigPath(CONFIG_PARAMS.ROOTPATH) ?? componentsRoot;
+	// Relative scopes resolve against rootPath, as documented in the schema — NOT against
+	// componentsRoot, which would double-nest (`./components` → componentsRoot/components).
+	const fromRootPath = (scope: string) => (isAbsolute(scope) ? scope : resolvePath(rootPath, scope));
+	const configTarget = config.configScope ? fromRootPath(config.configScope) : getConfigFilePath();
+	let configScope: Pick<AgentScopes, 'configDir' | 'configFile'> = {};
+	try {
+		// Canonical, so a symlinked config file is admitted as its target instead of refused as a link.
+		const canonicalTarget = realpathSync.native(configTarget);
+		const target = statSync(canonicalTarget);
+		if (target.isFile()) {
+			configScope = { configDir: dirname(canonicalTarget), configFile: basename(canonicalTarget) };
+		} else if (target.isDirectory()) {
+			configScope = { configDir: canonicalTarget };
+		} else {
+			throw new Error('not a file or directory');
+		}
+	} catch (err) {
+		log.error?.(
+			`Agent 'config' scope is unavailable: ${configTarget}: ${err instanceof Error ? err.message : String(err)}`
+		);
+	}
+	return {
+		componentsRoot: config.componentsScope ? fromRootPath(config.componentsScope) : componentsRoot,
+		logDir,
+		...configScope,
+		keyDirs: [join(rootPath, LICENSE_KEY_DIR_NAME), join(rootPath, SSH_KEY_DIR_NAME)],
+	};
+}
+
+export function resolveOperationsApiPorts(): number[] {
+	return operationsApiPortsFrom([
+		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT),
+		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT),
+	]);
+}
+
+export function mergeConfig(opts: StartOpts): AgentConfig {
+	return {
+		...DEFAULT_CONFIG,
+		...(opts.enabled !== undefined && { enabled: !!opts.enabled }),
+		...(opts.provider !== undefined && { provider: String(opts.provider) }),
+		...(opts.model !== undefined && { model: String(opts.model) }),
+		...(opts.maxTokens !== undefined && { maxTokens: resolveMaxTokens(opts.maxTokens) }),
+		...(opts.maxToolResultBytes !== undefined && {
+			maxToolResultBytes: resolveMaxToolResultBytes(opts.maxToolResultBytes),
+		}),
+		...(opts.autoApprove !== undefined && { autoApprove: !!opts.autoApprove }),
+		...(opts.allowDestructive !== undefined && { allowDestructive: !!opts.allowDestructive }),
+		...(opts.user !== undefined && { user: String(opts.user) }),
+		...(opts.componentsScope !== undefined && { componentsScope: String(opts.componentsScope) }),
+		...(opts.configScope !== undefined && { configScope: String(opts.configScope) }),
+		...(opts.httpFetch !== undefined && { httpFetch: resolveHttpFetchOrDisable(opts.httpFetch) }),
+		...(opts.tools !== undefined && { tools: resolveToolSwitches(opts.tools) }),
+		...(opts.systemPromptAppend !== undefined && { systemPromptAppend: String(opts.systemPromptAppend) }),
+	};
+}
+
+const ALL_TOOL_SWITCHES_OFF: Readonly<AgentToolSwitches> = Object.freeze({
+	filesystem: false,
+	schedule: false,
+	inspector: false,
+	bestPractices: false,
+});
+
+/**
+ * A malformed `agent.tools` turns groups off, never on: a value that is not a boolean turns its group
+ * off, and an unknown key or a non-object turns every group off, since a misspelled key may have been
+ * meant to turn one off.
+ */
+export function resolveToolSwitches(raw: unknown): AgentToolSwitches {
+	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+		log.error?.(
+			`agent.tools must be an object of booleans, got ${JSON.stringify(raw)}; every operator tool group is off until it is corrected`
+		);
+		return ALL_TOOL_SWITCHES_OFF;
+	}
+	const unknownKeys = Object.keys(raw).filter((key) => !Object.hasOwn(ALL_TOOL_SWITCHES_ON, key));
+	if (unknownKeys.length > 0) {
+		log.error?.(
+			`agent.tools has unknown key(s): ${unknownKeys.join(', ')}; every operator tool group is off until it is corrected`
+		);
+		return ALL_TOOL_SWITCHES_OFF;
+	}
+	const switches = { ...ALL_TOOL_SWITCHES_ON };
+	for (const key of Object.keys(switches) as (keyof AgentToolSwitches)[]) {
+		const value = (raw as Record<string, unknown>)[key];
+		if (value === undefined || value === true) continue;
+		if (value !== false) {
+			log.error?.(
+				`agent.tools.${key} must be true or false, got ${JSON.stringify(value)}; the group is off until it is corrected`
+			);
+		}
+		switches[key] = false;
+	}
+	return switches;
+}
+
+function describeToolsOff(tools: AgentToolSwitches): string {
+	const off = Object.entries(tools)
+		.filter(([, on]) => !on)
+		.map(([group]) => group);
+	return off.length > 0 ? `; off: ${off.join(', ')}` : '';
+}
+
+function resolveMaxTokens(raw: unknown): number {
+	const maxTokens = typeof raw === 'string' ? Number(raw) : raw;
+	if (Number.isSafeInteger(maxTokens) && (maxTokens as number) > 0) return maxTokens as number;
+	log.error?.(`agent.maxTokens must be a positive integer, got ${String(raw)}; using ${DEFAULT_CONFIG.maxTokens}`);
+	return DEFAULT_CONFIG.maxTokens;
+}
+
+function resolveMaxToolResultBytes(raw: unknown): number {
+	const maxToolResultBytes = typeof raw === 'string' ? Number(raw) : raw;
+	if (isValidMaxToolResultBytes(maxToolResultBytes)) return maxToolResultBytes;
+	log.error?.(
+		`agent.maxToolResultBytes must be an integer from ${MIN_MAX_TOOL_RESULT_BYTES} to ${MAX_MAX_TOOL_RESULT_BYTES}, got ${String(raw)}; using ${DEFAULT_CONFIG.maxToolResultBytes}`
+	);
+	return DEFAULT_CONFIG.maxToolResultBytes;
+}
+
+/** A malformed policy disables the tool rather than the agent: the egress stays closed, the rest stays usable. */
+function resolveHttpFetchOrDisable(raw: unknown): HttpFetchConfig {
+	try {
+		return resolveHttpFetchConfig(raw);
+	} catch (err) {
+		log.error?.(
+			`${err instanceof Error ? err.message : String(err)}; http_fetch is disabled until agent.httpFetch is corrected`
+		);
+		return false;
+	}
+}
+
+function describeHttpFetch(config: HttpFetchConfig): string {
+	if (config === true) return 'enabled';
+	if (config === false) return 'disabled';
+	return `allow-list ${config.allow.join(', ')}`;
+}
+
+/** Test-only: reset module state between specs. */
+export function _resetForTests(): void {
+	_resetInFlightForTests();
+}

@@ -10,11 +10,48 @@
  * in via a constructor type so the thrown errors carry the backend's name
  * for `instanceof` matching in tests.
  */
+import { ServerError } from '../../utility/errors/hdbError.ts';
 import { isUnresolvedEnvVarPlaceholder } from '../../utility/expandEnvVar.ts';
 import type { TokenUsage } from './types.ts';
 
 /** Constructor signature for backend-specific error classes. */
 export type BackendErrorCtor = new (message: string) => Error;
+
+/**
+ * Thrown by a backend's `scoreChoices` for a call it cannot score (#2838), as distinct from a call
+ * that failed: the decision adapter votes instead in `auto` mode, and the facade records the
+ * attempt as `scoring_unsupported`. `usage` carries the tokens the attempt did consume (a
+ * completion that came back without log-probabilities is still billed), so the failure row
+ * accounts for them.
+ */
+export class ChoiceScoringUnsupportedError extends ServerError {
+	declare usage?: TokenUsage;
+	constructor(message: string, usage?: TokenUsage) {
+		super(message);
+		this.name = 'ChoiceScoringUnsupportedError';
+		if (usage) this.usage = usage;
+	}
+}
+
+// Provider wording for an input that does not fit the model's context window: OpenAI and compatible
+// servers (vLLM, Mistral, Gemini's OpenAI endpoint), Anthropic, and Bedrock's ValidationException.
+const CONTEXT_WINDOW_REJECTION =
+	/context[ _](?:length|window|limit)|maximum context length|prompt is too long|input is too long|too many (?:input )?tokens|exceeds the maximum number of tokens/i;
+
+/**
+ * Whether a provider rejected a request because its input does not fit the model's context window.
+ * A backend sets `contextWindowExceeded` on the error it throws when this holds, so callers branch
+ * on {@link isContextWindowExceeded} instead of parsing provider wording.
+ */
+export function isContextWindowRejection(status: number | undefined, message: unknown, code?: unknown): boolean {
+	if (code === 'context_length_exceeded') return true;
+	if (status !== 400 && status !== 413) return false;
+	return typeof message === 'string' && CONTEXT_WINDOW_REJECTION.test(message);
+}
+
+export function isContextWindowExceeded(err: unknown): boolean {
+	return (err as { contextWindowExceeded?: unknown } | null | undefined)?.contextWindowExceeded === true;
+}
 
 /**
  * Combine a caller-supplied AbortSignal with a per-call timeout via
@@ -41,9 +78,87 @@ export function assignFiniteTokenCount(
 	key: 'promptTokens' | 'completionTokens' | 'embeddingTokens',
 	value: unknown
 ): void {
-	if (typeof value !== 'number') return;
-	if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) return;
-	usage[key] = value;
+	if (isTokenCount(value)) usage[key] = value;
+}
+
+export function isTokenCount(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 && Number.isInteger(value);
+}
+
+// Body-read caps. A hostile or buggy upstream that returns a multi-GiB body
+// would otherwise OOM the process before we reject the call.
+// Success responses must accommodate the largest LEGAL embedding batch: OpenAI
+// accepts up to 2048 inputs per request, and text-embedding-3-large returns
+// 3072 floats each — roughly 125-190 MiB of JSON. 256 MiB clears that with
+// headroom while still bounding a runaway upstream.
+// Error responses are small prose strings; 256 KiB is generous.
+export const MAX_RESPONSE_BODY_BYTES = 256 << 20; // 256 MiB
+export const MAX_ERROR_BODY_BYTES = 256 << 10; // 256 KiB
+
+// Module-level TextDecoder avoids per-call allocation in the streaming read path.
+const BODY_DECODER = new TextDecoder('utf-8');
+
+/**
+ * Read at most `maxBytes` from `res.body`, then JSON.parse. Throws the
+ * caller's error class — never a bare `SyntaxError` or `RangeError` — so
+ * the caller's `instanceof` checks stay consistent.
+ *
+ * A response whose body exceeds `maxBytes` is an explicit failure rather than
+ * a silent partial read; the caller's error class surfaces the diagnosis.
+ */
+export async function readBoundedJson<T>(
+	res: Response,
+	endpoint: string,
+	Err: BackendErrorCtor,
+	maxBytes: number
+): Promise<T> {
+	if (!res.body) {
+		// No body at all — treat the same as invalid JSON.
+		throw new Err(`${endpoint} returned an empty response body`);
+	}
+	const chunks: Uint8Array[] = [];
+	let totalBytes = 0;
+	try {
+		for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+			totalBytes += chunk.byteLength;
+			if (totalBytes > maxBytes) {
+				// Release the connection promptly before throwing.
+				res.body?.cancel?.().catch(() => {});
+				throw new Err(
+					`${endpoint} response body exceeds ${maxBytes}-byte limit (received >${totalBytes} bytes); ` +
+						'rejecting to prevent unbounded memory use'
+				);
+			}
+			chunks.push(chunk);
+		}
+	} catch (err) {
+		// Re-wrap unexpected stream errors (network abort, socket reset, etc.)
+		// so callers always see the backend's Err class, not a raw DOMException
+		// or Node stream error. Don't rewrap errors we already constructed above.
+		if (err instanceof Err) throw err;
+		throw new Err(`${endpoint} stream error while reading response body: ${(err as Error)?.message ?? err}`);
+	}
+	const merged =
+		totalBytes === 0
+			? ''
+			: BODY_DECODER.decode(
+					chunks.length === 1
+						? chunks[0]
+						: (() => {
+								const buf = new Uint8Array(totalBytes);
+								let offset = 0;
+								for (const c of chunks) {
+									buf.set(c, offset);
+									offset += c.byteLength;
+								}
+								return buf;
+							})()
+				);
+	try {
+		return JSON.parse(merged) as T;
+	} catch {
+		throw new Err(`${endpoint} returned a non-JSON response body`);
+	}
 }
 
 /**
@@ -52,13 +167,12 @@ export function assignFiniteTokenCount(
  * include upstream-derived bytes). Matches the sanitization posture from
  * `analyticsTable.ts:35` ("Sanitized code (...). Never a raw upstream
  * message.").
+ *
+ * Caps the read at `MAX_RESPONSE_BODY_BYTES` (256 MiB) to bound memory use
+ * on hostile or misbehaving upstream endpoints.
  */
 export async function parseJsonResponse<T>(res: Response, endpoint: string, Err: BackendErrorCtor): Promise<T> {
-	try {
-		return (await res.json()) as T;
-	} catch {
-		throw new Err(`${endpoint} returned a non-JSON response body`);
-	}
+	return readBoundedJson<T>(res, endpoint, Err, MAX_RESPONSE_BODY_BYTES);
 }
 
 /**
@@ -92,7 +206,7 @@ export function requireCredential(
 	}
 	if (isUnresolvedEnvVarPlaceholder(value)) {
 		throw new Err(
-			`${backendLabel} ${fieldName} is the literal placeholder ${value}; set the matching env var before starting Harper`
+			`${backendLabel} ${fieldName} is the literal placeholder ${value}; set the matching environment variable or processEnv secret, then restart Harper`
 		);
 	}
 	return value;

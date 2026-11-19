@@ -1,5 +1,6 @@
 {
 	"include": [
+		"agent/**/*",
 		"bin/**/*",
 		"components/**/*",
 		"config/**/*",
@@ -9,6 +10,7 @@
 		"resources/**/*",
 		"security/**/*",
 		"server/**/*",
+		"sqlEngine/**/*",
 		"sqlTranslator/**/*",
 		"upgrade/**/*",
 		"utility/**/*",
@@ -23,8 +25,18 @@
 		// Type checking only by default; use `tsconfig.build.json` for emitting
 		"noEmit": true,
 
-		// Target Node 20+ with ES2022 features
+		// Preserve the ES2022 type surface while declaring Node 22's Promise.withResolvers() and String.toWellFormed()
 		"target": "ES2022",
+		"lib": [
+			"ES2022",
+			"ES2024.Promise",
+			"ES2024.String",
+			"DOM",
+			"WebWorker.ImportScripts",
+			"ScriptHost",
+			"DOM.Iterable",
+			"DOM.AsyncIterable"
+		],
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
 
@@ -35,6 +47,10 @@
 
 		// Allow .ts extensions in imports (will be transpiled to .js by esbuild)
 		"allowImportingTsExtensions": true,
+
+		// Codebase is not strict-clean yet; pin explicitly so a compiler upgrade
+		// that flips this default (e.g. TypeScript 7) doesn't silently change results
+		"strict": false,
 
 		// Enforce erasable syntax only so we can use Node.js type-stripping
 		"erasableSyntaxOnly": true,

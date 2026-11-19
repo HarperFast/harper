@@ -46,3 +46,25 @@ commits-to-pick.txt
 # npm run package Outputs
 harperfast-harper-*.tgz
 harper-*.tgz
+
+# AI
+.antigravitycli/
+.claude/
+cache/
+
+# Benchmark results (generated)
+benchmarks/ycsb/results/
+benchmarks/ycsb/bench-out/
+benchmarks/compression/results/
+benchmarks/fulltext-analytics/results/
+
+# export_local integration-test artifacts — these tests pass `path: './'`, so the export lands in
+# the repo root and a `git add -A` after a test run commits it
+test_export*.json
+
+# terminology export_local test artifact
+test_export_terminology_test.json
+
+# dev-mode boots (harper dev <fixture>) symlink node_modules/harper into the
+# fixture component dir; keep those out of commits
+integrationTests/**/node_modules/

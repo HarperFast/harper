@@ -1,0 +1,465 @@
+/**
+ * Derive MCP tool input schemas from a Harper Resource's `Table.attributes`.
+ *
+ * Harper attribute types map to JSON Schema's primitive types; nested
+ * `properties[]` and array `elements` map recursively. `attribute_permissions`
+ * (per role, per table) narrows the schema by removing attributes the user
+ * can't read (for `get_*`/`search_*`) or write (for `create_*`/`update_*`).
+ *
+ * Runtime enforcement still happens in `Table.allowUpdate` /
+ * `Table.allowCreate` — the schema narrowing here is a UX layer (so the LLM
+ * doesn't waste tokens on fields it can't write), NOT a security boundary.
+ */
+
+import {
+	JSON_SCHEMA_SCALAR_TYPES,
+	attributeToSchema,
+	isProgrammaticSchema,
+	isUndeclaredRequiredAttribute,
+	resolveDeclaredType,
+	type AttributeLike,
+	type JsonSchemaFragment,
+	type JsonValue,
+} from '../../../../resources/jsonSchemaTypes.ts';
+
+export interface HarperAttribute {
+	name: string;
+	type?: string;
+	description?: string;
+	hidden?: boolean;
+	nullable?: boolean;
+	/** Source JSON-Schema type union from `static properties`; MCP accepts type arrays, so it passes through. */
+	types?: readonly string[];
+	isPrimaryKey?: boolean;
+	properties?: HarperAttribute[];
+	elements?: HarperAttribute;
+	computed?: unknown;
+	computedFromExpression?: string;
+	assignCreatedTime?: boolean;
+	assignUpdatedTime?: boolean;
+	expiresAt?: boolean;
+	// JSON-Schema hints a programmatic Resource may carry via `static properties`.
+	enum?: readonly JsonValue[];
+	format?: string;
+	const?: unknown;
+	required?: readonly string[];
+	additionalProperties?: boolean;
+	requiredOnSchema?: boolean;
+	relationship?: unknown;
+	definition?: unknown;
+}
+
+export interface AttributePermissionEntry {
+	attribute_name: string;
+	read?: boolean;
+	insert?: boolean;
+	update?: boolean;
+}
+
+type Mode = 'read' | 'insert' | 'update';
+
+/**
+ * Maps a Harper attribute type to a JSON Schema `type` value. Unknown types
+ * remain untyped so the published contract does not invent a constraint.
+ */
+function harperTypeToJsonSchema(
+	type: string | undefined,
+	attributeName?: string,
+	isDeclaredReference = false
+): { type: string | string[] } | object {
+	// A programmatic Resource's `static properties` already speaks JSON Schema (lowercase types, no
+	// collision with Harper's capitalized GraphQL types); pass those through unchanged.
+	if (type && JSON_SCHEMA_SCALAR_TYPES.has(type)) return { type };
+	switch (type) {
+		case 'Int':
+		case 'Long':
+		case 'BigInt':
+			return { type: 'integer' };
+		case 'Float':
+			return { type: 'number' };
+		case 'Boolean':
+			return { type: 'boolean' };
+		case 'String':
+		case 'ID':
+			return { type: 'string' };
+		case 'Date':
+			// Harper Date may be ISO string or number; allow both for LLM flexibility.
+			return { type: ['string', 'number'], description: 'ISO 8601 timestamp or epoch milliseconds.' };
+		case 'Bytes':
+		case 'Blob':
+			return { type: 'string', contentEncoding: 'base64' };
+		case 'Any':
+		case undefined:
+			return {};
+		default: {
+			if (isDeclaredReference) return {};
+			const resolved = resolveDeclaredType(type, `MCP tool schema property "${attributeName ?? '<unnamed>'}"`);
+			return resolved ? { type: resolved } : {};
+		}
+	}
+}
+
+/**
+ * Emit an attribute as an MCP property schema. The traversal (nesting, arrays, `hidden` suppression,
+ * hint propagation, nullability) is shared with the OpenAPI generator so the two can't describe the
+ * same fragment differently; only the Harper-primitive mapping below is MCP-specific.
+ *
+ * Returns `undefined` for a `hidden` attribute — callers skip it.
+ */
+function attributeToProperty(attr: HarperAttribute, valueConstraints = true): object | undefined {
+	return attributeToSchema(attr as AttributeLike, {
+		dialect: 'json-schema',
+		valueConstraints,
+		mapPrimitive: (type, a) =>
+			harperTypeToJsonSchema(
+				type,
+				a.name,
+				Boolean(!valueConstraints || (a as HarperAttribute).relationship || (a as HarperAttribute).definition)
+			) as JsonSchemaFragment,
+	});
+}
+
+/**
+ * The `id` argument's schema. Verb tools surface the primary key as the record's address, not as one
+ * of its fields, so a `@hidden` primary key still has to be typed here — otherwise the tool advertises
+ * a required argument with no type at all. Falls back only when there is no primary key to describe.
+ */
+function primaryKeySchema(pk: HarperAttribute | undefined, valueConstraints: boolean): object {
+	if (!pk) return { type: 'string' };
+	return (
+		attributeToSchema(pk as AttributeLike, {
+			dialect: 'json-schema',
+			valueConstraints,
+			mapPrimitive: (type, a) =>
+				harperTypeToJsonSchema(
+					type,
+					a.name,
+					Boolean(!valueConstraints || (a as HarperAttribute).relationship || (a as HarperAttribute).definition)
+				) as JsonSchemaFragment,
+			ignoreHidden: true,
+		}) ?? { type: 'string' }
+	);
+}
+
+/**
+ * `true` if the user has the requested mode (read/insert/update) on this
+ * attribute. When no per-attribute permissions exist, returns true (the
+ * table-level perm gates the call already).
+ */
+function attributeAllowed(
+	attributeName: string,
+	permissions: AttributePermissionEntry[] | undefined,
+	mode: Mode
+): boolean {
+	if (!permissions || permissions.length === 0) return true;
+	const match = permissions.find((p) => p.attribute_name === attributeName);
+	if (!match) return false; // explicit list with no entry → denied
+	return match[mode] !== false;
+}
+
+/**
+ * Composed visibility: an attribute is visible when it is NOT @hidden AND the
+ * caller is allowed under attribute_permissions for the requested mode. The
+ * `@hidden` directive is a metadata-visibility signal — it suppresses the
+ * attribute from MCP descriptors and OpenAPI emit. RBAC remains the
+ * enforcement mechanism for data access.
+ */
+function attributeVisible(
+	attr: HarperAttribute,
+	permissions: AttributePermissionEntry[] | undefined,
+	mode: Mode
+): boolean {
+	if (attr.hidden) return false;
+	return attributeAllowed(attr.name, permissions, mode);
+}
+
+/**
+ * Build a JSON Schema object covering some subset of the table's attributes.
+ * `mode` controls how attribute_permissions are interpreted; `include`
+ * optionally limits to a subset (e.g. primary-key-only for `delete_*`).
+ */
+function buildPropertiesObject(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined,
+	mode: Mode,
+	include?: (a: HarperAttribute) => boolean
+): { properties: Record<string, object>; required: string[] } {
+	const properties: Record<string, object> = Object.create(null);
+	const required: string[] = [];
+	for (const attr of attributes) {
+		if (include && !include(attr)) continue;
+		if (!attributeVisible(attr, permissions, mode)) continue;
+		// Skip auto-managed columns from write inputs — Harper assigns them.
+		if (mode !== 'read' && (attr.assignCreatedTime || attr.assignUpdatedTime || attr.expiresAt)) continue;
+		if (mode !== 'read' && (attr.computed !== undefined || attr.computedFromExpression !== undefined)) continue;
+		if (mode !== 'read' && attr.relationship) continue;
+		const schema = attributeToProperty(attr, isProgrammaticSchema(attributes));
+		if (!schema) continue;
+		properties[attr.name] = schema;
+		if (mode === 'insert' && (attr.requiredOnSchema || attr.nullable === false) && !attr.isPrimaryKey) {
+			required.push(attr.name);
+		}
+	}
+	return { properties, required };
+}
+
+function findPrimaryKey(attributes: HarperAttribute[]): HarperAttribute | undefined {
+	return attributes.find((a) => a.isPrimaryKey);
+}
+
+export function deriveGetSchema(
+	attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	const pk = findPrimaryKey(attributes);
+	const pkSchema = primaryKeySchema(pk, isProgrammaticSchema(attributes));
+	return {
+		type: 'object',
+		properties: {
+			id: { ...pkSchema, description: pk ? `Primary key (${pk.name}).` : 'Primary key.' },
+			get_attributes: {
+				type: 'array',
+				items: { type: 'string' },
+				description: 'Attribute names to project; defaults to all readable attributes.',
+			},
+		},
+		required: ['id'],
+	};
+}
+
+export function deriveSearchSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	// `conditions` is freeform — Harper supports many comparators; we expose
+	// the common subset and rely on server-side validation for the rest.
+	const readableAttrs = attributes.filter(
+		(a) => !isUndeclaredRequiredAttribute(a) && attributeVisible(a, permissions, 'read')
+	);
+	const attrNames = readableAttrs.map((a) => a.name);
+	return {
+		type: 'object',
+		properties: {
+			conditions: {
+				type: 'array',
+				items: {
+					type: 'object',
+					properties: {
+						attribute: {
+							type: 'string',
+							...(attrNames.length > 0 ? { enum: attrNames } : {}),
+							description: 'Attribute name to filter on.',
+						},
+						comparator: {
+							type: 'string',
+							enum: [
+								'equals',
+								'not_equals',
+								'contains',
+								'starts_with',
+								'ends_with',
+								'greater_than',
+								'less_than',
+								'greater_than_equal',
+								'less_than_equal',
+								'between',
+							],
+							description: 'Comparison operator. Defaults to "equals" if omitted.',
+						},
+						value: { description: 'Comparison value (any JSON type).' },
+					},
+					required: ['attribute', 'value'],
+				},
+			},
+			operator: { type: 'string', enum: ['and', 'or'], description: 'How to combine conditions; defaults to "and".' },
+			get_attributes: { type: 'array', items: { type: 'string' } },
+			limit: { type: 'integer', minimum: 1, description: 'Max records to return on this page.' },
+			cursor: { type: 'string', description: 'Opaque pagination cursor returned by a previous call.' },
+		},
+	};
+}
+
+export function deriveCreateSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	const { properties, required } = buildPropertiesObject(attributes, permissions, 'insert');
+	const schema: { type: string; properties: Record<string, object>; required?: string[] } = {
+		type: 'object',
+		properties,
+	};
+	if (required.length > 0) schema.required = required;
+	return schema;
+}
+
+export function deriveUpdateSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	const pk = findPrimaryKey(attributes);
+	const { properties } = buildPropertiesObject(attributes, permissions, 'update', (a) => !a.isPrimaryKey);
+	return {
+		type: 'object',
+		properties: {
+			id: pk
+				? {
+						...primaryKeySchema(pk, isProgrammaticSchema(attributes)),
+						description: `Primary key (${pk.name}). Required.`,
+					}
+				: { type: 'string', description: 'Primary key. Required.' },
+			...properties,
+		},
+		required: ['id'],
+	};
+}
+
+export function deriveDeleteSchema(
+	attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	const pk = findPrimaryKey(attributes);
+	return {
+		type: 'object',
+		properties: {
+			id: pk
+				? { ...primaryKeySchema(pk, isProgrammaticSchema(attributes)), description: `Primary key (${pk.name}).` }
+				: { type: 'string', description: 'Primary key.' },
+		},
+		required: ['id'],
+	};
+}
+
+/**
+ * Full record shape — every visible attribute as it appears in returned records.
+ * Used as the outputSchema for `get_*` only. Reflects what the server returns,
+ * not what the client sends: server-assigned fields (@createdTime,
+ * @updatedTime, @primaryKey) appear as required in output even though they're
+ * optional on input.
+ *
+ * `create_*`/`update_*`/`patch_*`/`delete_*` deliberately do NOT use this —
+ * their handlers return a result envelope (id / ack / deleted), not the full
+ * record, and the record's required server-assigned fields aren't guaranteed at
+ * write time (e.g. a freshly created record may lack @updatedTime) (#1324).
+ * `search_*` omits outputSchema — envelope shape is tracked in a sibling issue.
+ */
+function deriveRecordSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	const properties: Record<string, object> = Object.create(null);
+	const required: string[] = [];
+	for (const attr of attributes) {
+		if (!attributeVisible(attr, permissions, 'read')) continue;
+		const schema = attributeToProperty(attr, isProgrammaticSchema(attributes));
+		if (!schema) continue;
+		properties[attr.name] = schema;
+		const requiredOnOutput =
+			!attr.relationship &&
+			(attr.requiredOnSchema ||
+				attr.nullable === false ||
+				attr.assignCreatedTime ||
+				attr.assignUpdatedTime ||
+				attr.isPrimaryKey);
+		if (requiredOnOutput) required.push(attr.name);
+	}
+	const schema: {
+		type: string;
+		properties: Record<string, object>;
+		required?: string[];
+		additionalProperties: boolean;
+	} = {
+		type: 'object',
+		properties,
+		additionalProperties: false,
+	};
+	if (required.length > 0) schema.required = required;
+	return schema;
+}
+
+export function deriveGetOutputSchema(
+	attributes: HarperAttribute[],
+	permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveRecordSchema(attributes, permissions);
+}
+
+/**
+ * Acknowledgement envelope — `{ ok: boolean }`. MCP requires `structuredContent`
+ * (and therefore `outputSchema`) to describe a JSON *object*, so write verbs that
+ * have no meaningful payload advertise this minimal object rather than a scalar.
+ */
+function deriveAckSchema(okDescription: string): object {
+	return {
+		type: 'object',
+		properties: { ok: { type: 'boolean', description: okDescription } },
+		required: ['ok'],
+		additionalProperties: false,
+	};
+}
+
+/**
+ * Output schema for create responses. `makeCreateHandler` resolves the new
+ * record's primary key (a scalar) and wraps it as `{ id }`, so advertise that
+ * envelope — typed by the primary-key attribute — rather than the full record
+ * (which the handler never returns and whose server-assigned fields aren't
+ * guaranteed at create time) (#1324).
+ */
+export function deriveCreateOutputSchema(
+	attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	const pk = findPrimaryKey(attributes);
+	const idSchema = primaryKeySchema(pk, isProgrammaticSchema(attributes));
+	return {
+		type: 'object',
+		properties: {
+			id: {
+				...idSchema,
+				description: pk ? `Primary key of the created record (${pk.name}).` : 'Primary key of the created record.',
+			},
+		},
+		required: ['id'],
+		additionalProperties: false,
+	};
+}
+
+/**
+ * Output schema for update (PUT) responses. `Table.put` resolves to undefined;
+ * the handler surfaces `{ ok: true }` (#1324).
+ */
+export function deriveUpdateOutputSchema(
+	_attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveAckSchema('True when the record was written.');
+}
+
+/**
+ * Output schema for patch responses. `Table.patch` resolves to undefined; the
+ * handler surfaces `{ ok: true }` (#1324).
+ */
+export function derivePatchOutputSchema(
+	_attributes: HarperAttribute[],
+	_permissions: AttributePermissionEntry[] | undefined
+): object {
+	return deriveAckSchema('True when the record was patched.');
+}
+
+/**
+ * Output schema for delete responses. `Table.delete` resolves to a boolean;
+ * `makeDeleteHandler` wraps it as `{ deleted }` so the result carries
+ * structuredContent (an object, as MCP requires) (#1324).
+ */
+export function deriveDeleteOutputSchema(_attributes: HarperAttribute[]): object {
+	return {
+		type: 'object',
+		properties: {
+			deleted: {
+				type: 'boolean',
+				description: 'True when a record was deleted; false when no record matched the primary key.',
+			},
+		},
+		required: ['deleted'],
+		additionalProperties: false,
+	};
+}

@@ -1,0 +1,26 @@
+{
+	"options": {
+		"clientId": "client-id",
+		"userName": "user-name",
+		"authorizations": "auth-groups"
+	},
+	"acls": [
+		{
+			"topicFilter": "chat/%u/#",
+			"publishers": ["all"],
+			"subscribers": ["all"]
+		},
+		{
+			"topicFilter": "broadcast/#",
+			"publishers": ["publisher"],
+			"subscribers": ["subscriber"],
+			"anonymousSubscriber": true
+		},
+		{
+			"topicFilter": "$SYS/#",
+			"publishers": [],
+			"subscribers": ["sys-monitor"],
+			"anonymousSubscriber": false
+		}
+	]
+}

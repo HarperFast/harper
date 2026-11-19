@@ -1,17 +1,24 @@
-'use strict';
+const segfaultHandlerPackage = 'segfault-handler';
+('use strict');
 
 // Note - do not import/use commonUtils.js in this module, it will cause circular dependencies.
-import * as fs from 'fs-extra';
-import { workerData, threadId, isMainThread } from 'worker_threads';
-import * as pathModule from 'path';
+import fs from 'fs-extra';
+import { workerData, threadId, isMainThread } from 'node:worker_threads';
+import * as pathModule from 'node:path';
 import * as YAML from 'yaml';
-const PropertiesReader = require('properties-reader');
+import _PropertiesReader from 'properties-reader';
+const PropertiesReader = _PropertiesReader;
 import * as hdbTerms from '../hdbTerms.ts';
 import assignCMDENVVariables from '../assignCmdEnvVariables.ts';
-import * as os from 'os';
-import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import * as os from 'node:os';
+import { PACKAGE_ROOT, loadRuntimeModule } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
-import { Console } from 'console';
+import { Console } from 'node:console';
+import { inspect, types } from 'node:util';
+import { createRotationGuard, INVALID_MAX_SIZE_MSG, parseMaxSize, resolveRotatedLogDir } from './logRotation.ts';
+import { type FileIdentity, registerLogSink } from './logGenerationCoordinator.ts';
+
+const { isNativeError } = types;
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
 // because unit tests will create multiple instances of this module)
 let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
@@ -22,7 +29,6 @@ let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
 	: (process.stdout as any).nativeWrite || ((process.stdout as any).nativeWrite = process.stdout.write);
 let fileLoggers = new Map();
 const { join } = pathModule;
-
 const MAX_LOG_BUFFER = 10000;
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -39,10 +45,26 @@ export const OUTPUTS = {
 	STDERR: 'stdErr',
 };
 
+/** Keys whose values inspectForLog and the MCP audit log (components/mcp/audit.ts) mask. */
+export const CREDENTIAL_KEY_PATTERN =
+	/(secret|password|passphrase|token|api[-_]?key|private[-_]?key|credentials?|auth|cookie)/i;
+
 // Location of default config YAML.
 const DEFAULT_CONFIG_FILE = join(PACKAGE_ROOT, 'static', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
 
 const CLOSE_LOG_FD_TIMEOUT = 10000;
+
+// Above the module-scope initLogSettings() call below, which reaches getFileLogger: a const
+// declared after it is still in its temporal dead zone when the file sink first reads one.
+const LOG_TIME_USAGE_THRESHOLD = 100;
+// How long to write straight to stdio after the log file refuses an append.
+const APPEND_RETRY_COOLDOWN = 5000;
+// Ceiling on how often a failing rotation may report itself; the failure repeats every check point.
+const ROTATION_REPORT_INTERVAL = 60000;
+const SET_ROTATION_POLICY = Symbol('setRotationPolicy');
+const GET_ROTATION_POLICY = Symbol('getRotationPolicy');
+const FILE_ROTATION_SOURCE = Symbol('fileRotationSource');
+const SERVICE_NAME = workerData?.name?.replace(/ /g, '-') || 'main';
 
 let logConsole;
 let log_to_file;
@@ -84,6 +106,9 @@ export let externalLogger: any = {
 	forComponent(name: string) {
 		return externalLogger.forComponent(name);
 	},
+	status(options) {
+		return externalLogger.status(options);
+	},
 };
 _assignPackageExport('logger', externalLogger);
 // default logger used for the global used by external components
@@ -97,25 +122,67 @@ let hdbProperties;
 
 let rootConfig;
 
-function updateLogger(logger: any, logOptions: any, name?: string) {
-	logger.rotation = logOptions.rotation;
+// `mainLoggerRef` defaults to the module's private `mainLogger` singleton (the real production
+// behavior) but can be overridden by callers (currently just tests) so the inheritance decision
+// below can be exercised against a throwaway logger without reaching into module-private state.
+export function updateLogger(logger: any, logOptions: any, name?: string, mainLoggerRef: any = mainLogger) {
+	// Fall back to the main logger's rotation (like level/path below) so an external/component
+	// logger with no rotation block of its own inherits maxSize/interval/etc rather than losing
+	// rotation entirely (#1877). Excluded when `logger` IS mainLoggerRef: the fallback would just
+	// reassign mainLogger.rotation to itself, making it impossible to ever clear main's rotation.
+	const inheritedRotation = logOptions.rotation ?? (logger === mainLoggerRef ? undefined : mainLoggerRef?.rotation);
+	const loggerPolicy = logger[GET_ROTATION_POLICY]?.();
+	const mainPolicy = mainLoggerRef?.[GET_ROTATION_POLICY]?.();
+	const inheritsRotation = logOptions.rotation == null && logger !== mainLoggerRef;
+	const rotationSource = inheritsRotation ? mainPolicy?.source : loggerPolicy?.ownSource;
 	let path = logOptions.path;
 	if (path) {
 		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
 	} else if (logOptions.root) {
 		path = join(logOptions.root, logName);
 	} else {
-		path = mainLogger.path;
-		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
+		path = mainLoggerRef.path;
+		if (!logOptions.root && path) logOptions.root = pathModule.dirname(path);
 	}
+	if (inheritedRotation && inheritedRotation === mainLoggerRef?.rotation && path !== mainLoggerRef?.path) {
+		// This logger has no rotation block of its own and is inheriting main's wholesale — but
+		// inheriting `rotation.path` too would point this logger's archives at wherever main
+		// archives to. If this logger's file lives on a different filesystem/volume than that
+		// directory, the rotator's fs.rename() there fails with EXDEV and the tick error leaks
+		// (contained in logRotator.ts) without ever rotating this log. Strip the inherited path so
+		// rotation instead defaults beside this logger's own path (logRotator's own <log dir>/rotated
+		// fallback); an explicit `rotation.path` in this logger's own config still wins, since that
+		// goes through `logOptions.rotation` above, not this fallback. Clone rather than mutate:
+		// `inheritedRotation` is the literal object shared by mainLogger.rotation and every other
+		// component that inherited it.
+		//
+		// Only when the paths differ. A logger writing to main's own file shares main's rotation
+		// state — file loggers are cached per path — so stripping there discards the operator's
+		// configured rotation.path for the main log itself, which no EXDEV risk justifies.
+		const { path: _inheritedPath, ...rotationWithoutPath } = inheritedRotation;
+		setRotationPolicy(rotationWithoutPath);
+	} else {
+		setRotationPolicy(inheritedRotation);
+	}
+	// After the rotation above: assigning `path` goes through the setter that rebuilds this path's
+	// file logger, and it reads `logger.rotation` as it stands at that moment.
 	if (path) logger.path = path;
+	else if (!mainLoggerRef?.path && logger !== mainLoggerRef) logger.path = undefined;
 	else console.error('No path for logger', logOptions);
-	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLogger?.level ?? LOG_LEVEL_HIERARCHY.info;
+	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLoggerRef?.level ?? LOG_LEVEL_HIERARCHY.info;
 	updateConditional(logger);
-	logger.logToStdstreams = logOptions.stdStreams ?? false;
+	logger.logToStdstreams =
+		logOptions.stdStreams ?? (logger === mainLoggerRef ? false : mainLoggerRef?.logToStdstreams) ?? false;
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
-	logger.tag = logOptions.tag ?? ((mainLogger.path === logger.path || externalLogger.path === logger.path) && name);
+	logger.tag =
+		logOptions.tag ??
+		((!logger.path || mainLoggerRef.path === logger.path || externalLogger.path === logger.path) && name);
+
+	function setRotationPolicy(rotation) {
+		if (logger[SET_ROTATION_POLICY]) logger[SET_ROTATION_POLICY](rotation, rotationSource, inheritsRotation);
+		else logger.rotation = rotation;
+	}
 }
 // creates a logger where the methods are only defined if they are within the log level.
 // Using this conditional logger means that every method call must be optional like log.trace?.('message),
@@ -130,6 +197,11 @@ function updateConditional(logger: any) {
 	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
 	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
 	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
+	Object.defineProperty(conditional, 'status', {
+		value: logger.status.bind(logger),
+		writable: true,
+		configurable: true,
+	});
 }
 /**
  * Resolve a config path value against rootPath if it is relative.
@@ -141,15 +213,36 @@ function resolveLogPath(configPath: string, rootPath: string) {
 }
 async function updateLogSettings() {
 	if (!rootConfig) {
+		// Lazy-load to avoid a circular dependency at module evaluation time
+		// (RootConfigWatcher imports configUtils which imports this logger).
+		const { getSharedRootConfigWatcher } = await import('../../config/RootConfigWatcher.ts');
 		// set up the initial watcher
-		rootConfig = new RootConfigWatcher();
+		rootConfig = getSharedRootConfigWatcher();
 		// wait for it to be ready
 		await rootConfig.ready;
 		// TODO: Any way to differentiate changes that we can and can't handle?
 		rootConfig.on('change', updateLogSettings);
 	}
-	let rootConfigObject = rootConfig.config;
-	const logOptions = rootConfigObject.logging ?? {};
+	applyLogSettings(rootConfig.config);
+}
+
+function normalizeLogOptions(options: any) {
+	if (typeof options === 'string') return { level: options };
+	if (options && typeof options === 'object') return options;
+	return undefined;
+}
+
+// Separate from the watcher wiring above because the watcher it builds reads a process-wide path,
+// which leaves no way to exercise these settings against a given config.
+function applyLogSettings(rootConfigObject: any) {
+	// `ready` settles on every terminal read outcome, including ones that carry no config at all —
+	// see DESIGN.md, "Every terminal read outcome settles the barrier". Applying that as settings
+	// would not be "the defaults": `updateLogger` reads an absent `rotation` as rotation off and an
+	// absent `console` as console off, so an unreadable config would silently disable logging.
+	// What `initLogSettings()` established at startup stands until a real config arrives, which
+	// is why the watcher settles those outcomes with no config rather than an empty one.
+	if (!rootConfigObject || typeof rootConfigObject !== 'object') return;
+	const logOptions = normalizeLogOptions(rootConfigObject.logging) ?? {};
 	// Resolve relative paths against rootPath from the same config
 	const rootPath = rootConfigObject.rootPath;
 	if (logOptions.root) {
@@ -161,23 +254,101 @@ async function updateLogSettings() {
 	updateLogger(mainLogger, logOptions);
 	logFilePath = mainLogger.path;
 	logConsole = logOptions.console ?? false;
-	if (logOptions.external) {
-		updateLogger(externalLogger, logOptions.external);
-		for (let [name, component] of mainLogger.components) {
-			if (!(rootConfigObject[name] && rootConfigObject[name].logging) && component.isExternal)
-				updateLogger(component, logOptions.external, name);
-		}
-	}
+	// an unrecognized level leaves the main logger unchanged, so it must not reach logLevel either
+	if (LOG_LEVEL_HIERARCHY[logOptions.level]) logLevel = logOptions.level;
 	for (const name in rootConfigObject) {
-		// we now scan each component to see if it has logging individual configured
-		const component = rootConfigObject[name];
-		if (component.logging) {
-			updateLogger(mainLogger.forComponent(name), component.logging, name);
-		} else if (mainLogger.hasComponent(name)) {
-			const componentLogger = mainLogger.forComponent(name);
-			updateLogger(componentLogger, (componentLogger.isExternal && logOptions.external) ?? logOptions, name);
+		// `myComponent:` with nothing under it parses to null, and an async listener's TypeError
+		// escapes the watcher's emit guard as an unhandled rejection.
+		if (normalizeLogOptions(rootConfigObject[name]?.logging)) mainLogger.forComponent(name);
+	}
+	updateComponentLoggers(rootConfigObject, normalizeLogOptions(logOptions.external));
+}
+
+function updateComponentLoggers(configObject: any, externalLogOptions: any) {
+	for (const [name, componentLogger] of mainLogger.components) {
+		const componentLogOptions =
+			normalizeLogOptions(configObject?.[name]?.logging) ??
+			(name === 'external' || componentLogger.isExternal ? externalLogOptions : undefined) ??
+			{};
+		try {
+			updateLogger(componentLogger, componentLogOptions, name);
+		} catch (err) {
+			console.error(err);
+			updateLogger(componentLogger, {}, name);
 		}
 	}
+	if (!externalLogOptions?.tag) externalLogger.tag = null; // don't tag by default
+}
+
+/**
+ * True when the argument is an Error (same-realm or native cross-realm — component code runs
+ * through node:vm, so a VM-created Error fails `instanceof Error` but passes `isNativeError`).
+ * Classified via `util.types.isNativeError` alone, never `instanceof Error`: `instanceof` walks
+ * the prototype chain via `[[GetPrototypeOf]]`, which for a value like
+ * `Object.create(Object.create(proxyAncestor))` eventually reaches `proxyAncestor` and invokes
+ * ITS `getPrototypeOf` trap, even though `arg` itself is an ordinary object and not a Proxy - a
+ * trap that hangs (an infinite loop) or has side effects would run to completion on whatever path
+ * called isErrorLike (e.g. logging a DIFFERENT operation's failure). `isNativeError` checks an
+ * internal slot directly, the same realm-independent, prototype-chain-independent mechanism
+ * `types.isMap`/`types.isDate`/etc. use elsewhere in this file, so it recognizes same-realm,
+ * cross-realm (VM), and Error-subclass instances without ever walking a prototype chain. The
+ * try/catch below still guards other exotic objects for other reasons — the logger must never
+ * throw on any input, and util.format renders those fine raw. Exported so call sites outside this
+ * module (e.g. OperationFunctionCaller, deciding how to log an error-shaped value it didn't itself
+ * catch as an Error) can reuse the same classification instead of a weaker local `instanceof`
+ * check.
+ */
+export function isErrorLike(arg: any): boolean {
+	try {
+		return isNativeError(arg);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * True when `arg` needs sanitizeErrorArg's replacement before reaching Console's raw formatting:
+ * either it's error-like, or it's a live Proxy that isErrorLike deliberately reports as false (see
+ * isErrorLike above) but that Console's default inspect would still reflect on directly - which,
+ * if the Proxy happens to wrap an Error, dumps its own-enumerable properties unsanitized (#1734).
+ */
+function needsSanitizing(arg: any): boolean {
+	return types.isProxy(arg) || isErrorLike(arg);
+}
+
+/**
+ * Replaces an Error (or a Proxy - live-or-revoked, whatever it wraps) with a safe placeholder
+ * before it reaches Console's util.inspect formatting; same Proxy-first ordering and rationale as
+ * deepSanitizeErrors' `types.isProxy` check (see there) - reflecting on a Proxy at all, even just
+ * to classify it, risks running a hostile trap on the shallow logging path too.
+ */
+function sanitizeErrorArg(arg: any) {
+	if (types.isProxy(arg)) return labelPlaceholder('[Proxy]');
+	return isErrorLike(arg) ? errorForLog(arg) : arg;
+}
+
+/**
+ * Replaces every Error argument with its log-safe errorForLog wrapper before the args reach
+ * Console's util.inspect formatting, which would otherwise dump the error's own-enumerable
+ * properties — where libraries and app code stash credentials (axios config headers, an
+ * hdb_secret for an outbound Authorization header) — into hdb.log (see #1734 and errorForLog).
+ * Called inside each level gate so filtered-out log calls pay nothing beyond the arg scan,
+ * and only allocates when an Error (or Proxy needing the same treatment) is actually present.
+ * Deliberately shallow: an Error nested inside a logged object/array is not rewritten (deep-
+ * walking every logged structure is not worth the per-call cost, and the #1734 threat is raw
+ * thrown errors).
+ */
+function sanitizeErrorArgs(args: any[]) {
+	for (let i = 0; i < args.length; i++) {
+		if (needsSanitizing(args[i])) {
+			const sanitized = args.slice(0, i);
+			for (let j = i; j < args.length; j++) {
+				sanitized[j] = sanitizeErrorArg(args[j]);
+			}
+			return sanitized;
+		}
+	}
+	return args;
 }
 
 class HarperLogger extends Console {
@@ -193,35 +364,35 @@ class HarperLogger extends Console {
 	trace(...args) {
 		currentLevel = 'trace';
 		if (this.level <= LOG_LEVEL_HIERARCHY.trace) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	debug(...args) {
 		currentLevel = 'debug';
 		if (this.level <= LOG_LEVEL_HIERARCHY.debug) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	info(...args) {
 		currentLevel = 'info';
 		if (this.level <= LOG_LEVEL_HIERARCHY.info) {
-			super.info(...args);
+			super.info(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	warn(...args) {
 		currentLevel = 'warn';
 		if (this.level <= LOG_LEVEL_HIERARCHY.warn) {
-			super.warn(...args);
+			super.warn(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
 	error(...args) {
 		currentLevel = 'error';
 		if (this.level <= LOG_LEVEL_HIERARCHY.error) {
-			super.error(...args);
+			super.error(...sanitizeErrorArgs(args));
 		}
 		currentLevel = 'info';
 	}
@@ -230,7 +401,7 @@ class HarperLogger extends Console {
 		try {
 			currentLevel = 'fatal';
 			if (this.level <= LOG_LEVEL_HIERARCHY.fatal) {
-				super.error(...args);
+				super.error(...sanitizeErrorArgs(args));
 			}
 			currentLevel = 'info';
 		} finally {
@@ -242,15 +413,30 @@ class HarperLogger extends Console {
 		try {
 			currentLevel = 'notify';
 			if (this.level <= LOG_LEVEL_HIERARCHY.notify) {
-				super.info(...args);
+				super.info(...sanitizeErrorArgs(args));
 			}
 			currentLevel = 'info';
 		} finally {
 			logImmediately = false;
 		}
 	}
+	// Inherited Console methods that format arbitrary values would bypass sanitizeErrorArgs —
+	// guard them too so logger.log(error) / dir / table can't leak either (#1734). Their
+	// existing semantics (no level gate) are preserved; only the Error args are wrapped.
+	log(...args) {
+		super.log(...sanitizeErrorArgs(args));
+	}
+	dir(item, options?) {
+		super.dir(sanitizeErrorArg(item), options);
+	}
+	table(data, columns?) {
+		super.table(Array.isArray(data) ? sanitizeErrorArgs(data) : sanitizeErrorArg(data), columns);
+	}
 	withTag(tag) {
 		return loggerWithTag(tag, true, this);
+	}
+	status(options) {
+		return statusLogger(options, this);
 	}
 	forComponent(_name) {
 		// to be replaced
@@ -264,42 +450,95 @@ class HarperLogger extends Console {
 
 if (hdbProperties === undefined) initLogSettings();
 
-module.exports = {
-	notify,
-	fatal,
-	error,
-	warn,
-	info,
-	debug,
-	trace,
-	logLevel,
-	loggerWithTag,
-	suppressLogging,
-	initLogSettings,
-	logCustomLevel,
-	closeLogFile,
-	createLogger,
-	logsAtLevel,
-	getLogFilePath: () => logFilePath,
-	forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
-	setMainLogger,
-	setLogLevel,
-	OUTPUTS,
-	AuthAuditLog,
-	// for now these functions at least notify us of when the component system is ready so
-	// we can start using the RootConfigWatcher
-	start: updateLogSettings,
-	startOnMainThread: updateLogSettings,
-	errorToString,
-	disableStdio,
-	externalLogger,
-};
+if (typeof module !== 'undefined') {
+	module.exports = {
+		notify,
+		fatal,
+		error,
+		warn,
+		info,
+		debug,
+		trace,
+		get logLevel() {
+			return logLevel;
+		},
+		set logLevel(level) {
+			logLevel = level;
+		},
+		loggerWithTag,
+		suppressLogging,
+		initLogSettings,
+		logCustomLevel,
+		closeLogFile,
+		createLogger,
+		logsAtLevel,
+		getLogFilePath: () => logFilePath,
+		forComponent: (name, isExternal) => mainLogger.forComponent(name, isExternal),
+		setMainLogger,
+		setLogLevel,
+		OUTPUTS,
+		CREDENTIAL_KEY_PATTERN,
+		AuthAuditLog,
+		// for now these functions at least notify us of when the component system is ready so
+		// we can start using the RootConfigWatcher
+		start: updateLogSettings,
+		startOnMainThread: updateLogSettings,
+		// Test-only: applies a config without the process-wide watcher `updateLogSettings` builds.
+		_applyLogSettingsForTests: applyLogSettings,
+		errorToString,
+		errorForLog,
+		inspectForLog,
+		isErrorLike,
+		disableStdio,
+		isStdioBrokenError,
+		externalLogger,
+		conditional: mainLogger.conditional,
+		updateLogger,
+		setStatusHandler,
+		status,
+	};
+}
+
+// Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
+// text back into the file logger this is the fallback for, and swallows a broken pipe - there is
+// nowhere left to report it.
+function writeToStdioDirectly(stream, text) {
+	try {
+		nativeStdWrite.call(stream, text);
+	} catch {
+		// stdio is gone too
+	}
+}
+
+// A bare no-op would read as permanent backpressure to a pipe()'d source; this drains and
+// discards instead.
+function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
+	if (typeof encoding === 'function') callback = encoding;
+	if (typeof callback === 'function') callback();
+	return true;
+}
 
 /**
  * We call this if stdio is not functional
  */
 export function disableStdio(_unused?: any) {
-	nativeStdWrite = function () {}; // make this a noop
+	nativeStdWrite = noopWrite;
+}
+
+const STDIO_BROKEN_ERROR_CODES = new Set(['EPIPE', 'EIO', 'ERR_STREAM_DESTROYED']);
+
+/**
+ * True when this error means a stdio stream (stdout/stderr) is permanently unwritable - the
+ * pipe's reader died (EPIPE), the terminal closed (EIO), or the stream was already destroyed.
+ * Callers should disableStdio() on this rather than logging through the same sink that threw it.
+ */
+export function isStdioBrokenError(error: any): boolean {
+	return STDIO_BROKEN_ERROR_CODES.has(error?.code);
+}
+
+export function status(options: any) {
+	// Use the public facade so status calls also observe replaced log methods.
+	return statusLogger(options, typeof module !== 'undefined' ? module.exports : loggerExports);
 }
 
 /**
@@ -317,9 +556,19 @@ export function logsAtLevel(level: any) {
  * any, use default values.
  */
 export function initLogSettings(forceInit = false) {
+	const previousMainLogger = mainLogger;
 	try {
 		if (hdbProperties === undefined || forceInit) {
+			if (forceInit && mainLogger?.[SET_ROTATION_POLICY]) {
+				const currentPath = mainLogger.path;
+				if (currentPath) {
+					const { ownSource } = mainLogger[GET_ROTATION_POLICY]();
+					mainLogger[SET_ROTATION_POLICY](undefined, ownSource, false);
+					mainLogger.path = currentPath;
+				}
+			}
 			closeLogFile();
+			logLevel = undefined;
 			const bootPropsFilePath = getPropsFilePath();
 			let properties = assignCMDENVVariables(['ROOTPATH']);
 			try {
@@ -343,6 +592,7 @@ export function initLogSettings(forceInit = false) {
 					configPath = join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE);
 			} else configPath = hdbProperties.get('settings_path');
 			let rotation;
+			let configObject;
 			({
 				level: logLevel,
 				configLogPath: logRoot,
@@ -351,6 +601,7 @@ export function initLogSettings(forceInit = false) {
 				colorMode,
 				rotation,
 				toStream: logToStdstreams,
+				configObject,
 			} = getLogConfig(configPath));
 
 			logName = hdbTerms.LOG_NAMES.HDB;
@@ -361,18 +612,24 @@ export function initLogSettings(forceInit = false) {
 				level: logLevel,
 				stdStreams: logToStdstreams,
 				rotation,
+				components: previousMainLogger?.components,
+				conditional: previousMainLogger?.conditional,
 			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
-			externalLogger.tag = null; // don't tag by default
+			const externalLogOptions = normalizeLogOptions(configObject?.logging?.external);
+			updateComponentLoggers(configObject, externalLogOptions);
 			if (isMainThread && typeof globalThis.Bun === 'undefined') {
-				// Bun will crash with the segfault handler, ironically
-				try {
-					const SegfaultHandler = require('segfault-handler');
-					SegfaultHandler.registerHandler(join(logRoot, 'crash.log'));
-				} catch {
-					// optional dependency, ok if we can't run it
-				}
+				// Bun will crash with the segfault handler, ironically.
+				// Dynamic import works in both CJS and ESM (type-strip); require() is not
+				// available as a global in ESM so we can't use it here.
+				import(segfaultHandlerPackage)
+					.then((mod) => {
+						(mod.default ?? mod).registerHandler(join(logRoot, 'crash.log'));
+					})
+					.catch(() => {
+						// optional dependency, ok if unavailable
+					});
 			}
 		}
 	} catch (err) {
@@ -396,15 +653,28 @@ export function initLogSettings(forceInit = false) {
 
 			const { defaultLevel } = getDefaultConfig();
 
+			logFilePath = undefined;
 			log_to_file = false;
 			logToStdstreams = true;
 
 			logLevel = logLevel === undefined ? defaultLevel : logLevel;
 
-			mainLogger = createLogger({ level: logLevel });
+			// createLogger shadows the module-level `logToStdstreams` with this option, so omitting it
+			// drops every log written before a config exists rather than routing it to the streams.
+			mainLogger = createLogger({
+				level: logLevel,
+				stdStreams: logToStdstreams,
+				components: previousMainLogger?.components,
+				conditional: previousMainLogger?.conditional,
+			});
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
-			externalLogger.tag = null; // don't tag by default
+			updateComponentLoggers(undefined, undefined);
+			// The streams are this branch's only sink, so it needs the same EPIPE/EIO listeners the
+			// configured path installs below: `harper install | head -1` closes the reader, and the
+			// async error would otherwise land on a stream with none and take the install down. The
+			// guard's write override is inert here, because `log_to_file` is false.
+			stdioLogging();
 			return;
 		}
 
@@ -420,56 +690,135 @@ export function initLogSettings(forceInit = false) {
 	stdioLogging();
 }
 let loggingEnabled = true;
-function stdioLogging() {
-	if (log_to_file) {
-		process.stdout.write = function (data) {
-			if (
-				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				loggingEnabled &&
-				logConsole
-			) {
-				data = data.toString();
-				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				writeToLogFile(data);
-			}
-			return nativeStdWrite.apply(process.stdout, arguments);
-		};
-		process.stderr.write = function (data) {
-			if (
-				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				loggingEnabled &&
-				logConsole
-			) {
-				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				writeToLogFile(data);
-			}
-			return nativeStdWrite.apply(process.stderr, arguments);
-		};
-	}
+
+// A POSIX pipe reports a broken pipe asynchronously - write() returns normally and the EPIPE
+// arrives later as an 'error' event, past the try/catch below. An unhandled 'error' event on any
+// EventEmitter becomes an uncaughtException, so the listener is what actually catches that case.
+function installStdioGuard(stream) {
+	if (stream.harperStdioErrorHandler) stream.removeListener('error', stream.harperStdioErrorHandler);
+	stream.harperStdioErrorHandler = (error) => {
+		if (!isStdioBrokenError(error)) throw error;
+		disableStdio();
+	};
+	stream.on('error', stream.harperStdioErrorHandler);
+
+	stream.write = function (data) {
+		if (
+			log_to_file &&
+			typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
+			loggingEnabled &&
+			logConsole
+		) {
+			data = data.toString();
+			if (data[data.length - 1] === '\n') data = data.slice(0, -1);
+			writeToLogFile(data);
+		}
+		try {
+			return nativeStdWrite.apply(stream, arguments);
+		} catch (error) {
+			if (!isStdioBrokenError(error)) throw error;
+			disableStdio();
+			return noopWrite.apply(stream, arguments);
+		}
+	};
 }
 
-export function loggerWithTag(tag: string, conditional?: boolean, logger: any = mainLogger) {
-	tag = tag.replace(/ /g, '-'); // tag can't have spaces
-	return {
-		notify: logWithTag(logger.notify, 'notify'),
-		fatal: logWithTag(logger.fatal, 'fatal'),
-		error: logWithTag(logger.error, 'error'),
-		warn: logWithTag(logger.warn, 'warn'),
-		info: logWithTag(logger.info, 'info'),
-		debug: logWithTag(logger.debug, 'debug'),
-		trace: logWithTag(logger.trace, 'trace'),
-	};
-	function logWithTag(loggerMethod, level) {
-		return !conditional || logger.level <= LOG_LEVEL_HIERARCHY[level]
-			? function (...args) {
-					currentTag = tag;
-					try {
-						return loggerMethod.call(logger, ...args);
-					} finally {
-						currentTag = undefined;
-					}
+function stdioLogging() {
+	installStdioGuard(process.stdout);
+	installStdioGuard(process.stderr);
+}
+
+let statusHandler: any;
+export function setStatusHandler(handler: any) {
+	statusHandler = handler;
+}
+function dispatchStatus(options: any, level: string | null, tag: string, args: any[]) {
+	try {
+		statusHandler?.(options, level, tag, args);
+	} catch {
+		// Status instrumentation must not interrupt the caller's recovery or cleanup.
+	}
+}
+function statusLogger(options: any, logger: any, tag?: string) {
+	// A chained log method (.error(), .warn(), etc.) fires synchronously if the caller chains
+	// one, before this microtask runs. Deferring the options-only dispatch lets us skip it when
+	// a chained call already reported the same logical event, avoiding a double dispatch.
+	let chained = false;
+	if (statusHandler) {
+		queueMicrotask(() => {
+			if (!chained && statusHandler) {
+				dispatchStatus(options, null, tag || logger.tag || currentTag, []);
+			}
+		});
+	}
+	const wrapper: any = {};
+	for (const level of ['notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']) {
+		wrapper[level] = function (...args: any[]) {
+			chained = true;
+			try {
+				logger[level]?.(...args);
+			} finally {
+				if (statusHandler) {
+					dispatchStatus(options, level, tag || logger.tag || currentTag, args);
 				}
-			: null;
+			}
+		};
+	}
+	return wrapper;
+}
+
+export function loggerWithTag(tag: string, conditional?: boolean, logger?: any) {
+	tag = tag.replace(/ /g, '-'); // tag can't have spaces
+	const methods = {
+		notify: logWithTag('notify'),
+		fatal: logWithTag('fatal'),
+		error: logWithTag('error'),
+		warn: logWithTag('warn'),
+		info: logWithTag('info'),
+		debug: logWithTag('debug'),
+		trace: logWithTag('trace'),
+	};
+	const taggedLogger = !conditional
+		? methods
+		: {
+				get notify() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.notify ? methods.notify : null;
+				},
+				get fatal() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.fatal ? methods.fatal : null;
+				},
+				get error() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.error ? methods.error : null;
+				},
+				get warn() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.warn ? methods.warn : null;
+				},
+				get info() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.info ? methods.info : null;
+				},
+				get debug() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.debug ? methods.debug : null;
+				},
+				get trace() {
+					return (logger ?? mainLogger).level <= LOG_LEVEL_HIERARCHY.trace ? methods.trace : null;
+				},
+			};
+	Object.defineProperty(taggedLogger, 'status', {
+		value(options) {
+			return statusLogger(options, taggedLogger, tag);
+		},
+	});
+	return taggedLogger;
+	function logWithTag(level) {
+		return function (...args) {
+			const targetLogger = logger ?? mainLogger;
+			currentTag = tag;
+			try {
+				return targetLogger[level](...args);
+			} finally {
+				currentTag = undefined;
+			}
+		};
 	}
 }
 
@@ -482,7 +831,6 @@ export function suppressLogging(callback) {
 	}
 }
 
-const SERVICE_NAME = workerData?.name?.replace(/ /g, '-') || 'main';
 // these are used to store information about the current service and tag so we can prepend them to the log during
 // the writes, without having to pass the information through the Console instance
 let currentLevel = 'info'; // default is info
@@ -497,7 +845,16 @@ export function createLogger(options: any = {} as any) {
 		isExternalInstance,
 		writeToLog,
 		component,
+		components = new Map(),
+		conditional = {},
+		rotationSource,
+		rotationInherited = false,
 	}: any = options;
+	const ownRotationSource = Symbol('rotationPolicySource');
+	let currentRotationSource = rotationSource ?? ownRotationSource;
+	let previousRotationSource;
+	let currentRotationInherited = rotationInherited;
+	let rotationChangeIsAuthoritative = rotation !== undefined;
 	if (!logLevel) logLevel = 'info';
 	let level = typeof logLevel === 'number' ? logLevel : LOG_LEVEL_HIERARCHY[logLevel];
 	let logger;
@@ -520,7 +877,7 @@ export function createLogger(options: any = {} as any) {
 			} else {
 				logToFile(log);
 			}
-		} else if (logToStdstreams) process.stdout.write(log);
+		} else if (logger.logToStdstreams) process.stdout.write(log);
 	}
 
 	/**
@@ -530,7 +887,7 @@ export function createLogger(options: any = {} as any) {
 	function logStdErr(log) {
 		if (log_to_file) {
 			logToFile(log);
-			if (logToStdstreams) {
+			if (logger.logToStdstreams) {
 				loggingEnabled = false;
 				try {
 					// if we are writing std streams we don't want to double write to the file through the stdio capture
@@ -539,9 +896,10 @@ export function createLogger(options: any = {} as any) {
 					loggingEnabled = true;
 				}
 			}
-		} else if (logToStdstreams) process.stderr.write(log);
+		} else if (logger.logToStdstreams) process.stderr.write(log);
 	}
-	let logToFile = logFilePath && getFileLogger(logFilePath, rotation, isExternalInstance);
+	let logToFile = logFilePath && getFileLogger(logFilePath, rotation, isExternalInstance, rotationPolicy());
+	rotationPolicyApplied();
 	function logPrepend(write) {
 		return {
 			write(log) {
@@ -564,6 +922,15 @@ export function createLogger(options: any = {} as any) {
 		},
 		level
 	);
+	logger[SET_ROTATION_POLICY] = function (newRotation, source = ownRotationSource, inherited = false) {
+		previousRotationSource = currentRotationSource;
+		currentRotationSource = source ?? ownRotationSource;
+		currentRotationInherited = inherited;
+		rotationChangeIsAuthoritative = true;
+		logger.rotation = newRotation;
+	};
+	logger[GET_ROTATION_POLICY] = () => ({ ownSource: ownRotationSource, source: currentRotationSource });
+	logger.conditional = conditional;
 	updateConditional(logger);
 	logger.path = logFilePath;
 	Object.defineProperty(logger, 'path', {
@@ -571,8 +938,21 @@ export function createLogger(options: any = {} as any) {
 			return logFilePath;
 		},
 		set(path) {
+			const previousPath = logFilePath;
 			logFilePath = path;
-			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance);
+			if (!logFilePath) {
+				if (previousPath && rotationChangeIsAuthoritative && logger.rotation === undefined) {
+					getFileLogger(previousPath, undefined, isExternalInstance, rotationPolicy());
+				}
+				logToFile = undefined;
+				logger.closeLogFile = undefined;
+				rotationPolicyApplied();
+				if (isExternalInstance) writeToLogFile = undefined;
+				return;
+			}
+			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance, rotationPolicy());
+			logger.closeLogFile = logToFile.closeLogFile;
+			rotationPolicyApplied();
 			if (isExternalInstance) writeToLogFile = logToFile;
 		},
 		enumerable: true,
@@ -580,17 +960,19 @@ export function createLogger(options: any = {} as any) {
 	logger.closeLogFile = logToFile?.closeLogFile;
 	logger.logToStdstreams = logToStdstreams;
 	if (!component) {
-		let components = new Map();
 		logger.forComponent = function (name, isExternal = false) {
 			let componentLogger = components.get(name);
 			if (!componentLogger) {
 				const protoLogger = isExternal ? externalLogger : logger;
+				const protoRotationPolicy = protoLogger[GET_ROTATION_POLICY]?.();
 				componentLogger = createLogger({
 					path: protoLogger.path,
 					level: protoLogger.level,
 					stdStreams: protoLogger.logToStdstreams,
 					isExternalInstance: isExternal || name === 'external',
 					rotation: protoLogger.rotation,
+					rotationSource: protoRotationPolicy?.source,
+					rotationInherited: true,
 					writeToLog,
 					component: true,
 				});
@@ -606,42 +988,133 @@ export function createLogger(options: any = {} as any) {
 		logger.components = components;
 	}
 	return logger;
+
+	function rotationPolicy() {
+		return {
+			source: currentRotationSource,
+			previousSource: previousRotationSource,
+			inherited: currentRotationInherited,
+			authoritative: rotationChangeIsAuthoritative,
+		};
+	}
+
+	function rotationPolicyApplied() {
+		previousRotationSource = currentRotationSource;
+		rotationChangeIsAuthoritative = false;
+	}
 }
-const LOG_TIME_USAGE_THRESHOLD = 100;
 /**
  * Get the file logger for the given path. If it doesn't exist, create it.
  * @param path
  * @param isExternalInstance
  * @return {any}
  */
-function getFileLogger(path, rotation, isExternalInstance) {
+function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 	let logger = fileLoggers.get(path);
-	let logFD, loggedFDError, logTimer;
+	let logFD, loggedFDError, loggedAppendError, logTimer, retryAppendAfter;
 	let logBuffer;
+	let rotationProblemNotice;
 	let logTimeUsage = 0;
+	let rotationGuard,
+		nextRotationReport = 0;
+	let logFDIdentity: FileIdentity | null;
 	if (!logger) {
 		logger = logToFile;
 		logger.closeLogFile = closeLogFile;
+		// The guard has to be installed through the live closure: later calls for this path get the
+		// cached logger back, and their own logFD/logBuffer are dead.
+		logger.installRotationGuard = installRotationGuard;
 		logger.path = path;
 		fileLoggers.set(path, logger);
+		// Registered by the sink, not by the size guard: a thread that writes this file but has no
+		// guard (no maxSize, or rotation driven only by interval) still holds a descriptor, and an
+		// answer from it has to mean "released" rather than only "handler ran".
+		registerLogSink(path, { identity: () => logFDIdentity, close: closeLogFile });
 	}
-	if (isMainThread && JSON.stringify(rotation) !== JSON.stringify(logger.rotation)) {
+	const currentSource = logger[FILE_ROTATION_SOURCE];
+	const sameSource = currentSource === rotationPolicy.source;
+	const replacesPreviousSource = currentSource !== undefined && currentSource === rotationPolicy.previousSource;
+	const canInstall =
+		rotation !== undefined &&
+		(!rotationPolicy.inherited || currentSource === undefined || sameSource || replacesPreviousSource);
+	const canClear = rotation === undefined && rotationPolicy.authoritative && (sameSource || replacesPreviousSource);
+	let reconfigured = false;
+	if (canInstall) {
+		logger[FILE_ROTATION_SOURCE] = rotationPolicy.source;
+		reconfigured = JSON.stringify(rotation) !== JSON.stringify(logger.rotation);
+	}
+	if (reconfigured) {
 		logger.rotation = rotation;
+		// Every writing thread, and synchronously: request logging is produced by the HTTP workers, and
+		// at the rates that make maxSize matter a deferred guard misses megabytes before it exists.
+		logger.installRotationGuard(rotation);
+	} else if (canClear) {
+		logger.rotation = undefined;
+		logger[FILE_ROTATION_SOURCE] = undefined;
+		logger.installRotationGuard(undefined);
+		reconfigured = true;
+	}
+	if (isMainThread && reconfigured) {
 		setTimeout(() => {
-			logger.rotator?.end();
-			if (!rotation) return;
-			const logRotator = require('./logRotator');
+			// Everything inside the try: a throw from a timer callback is unhandled, and neither
+			// loading logRotator.ts (which reaches environmentManager's synchronous init) nor a
+			// rotator teardown may take the process down over log rotation (#847).
 			try {
+				const previousRotator = logger.rotator;
+				logger.rotator = undefined;
+				previousRotator?.end();
+				if (!rotation) return;
+				const { logRotator } = loadRuntimeModule('utility/logging/logRotator');
 				logger.rotator = logRotator({
 					logger,
 					...rotation,
 				});
 			} catch (error) {
-				logger('Error initializing log rotator', error);
+				logger(`Error initializing log rotator (log rotation disabled): ${error.message}`);
 			}
 		}, 100);
 	}
 	return logger;
+	function installRotationGuard(newRotation) {
+		rotationGuard = undefined;
+		if (!newRotation || newRotation.enabled === false) return;
+		const maxBytes = parseMaxSize(newRotation.maxSize);
+		if (!maxBytes) {
+			if (newRotation.maxSize != null) reportRotationProblem(`logging.rotation.maxSize: ${INVALID_MAX_SIZE_MSG}`);
+			return;
+		}
+		try {
+			rotationGuard = createRotationGuard({
+				logPath: path,
+				maxBytes,
+				rotatedLogDir: resolveRotatedLogDir(path, newRotation.path),
+				// From the rotation block rather than environmentManager (which logRotator still reads):
+				// environmentManager imports this module, so it cannot be reached from the write path.
+				compress: newRotation.compress,
+				getLogIdentity: () => logFDIdentity,
+				closeLogFile,
+				report: reportRotationProblem,
+				onRotated(archivePath) {
+					// Same shape as every other line in the file: written straight to the sink, this
+					// bypasses the prefix createLogger's logPrepend adds, and readLog parses by level.
+					logToFile(`[${SERVICE_NAME}/${threadId}] [notify]: hdb.log rotated, old log moved to ${archivePath}`);
+				},
+			});
+		} catch (error) {
+			reportRotationProblem(`log rotation is disabled for ${path}: ${error}`);
+		}
+	}
+	function reportRotationProblem(text) {
+		// Straight to stdio, never back through this sink: the sink is what rotation is failing on.
+		// Rate-limited rather than once-only, so a later, different failure is still reported.
+		if (nextRotationReport > performance.now()) return;
+		nextRotationReport = performance.now() + ROTATION_REPORT_INTERVAL;
+		const message = `Harper log rotation problem — ${text}`;
+		// Scripted services discard stdio. Preserve the warning in the active file on the next
+		// successful append as well, without recursing through the rotation guard.
+		rotationProblemNotice = `${new Date().toISOString()} [${SERVICE_NAME}/${threadId}] [error]: ${message}\n`;
+		writeToStdioDirectly(process.stderr, `${message}\n`);
+	}
 	function logToFile(log) {
 		let entry = `${new Date().toISOString()} ${log}${log.endsWith('\n') ? '' : '\n'}`;
 		if (logBuffer) {
@@ -668,16 +1141,47 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	}
 	// this is called on a timer, and will write the log buffer to the file
 	function logQueuedData(entry?: any) {
+		const payload = logBuffer ? logBuffer.join('') : entry;
+		// Released before anything can re-enter: the rotation notice is written from inside the append
+		// below, and a re-entrant flush still holding this batch would write it twice.
+		logBuffer = null;
+		if (payload === undefined) return;
+		// A file that just refused a write will refuse the next one too, and every attempt costs a
+		// failed syscall plus a thrown error on whatever path is logging - which, on a full volume,
+		// is the request path at full rate. Go straight to stdio until the cooldown expires.
+		// Opened after the guard: a guard recovering by rotation closes this descriptor first.
+		const mayAppend = !(retryAppendAfter > performance.now()) && (rotationGuard?.beforeAppend() ?? true);
 		openLogFile(undefined);
-		if (logFD) {
+		if (logFD && mayAppend) {
 			let startTime = performance.now();
-			fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : entry);
+			try {
+				const appendPayload = rotationProblemNotice ? rotationProblemNotice + payload : payload;
+				const appendBuffer = Buffer.from(appendPayload);
+				fs.appendFileSync(logFD, appendBuffer);
+				rotationProblemNotice = undefined;
+				// Both cleared, so a volume that fills again months later reports itself again
+				retryAppendAfter = undefined;
+				loggedAppendError = false;
+				rotationGuard?.recordWrite(appendBuffer.length);
+			} catch (error) {
+				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
+				// A log write must never take the process down: on an exhausted volume this throws from
+				// both inline and timer call sites, making every log statement a crash point (#847).
+				// The fallback goes through nativeStdWrite rather than console because
+				// installStdioGuard routes console output back into this same file logger when
+				// logging.file and logging.console are both on, which would recurse until the stack blew.
+				if (!loggedAppendError) {
+					loggedAppendError = true;
+					writeToStdioDirectly(process.stderr, `Harper cannot write to its log file: ${error}\n`);
+				}
+				writeToStdioDirectly(process.stdout, payload);
+				return;
+			}
 			let endTime = performance.now();
 			// determine if we are using more than about two percent of processing time for log writes recently, and if so, we
 			// will start buffering
 			logTimeUsage = Math.max(endTime, logTimeUsage) + (endTime - startTime) * 50;
-		} else if (!loggedFDError) console.log(logBuffer ? logBuffer.join('') : entry);
-		if (logBuffer) logBuffer = null;
+		} else writeToStdioDirectly(process.stdout, payload);
 	}
 
 	function closeLogFile(_unused?: any) {
@@ -685,6 +1189,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			fs.closeSync(logFD);
 		} catch {}
 		logFD = null;
+		logFDIdentity = null;
 		if (isExternalInstance) mainLogFd = null;
 	}
 
@@ -692,12 +1197,25 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		if (!logFD) {
 			try {
 				logFD = fs.openSync(path, 'a');
+				// Which generation this descriptor belongs to, recorded once here so the size guard's
+				// checkpoint needs a single pathname stat to tell whether the file has moved under it.
+				try {
+					const opened = fs.fstatSync(logFD, { bigint: true });
+					logFDIdentity = { ino: opened.ino, dev: opened.dev };
+				} catch {
+					logFDIdentity = null;
+				}
 				if (isExternalInstance) mainLogFd = logFD;
 			} catch (error) {
 				if (error.code === 'ENOENT' && !isRetry) {
 					// if the directory doesn't exist, create it
-					fs.mkdirpSync(pathModule.dirname(path));
-					return openLogFile(true);
+					try {
+						fs.mkdirpSync(pathModule.dirname(path));
+						return openLogFile(true);
+					} catch (mkdirError) {
+						// creating the log directory can fail for the same reason the log write can
+						error = mkdirError;
+					}
 				}
 				if (!loggedFDError) {
 					loggedFDError = true;
@@ -823,7 +1341,7 @@ function getLogConfig(hdbConfigPath) {
 			const oldHdbSettings = PropertiesReader(hdbConfigPath);
 			return {
 				level: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY),
-				configLogPath: pathModule.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)),
+				configLogPath: pathModule.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY) as string),
 				toFile: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_FILE),
 				toStream: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS),
 			};
@@ -850,6 +1368,7 @@ function getLogConfig(hdbConfigPath) {
 			logConsole,
 			colorMode,
 			rotation,
+			configObject: configDoc.toJSON?.(),
 		};
 	} catch (err) {
 		// If the config file doesn't exist throw ENOENT error and parent function will use default log settings
@@ -892,7 +1411,1022 @@ function getDefaultConfig() {
  * @return {string|string}
  */
 export function errorToString(error: any) {
-	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
+	if (error == null) return String(error);
+	try {
+		return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
+	} catch {
+		// error is hostile (e.g. a revoked Proxy, or a getter that throws) - this must never throw,
+		// since it's called directly for response bodies (REST.ts/http.ts/JSONStream) as well as here.
+		try {
+			return Object.prototype.toString.call(error);
+		} catch {
+			return '[Unrenderable Object]';
+		}
+	}
+}
+
+// Own-enumerable Error properties considered safe to surface in logs — common diagnostic fields
+// (HTTP status, Node error codes) that libraries and app code don't use to carry secrets, unlike
+// arbitrary properties (axios' `config`/`request` with an Authorization header), which stay
+// excluded. `path` is deliberately omitted: it can reveal internal filesystem layout, and the
+// message/stack already names the failing operation.
+const LOGGABLE_ERROR_PROPS = ['code', 'status', 'statusCode', 'errno', 'syscall'];
+
+function loggablePropsSuffix(error: any): string {
+	if (typeof error !== 'object' || error === null) return '';
+	let suffix = '';
+	for (const key of LOGGABLE_ERROR_PROPS) {
+		try {
+			const value = error[key];
+			if (value !== undefined) suffix += ` ${key}=${value}`;
+		} catch {
+			// A hostile property (revoked Proxy, throwing getter) must not crash the logger - skip it.
+		}
+	}
+	return suffix;
+}
+
+function renderErrorLine(error: any, maxLength = Infinity): string {
+	try {
+		// The stack repeats the message ahead of its frames, so a message longer than maxLength would
+		// leave no frame uncut; it is not materialized then.
+		const message = maxLength === Infinity ? undefined : error?.message;
+		const base =
+			typeof message === 'string' && message.length > maxLength
+				? `${error.constructor?.name ?? 'Error'}: ${message.slice(0, Math.max(0, maxLength))}`
+				: typeof error?.stack === 'string'
+					? error.stack
+					: errorToString(error);
+		return base + loggablePropsSuffix(error);
+	} catch (err) {
+		// error?.stack itself can throw on a hostile object (e.g. a getter on a `cause` chain member
+		// that throws a revoked Proxy) - `err` is then whatever was thrown, so it must be rendered via
+		// errorToString, the only renderer in this file explicitly guaranteed never to throw regardless
+		// of input. `err instanceof Error`/`String(err)` are NOT safe here: both throw on a revoked
+		// Proxy, which would defeat this catch's whole purpose.
+		return `[Unrenderable Error: ${errorToString(err)}]`;
+	}
+}
+
+/**
+ * Renders an error to its stack (class name + message + frames) plus a small allowlist of
+ * diagnostic properties (see `LOGGABLE_ERROR_PROPS`), then appends the same for each error in its
+ * `cause` chain. Deliberately excludes every OTHER own-enumerable property — those are exactly
+ * what leaks secrets in #1734 (see `errorForLog`).
+ *
+ * The `cause` chain is not under this module's control (any code that threw the outer error could
+ * have attached a hostile `cause` - a revoked Proxy, an object with a throwing getter), so every
+ * step of the walk is defensive: this function must never throw regardless of what it's given.
+ * Stops appending causes once the output passes `maxLength`.
+ */
+function errorToLogString(error: any, maxLength = Infinity) {
+	if (error == null) return String(error);
+	let output = renderErrorLine(error, maxLength);
+	const seen = new Set([error]);
+	let cause: any;
+	try {
+		cause = error.cause;
+	} catch {
+		return output;
+	}
+	while (cause != null && !seen.has(cause) && output.length <= maxLength) {
+		seen.add(cause);
+		output += `\ncaused by: ${renderErrorLine(cause, maxLength - output.length)}`;
+		try {
+			cause = cause.cause;
+		} catch {
+			break;
+		}
+	}
+	return output;
+}
+
+/**
+ * Returns a log-safe representation of an error for passing to the logger. It renders the stack
+ * (class name + message + frames) plus any `cause` chain, but NOT the error's own-enumerable
+ * properties.
+ *
+ * This deliberately avoids logging the raw Error object: Node's Console formats a logged Error with
+ * util.inspect, which dumps every own-enumerable property. Anything an app or an HTTP client library
+ * stashes on a thrown Error — a credential used for an outbound Authorization header, an axios
+ * `config`/`request` with headers — would otherwise land verbatim in hdb.log (see #1734). Those
+ * custom properties are not part of the stack, so this preserves debuggability without leaking them.
+ *
+ * A wrapper carrying the rendering on `util.inspect.custom` is returned rather than a pre-built
+ * string so the (potentially expensive) stack materialization only happens if the logger's level
+ * gate actually writes the entry — passing a raw string would force it eagerly on the discarded path.
+ */
+export function errorForLog(error: any) {
+	const render = () => errorToLogString(error);
+	return { [inspect.custom]: render, toString: render };
+}
+
+// Bounds deepSanitizeErrors' walk: deep enough to reach any realistic diagnostic payload shape,
+// capped so a pathological/adversarial structure can't blow the stack.
+const MAX_SANITIZE_DEPTH = 20;
+
+// Default per-object property cap (used when inspectForLog's caller didn't request a specific
+// maxArrayLength) and an absolute ceiling on total nodes visited across the WHOLE walk. Per-
+// container breadth alone isn't enough: a structure that is merely wide at every one of
+// MAX_SANITIZE_DEPTH levels multiplies out to an astronomical node count, so a global counter is
+// the actual backstop. Both exist because sanitizing happens BEFORE util.inspect's own
+// maxArrayLength truncation runs - a huge/sparse array or a huge Map/Set in a structured error
+// (`new Array(0xffffffff)`, or a hostile component's crafted payload) would otherwise force this
+// walk to visit billions of entries and wedge the event loop while just trying to log the
+// *original* error, before inspect ever gets a chance to truncate the output.
+const DEFAULT_MAX_SANITIZE_ENTRIES = 1000;
+const MAX_SANITIZE_NODES = 50_000;
+// Hard ceiling on the per-container breadth budget, regardless of what a caller requests via
+// inspectForLog's `maxArrayLength` option. Without this, a caller passing an unbounded value
+// (`Infinity`, or just a very large finite one) sets a container's own loop limit that high too -
+// so even though deepSanitizeErrors itself starts returning cheap placeholders once
+// MAX_SANITIZE_NODES is exhausted, the PARENT loop (the one iterating a huge array/Map/Set's
+// entries) still runs for its full stated limit before that ever kicks in, defeating the budget as
+// a real ceiling on total work. The one caller in this codebase passes 250; this only bites a
+// caller that deliberately (or by bug) requests something far larger.
+const HARD_MAX_SANITIZE_ENTRIES = 10_000;
+// Ceiling, in characters, on one inspectForLog render (its UTF-8 form is at most 3x that): the
+// per-container and node limits above multiply rather than add, so they do not bound the total. Well
+// above the largest known legitimate payload, deployComponent's install_output (capped at 16KB).
+const MAX_LOG_RENDER_LENGTH = 256 * 1024;
+// The walk's estimate stops short of the exact cap so the truncation markers and closing brackets it
+// does not charge still fit, and a render the walk truncated normally ends whole instead of being cut
+// by the exact cap.
+const SANITIZE_RENDER_BUDGET = MAX_LOG_RENDER_LENGTH - 16 * 1024;
+// Work on properties an inherited inspect hook's output replaced, which never renders: bounded apart
+// from the render budget so one large such object does not starve the fields after it.
+const MAX_DISCARDED_RENDER = 4 * SANITIZE_RENDER_BUDGET;
+const OMITTED_LABEL = '[omitted (sanitize budget)]';
+const NOT_RENDERED_LABEL = '[below inspect depth]';
+const COLLAPSED_MARKER = Symbol('sanitize: collapsed at inspect depth');
+const NATIVE_BUFFER_INSPECT = Object.getOwnPropertyDescriptor(Buffer.prototype, inspect.custom)?.value;
+const REDACTED_LABEL = '[redacted]';
+
+interface SanitizeBudget {
+	nodes: number;
+	// Array, Map and Set entries walked per container: what util.inspect prints (maxArrayLength).
+	maxEntries: number;
+	// Object properties walked per container (util.inspect prints all of them).
+	maxKeys: number;
+	// Estimated render length still available.
+	chars: number;
+	// Charged for properties an inherited hook's output replaced, then refunded to `chars`.
+	discarded: number;
+	maxStringLength: number;
+	// util.inspect expands a container only at a level at or below this, so nothing below the next
+	// level is ever printed.
+	renderDepth: number;
+	// What util.inspect would hand a custom inspect hook.
+	renderOptions: any;
+	// For rendering a leaf without running a hook it carries, which would bypass the walk.
+	leafOptions: any;
+}
+
+interface SeenEntry {
+	clone: any;
+	// A clone built at this depth holds only what util.inspect prints from there, so it stands in for
+	// the original only at this depth or deeper.
+	depth: number;
+	// Set once the clone is complete, and charged again on a repeat reference, because util.inspect
+	// prints a shared sub-object in full at every occurrence; still unset means a cycle, which it
+	// prints as [Circular].
+	cost?: number;
+}
+
+function isBudgetSpent(budget: SanitizeBudget): boolean {
+	return budget.chars <= 0 || budget.nodes >= MAX_SANITIZE_NODES;
+}
+
+function entryOverhead(depth: number): number {
+	return 2 * depth + 4;
+}
+
+function omittedCharacters(count: number): string {
+	return `... [${count} more characters omitted (sanitize budget)]`;
+}
+
+function chargeText(text: string, budget: SanitizeBudget, renderedLength = text.length): string {
+	budget.chars -= renderedLength;
+	if (budget.chars >= 0) return text;
+	const kept = Math.max(0, Math.min(text.length, renderedLength + budget.chars));
+	if (kept === text.length) return text;
+	return text.slice(0, kept) + omittedCharacters(text.length - kept);
+}
+
+/** A util.inspect-style placeholder rendered without invoking anything. */
+function labelPlaceholder(label: string) {
+	return { [inspect.custom]: () => label, toString: () => label };
+}
+
+/** Text util.inspect prints verbatim (re-indented to where it lands), charged at its exact length:
+ *  how a leaf whose rendered size the walk cannot estimate reaches the render. */
+function renderedLeaf(text: string, budget: SanitizeBudget) {
+	return labelPlaceholder(chargeText(text, budget));
+}
+
+/** The custom inspect hook util.inspect would find on an opaque built-in or function, read through
+ *  descriptors only; a Proxy or accessor level yields none, and the leaf then prints natively. */
+function leafInspectHook(value: object): Function | undefined {
+	for (let level: any = value; level !== null; level = Object.getPrototypeOf(level)) {
+		if (types.isProxy(level)) return undefined;
+		const descriptor = Object.getOwnPropertyDescriptor(level, inspect.custom);
+		if (descriptor) return typeof descriptor.value === 'function' ? descriptor.value : undefined;
+	}
+	return undefined;
+}
+
+/** A container util.inspect prints only as `[ClassName]` at this depth, so none of its entries are
+ *  walked; the marker keeps a non-empty one from printing as empty. */
+function collapsedClone(entry: SeenEntry, hasEntries: boolean) {
+	if (hasEntries) defineOwnProperty(entry.clone, COLLAPSED_MARKER, true);
+	entry.cost = 0;
+	return entry.clone;
+}
+
+function chargedPlaceholder(label: string, budget: SanitizeBudget, depth: number) {
+	budget.nodes++;
+	budget.chars -= entryOverhead(depth) + label.length;
+	return labelPlaceholder(label);
+}
+
+/** A util.inspect-style placeholder for an accessor property, describing it without invoking the
+ *  getter — see the getter-invocation note on deepSanitizeErrors below. */
+function accessorPlaceholder(descriptor: PropertyDescriptor, budget: SanitizeBudget, depth: number) {
+	return chargedPlaceholder(
+		descriptor.get && descriptor.set ? '[Getter/Setter]' : descriptor.get ? '[Getter]' : '[Setter]',
+		budget,
+		depth
+	);
+}
+
+/** True for a value stored under a credential-shaped key (a symbol key by its description). null,
+ *  undefined and booleans cannot carry a secret, and `token: undefined` is the diagnostic an operator
+ *  needs, so those still render. */
+function isCredentialEntry(key: unknown, value: unknown): boolean {
+	const name = typeof key === 'symbol' ? key.description : key;
+	return typeof name === 'string' && value != null && typeof value !== 'boolean' && CREDENTIAL_KEY_PATTERN.test(name);
+}
+
+/** `value`'s own enumerable custom inspect hook. Reading it runs an accessor-defined hook's getter,
+ *  which util.inspect would equally run to find it. */
+function ownInspectHook(value: object): Function | undefined {
+	try {
+		if (!Object.getOwnPropertyDescriptor(value, inspect.custom)?.enumerable) return undefined;
+		const hook = value[inspect.custom];
+		return typeof hook === 'function' ? hook : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The custom inspect hook `proto`'s chain defines, read without invoking anything: the chain has
+ *  already passed isSafeToWearPrototype, so it holds no Proxy and no accessor. */
+function inheritedInspectHook(proto: object): Function | undefined {
+	for (let level = proto; level !== null && level !== Object.prototype; level = Object.getPrototypeOf(level)) {
+		const descriptor = Object.getOwnPropertyDescriptor(level, inspect.custom);
+		if (descriptor) return typeof descriptor.value === 'function' ? descriptor.value : undefined;
+	}
+	return undefined;
+}
+
+function callInspectHook(hook: Function, self: object, depth: number, budget: SanitizeBudget): any {
+	try {
+		// Mirror util.inspect: pass a hook `null`, not Infinity, when the caller's depth is unlimited.
+		const remainingDepth = budget.renderOptions.depth === null ? null : budget.renderDepth - depth;
+		return hook.call(self, remainingDepth, budget.renderOptions, inspect);
+	} catch (err) {
+		return `[Unrenderable value: ${errorToString(err)}]`;
+	}
+}
+
+/**
+ * Placeholder substituted when a recursive sanitize step on a child throws, instead of falling
+ * back to that child's raw (unsanitized) value. A throw here is not a reason to skip sanitizing -
+ * it is exactly the case a hostile value produces (e.g. a Proxy whose `ownKeys` trap throws once
+ * reached one level down), and the child that triggered it may itself contain an unsanitized
+ * Error. Falling back to raw would silently hand that Error to inspect() at the raised depth,
+ * recreating the #1734 leak this whole walk exists to prevent.
+ */
+function sanitizeFailurePlaceholder() {
+	return labelPlaceholder('[Unrenderable value: sanitize failed]');
+}
+
+// Unique symbol keys for the plain-object breadth-cap markers below, rather than a string key
+// like the array/Map/Set truncation markers use - a hostile or just plain unlucky object could
+// have an own string property literally named the same as a string marker, silently colliding
+// with (and hiding) real data. A locally-scoped Symbol can never collide with an enumerable
+// string OR pre-existing symbol key on the original value.
+const KEYS_TRUNCATED_MARKER = Symbol('sanitize: string-keyed properties truncated');
+const SYMBOLS_TRUNCATED_MARKER = Symbol('sanitize: symbol-keyed properties truncated');
+
+/**
+ * True for the specific built-ins whose actual data is NOT reachable through their own-enumerable
+ * string/symbol keys, so rebuilding them via a property walk would silently corrupt their
+ * rendering (Object.keys(new Date()) is `[]`; a Buffer's bytes live in a typed-array internal
+ * slot, not enumerable own properties). Everything else - an object literal, a class instance, a
+ * VM cross-realm object of either - IS walked and rebuilt: a class or custom-prototype instance is
+ * just as capable of holding a nested Error as a plain object (`http_resp_msg` is a generic field,
+ * not limited to the known deploy payload), and leaving instances raw would hand the raised inspect
+ * depth below a real, generic secret-leak path. `types.is*` checks an internal slot, not the
+ * prototype chain, so - like isNativeError / types.isMap / types.isSet elsewhere in this file -
+ * this is realm-independent: a VM-created Date is still recognized as opaque.
+ *
+ * Promise is deliberately NOT included here (handled separately in deepSanitizeErrors, see below):
+ * unlike the others, a Promise's resolved/rejected value is not merely internal-slot data with a
+ * fixed rendering, it's arbitrary caller data - and util.inspect renders it directly, own-enumerable
+ * properties and all (`util.inspect(Promise.resolve(errorWithSecretHeader), { depth: 8 })` prints
+ * the header). There is no supported synchronous way to read that value in order to sanitize it, so
+ * the only safe option is to never hand a Promise to inspect() raw.
+ *
+ * An *expando* own-enumerable property stashed directly on one of these (e.g. `const d = new
+ * Date(); d.cause = secretError`) would otherwise leak the same way the Promise case above does -
+ * inspect() renders own-enumerable properties on ANY object, opaque built-ins included. Handled by
+ * hasEnumerableOwnProps/safeOpaqueBuiltinSummary below: the common path (no expando) renders the
+ * value itself in its native format; only a value actually carrying one pays for a safe
+ * replacement.
+ */
+function isOpaqueBuiltin(value: object): boolean {
+	return (
+		types.isDate(value) ||
+		types.isRegExp(value) ||
+		types.isArrayBufferView(value) || // covers Buffer and every TypedArray/DataView
+		types.isAnyArrayBuffer(value) ||
+		types.isWeakMap(value) ||
+		types.isWeakSet(value) ||
+		types.isBoxedPrimitive(value) // a boxed Boolean/Number/String/Symbol/BigInt wrapper
+	);
+}
+
+// %TypedArray%.prototype - the shared abstract superclass prototype every concrete TypedArray
+// (Uint8Array, Buffer, etc.) inherits `length` from. Read once so hasEnumerableOwnProps can bind
+// to it explicitly via Reflect.get, the same hijack-avoidance pattern as the Map/Set branches'
+// `Reflect.get(Map.prototype, 'size', value)` - the intrinsic `length` getter is spec-configurable,
+// so a hostile value can shadow it with an own `length` property reporting whatever it likes.
+const TYPED_ARRAY_PROTO = Object.getPrototypeOf(Uint8Array.prototype);
+
+// Above this many elements, hasEnumerableOwnProps skips its indexed-type check and fails closed
+// (assumes an expando IS present, safe direction) rather than paying for it - see the comment at
+// that check for why.
+const MAX_INDEXED_EXPANDO_CHECK_LENGTH = 10_000;
+
+/**
+ * True if `value` has any own-enumerable string or symbol property beyond its own intrinsic data -
+ * i.e. an expando - since none of isOpaqueBuiltin's types (nor a bare function) normally carry any.
+ * Checked before deciding whether an opaque built-in/function is safe to hand to inspect() raw.
+ * Errs conservative: if the check itself cannot be completed safely (a hostile `ownKeys`/descriptor
+ * trap), treat that as "has an expando" rather than risk a false "clean" on something we couldn't
+ * actually verify.
+ *
+ * A TypedArray/Buffer's own numeric indices ARE its intrinsic byte/element data, own-enumerable
+ * exactly like any other array - `Object.keys(Buffer.from('hi'))` is `['0', '1']` - so those don't
+ * count as expandos here; only a key beyond `[0, length)` does. A boxed String has the same shape
+ * (`Object.keys(new String('hi'))` is the same `['0', '1']`) and gets the same carve-out; detected
+ * via `types.isStringObject` (an internal-slot check, like `isOpaqueBuiltin`'s `types.is*` checks
+ * above) rather than `Object.prototype.toString.call`, which reads the value's own
+ * `Symbol.toStringTag` property - a hostile value defining that as a getter would have it run
+ * during this supposedly passive classification. DataView has no such index
+ * properties (its data is accessed only via get/set methods), so it's excluded from the carve-out
+ * and goes through the plain `Object.keys(value).length > 0` check like any ordinary object.
+ *
+ * For either indexed shape, checking for an expando against `Object.keys` costs one array
+ * allocation sized to the FULL length just to answer "clean or not" - fine for a small buffer, but
+ * a multi-hundred-MB Buffer or huge boxed string would materialize a matching number of key strings
+ * merely to decide this supposedly-cheap fast path applies, turning it into an attacker-sized scan
+ * on the error-logging path itself. Above MAX_INDEXED_EXPANDO_CHECK_LENGTH elements, skip the check
+ * and FAIL CLOSED (assume it HAS an expando) rather than skip it and assume clean: the safe
+ * direction when we can't verify is always "has an expando" (same as the hostile-trap catch above),
+ * never "verified clean" - failing open here would return e.g. a `Buffer.alloc(10_001)` carrying a
+ * real, ordinary-sized expando raw, unsanitized. Failing closed still avoids the expensive scan
+ * (that's the whole point of the size cap) - it just means a huge but genuinely expando-free
+ * Buffer/string also renders as safeOpaqueBuiltinSummary's generic placeholder above this size,
+ * rather than its full native format. Losing pretty-printing for a buffer/string that large is a
+ * reasonable trade for never guessing "clean" on data we didn't actually check.
+ */
+function hasEnumerableOwnProps(value: object): boolean {
+	try {
+		const isTypedArray = ArrayBuffer.isView(value) && !types.isDataView(value);
+		const isBoxedString = types.isStringObject(value);
+		if (isTypedArray || isBoxedString) {
+			// The typed-array getter is bound explicitly (see TYPED_ARRAY_PROTO above) to survive a
+			// shadowed own `length`; a boxed String's `length` is a non-configurable, non-writable own
+			// property per spec and can't be shadowed, so a direct read is already safe.
+			const length = isTypedArray ? Reflect.get(TYPED_ARRAY_PROTO, 'length', value) : (value as any).length;
+			if (typeof length !== 'number') return true; // couldn't verify the intrinsic size - conservative
+			if (length > MAX_INDEXED_EXPANDO_CHECK_LENGTH) return true; // too large to check - fail closed, not clean
+			const keys = Object.keys(value);
+			for (const key of keys) {
+				const index = key === '' ? NaN : Number(key);
+				if (!(Number.isInteger(index) && index >= 0 && index < length && String(index) === key)) return true;
+			}
+		} else if (Object.keys(value).length > 0) {
+			return true;
+		}
+		for (const sym of Object.getOwnPropertySymbols(value)) {
+			if (Object.getOwnPropertyDescriptor(value, sym)?.enumerable) return true;
+		}
+		return false;
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * Returns a value safe to hand to inspect() in place of an opaque built-in that (unusually) carries
+ * an expando property - reached only via hasEnumerableOwnProps returning true, never on the common
+ * expando-free path. Date/RegExp/WeakMap/WeakSet are cheap to reconstruct byte/value-for-value from
+ * their intrinsic prototype (bound explicitly via .call/Reflect.get, not `value.getTime()` etc,
+ * exactly so an own property shadowing that method - the same class of hijack the Map/Set branches
+ * below guard against - can't run instead of the real accessor); WeakMap/WeakSet never expose their
+ * entries via inspect regardless, so a fresh empty instance loses nothing. Buffer/TypedArray/
+ * DataView/ArrayBuffer/boxed-primitives are left as a bounded type-tag summary instead: safely
+ * reconstructing an exact byte-for-byte or value-for-value copy needs per-subtype branching that
+ * isn't worth it for how rarely one of these ever carries an expando in the first place.
+ */
+function safeOpaqueBuiltinSummary(value: object): any {
+	try {
+		if (types.isDate(value)) return new Date(Date.prototype.getTime.call(value));
+		if (types.isRegExp(value)) {
+			const source = Reflect.get(RegExp.prototype, 'source', value);
+			// Built manually from each individual flag getter (bound via Reflect.get, same
+			// hijack-avoidance pattern as source/Map/Set elsewhere in this file) rather than reading
+			// the combined `RegExp.prototype.flags` getter: per spec, `flags` synthesizes its result by
+			// reading `this.global`, `this.ignoreCase`, etc. as ordinary property gets on `value` -
+			// each individual flag getter (`global`, `ignoreCase`, ...) instead reads the internal
+			// [[OriginalFlags]] slot directly, the same as `source`. An expando shadowing e.g. `global`
+			// with a hostile getter would otherwise have `flags` invoke it while merely trying to
+			// reconstruct a safe copy of the RegExp.
+			let flags = '';
+			if (Reflect.get(RegExp.prototype, 'hasIndices', value)) flags += 'd';
+			if (Reflect.get(RegExp.prototype, 'global', value)) flags += 'g';
+			if (Reflect.get(RegExp.prototype, 'ignoreCase', value)) flags += 'i';
+			if (Reflect.get(RegExp.prototype, 'multiline', value)) flags += 'm';
+			if (Reflect.get(RegExp.prototype, 'dotAll', value)) flags += 's';
+			if (Reflect.get(RegExp.prototype, 'unicode', value)) flags += 'u';
+			if (Reflect.get(RegExp.prototype, 'unicodeSets', value)) flags += 'v';
+			if (Reflect.get(RegExp.prototype, 'sticky', value)) flags += 'y';
+			return new RegExp(source, flags);
+		}
+		if (types.isWeakMap(value)) return new WeakMap();
+		if (types.isWeakSet(value)) return new WeakSet();
+	} catch {
+		// fall through to the generic tag-only summary below
+	}
+	// A fixed, types.is*-derived tag - never Object.prototype.toString.call(value), which reads the
+	// value's own Symbol.toStringTag and would invoke a hostile getter defined there while merely
+	// picking a label (the same class of bug fixed in isErrorLike's classification - see there). Every
+	// branch here is an internal-slot check, so none of them can run caller-controlled code.
+	let tag = 'value';
+	if (types.isStringObject(value)) tag = 'String';
+	else if (types.isNumberObject(value)) tag = 'Number';
+	else if (types.isBooleanObject(value)) tag = 'Boolean';
+	else if (types.isSymbolObject(value)) tag = 'Symbol';
+	else if (types.isArrayBufferView(value)) tag = 'ArrayBufferView';
+	else if (types.isAnyArrayBuffer(value)) tag = 'ArrayBuffer';
+	return labelPlaceholder(`[${tag} with own properties omitted for safety]`);
+}
+
+/** Defines `key` as an own DATA property via defineProperty rather than `target[key] = value`.
+ *  Once a sanitized clone's prototype is restored to the original's (see deepSanitizeErrors), a
+ *  plain assignment for a key that has an inherited accessor further up that prototype chain would
+ *  invoke the INHERITED SETTER instead of creating an own property - running arbitrary code during
+ *  what should be a passive render - and a key literally named `__proto__` would hit the legacy
+ *  Object.prototype.__proto__ setter and reparent the clone instead of storing a property named
+ *  "__proto__". defineProperty always creates/replaces an own property directly, regardless of key
+ *  name or what the prototype chain declares. */
+function defineOwnProperty(target: any, key: string | symbol, value: any) {
+	Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
+}
+
+/**
+ * True if `proto` (and every prototype above it, up to but excluding Object.prototype/null) is
+ * safe for a stateless sanitized clone to wear - i.e. util.inspect can later render a value with
+ * this prototype without running any caller-controlled code.
+ *
+ * This used to be answered by actually calling `inspect()` on the empty clone as a probe - but
+ * that IS running caller-controlled code, just earlier and silently: `inspect()` walks the full
+ * prototype chain (not just the immediate level) doing its own class-name/tag detection, which
+ * invokes a Proxy ANCESTOR's traps (`types.isProxy(proto)` alone only catches the immediate
+ * level), reads an inherited `Symbol.toStringTag` getter, and - even with `customInspect: false`
+ * suppressing the clone's OWN custom inspector - still leaves that same inspector to be invoked a
+ * second time by the real render later. A hostile trap/getter that never returns wedges the
+ * logging worker regardless of which of those two invocations reaches it.
+ *
+ * So this never invokes anything: `types.isProxy` and `Object.getOwnPropertyNames`/
+ * `getOwnPropertyDescriptor`/`getPrototypeOf` are internal-slot/structural reads on each
+ * non-Proxy level, same as the rest of this file's reflection. A level is rejected if it's a
+ * Proxy (any trap, including on revocation) or defines any OWN accessor (getter/setter) property
+ * - the exact shape of a branded built-in's internal-slot getter (e.g. URL.prototype's
+ * `href`/`protocol`/...), and there is no way to tell "safe getter" from "hostile getter" without
+ * invoking it, so any accessor anywhere in the chain fails closed. An ordinary class's prototype
+ * (only a data `constructor` property, plus perhaps plain methods) passes, so a plain
+ * custom-class instance still renders with its real class name (see the 'Diagnostic' test).
+ */
+function isSafeToWearPrototype(proto: object): boolean {
+	let level: any = proto;
+	while (level !== null && level !== Object.prototype) {
+		if (types.isProxy(level)) return false;
+		let keys: (string | symbol)[];
+		try {
+			keys = [...Object.getOwnPropertyNames(level), ...Object.getOwnPropertySymbols(level)];
+		} catch {
+			return false;
+		}
+		for (const key of keys) {
+			if (key === 'constructor') continue; // an ordinary data property on every class prototype
+			let descriptor;
+			try {
+				descriptor = Object.getOwnPropertyDescriptor(level, key);
+			} catch {
+				return false;
+			}
+			if (descriptor && (descriptor.get || descriptor.set)) return false;
+		}
+		try {
+			level = Object.getPrototypeOf(level);
+		} catch {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
+ * Recursively walks a plain object/array, replacing every Error-like value found at any depth
+ * with its errorForLog text (see isErrorLike/errorForLog and #1734). sanitizeErrorArgs is
+ * deliberately shallow because it guards the hot, frequent top-level log-call path — this walk is
+ * for inspectForLog's callers instead, which are low-frequency (a caught error's diagnostic
+ * detail), so the extra traversal cost doesn't matter and full coverage does: an Error nested
+ * anywhere inside a value later rendered with a raised inspect depth (see inspectForLog) would
+ * otherwise surface its own-enumerable properties raw.
+ *
+ * Arrays, Map, Set, and every other object EXCEPT the isOpaqueBuiltin exclusions above are rebuilt
+ * so an Error nested inside them at any depth is still reached and sanitized - a raw Error left
+ * unsanitized anywhere in the tree would surface its own-enumerable properties (e.g. an axios
+ * `config.headers.Authorization`) raw once the raised inspect depth below reaches it. A rebuilt
+ * object/class-instance clone has the original's prototype restored (Object.setPrototypeOf) so
+ * inspect() still shows its real class name - the clone differs from the original only in which of
+ * its OWN enumerable properties got swapped for a sanitized/placeholder value, same as it would for
+ * a plain object.
+ *
+ * Custom inspect hooks, own or inherited, are resolved here rather than by util.inspect: each is
+ * called once, in walk order, where util.inspect would call it (an own hook with the original as
+ * `this`, an inherited one with the clone), and what it returns replaces the value and is walked
+ * like any other. So a hook's output is sanitized, masked and charged in order, and no clone carries
+ * a hook for util.inspect to run at render time.
+ *
+ * Cycle-safe via a WeakMap from original to its (in-progress) clone, registered before recursing
+ * into children, so a cycle resolves to the clone in progress rather than falling back to the raw
+ * original (which would bypass sanitization on the repeated branch) - and depth-capped so a
+ * pathologically deep structure can't blow the stack. Every property read and recursive step is
+ * individually guarded so one hostile getter or exotic nested value can only cost that one
+ * field, not the whole render (inspectForLog's own try/catch around inspect() is still the final
+ * backstop regardless).
+ *
+ * Never invokes an accessor (getter) property, and never resolves an overridable Symbol.iterator:
+ * unlike util.inspect's default (which shows a getter as `[Getter]` without calling it), reading
+ * `value[key]`/`value[sym]` for every own-enumerable key - or iterating an array/Map/Set with
+ * `for...of`, which resolves the value's own-or-inherited `Symbol.iterator` - would run arbitrary
+ * synchronous code, including a subclass instance's overridden iterator, while the logger is just
+ * trying to report the *original* error (a hostile accessor/iterator that loops, blocks, or
+ * mutates state runs regardless). Arrays are walked by own property descriptor per index instead
+ * of `for...of`; Map/Set are walked via their intrinsic prototype methods bound with `.call`,
+ * which reads the internal slot data directly rather than going through the instance's own (or an
+ * overriding subclass's) iterator method. Objects read property descriptors and recurse only into
+ * a data descriptor's value; an accessor gets accessorPlaceholder's label instead. Every own
+ * property is written via defineOwnProperty rather than assignment, so a clone whose prototype was
+ * restored to a class's prototype can't trigger an inherited setter (or the legacy `__proto__`
+ * setter) partway through the walk.
+ *
+ * Breadth-bounded via `budget`, shared across the whole walk (not reset per container): each
+ * container is capped at `budget.maxEntries` entries (with a placeholder noting what was
+ * skipped), and the walk stops sanitizing entirely past `MAX_SANITIZE_NODES` total nodes visited,
+ * regardless of per-container caps - see the constants' comment for why both are needed. The same
+ * budget carries an estimate of the rendered length, charged per entry as the walk goes; once it or
+ * the node count is spent, each open container stops and records what it omitted.
+ *
+ * Only what util.inspect prints is walked and charged: nothing below the level at which it collapses
+ * a container to `[Object]` (budget.renderDepth + 1).
+ *
+ * Masks the value of any data property or Map entry whose key matches CREDENTIAL_KEY_PATTERN, at any
+ * depth the walk reaches (see isCredentialEntry).
+ */
+function deepSanitizeErrors(value: any, seen: WeakMap<object, SeenEntry>, depth: number, budget: SanitizeBudget): any {
+	// Functions are `typeof 'function'`, not 'object' - included here (rather than falling through
+	// as if they were a harmless primitive) because a function is just as capable of carrying an
+	// expando own-enumerable property (`fn.cause = secretError`, an ordinary and not-even-unusual
+	// JS pattern) as a plain object is, and inspect() renders those own properties the same way.
+	// Counted first, before even the primitive-leaf check below, so a primitive leaf (string/number/
+	// etc in an array/object, the overwhelmingly common case) consumes exactly as much of the shared
+	// budget as a container does. Without this, only container nodes counted towards
+	// MAX_SANITIZE_NODES while each one's up-to-budget.maxEntries primitive children were free, so
+	// e.g. 50,000 containers of 250 primitive fields each could still walk ~12.5 million values
+	// before this cap ever engaged.
+	if (++budget.nodes > MAX_SANITIZE_NODES) return labelPlaceholder('[Unrenderable value: sanitize budget exceeded]');
+	const isPrimitive = value === null || (typeof value !== 'object' && typeof value !== 'function');
+	if (depth > budget.renderDepth + 1) return isPrimitive ? value : labelPlaceholder(NOT_RENDERED_LABEL);
+	if (budget.chars <= 0) return labelPlaceholder(OMITTED_LABEL);
+	budget.chars -= entryOverhead(depth);
+	if (typeof value === 'string') {
+		return chargeText(value, budget, Math.min(value.length, budget.maxStringLength) + 2);
+	}
+	if (isPrimitive) {
+		budget.chars -= String(value).length;
+		return value;
+	}
+	// Checked before isErrorLike/anything else that reflects on `value`: types.isProxy queries the
+	// exotic object's internal slots directly (safe even on a revoked Proxy - it never throws), but
+	// EVERY reflective operation past this point - `instanceof` inside isErrorLike, Array.isArray,
+	// Object.getPrototypeOf, Object.keys - invokes whatever trap the Proxy's handler defines for it.
+	// A throwing trap was already caught by the try/catch below, but a trap that hangs (an infinite
+	// loop) or has side effects runs to completion regardless of any catch - on the very path meant
+	// to log a DIFFERENT failure. There is no privileged way in userland to read a Proxy's target
+	// without going through its traps (the exact reason native util.inspect's default rendering,
+	// which does have that privileged access, isn't reusable here - see the Promise note above for
+	// the same class of "can't safely introspect this" tradeoff), so a Proxy is never reflected on
+	// at all: always a safe, static placeholder, trap or no trap.
+	if (types.isProxy(value)) return labelPlaceholder('[Proxy]');
+	if (isErrorLike(value)) return renderedLeaf(errorToLogString(value, budget.chars), budget);
+	const seenEntry = seen.get(value);
+	if (seenEntry && seenEntry.depth <= depth) {
+		if (seenEntry.cost !== undefined) {
+			if (seenEntry.cost > budget.chars) {
+				budget.chars = 0;
+				return labelPlaceholder(OMITTED_LABEL);
+			}
+			budget.chars -= seenEntry.cost;
+		}
+		return seenEntry.clone;
+	}
+	// Depth-capped values are never handed back raw: an Error directly AT this depth is already
+	// caught by isErrorLike above, but a plain container here could still hold an Error somewhere
+	// inside it that we're choosing not to recurse into - handing it back unsanitized would let a
+	// caller-requested depth greater than MAX_SANITIZE_DEPTH (the one caller in this codebase uses
+	// 8, well under it) reach and print that Error's own-enumerable properties raw (#1734).
+	if (depth >= MAX_SANITIZE_DEPTH) return labelPlaceholder('[Unrenderable value: sanitize depth exceeded]');
+
+	let isArray: boolean, isMap: boolean, isSet: boolean, isFunction: boolean;
+	try {
+		isArray = Array.isArray(value);
+		// types.isMap/isSet check an internal slot, not the prototype chain, so (like isNativeError)
+		// they still recognize a Map/Set created in a different realm (component code runs through
+		// node:vm) - `instanceof Map`/`Set` would not, silently leaving that container's contents
+		// (and any Error nested inside) unsanitized at the raised inspect depth below.
+		isMap = !isArray && types.isMap(value);
+		isSet = !isArray && !isMap && types.isSet(value);
+		isFunction = !isArray && !isMap && !isSet && typeof value === 'function';
+		// See the Promise note on isOpaqueBuiltin above: its resolved/rejected value is arbitrary
+		// caller data that inspect() renders directly (own-enumerable properties included), and there
+		// is no supported synchronous way to read it in order to sanitize it - so unlike every other
+		// opaque built-in, a Promise is never handed to inspect() raw, sanitized or not.
+		if (!isArray && !isMap && !isSet && types.isPromise(value)) return labelPlaceholder('[Promise]');
+		const isLeaf = !isArray && !isMap && !isSet && (isFunction || isOpaqueBuiltin(value));
+		if (isLeaf && hasEnumerableOwnProps(value)) {
+			// An expando-carrying function falls through to the object walk below. Only an opaque
+			// built-in that actually carries one pays for safeOpaqueBuiltinSummary.
+			if (!isFunction) return deepSanitizeErrors(safeOpaqueBuiltinSummary(value), seen, depth, budget);
+		} else if (isLeaf) {
+			// A hook other than Node's own Buffer one is resolved like an object's, so its output is walked.
+			const hook = leafInspectHook(value);
+			if (hook === NATIVE_BUFFER_INSPECT) return renderedLeaf(inspect(value, budget.renderOptions), budget);
+			const output = hook ? callInspectHook(hook, value, depth, budget) : value;
+			if (output === value) return renderedLeaf(inspect(value, budget.leafOptions), budget);
+			return typeof output === 'string'
+				? renderedLeaf(output, budget)
+				: deepSanitizeErrors(output, seen, depth, budget);
+		}
+	} catch {
+		// The types.isProxy check above already routes every Proxy (revoked or not) to a placeholder
+		// before this block ever runs, so nothing YET IDENTIFIED reaches this catch on real input -
+		// but on the same "never fall back to raw" principle as every other catch in this walk, a
+		// safe placeholder costs nothing here and closes the door on whatever unforeseen way a
+		// future value might still throw here.
+		return sanitizeFailurePlaceholder();
+	}
+	// A function reaching here carries an expando: fall through into the generic object walk below
+	// (Object.keys/getOwnPropertyDescriptor/getOwnPropertySymbols all work the same on a function as
+	// on a plain object) so that expando gets sanitized like any other object's - the clone won't be
+	// callable and inspect() renders it as a plain `Function { ... }` rather than `[Function: name]`,
+	// but that's a safe, honest trade for a case inspect() would otherwise render with a raw,
+	// unsanitized secret alongside it.
+
+	const charsBefore = budget.chars;
+	// Past util.inspect's depth a container prints as `[ClassName]`, its entries unseen.
+	const expanded = depth <= budget.renderDepth;
+	if (isArray) {
+		const clone: any[] = [];
+		const entry: SeenEntry = { clone, depth };
+		seen.set(value, entry);
+		const length = value.length;
+		if (!expanded) return collapsedClone(entry, length > 0);
+		// Reserve one slot for the truncation marker when overflowing, so the clone's final size is
+		// exactly budget.maxEntries - matching whatever maxArrayLength the caller will inspect() with
+		// - rather than maxEntries + 1, which util.inspect's OWN truncation would then clip anyway,
+		// silently hiding the marker (and the fact that anything was dropped at all) behind its
+		// generic "... N more items" ellipsis.
+		const limit = length > budget.maxEntries ? budget.maxEntries - 1 : length;
+		let i = 0;
+		for (; i < limit && !isBudgetSpent(budget); i++) {
+			let descriptor;
+			try {
+				descriptor = Object.getOwnPropertyDescriptor(value, i);
+			} catch {
+				continue; // leave index i a hole rather than risk a second throw
+			}
+			if (!descriptor) continue; // a genuine sparse-array hole - leave it, not `undefined`
+			if (descriptor.get || descriptor.set) {
+				clone[i] = accessorPlaceholder(descriptor, budget, depth + 1);
+				continue;
+			}
+			try {
+				clone[i] = deepSanitizeErrors(descriptor.value, seen, depth + 1, budget);
+			} catch {
+				clone[i] = sanitizeFailurePlaceholder();
+			}
+		}
+		if (i < length) clone[i] = labelPlaceholder(`[${length - i} more array entries omitted (sanitize budget)]`);
+		entry.cost = charsBefore - budget.chars;
+		return clone;
+	}
+
+	if (isMap) {
+		const clone = new Map();
+		const entry: SeenEntry = { clone, depth };
+		seen.set(value, entry);
+		// Reflect.get with an explicit receiver reads Map.prototype's intrinsic `size` getter bound
+		// to value's internal slot, bypassing an overriding subclass's own `size` the same way the
+		// .call-bound entries() below bypasses an overriding subclass's Symbol.iterator.
+		const size = Reflect.get(Map.prototype, 'size', value);
+		if (!expanded) return collapsedClone(entry, size > 0);
+		const limit = size > budget.maxEntries ? budget.maxEntries - 1 : size;
+		let count = 0;
+		// Map.prototype.entries bound via .call reads the internal [[MapData]] slot directly,
+		// rather than resolving value's own (or an overriding subclass's) Symbol.iterator.
+		for (const [k, v] of Map.prototype.entries.call(value)) {
+			if (count >= limit || isBudgetSpent(budget)) break;
+			count++;
+			// Sanitized independently (rather than in one combined try) so a throw sanitizing the key
+			// doesn't also discard an already-sanitized value, or vice versa - each side falls back to
+			// its own placeholder, never to the other's raw counterpart.
+			let sanitizedKey, sanitizedValue;
+			try {
+				sanitizedKey = deepSanitizeErrors(k, seen, depth + 1, budget);
+			} catch {
+				sanitizedKey = sanitizeFailurePlaceholder();
+			}
+			if (isCredentialEntry(k, v)) {
+				sanitizedValue = chargedPlaceholder(REDACTED_LABEL, budget, depth + 1);
+			} else {
+				try {
+					sanitizedValue = deepSanitizeErrors(v, seen, depth + 1, budget);
+				} catch {
+					sanitizedValue = sanitizeFailurePlaceholder();
+				}
+			}
+			clone.set(sanitizedKey, sanitizedValue);
+		}
+		if (count < size)
+			clone.set(
+				labelPlaceholder('[truncated]'),
+				labelPlaceholder(`[${size - count} more Map entries omitted (sanitize budget)]`)
+			);
+		entry.cost = charsBefore - budget.chars;
+		return clone;
+	}
+
+	if (isSet) {
+		const clone = new Set();
+		const entry: SeenEntry = { clone, depth };
+		seen.set(value, entry);
+		const size = Reflect.get(Set.prototype, 'size', value);
+		if (!expanded) return collapsedClone(entry, size > 0);
+		const limit = size > budget.maxEntries ? budget.maxEntries - 1 : size;
+		let count = 0;
+		// Same rationale as the Map branch above: Set.prototype.values via .call, not for...of.
+		for (const item of Set.prototype.values.call(value)) {
+			if (count >= limit || isBudgetSpent(budget)) break;
+			count++;
+			try {
+				clone.add(deepSanitizeErrors(item, seen, depth + 1, budget));
+			} catch {
+				clone.add(sanitizeFailurePlaceholder());
+			}
+		}
+		if (count < size) clone.add(labelPlaceholder(`[${size - count} more Set entries omitted (sanitize budget)]`));
+		entry.cost = charsBefore - budget.chars;
+		return clone;
+	}
+
+	const result: Record<string | symbol, any> = {};
+	const entry: SeenEntry = { clone: result, depth };
+	seen.set(value, entry);
+	const ownHook = ownInspectHook(value);
+	if (ownHook) {
+		const output = callInspectHook(ownHook, value, depth, budget);
+		// A hook that returns the value itself leaves util.inspect to format it as usual.
+		if (output !== value) {
+			entry.clone =
+				typeof output === 'string' ? renderedLeaf(output, budget) : deepSanitizeErrors(output, seen, depth, budget);
+			entry.cost = charsBefore - budget.chars;
+			return entry.clone;
+		}
+	}
+	let inheritedHook: Function | undefined;
+	try {
+		const proto = Object.getPrototypeOf(value);
+		// A branded built-in with private internal slots (URL, Headers, Request/Response, or any
+		// custom class whose own accessors read `#private` state) throws when util.inspect later
+		// renders a value wearing its prototype but lacking its real internal state - and losing it
+		// unguarded would surface all the way up to inspectForLog's outer catch and replace the
+		// ENTIRE structured payload - not just this one nested field - with a single "[Unrenderable
+		// value]", losing phase/install_output/deployment_id and everything else alongside it, for
+		// one URL-shaped field anywhere in the tree.
+		//
+		// This USED to be answered by actually calling `inspect()` on the empty clone as a probe, but
+		// that runs the same caller-controlled code it's trying to guard against, just earlier and
+		// silently: a Proxy ANYWHERE in the ancestor chain (not just the immediate `proto`) still gets
+		// its traps invoked by inspect's own class-name/tag walk, an inherited `Symbol.toStringTag`
+		// getter still gets read, and even `customInspect: false` only stops the PROBE's own call from
+		// invoking a custom inspector - the real render right after still invokes it a second time,
+		// corrupting a stateful/one-shot inspector's actual output. `isSafeToWearPrototype` answers the
+		// same question without invoking anything (see its doc comment); `proto` is restored only when
+		// it says so. Skipped for `null`/`Object.prototype`, the overwhelmingly common case for a
+		// JSON-like diagnostic payload, where no exotic prototype is ever attached and this check would
+		// be pure overhead for a class that could never fail it.
+		if (proto !== null && proto !== Object.prototype && isSafeToWearPrototype(proto)) {
+			Object.setPrototypeOf(result, proto);
+			inheritedHook = inheritedInspectHook(proto);
+			// Resolved below; util.inspect must not call it again at render time.
+			if (inheritedHook) Object.defineProperty(result, inspect.custom, { value: undefined });
+		}
+	} catch {
+		// Fall through with the clone's default Object.prototype - inspect() renders it without the
+		// class name, but every actual property attached below is still safe to render (see above for
+		// why the prototype itself, not the data, is what's unsafe here).
+	}
+	// Object.keys/getOwnPropertySymbols themselves are one unavoidable O(n) pass (a plain object,
+	// unlike Array/Map/Set, has no O(1) size to check before enumerating) - but everything AFTER
+	// that (getOwnPropertyDescriptor + recurse + defineProperty per key) is the expensive part, and
+	// that part IS capped at budget.maxKeys, like every other container branch's breadth, so a
+	// million-key object can't turn a single log call into a million-entry clone.
+	// An inherited hook still reads the clone's properties, so only a hook-less one collapses; whether
+	// the original is empty is not checked, since that is the full key enumeration this avoids.
+	if (!expanded && !inheritedHook) return collapsedClone(entry, true);
+	if (inheritedHook && budget.discarded >= MAX_DISCARDED_RENDER) {
+		budget.chars -= OMITTED_LABEL.length;
+		entry.clone = labelPlaceholder(OMITTED_LABEL);
+		entry.cost = OMITTED_LABEL.length;
+		return entry.clone;
+	}
+	const keys = Object.keys(value);
+	const keysLimit = keys.length > budget.maxKeys ? budget.maxKeys - 1 : keys.length;
+	let keyCount = 0;
+	for (; keyCount < keysLimit && !isBudgetSpent(budget); keyCount++) {
+		const key = keys[keyCount];
+		if (expanded) {
+			// util.inspect prints a key whole, without maxStringLength
+			if (key.length > budget.chars) {
+				budget.chars = 0;
+				break;
+			}
+			budget.chars -= key.length;
+		}
+		let descriptor;
+		try {
+			descriptor = Object.getOwnPropertyDescriptor(value, key);
+		} catch {
+			continue; // a hostile descriptor trap - omit rather than risk a second throw
+		}
+		if (!descriptor) continue; // removed mid-walk by another property's getter side effect
+		if (descriptor.get || descriptor.set) {
+			defineOwnProperty(result, key, accessorPlaceholder(descriptor, budget, depth + 1));
+			continue;
+		}
+		if (isCredentialEntry(key, descriptor.value)) {
+			defineOwnProperty(result, key, chargedPlaceholder(REDACTED_LABEL, budget, depth + 1));
+			continue;
+		}
+		try {
+			defineOwnProperty(result, key, deepSanitizeErrors(descriptor.value, seen, depth + 1, budget));
+		} catch {
+			defineOwnProperty(result, key, sanitizeFailurePlaceholder());
+		}
+	}
+	if (keyCount < keys.length)
+		defineOwnProperty(
+			result,
+			KEYS_TRUNCATED_MARKER,
+			labelPlaceholder(`[${keys.length - keyCount} more properties omitted (sanitize budget)]`)
+		);
+	const symbols = Object.getOwnPropertySymbols(value);
+	const symbolsLimit = symbols.length > budget.maxKeys ? budget.maxKeys - 1 : symbols.length;
+	let symbolCount = 0;
+	for (; symbolCount < symbolsLimit && !isBudgetSpent(budget); symbolCount++) {
+		const sym = symbols[symbolCount];
+		if (sym === inspect.custom) continue;
+		if (expanded) {
+			const keyLength = String(sym).length;
+			if (keyLength > budget.chars) {
+				budget.chars = 0;
+				break;
+			}
+			budget.chars -= keyLength;
+		}
+		let descriptor;
+		try {
+			descriptor = Object.getOwnPropertyDescriptor(value, sym);
+		} catch {
+			continue;
+		}
+		if (!descriptor?.enumerable) continue;
+		if (descriptor.get || descriptor.set) {
+			defineOwnProperty(result, sym, accessorPlaceholder(descriptor, budget, depth + 1));
+			continue;
+		}
+		if (isCredentialEntry(sym, descriptor.value)) {
+			defineOwnProperty(result, sym, chargedPlaceholder(REDACTED_LABEL, budget, depth + 1));
+			continue;
+		}
+		try {
+			defineOwnProperty(result, sym, deepSanitizeErrors(descriptor.value, seen, depth + 1, budget));
+		} catch {
+			defineOwnProperty(result, sym, sanitizeFailurePlaceholder());
+		}
+	}
+	if (symbolCount < symbols.length)
+		defineOwnProperty(
+			result,
+			SYMBOLS_TRUNCATED_MARKER,
+			labelPlaceholder(`[${symbols.length - symbolCount} more symbol properties omitted (sanitize budget)]`)
+		);
+	if (inheritedHook) {
+		const output = callInspectHook(inheritedHook, result, depth, budget);
+		if (output !== result) {
+			budget.discarded += charsBefore - budget.chars;
+			budget.chars = charsBefore;
+			entry.clone =
+				typeof output === 'string' ? renderedLeaf(output, budget) : deepSanitizeErrors(output, seen, depth, budget);
+		}
+	}
+	entry.cost = charsBefore - budget.chars;
+	return entry.clone;
+}
+
+/**
+ * Returns a log-safe lazy wrapper around `util.inspect(value, options)`, for call sites that need
+ * to log a structured, non-Error value with non-default inspect options (e.g. a deeper depth or
+ * higher array/string limits than Console's defaults, to avoid flattening nested diagnostic data —
+ * see harper#1982). Same rationale as errorForLog: the wrapper defers the (potentially expensive,
+ * e.g. large-array) render until the logger's level gate actually writes the entry, and the render
+ * itself can never throw regardless of what `value` is — including a hostile nested
+ * `[util.inspect.custom]` hook — so a formatting failure can never mask the real thing being
+ * logged (e.g. replace the caught operation error with an inspect error). Any Error nested inside
+ * `value` is sanitized via deepSanitizeErrors before rendering, so a raised inspect depth here
+ * can't surface a nested Error's own-enumerable properties (#1734) the way the raw value would.
+ * `options.maxArrayLength`, if given, also bounds sanitization's own per-container breadth (see
+ * deepSanitizeErrors' budget) - a caller raising the render limit is raising how much genuinely
+ * needs to be walked, not just how much of an already-cheap walk gets displayed.
+ *
+ * The result is at most MAX_LOG_RENDER_LENGTH characters on every path. The walk's estimate is what
+ * bounds the work; this final cut is what makes the length exact, since util.inspect's layout and
+ * escaping are not predictable from the walk. Values under credential-shaped keys are masked (see
+ * deepSanitizeErrors); a custom inspect hook that itself returns such a value as a primitive
+ * renders what it returns.
+ */
+export function inspectForLog(value: any, options?: any) {
+	const render = () => {
+		let rendered: string;
+		try {
+			const requestedEntries = Number(options?.maxArrayLength);
+			const renderOptions = { ...inspect.defaultOptions, ...options, stylize: (text: string) => text };
+			// util.inspect treats null as unlimited for all three
+			const limit = (option: any) => (typeof option === 'number' && option >= 0 ? option : Infinity);
+			renderOptions.maxArrayLength = Math.min(limit(renderOptions.maxArrayLength), HARD_MAX_SANITIZE_ENTRIES);
+			const budget: SanitizeBudget = {
+				nodes: 0,
+				maxEntries: Math.max(1, renderOptions.maxArrayLength),
+				maxKeys:
+					requestedEntries > 0 ? Math.min(requestedEntries, HARD_MAX_SANITIZE_ENTRIES) : DEFAULT_MAX_SANITIZE_ENTRIES,
+				chars: SANITIZE_RENDER_BUDGET,
+				discarded: 0,
+				maxStringLength: limit(renderOptions.maxStringLength),
+				renderDepth: limit(renderOptions.depth),
+				renderOptions,
+				leafOptions: { ...renderOptions, customInspect: false },
+			};
+			rendered = inspect(deepSanitizeErrors(value, new WeakMap(), 0, budget), options);
+		} catch (err) {
+			// errorToString is the guaranteed-never-throw stringifier (unlike `err instanceof Error` or
+			// `String(err)` here, both of which can themselves throw on a hostile value - e.g. a revoked
+			// Proxy thrown by a nested custom-inspect hook - which would otherwise escape this catch and
+			// mask the real operation error being logged).
+			rendered = `[Unrenderable value: ${errorToString(err)}]`;
+		}
+		if (rendered.length <= MAX_LOG_RENDER_LENGTH) return rendered;
+		// Room for the longest possible marker, so the result never exceeds the cap.
+		const kept = MAX_LOG_RENDER_LENGTH - omittedCharacters(rendered.length).length;
+		return rendered.slice(0, kept) + omittedCharacters(rendered.length - kept);
+	};
+	return { [inspect.custom]: render, toString: render };
 }
 
 export function setMainLogger(logger: any) {
@@ -922,11 +2456,11 @@ export function AuthAuditLog(
 	this.path = path;
 }
 // we have to load this at the end to avoid circular dependencies problems
-import { RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
 
 export const getLogFilePath = () => logFilePath;
 export const forComponent = (name: string, isExternal?: boolean) => mainLogger.forComponent(name, isExternal);
-export default {
+export const conditional = mainLogger.conditional;
+const loggerExports = {
 	notify,
 	fatal,
 	error,
@@ -936,6 +2470,9 @@ export default {
 	trace,
 	get logLevel() {
 		return logLevel;
+	},
+	set logLevel(level) {
+		logLevel = level;
 	},
 	loggerWithTag,
 	suppressLogging,
@@ -949,8 +2486,21 @@ export default {
 	setMainLogger,
 	setLogLevel,
 	OUTPUTS,
+	CREDENTIAL_KEY_PATTERN,
 	disableStdio,
+	isStdioBrokenError,
 	externalLogger,
+	conditional,
 	AuthAuditLog,
 	errorToString,
+	errorForLog,
+	inspectForLog,
+	isErrorLike,
+	updateLogger,
+	start: updateLogSettings,
+	startOnMainThread: updateLogSettings,
+	setStatusHandler,
+	status,
 };
+
+export default loggerExports;

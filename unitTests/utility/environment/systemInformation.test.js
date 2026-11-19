@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const sinon = require('sinon');
-const system_information = require('#src/utility/environment/systemInformation');
+const system_information = require('#js/utility/environment/systemInformation');
 const env_mgr = require('#src/utility/environment/environmentManager');
 
 const { SystemInformationRequest } = system_information;
@@ -130,7 +130,7 @@ const EXPECTED_PROPERTIES = {
 		'node_version',
 		'npm_version',
 	],
-	time: ['current', 'uptime', 'timezone', 'timezoneName'],
+	time: ['current', 'uptime', 'timezone', 'timezoneName', 'process_uptime'],
 	cpu: [
 		'manufacturer',
 		'brand',
@@ -176,7 +176,7 @@ const EXPECTED_PROPERTIES = {
 		'reclaimable',
 		'writeback',
 	],
-	disk: ['io', 'read_write', 'size'],
+	disk: ['free_space_basis', 'io', 'read_write', 'size'],
 	disk_io: ['rIO', 'wIO', 'tIO'],
 	disk_read_write: ['rx', 'wx', 'tx'],
 	disk_size: ['fs', 'rw', 'type', 'size', 'used', 'use', 'mount', 'available'],
@@ -253,6 +253,12 @@ describe('test systemInformation module', () => {
 	it('test getTimeInfo function', () => {
 		const results = system_information.getTimeInfo();
 		assert.deepEqual(Object.keys(results).sort(), EXPECTED_PROPERTIES.time.sort());
+		// process_uptime is process.uptime() in seconds (matching the sibling `uptime`), not ms.
+		assert.equal(typeof results.process_uptime, 'number');
+		assert.ok(
+			Math.abs(results.process_uptime - process.uptime()) <= 2,
+			'process_uptime should be process uptime in seconds'
+		);
 	});
 
 	it('test getCPUInfo function', async () => {
@@ -285,7 +291,7 @@ describe('test systemInformation module', () => {
 
 		env_mgr.setProperty('operationsApi_sysInfo_disk', false);
 		results = await system_information.getDiskInfo();
-		assert.deepEqual(results, {});
+		assert.deepEqual(Object.keys(results).sort(), ['free_space_basis']);
 	});
 
 	it('test getNetworkInfo function', async () => {

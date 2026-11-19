@@ -1,0 +1,476 @@
+import * as serverUtilitiesRuntimeModule from '../../../server/serverHelpers/serverUtilities.ts';
+/**
+ * Operations-profile tool generation. Exposes one MCP tool per Harper
+ * operation that survives the `mcp.operations.allow` / `deny` filter, computed
+ * *lazily* by walking Harper's live `OPERATION_FUNCTION_MAP` on each
+ * `tools/list` / `tools/call`.
+ *
+ * The list is computed lazily (not snapshotted at registration) because
+ * components register their operations via `server.registerOperation` during
+ * `startOnMainThread`, which runs AFTER the MCP operations profile registers
+ * (see components/mcp/index.ts → registerMcpProfile). A one-time walk at
+ * registration time would miss every component-registered operation (e.g. the
+ * built-in agent's `agent_prompt`), so `mcp.operations.allow` listing them
+ * would silently have no effect — #1562. Walking the live map per request
+ * removes the ordering dependence and stays consistent as components load.
+ *
+ * The default v1 allow list is read-only and intentionally narrow:
+ * `describe_*`, `list_*`, `search_*`, plus an explicit set of safe
+ * getters (`get_job`, `get_status`, `get_analytics`, `get_metrics`),
+ * `system_information`, `read_log`, `read_audit_log`. A `get_*` glob
+ * was rejected because it would have matched `get_configuration`
+ * (TLS/S3/auth secrets), `get_components` + `get_component_file` +
+ * `get_custom_function*` (component source code, which can embed
+ * secrets), `get_backup`, and `get_deployment{,_payload}` — none of
+ * which should default into the MCP surface even though
+ * `verifyPerms` still gates the actual call. Operators who want any
+ * of those opt in via `mcp.operations.allow`. Destructive ops carry
+ * `destructiveHint: true` so well-behaved MCP clients can surface a
+ * confirmation prompt.
+ *
+ * Tool dispatch delegates to `chooseOperation` + `processLocalTransaction`
+ * — the same path Harper's REST `/operation` endpoint uses. That means
+ * `verifyPerms` runs unchanged, replication catchup runs unchanged, and
+ * server-side validation errors surface as `isError: true` results without
+ * the MCP layer needing to know what each operation expects.
+ */
+import { Readable } from 'node:stream';
+import * as env from '../../../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS, STREAMING_RESPONSE_OPERATIONS } from '../../../utility/hdbTerms.ts';
+import harperLogger from '../../../utility/logging/harper_logger.ts';
+import { matchesAny } from './nameFilter.ts';
+import {
+	canRoleInvokeOperation,
+	setProfileToolProvider,
+	type AuthedUser,
+	type ProfileToolProvider,
+	type ToolDef,
+	type ToolResult,
+} from '../toolRegistry.ts';
+import { wrapToolResult } from './results.ts';
+import { OPERATION_INPUT_SCHEMAS, PERMISSIVE_SCHEMA } from './schemas/operations.ts';
+import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
+
+// Resolved from Harper's server-helpers graph on demand. The map is built at
+// Harper boot but keeps mutating as components register operations during
+// `startOnMainThread` — the provider below re-reads it per request rather than
+// snapshotting (#1562).
+type OperationFunction = (json: object) => unknown | Promise<unknown>;
+type OperationFunctionMap = Map<string, { operation_function: OperationFunction }>;
+
+type ChooseOperation = (body: object) => OperationFunction;
+type ProcessLocalTransaction = (req: { body: object }, fn: OperationFunction) => Promise<unknown>;
+
+interface OperationsConfig {
+	allow?: readonly string[];
+	deny?: readonly string[];
+}
+
+// Test seams replace production dispatch when exercising registry behavior.
+let _opMapOverride: OperationFunctionMap | undefined;
+let _chooseOperationOverride: ChooseOperation | undefined;
+let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
+
+export function _setOperationFunctionMapForTest(m: OperationFunctionMap | undefined): void {
+	_opMapOverride = m;
+}
+export function _setChooseOperationForTest(fn: ChooseOperation | undefined): void {
+	_chooseOperationOverride = fn;
+}
+export function _setProcessLocalTransactionForTest(fn: ProcessLocalTransaction | undefined): void {
+	_processLocalTransactionOverride = fn;
+}
+
+function loadServerUtilities():
+	| {
+			OPERATION_FUNCTION_MAP?: OperationFunctionMap;
+			chooseOperation?: ChooseOperation;
+			processLocalTransaction?: ProcessLocalTransaction;
+	  }
+	| undefined {
+	try {
+		return serverUtilitiesRuntimeModule as any;
+	} catch (err) {
+		harperLogger.trace(`MCP operations tools: serverUtilities unavailable (${(err as Error).message})`);
+		return undefined;
+	}
+}
+
+function getOperationFunctionMap(): OperationFunctionMap | undefined {
+	if (_opMapOverride) return _opMapOverride;
+	const utils = loadServerUtilities();
+	return utils?.OPERATION_FUNCTION_MAP;
+}
+
+function getChooseOperation(): ChooseOperation | undefined {
+	if (_chooseOperationOverride) return _chooseOperationOverride;
+	return loadServerUtilities()?.chooseOperation;
+}
+
+function getProcessLocalTransaction(): ProcessLocalTransaction | undefined {
+	if (_processLocalTransactionOverride) return _processLocalTransactionOverride;
+	return loadServerUtilities()?.processLocalTransaction;
+}
+
+/**
+ * Default v1 allow list — read-only operations only. Operators who want
+ * destructive ops on the MCP surface opt in via `mcp.operations.allow`.
+ */
+export const DEFAULT_ALLOW: readonly string[] = [
+	'describe_*',
+	'list_*',
+	'search_*',
+	// Explicit safe getters only — see file-header rationale. `get_*` would
+	// pull in `get_configuration`, `get_components`, `get_custom_function*`,
+	// `get_backup`, and `get_deployment*`, all of which can leak secrets or
+	// source code into the LLM context even with `verifyPerms` enforcing.
+	'get_job',
+	'get_status',
+	'get_analytics',
+	'get_metrics',
+	'system_information',
+	'read_log',
+	'read_audit_log',
+];
+
+/**
+ * Operations excluded from the DEFAULT allow surface even when a glob matches
+ * (`list_*` would otherwise pull in `list_secrets`). The secrets store is key
+ * custody management, not data reads — none of it belongs on an LLM-facing
+ * surface by default, same rationale as the sensitive `get_*` exclusions
+ * above. Operators can still expose these deliberately via
+ * `mcp.operations.allow` (an explicit allow list replaces the default and is
+ * not filtered by this set), where the audit-log redaction of
+ * `value`/`values`/`envelope` applies.
+ *
+ * OIDC trust policies (#2171) are excluded on the same grounds and then some: a
+ * policy grants an external CI workflow the right to authenticate as a Harper
+ * user, so reading the set tells an attacker exactly which repository and
+ * workflow to compromise, and writing one is a way to grant itself access. The
+ * preview operations read and write such policies, with the role and user they name.
+ */
+export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
+	'set_secret',
+	'grant_secret',
+	'revoke_secret',
+	'list_secrets',
+	'delete_secret',
+	'get_secrets_public_key',
+	'add_oidc_trust',
+	'list_oidc_trust',
+	'drop_oidc_trust',
+	'exchange_oidc_token',
+	'enable_previews',
+	'disable_previews',
+	'fence_preview_releases',
+	'get_preview_policy',
+]);
+
+/**
+ * Operations that carry `destructiveHint: true` when opted into the allow
+ * list. The hint lets MCP clients surface a confirmation prompt before
+ * calling. It is **not** an authorization check — Harper's `verifyPerms`
+ * still runs at the actual dispatch site.
+ */
+const DESTRUCTIVE_OPERATIONS: ReadonlySet<string> = new Set([
+	'drop_schema',
+	'drop_database',
+	'drop_table',
+	'drop_attribute',
+	'delete',
+	'delete_files_before',
+	'delete_records_before',
+	'delete_audit_logs_before',
+	'delete_transaction_logs_before',
+	'drop_user',
+	'drop_role',
+	'disable_previews',
+	'fence_preview_releases',
+	'restart',
+	'restart_service',
+	'set_configuration',
+	'remove_node',
+	'restore_backup',
+	'delete_backup',
+	'purge_backups',
+	'delete_deployment_payload',
+]);
+
+/**
+ * Read-only operations carry `readOnlyHint: true`. The category is wider
+ * than the default allow list (some custom-allowed ops are also read-only
+ * — `system_information`, for example). Any op matching one of these
+ * prefixes or names is treated as read-only.
+ */
+const READ_ONLY_PREFIXES: readonly string[] = ['describe_', 'list_', 'search_', 'get_', 'read_'];
+const READ_ONLY_NAMES: ReadonlySet<string> = new Set(['system_information', 'status']);
+
+/**
+ * Operations annotated with `idempotentHint: true`. Under MCP semantics this
+ * is a STRONGER claim than "doesn't crash on retry": the second call must
+ * produce the same observable outcome as the first. `add_user` is NOT
+ * idempotent in this sense — the second call returns an "already exists"
+ * error rather than the created user.
+ *
+ * Default-empty. Entries are added only after verifying the handler's
+ * repeat-call behavior end-to-end. Under-annotate before mis-annotate.
+ *
+ * Note: read-only operations (DESCRIBE_*, LIST_*, SEARCH_*, GET_*, READ_*,
+ * system_information) are covered by `readOnlyHint: true` — that's the
+ * stronger and correct signal for queries.
+ */
+const IDEMPOTENT_OPERATIONS: ReadonlySet<string> = new Set([
+	// Intentionally empty for v1. Candidates that need pre-merge verification:
+	// - upsert (atomic insert-or-update; same payload should yield same state)
+	// - set_configuration (state-set semantics — confirm; if it's state-merge, NOT idempotent)
+]);
+
+function isReadOnly(operationName: string): boolean {
+	if (READ_ONLY_NAMES.has(operationName)) return true;
+	return READ_ONLY_PREFIXES.some((p) => operationName.startsWith(p));
+}
+
+function isDestructive(operationName: string): boolean {
+	return DESTRUCTIVE_OPERATIONS.has(operationName);
+}
+
+function isIdempotent(operationName: string): boolean {
+	return IDEMPOTENT_OPERATIONS.has(operationName);
+}
+
+function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
+	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
+	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
+	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
+	if (!matchesAny(operation, allowList)) return false;
+	if (matchesAny(operation, config.deny)) return false;
+	return true;
+}
+
+function getOperationsConfig(): OperationsConfig {
+	const allow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
+	const deny = env.get(CONFIG_PARAMS.MCP_OPERATIONS_DENY);
+	return {
+		allow: Array.isArray(allow) ? (allow as readonly string[]) : undefined,
+		deny: Array.isArray(deny) ? (deny as readonly string[]) : undefined,
+	};
+}
+
+function buildDescription(operationName: string, hasCuratedSchema: boolean): string {
+	const curated = OPERATION_DESCRIPTIONS[operationName];
+	if (curated) return curated;
+	const base = `Harper operation '${operationName}'.`;
+	const schemaNote = hasCuratedSchema
+		? ' Arguments validated against the curated schema below.'
+		: ' Arguments forwarded as-is; the server validates and returns a structured error on rejection.';
+	return base + schemaNote;
+}
+
+/**
+ * Maximum number of items or serialized bytes collected from a non-array iterable
+ * or async iterable operation result (`read_audit_log`, `get_analytics`, full-text
+ * `search_by_conditions`, etc.). Exceeding either cap fails with an explicit error
+ * rather than silently clipping results or buffering an unbounded cursor in memory.
+ */
+export const MAX_OPERATION_ITERABLE_ITEMS = 10_000;
+export const MAX_OPERATION_ITERABLE_BYTES = 10 * 1024 * 1024;
+
+function isCollectibleIterable(data: unknown): data is AsyncIterable<unknown> | Iterable<unknown> {
+	if (data === null || typeof data !== 'object') return false;
+	if (Array.isArray(data) || data instanceof Readable || ArrayBuffer.isView(data)) return false;
+	const candidate = data as { [Symbol.asyncIterator]?: unknown; [Symbol.iterator]?: unknown };
+	return typeof candidate[Symbol.asyncIterator] === 'function' || typeof candidate[Symbol.iterator] === 'function';
+}
+
+async function collectIterableResult(
+	operationName: string,
+	iterable: AsyncIterable<unknown> | Iterable<unknown>,
+	signal?: AbortSignal
+): Promise<unknown[]> {
+	const maybeMapError = (
+		iterable as { mapError?: (fn: (error: any) => unknown) => AsyncIterable<unknown> | Iterable<unknown> }
+	).mapError;
+	if (typeof maybeMapError === 'function') {
+		iterable = maybeMapError.call(iterable, (error: any) => ({
+			error: error?.name ?? 'Error',
+			message: error?.message ?? String(error),
+			...error?.partialObject,
+		}));
+	}
+	const items: unknown[] = [];
+	let totalBytes = 0;
+	for await (const item of iterable) {
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		const resolved = await item;
+		if (signal?.aborted) {
+			throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+		}
+		if (items.length >= MAX_OPERATION_ITERABLE_ITEMS) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result limit of ${MAX_OPERATION_ITERABLE_ITEMS} items; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		totalBytes += Buffer.byteLength(typeof resolved === 'string' ? resolved : (JSON.stringify(resolved) ?? ''));
+		if (totalBytes > MAX_OPERATION_ITERABLE_BYTES) {
+			throw new Error(
+				`operation '${operationName}' exceeded the maximum MCP iterable result byte limit of ${MAX_OPERATION_ITERABLE_BYTES} bytes; narrow the query (e.g. start_time/end_time, search_values, or conditions), specify a smaller limit where supported, or use the operations HTTP API`
+			);
+		}
+		items.push(resolved);
+	}
+	if (signal?.aborted) {
+		throw new Error(`operation '${operationName}' aborted while collecting iterable result`);
+	}
+	return items;
+}
+
+/**
+ * Build the dispatch handler for one operation. Returns a function suitable
+ * for `ToolDef.handler` that delegates to Harper's normal operation pipeline.
+ *
+ * Errors from `chooseOperation` (permission denied) or from the operation
+ * itself surface as `isError: true` MCP results, not JSON-RPC errors —
+ * matches the MCP spec's `tools/call` convention so the LLM sees and can
+ * adapt to the failure.
+ */
+export function makeOperationToolHandler(operationName: string) {
+	return async function operationToolHandler(
+		args: unknown,
+		context: { user: AuthedUser; signal?: AbortSignal }
+	): Promise<ToolResult> {
+		const body: Record<string, unknown> = {
+			...(args && typeof args === 'object' ? (args as Record<string, unknown>) : {}),
+			operation: operationName,
+			hdb_user: context.user,
+		};
+		// Authorization bypass is internal dispatch state, never client-supplied tool
+		// arguments — mirrors handlePostRequest's stripping in serverHandlers.js. Without
+		// this, a caller-supplied `bypass_auth`/`bypassAuth` argument would reach handlers
+		// (e.g. createTokens) that trust it directly from the body.
+		delete body.bypass_auth;
+		delete body.bypassAuth;
+		if (STREAMING_RESPONSE_OPERATIONS.has(operationName)) {
+			// Reject before the handler runs at all — see STREAMING_RESPONSE_OPERATIONS' comment for
+			// why destroying an already-returned stream isn't sufficient cleanup for these producers.
+			return {
+				isError: true,
+				content: [
+					{
+						type: 'text',
+						text: `operation '${operationName}' returns a byte stream and is only available over the operations HTTP API`,
+					},
+				],
+			};
+		}
+		try {
+			const chooseOperation = getChooseOperation();
+			const processLocalTransaction = getProcessLocalTransaction();
+			if (!chooseOperation || !processLocalTransaction) {
+				throw new Error('Harper operations runtime unavailable');
+			}
+			const operationFn = chooseOperation(body);
+			let data = await processLocalTransaction({ body }, operationFn);
+			if (isCollectibleIterable(data)) {
+				data = await collectIterableResult(operationName, data, context?.signal);
+			}
+			if (data instanceof Readable) {
+				// Backstop for an operation outside STREAMING_RESPONSE_OPERATIONS unexpectedly
+				// returning a stream (e.g. a future op added without updating that set). JSON.stringify
+				// would otherwise emit stream internals, not the payload. Best-effort cleanup only — see
+				// STREAMING_RESPONSE_OPERATIONS' comment; the real fix for a known op is adding it there.
+				data.destroy();
+				return {
+					isError: true,
+					content: [
+						{
+							type: 'text',
+							text: `operation '${operationName}' returned an unexpected byte stream result`,
+						},
+					],
+				};
+			}
+			return wrapToolResult(data);
+		} catch (err) {
+			const e = err as { message?: string; http_resp_msg?: string; statusCode?: number };
+			const message = e?.http_resp_msg ?? e?.message ?? `operation '${operationName}' failed`;
+			harperLogger.trace(
+				`MCP operations/${operationName} threw: ${(err as Error)?.stack ?? (err as Error)?.message ?? message}`
+			);
+			return {
+				isError: true,
+				content: [
+					{
+						type: 'text',
+						text: JSON.stringify({ kind: 'harper_error', operation: operationName, message }),
+					},
+				],
+			};
+		}
+	};
+}
+
+/**
+ * Build the `ToolDef` for one operation. Cheap and stateless — a def is a pure
+ * function of the operation name (its schema, description, annotations, RBAC
+ * predicate, and handler don't depend on the allow/deny config, which only
+ * decides *whether* the op is exposed, checked per request in the provider).
+ * `tools/list` isn't a hot path, so the provider rebuilds defs per call rather
+ * than caching (no module-level state to leak or stale-cache across tests).
+ */
+function buildOperationToolDef(operationName: string): ToolDef {
+	const inputSchema = OPERATION_INPUT_SCHEMAS[operationName] ?? PERMISSIVE_SCHEMA;
+	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
+	if (isReadOnly(operationName)) annotations.readOnlyHint = true;
+	if (isDestructive(operationName)) annotations.destructiveHint = true;
+	if (isIdempotent(operationName)) annotations.idempotentHint = true;
+	return {
+		name: operationName,
+		description: buildDescription(operationName, operationName in OPERATION_INPUT_SCHEMAS),
+		inputSchema,
+		profile: 'operations',
+		...(Object.keys(annotations).length > 0 ? { annotations } : {}),
+		visibleTo: (user) => canRoleInvokeOperation(user, operationName),
+		handler: makeOperationToolHandler(operationName),
+	};
+}
+
+/**
+ * Lazy operations-profile tool provider. Consulted by the registry on every
+ * `tools/list` / `tools/call`, so it reflects the live `OPERATION_FUNCTION_MAP`
+ * — including operations registered by components after MCP boot (#1562).
+ */
+const operationsToolProvider: ProfileToolProvider = {
+	list(): ToolDef[] {
+		const opMap = getOperationFunctionMap();
+		if (!opMap) {
+			harperLogger.warn('MCP operations profile: OPERATION_FUNCTION_MAP not available; no tools listed');
+			return [];
+		}
+		const config = getOperationsConfig();
+		const defs: ToolDef[] = [];
+		for (const operationName of opMap.keys()) {
+			if (!isOperationAllowed(operationName, config)) continue;
+			defs.push(buildOperationToolDef(operationName));
+		}
+		return defs;
+	},
+	get(operationName: string): ToolDef | undefined {
+		const opMap = getOperationFunctionMap();
+		if (!opMap || !opMap.has(operationName)) return undefined;
+		if (!isOperationAllowed(operationName, getOperationsConfig())) return undefined;
+		return buildOperationToolDef(operationName);
+	},
+};
+
+/**
+ * Install the operations-profile tool provider. The provider is walked lazily
+ * per request rather than snapshotting the op map here, so component operations
+ * registered after this runs still surface once allow-listed (#1562).
+ * Idempotent — re-installing the provider is a no-op swap.
+ */
+export function registerOperationsTools(): void {
+	setProfileToolProvider('operations', operationsToolProvider);
+	harperLogger.info('MCP operations profile: lazy tool provider installed');
+}

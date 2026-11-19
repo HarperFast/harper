@@ -170,13 +170,14 @@ tables.CacheOfResource.sourcedFrom({
 
 // test transparent HTTP caching straight through
 tables.CacheOfHttp.serverErrorCalls = 0;
+const cacheSourceBase = `http://${process.env.HARPER_TEST_HOST || 'localhost'}:9926`;
 tables.CacheOfHttp.sourcedFrom({
 	async get(target) {
 		switch (target) {
 			case 'direct-fetch':
-				return fetch(`http://localhost:9926/FourProp/2`);
+				return fetch(`${cacheSourceBase}/FourProp/2`);
 			case 'fetch-body':
-				const response = await fetch(`http://localhost:9926/FourProp/2`);
+				const response = await fetch(`${cacheSourceBase}/FourProp/2`);
 				return new Response(response.body, {
 					headers: {
 						'Content-Type': 'text/plain',

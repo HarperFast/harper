@@ -1,0 +1,1971 @@
+import * as hdbTerms from '../utility/hdbTerms.ts';
+import * as hdbUtils from '../utility/common_utils.ts';
+import _logger from '../utility/logging/harper_logger.ts';
+const logger = _logger;
+import {
+	configValidator,
+	effectiveHttpConfigValidator,
+	getDomainSocketPathLengthWarning,
+	isLegacySqlApplicationEntry,
+	REQUIRED_ROOT_CONFIG_KEYS,
+} from '../validation/configValidator.ts';
+import { isReservedComponentName } from '../utility/componentNames.ts';
+import _fs from 'fs-extra';
+const fs = _fs;
+import _YAML from 'yaml';
+const YAML = _YAML;
+import path from 'node:path';
+import { constants as osConstants } from 'node:os';
+import { isMainThread, threadId } from 'node:worker_threads';
+import { randomBytes } from 'node:crypto';
+import isNumber from 'is-number';
+import propertiesReaderModule from 'properties-reader';
+import getPath from 'lodash/get.js';
+import isEqual from 'lodash/isEqual.js';
+
+// Aliased to a mutable, module-scoped binding so unit tests can swap the
+// implementation via rewire. The compiled default-import binding is otherwise
+// not addressable by name, and a default-exported CJS callable cannot be stubbed
+// through its shared module object the way named exports can.
+// eslint-disable-next-line prefer-const
+let PropertiesReader = propertiesReaderModule;
+import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError.ts';
+import { HTTP_STATUS_CODES, HDB_ERROR_MSGS } from '../utility/errors/commonErrors.ts';
+import { server } from '../server/Server.ts';
+import { getBackupDirPath } from './configHelpers.ts';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import * as env from '../utility/environment/environmentManager.ts';
+import {
+	prepareRuntimeEnvConfig,
+	hasPersistedEnvConfigState,
+	discardConfigState,
+	composeConfigFromEnv,
+	envLayerNaming,
+} from './harperConfigEnvVars.ts';
+import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+import { formatConfigParseErrorDetails } from './parseConfigFile.ts';
+import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
+import { fsyncTolerantSync, isUnsupportedSyncError } from '../utility/fsync.ts';
+
+export { isUnsupportedSyncError } from '../utility/fsync.ts';
+
+const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
+const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
+const CONFIG_INIT_MSG = 'Config successfully initialized';
+const BACKUP_ERR = 'Error backing up config file';
+const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
+const DEFAULT_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'static', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
+
+const CONFIGURE_SUCCESS_RESPONSE =
+	'Configuration successfully set. You must restart Harper for new config settings to take effect.';
+
+const DEPRECATED_CONFIG = {
+	logging_rotation_retain: 'logging.rotation.retain',
+	logging_rotation_rotate: 'logging.rotation.rotate',
+	logging_rotation_rotateinterval: 'logging.rotation.rotateInterval',
+	logging_rotation_rotatemodule: 'logging.rotation.rotateModule',
+	logging_rotation_timezone: 'logging.rotation.timezone',
+	logging_rotation_workerinterval: 'logging.rotation.workerInterval',
+};
+
+let flatDefaultConfigObj;
+let flatConfigObj;
+let configGenerationCount = 0;
+export function configGeneration(): number {
+	return configGenerationCount;
+}
+let configObj;
+
+// Canonical param names that live in CONFIG_PARAM_MAP but do NOT correspond to a path in the
+// harper-config.yaml schema (BOOT_PROP_PARAMS is boot-props-file-only bookkeeping — see its own
+// comment). Splitting one of these on '_' and writing it into the nested configObj tree would
+// silently create a bogus top-level section (e.g. 'settings_path' -> configObj.settings.path),
+// which componentLoader.ts treats as a real component to load, since it iterates every truthy
+// top-level key of the root config.
+const NON_NESTED_CONFIG_PARAMS = new Set<string>(Object.values(hdbTerms.BOOT_PROP_PARAMS));
+
+export function resolvePath(relativePath: string) {
+	if (relativePath?.startsWith('~/')) {
+		return path.join(hdbUtils.getHomeDir(), relativePath.slice(1));
+	}
+	try {
+		return path.resolve(env.getHdbBasePath(), relativePath);
+	} catch (error) {
+		console.error('Unable to resolve path', relativePath, error);
+		return relativePath;
+	}
+}
+/**
+ * Get a config value and resolve it as a path relative to rootPath.
+ * Use this for any config param that represents a file/directory path.
+ * @param param
+ */
+export function getConfigPath(param: string) {
+	const value = env.get(param);
+	if (!value || typeof value !== 'string') return value;
+	if (value.startsWith('~/')) {
+		return path.join(hdbUtils.getHomeDir(), value.slice(1));
+	}
+	if (path.isAbsolute(value)) return value;
+	const rootPath = env.getHdbBasePath();
+	if (!rootPath) return value;
+	return path.resolve(rootPath, value);
+}
+
+// Write atomically via a randomized temp file + rename so readers do not observe partial content
+// and concurrent workers, which share process.pid, do not collide on a temp path.
+// Windows has no POSIX-style "replace an open file" semantics: rename() fails with
+// EPERM/EACCES/EBUSY while another worker or AV holds the destination open. Root config watchers use
+// readConfigFileSync so this blocking retry cannot wait on a read owned by its own worker.
+// The budget is the wall-clock window of the 12-attempt schedule it replaced
+// (10+20+40+80+160+320+500*6), so it stays a deadline rather than an attempt count without
+// widening the stall: this loop blocks the calling worker's event loop, and `set_configuration`
+// reaches it from a live request thread.
+const RENAME_RETRY_BUDGET_MS = 3_630;
+// Secondary guard only: stops a degenerate zero-delay option set from spinning the whole budget.
+const RENAME_RETRY_MAX_ATTEMPTS = 25;
+const RENAME_RETRY_INITIAL_DELAY_MS = 10;
+const RENAME_RETRY_MAX_DELAY_MS = 500;
+// Never notified; Atomics.wait uses this only as a CPU-idle synchronous sleep.
+const renameRetrySleepBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+// Classified by code alone rather than gated to win32 like the read side: `process.platform` does
+// not answer whether this filesystem can replace an open file — WSL drvfs, CIFS/SMB and Docker
+// Desktop bind mounts all report `linux` and return these codes transiently.
+function isRetryableRenameError(code: string): boolean {
+	return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
+
+type RenameRetryOptions = {
+	retryBudgetMs?: number;
+	maxRetries?: number;
+	initialDelayMs?: number;
+	maxDelayMs?: number;
+};
+
+type AtomicWriteOptions = RenameRetryOptions & {
+	skipIfUnchanged?: boolean;
+	/**
+	 * fsync the content before the rename and the directory after it, so the caller may treat the write as
+	 * on storage. Off by default: only a write another durable record depends on — a deploy's root-config
+	 * entry, which the activation journal is retired on the strength of — pays for the two syncs.
+	 */
+	durable?: boolean;
+	/**
+	 * For content that can hold a secret. On POSIX the file is created owner-only before its first byte, and
+	 * replacing a file this user owns keeps only its owner bits, so a narrower mode survives; another user's
+	 * file is replaced at 0o600. Run as root, the file keeps the owner (and owner bits) of the file it
+	 * replaces, or its directory's owner. Ignored on Windows, where access comes from the directory's ACL.
+	 */
+	ownerOnly?: boolean;
+	/** The file whose mode `ownerOnly` must not widen: one a later rename publishes this write over, or its source. */
+	replaces?: string;
+};
+
+// `flags` matters on Windows, which only flushes a handle opened for writing; a directory cannot be opened
+// for writing anywhere, and Windows cannot open one for fsync at all.
+function syncPathSync(targetPath: string, flags: 'r' | 'r+') {
+	let fd: number;
+	try {
+		fd = fs.openSync(targetPath, flags);
+	} catch (error) {
+		if (isUnsupportedSyncError(error)) return;
+		throw error;
+	}
+	try {
+		fsyncTolerantSync(fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+type OwnerOnlyTarget = { mode: number; owner?: { uid: number; gid: number } };
+
+function ownerOnlyTarget(replacedPath: string): OwnerOnlyTarget {
+	const replaced = fs.statSync(replacedPath, { throwIfNoEntry: false });
+	const uid = process.getuid?.();
+	if (uid === 0) {
+		// Root hands the file to the owner of what it replaces, or of its directory, so a root-run CLI on a
+		// non-root install leaves the service files it can still read.
+		const owner = replaced ?? fs.statSync(path.dirname(replacedPath));
+		return {
+			mode: replaced ? replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS : hdbTerms.SECRET_FILE_PERMISSIONS,
+			owner: owner.uid === 0 ? undefined : { uid: owner.uid, gid: owner.gid },
+		};
+	}
+	// Another user's owner bits say nothing about this process's access to the file it is about to own.
+	// getuid is absent on Android; with no uid to compare, nothing narrower than owner-only is kept.
+	if (!replaced || replaced.uid !== uid) return { mode: hdbTerms.SECRET_FILE_PERMISSIONS };
+	return { mode: replaced.mode & hdbTerms.SECRET_FILE_PERMISSIONS };
+}
+
+// Exclusive, so the file is this call's own and has `mode` (less umask) from creation, before any byte is written.
+function writeTempFileSync(tempPath: string, content, { mode, owner }: OwnerOnlyTarget, durable: boolean) {
+	try {
+		// The chown goes through the fd: the directory can belong to the owner, who could swap the temp path
+		// for a symlink, and a path chown run as root would follow it.
+		if (durable || owner) {
+			const fd = fs.openSync(tempPath, 'wx', mode);
+			try {
+				if (owner) fs.fchownSync(fd, owner.uid, owner.gid);
+				fs.writeFileSync(fd, content);
+				if (durable) fsyncTolerantSync(fd);
+			} finally {
+				fs.closeSync(fd);
+			}
+		} else {
+			fs.writeFileSync(tempPath, content, { flag: 'wx', mode });
+		}
+	} catch (err) {
+		// The open succeeds before the write runs out of room, leaving the temp file behind. EEXIST
+		// means the open found a file this call did not create.
+		if (err.code !== 'EEXIST') removeTempFile(tempPath);
+		throw err;
+	}
+}
+
+/**
+ * Put an existing file's content and the directory entry naming it on storage, without needing permission to
+ * write either: this flushes what is already there, so it must not fail where the file is readable but not
+ * writable. Only Windows needs a write handle to flush, and there a refusal is one of the tolerated codes.
+ */
+export function syncFileToStorageSync(filePath: string) {
+	syncPathSync(filePath, process.platform === 'win32' ? 'r+' : 'r');
+	syncPathSync(path.dirname(filePath), 'r');
+}
+
+function validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs }: RenameRetryOptions) {
+	const invalidOption =
+		!Number.isFinite(retryBudgetMs) ||
+		retryBudgetMs < 0 ||
+		(!Number.isFinite(maxRetries) && maxRetries !== Infinity) ||
+		maxRetries < 0 ||
+		!Number.isFinite(initialDelayMs) ||
+		initialDelayMs < 0 ||
+		!Number.isFinite(maxDelayMs) ||
+		maxDelayMs < 0;
+	if (invalidOption) {
+		throw new RangeError('rename retry options must be non-negative numbers');
+	}
+}
+
+// Linux has no libuv mapping for EDQUOT, so a quota-exhausted write surfaces as
+// `Unknown system error -122` with an unusable `code`; the numeric errno is the portable signal
+// (EDQUOT is 122 on Linux, 69 on macOS).
+const STORAGE_EXHAUSTED_CODES = new Set(['ENOSPC', 'EDQUOT']);
+// EDQUOT is absent from os.constants.errno on platforms without quotas, so filter before negating:
+// -undefined is NaN, which would sit in the set matching nothing and reading as a bug.
+const STORAGE_EXHAUSTED_ERRNOS = new Set(
+	[osConstants.errno.ENOSPC, osConstants.errno.EDQUOT].filter((errno) => errno !== undefined).map((errno) => -errno)
+);
+
+export function isStorageExhausted(error): boolean {
+	return STORAGE_EXHAUSTED_CODES.has(error?.code) || STORAGE_EXHAUSTED_ERRNOS.has(error?.errno);
+}
+
+// Boot-path persistence of derived config is best-effort: on an exhausted volume a fatal write here
+// is an un-breakable restart loop, because freeing space needs a started process (#847).
+export function persistConfigDuringBoot(artifactPath: string, write: () => void): boolean {
+	try {
+		write();
+		return true;
+	} catch (error) {
+		if (!isStorageExhausted(error)) throw error;
+		logger.error(
+			`Storage exhausted (${error.code ?? error.errno}) writing ${artifactPath}; continuing startup with the in-memory configuration. The file on disk is unchanged - free space on the Harper volume to restore config persistence.`
+		);
+		return false;
+	}
+}
+
+// Returns true when the file was written, false when an unchanged write was skipped.
+export function atomicWriteFile(
+	filePath,
+	content,
+	{
+		retryBudgetMs = RENAME_RETRY_BUDGET_MS,
+		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
+		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
+		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
+		skipIfUnchanged = false,
+		durable = false,
+		ownerOnly = false,
+		replaces = filePath,
+	}: AtomicWriteOptions = {}
+) {
+	// Before the temp write, so an option set that can never rename leaves no file behind.
+	validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
+	// Opt-in: skipping means no mtime bump, so no watcher event. Only callers that re-derive the
+	// same file every boot want that.
+	if (skipIfUnchanged && matchesFileContent(filePath, content)) return false;
+	const target = ownerOnly && process.platform !== 'win32' ? ownerOnlyTarget(replaces) : { mode: 0o666 };
+	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
+	// Content before the rename: a rename that reaches storage ahead of the bytes it names is the
+	// torn write the temp file exists to prevent.
+	writeTempFileSync(tempPath, content, target, durable);
+	try {
+		renameWithRetry(tempPath, filePath, { retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
+	} catch (err) {
+		// The temp name carries fresh randomness on every call, so a spent budget would otherwise
+		// leave a file nothing else will ever collect.
+		removeTempFile(tempPath);
+		throw err;
+	}
+	if (durable) syncPathSync(path.dirname(filePath), 'r');
+	return true;
+}
+
+export function renameWithRetry(
+	fromPath,
+	toPath,
+	{
+		retryBudgetMs = RENAME_RETRY_BUDGET_MS,
+		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
+		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
+		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
+	}: RenameRetryOptions = {}
+) {
+	validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
+	let retries = maxRetries;
+	let delayMs = initialDelayMs;
+	let retryDeadline;
+	let finalAttempt = false;
+	let attempts = 0;
+	const startedAt = performance.now();
+	while (true) {
+		try {
+			attempts++;
+			fs.renameSync(fromPath, toPath);
+			return;
+		} catch (err) {
+			if (!finalAttempt && retries > 0 && isRetryableRenameError(err.code)) {
+				retries--;
+				if (retryDeadline === undefined) {
+					retryDeadline = performance.now() + retryBudgetMs;
+				}
+				const remainingBudgetMs = retryDeadline - performance.now();
+				if (remainingBudgetMs > 0) {
+					// Sleep synchronously (all call sites are sync) to allow the holder to close the
+					// file. Atomics.wait yields the thread to the OS instead of spinning the CPU,
+					// which is what makes a multi-second worst-case budget affordable.
+					const sleepMs = Math.min(delayMs, remainingBudgetMs);
+					finalAttempt = sleepMs === remainingBudgetMs;
+					if (sleepMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, sleepMs);
+					delayMs = Math.min(Math.max(delayMs * 2, RENAME_RETRY_INITIAL_DELAY_MS), maxDelayMs);
+					continue;
+				}
+			}
+			// Whether the budget was spent or the code was never retryable is the difference
+			// between a holder that never released and a one-off failure, and neither survives on
+			// the rethrown error.
+			if (isRetryableRenameError(err.code)) {
+				logger.warn(
+					`Could not replace ${toPath}: ${err.code} after ${attempts} attempts over ${Math.round(performance.now() - startedAt)}ms`
+				);
+			}
+			throw err;
+		}
+	}
+}
+
+function removeTempFile(tempPath) {
+	try {
+		fs.unlinkSync(tempPath);
+	} catch {
+		// ignore cleanup errors
+	}
+}
+
+function matchesFileContent(filePath, content): boolean {
+	if (typeof content !== 'string') return false;
+	try {
+		return fs.readFileSync(filePath, 'utf8') === content;
+	} catch {
+		return false;
+	}
+}
+
+// Defaults whose presence opens a listener or widens cross-origin access. Under a root section the template
+// authored, an omitted one stays omitted, so it stays off as it did before templates were backfilled.
+const NESTED_BACKFILL_OPT_IN_PATHS = [
+	'mqtt.network.port',
+	'mqtt.network.securePort',
+	'mqtt.webSocket',
+	'operationsApi.network.cors',
+	'operationsApi.network.corsAccessList',
+];
+
+function backfillMissingDefaults(
+	targetDoc: _YAML.Document,
+	defaultsDoc: _YAML.Document,
+	templateRootKeys: Set<string>,
+	prefix: string[] = [],
+	introducedRoots?: Set<string>
+): void {
+	const defaultsNode = prefix.length === 0 ? defaultsDoc.contents : defaultsDoc.getIn(prefix, true);
+	if (!YAML.isMap(defaultsNode)) return;
+	for (const pair of defaultsNode.items) {
+		const key = String((pair.key as any)?.value ?? pair.key);
+		const keyPath = [...prefix, key];
+		if (!targetDoc.hasIn(keyPath)) {
+			if (prefix.length === 0 && !REQUIRED_ROOT_CONFIG_KEYS.has(key) && !introducedRoots?.has(key)) continue;
+			const dotPath = keyPath.join('.');
+			const skipOptIn = prefix.length > 0 && templateRootKeys.has(prefix[0]);
+			if (skipOptIn && NESTED_BACKFILL_OPT_IN_PATHS.includes(dotPath)) continue;
+			const defaultNode = defaultsDoc.getIn(keyPath, true);
+			const defaultVal =
+				defaultNode && typeof (defaultNode as any).toJSON === 'function'
+					? (defaultNode as any).toJSON()
+					: defaultsDoc.getIn(keyPath);
+			if (skipOptIn) {
+				for (const optInPath of NESTED_BACKFILL_OPT_IN_PATHS) {
+					if (optInPath.startsWith(`${dotPath}.`)) {
+						const parts = optInPath.slice(dotPath.length + 1).split('.');
+						const parent = parts.slice(0, -1).reduce((node, part) => node?.[part], defaultVal);
+						if (parent && typeof parent === 'object') delete parent[parts[parts.length - 1]];
+					}
+				}
+			}
+			targetDoc.setIn(keyPath, targetDoc.createNode(defaultVal));
+		} else if (YAML.isMap(pair.value) && YAML.isMap(targetDoc.getIn(keyPath, true))) {
+			backfillMissingDefaults(targetDoc, defaultsDoc, templateRootKeys, keyPath);
+		}
+	}
+}
+
+function collectLeafDotPaths(
+	obj: any,
+	prefix: string[] = [],
+	out = new Set<string>(),
+	defaultsDoc?: _YAML.Document
+): Set<string> {
+	if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+		if (prefix.length > 0) out.add(prefix.join('.'));
+		return out;
+	}
+	for (const [key, val] of Object.entries(obj)) {
+		const nextPath = [...prefix, key];
+		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+			if (Object.keys(val).length > 0) {
+				collectLeafDotPaths(val, nextPath, out, defaultsDoc);
+			} else {
+				const defaultNode = defaultsDoc?.getIn(nextPath, true);
+				if (!YAML.isMap(defaultNode) || defaultNode.items.length === 0) {
+					out.add(nextPath.join('.'));
+				}
+			}
+		} else {
+			out.add(nextPath.join('.'));
+		}
+	}
+	return out;
+}
+
+function syncObjectToYamlDoc(doc: _YAML.Document, obj: Record<string, any>, prefix: string[] = []): void {
+	const mapNode = prefix.length === 0 ? doc.contents : doc.getIn(prefix, true);
+	if (!YAML.isMap(mapNode)) {
+		if (prefix.length === 0) {
+			doc.contents = doc.createNode(obj) as any;
+		} else {
+			doc.setIn(prefix, doc.createNode(obj));
+		}
+		return;
+	}
+	for (const pair of [...mapNode.items]) {
+		const key = String((pair.key as any)?.value ?? pair.key);
+		if (!Object.prototype.hasOwnProperty.call(obj, key) || obj[key] === undefined) {
+			doc.deleteIn([...prefix, key]);
+		}
+	}
+	for (const [key, val] of Object.entries(obj)) {
+		if (val === undefined) continue;
+		const keyPath = [...prefix, key];
+		const currentNode = doc.getIn(keyPath, true);
+		if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+			if (Object.keys(val).length === 0) {
+				if (!YAML.isMap(currentNode) || currentNode.items.length !== 0) {
+					doc.setIn(keyPath, doc.createNode({}));
+				}
+			} else if (YAML.isMap(currentNode)) {
+				syncObjectToYamlDoc(doc, val, keyPath);
+			} else {
+				doc.setIn(keyPath, doc.createNode(val));
+			}
+		} else {
+			const currentVal =
+				currentNode && typeof (currentNode as any).toJSON === 'function'
+					? (currentNode as any).toJSON()
+					: doc.getIn(keyPath);
+			if (!doc.hasIn(keyPath) || !isEqual(currentVal, val)) {
+				doc.setIn(keyPath, val !== null && typeof val === 'object' ? doc.createNode(val) : val);
+			}
+		}
+	}
+}
+
+export interface StagedInstallConfig {
+	configDoc: _YAML.Document;
+	commitEnvConfigState?: () => boolean;
+	validated?: boolean;
+}
+
+function clearScalarAncestors(configDoc: _YAML.Document, splitParam: string[], userPaths?: Set<string>) {
+	for (let i = 1; i < splitParam.length; i++) {
+		const ancestorPath = splitParam.slice(0, i);
+		const ancestorVal = configDoc.getIn(ancestorPath);
+		if (ancestorVal !== undefined && (ancestorVal === null || typeof ancestorVal !== 'object')) {
+			configDoc.deleteIn(ancestorPath);
+			userPaths?.delete(ancestorPath.join('.'));
+		}
+	}
+}
+
+function composeInstallConfig(
+	args,
+	{
+		baseConfigPath,
+		defaultedArgKeys,
+		argsAreUserAuthored = true,
+	}: { baseConfigPath?: string; defaultedArgKeys?: Set<string>; argsAreUserAuthored?: boolean } = {}
+): StagedInstallConfig {
+	const defaultDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+	flatDefaultConfigObj = flattenConfig(defaultDoc.toJSON());
+
+	let configDoc = defaultDoc;
+	const userPaths = new Set<string>();
+	let templateRootKeys: Set<string>;
+	if (baseConfigPath) {
+		configDoc = parseYamlDoc(baseConfigPath);
+		if (configDoc.errors?.length > 0) {
+			throw new ServerError(
+				`Error parsing ${baseConfigPath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
+			);
+		}
+		const threadCount = configDoc.getIn(['threads']);
+		if (typeof threadCount === 'number' && threadCount >= 0) {
+			configDoc.deleteIn(['threads']);
+			configDoc.setIn(['threads', 'count'], threadCount);
+		}
+		const templateJson = configDoc.toJSON();
+		collectLeafDotPaths(templateJson, [], userPaths, defaultDoc);
+		templateRootKeys = new Set(Object.keys(templateJson ?? {}));
+		backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys);
+	}
+
+	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
+	let schemasArgs;
+	for (const arg in args) {
+		let configParam = lookupConfigParam(arg);
+
+		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
+		if (configParam === CONFIG_PARAMS.DATABASES) {
+			if (Array.isArray(args[arg])) {
+				schemasArgs = args[arg];
+			} else {
+				schemasArgs = Object.keys(args[arg]).map((key) => {
+					return { [key]: args[arg][key] };
+				});
+			}
+
+			continue;
+		}
+
+		if (!configParam && isSuffixEscapedParam(arg)) {
+			configParam = arg;
+		}
+
+		if (configParam !== undefined) {
+			const splitParam = configParam.split('_');
+			let value = castConfigValue(configParam, args[arg]);
+			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
+			try {
+				clearScalarAncestors(configDoc, splitParam, userPaths);
+
+				configDoc.setIn(
+					[...splitParam],
+					value !== null && typeof value === 'object' ? configDoc.createNode(value) : value
+				);
+				if (
+					argsAreUserAuthored &&
+					value !== undefined &&
+					value !== null &&
+					value !== '' &&
+					!defaultedArgKeys?.has(arg)
+				) {
+					userPaths.add(splitParam.join('.'));
+				}
+			} catch (err) {
+				logger.error(err);
+			}
+		}
+	}
+
+	if (schemasArgs) setSchemasConfig(configDoc, schemasArgs);
+	if (baseConfigPath) {
+		// Originals and $union must see the defaults of sections that install will keep enabled.
+		const introducedRoots = new Set(
+			Object.entries(composeConfigFromEnv())
+				.filter(([, value]) => value !== null && typeof value === 'object' && !Array.isArray(value))
+				.map(([key]) => key)
+		);
+		backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys, [], introducedRoots);
+	}
+
+	// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables BEFORE validation
+	// This allows runtime env vars to resolve port conflicts before validation
+	// Must be called AFTER rootPath is set in configDoc
+	// Mutates configDoc in place
+	const commitEnvConfigState = applyRuntimeEnvVarConfig(configDoc, null, {
+		isInstall: true,
+		userPaths,
+		deferStateCommit: true,
+	});
+	// A root section the template omitted but an arg or env layer introduced still needs its sibling defaults
+	if (baseConfigPath) backfillMissingDefaults(configDoc, defaultDoc, templateRootKeys);
+
+	return { configDoc, commitEnvConfigState };
+}
+
+// Leaves configObj unset until writeStagedInstallConfig() finishes so pre-file readers still see "uninstalled".
+export function stageInstallConfig(args, baseConfigPath?: string, defaultedArgKeys?: Set<string>): StagedInstallConfig {
+	const staged = composeInstallConfig(args, { baseConfigPath, defaultedArgKeys });
+	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+	configGenerationCount++;
+	return staged;
+}
+
+export function validateStagedInstallConfig(staged: StagedInstallConfig, skipFsValidation = false): void {
+	validateConfig(staged.configDoc, skipFsValidation);
+	staged.validated = true;
+	flatConfigObj = flattenConfig(staged.configDoc.toJSON());
+	configGenerationCount++;
+}
+
+export function writeStagedInstallConfig(
+	staged: StagedInstallConfig,
+	targetConfigPath?: string,
+	skipFsValidation = false
+): void {
+	const { configDoc, commitEnvConfigState, validated } = staged;
+
+	// Validates config doc and if required sets default values for some parameters.
+	if (!validated) {
+		validateConfig(configDoc, skipFsValidation);
+	}
+
+	// Create new config file and write config doc to it.
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
+	const configFilePath = targetConfigPath
+		? path.resolve(targetConfigPath)
+		: path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	fs.ensureDirSync(path.dirname(configFilePath));
+	atomicWriteFile(configFilePath, String(configDoc), { ownerOnly: true });
+	flatConfigObj = setActiveConfig(configDoc.toJSON());
+	configGenerationCount++;
+	commitEnvConfigState?.();
+	logger.trace(`Config file written to ${configFilePath}`);
+}
+
+/**
+ * Builds the Harper config file using user inputs and default values from defaultConfig.yaml
+ * @param args - any args that the user provided
+ * @param skipFsValidation - when true, skips filesystem existence checks during config validation.
+ */
+export function createConfigFile(args, skipFsValidation = false) {
+	// Callers such as harper-pro's clone pass whole flattened configs, not operator choices, so
+	// HARPER_DEFAULT_CONFIG must keep ownership of the paths it supplies.
+	const staged = composeInstallConfig(args, { argsAreUserAuthored: false });
+	writeStagedInstallConfig(staged, undefined, skipFsValidation);
+}
+
+/**
+ * Sets any schema/table location config that belongs under the 'schemas' config element.
+ * @param configDoc
+ * @param schemaConfJson
+ */
+function setSchemasConfig(configDoc, schemaConfJson) {
+	let schemasConf;
+	try {
+		try {
+			schemasConf = JSON.parse(schemaConfJson);
+		} catch (err) {
+			if (!hdbUtils.isObject(schemaConfJson)) throw err;
+			schemasConf = schemaConfJson;
+		}
+
+		for (const schemaConf of schemasConf) {
+			const schema = Object.keys(schemaConf)[0];
+			if (schemaConf[schema].hasOwnProperty(DATABASES_PARAM_CONFIG.TABLES)) {
+				for (const table in schemaConf[schema][DATABASES_PARAM_CONFIG.TABLES]) {
+					// Table path var can be 'path' or 'auditPath'
+					for (const tablePathVar in schemaConf[schema][DATABASES_PARAM_CONFIG.TABLES][table]) {
+						const tablePath = schemaConf[schema][DATABASES_PARAM_CONFIG.TABLES][table][tablePathVar];
+						const keys = [CONFIG_PARAMS.DATABASES, schema, DATABASES_PARAM_CONFIG.TABLES, table, tablePathVar];
+						configDoc.hasIn(keys) ? configDoc.setIn(keys, tablePath) : configDoc.addIn(keys, tablePath);
+					}
+				}
+			} else {
+				// Schema path var can be 'path' or 'auditPath'
+				for (const schemaPathVar in schemaConf[schema]) {
+					const schemaPath = schemaConf[schema][schemaPathVar];
+					const keys = [CONFIG_PARAMS.DATABASES, schema, schemaPathVar];
+					configDoc.hasIn(keys) ? configDoc.setIn(keys, schemaPath) : configDoc.addIn(keys, schemaPath);
+				}
+			}
+		}
+	} catch (err) {
+		logger.error('Error parsing schemas CLI/env config arguments', err);
+	}
+}
+
+/**
+ * Get a default config value from in memory object.
+ * If object is undefined read the default config yaml and instantiate default config obj.
+ * @param param
+ * @returns {*}
+ */
+export function getDefaultConfig(param: string) {
+	if (flatDefaultConfigObj === undefined) {
+		const configDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+		flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
+	}
+
+	const paramMap = lookupConfigParam(param);
+	if (paramMap === undefined) return undefined;
+
+	return flatDefaultConfigObj[paramMap.toLowerCase()];
+}
+
+/**
+ * Get config value from in memory flattened config obj.
+ * This functions depends on the config obj being initialized.
+ * We do not want it to get value directly from config file as this adds unnecessary overhead.
+ * @param param
+ * @returns {undefined|*}
+ */
+export function getConfigValue(param: string | null | undefined) {
+	if (param == null) {
+		logger.info(EMPTY_GET_VALUE);
+		return undefined;
+	}
+
+	if (flatConfigObj === undefined) {
+		logger.trace(UNINIT_GET_CONFIG_ERR);
+		return undefined;
+	}
+
+	const paramMap = lookupConfigParam(param);
+	if (paramMap === undefined) return undefined;
+
+	return flatConfigObj[paramMap.toLowerCase()];
+}
+
+export function getConfigFilePath(bootPropsFilePath = hdbUtils.getPropsFilePath()) {
+	const cmdArgs = hdbUtils.getEnvCliRootPath();
+	if (cmdArgs) {
+		let harperConfigPath = resolvePath(path.join(cmdArgs, hdbTerms.HARPER_CONFIG_FILE));
+		if (fs.existsSync(harperConfigPath)) return harperConfigPath;
+		if (fs.existsSync(resolvePath(path.join(cmdArgs, hdbTerms.HDB_CONFIG_FILE))))
+			return resolvePath(path.join(cmdArgs, hdbTerms.HDB_CONFIG_FILE));
+		return harperConfigPath;
+	}
+	const hdbProperties = PropertiesReader(bootPropsFilePath);
+	return resolvePath(hdbProperties.get(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY) as string);
+}
+
+/**
+ * The root config file runtime writers read and write, and the root-config publication lock is keyed by: the one
+ * boot reads whenever there is a boot source (`ROOTPATH`, or a boot props file), even if that file is missing
+ * right now. With no boot source at all — an install before it writes the boot props, a unit run with no Harper
+ * installed — it is the one under the configured root.
+ */
+export function getRootConfigFilePath(hdbRoot: string | undefined = env.getHdbBasePath()): string {
+	if (hdbUtils.getEnvCliRootPath() || fs.statSync(hdbUtils.getPropsFilePath(), { throwIfNoEntry: false }) || !hdbRoot) {
+		return getConfigFilePath();
+	}
+	const configFilePath = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	if (!fs.existsSync(configFilePath) && fs.existsSync(path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE))) {
+		return path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
+	}
+	return configFilePath;
+}
+
+/**
+ * Ensure the given top-level keys exist in the on-disk config file, writing an empty block (`{}`)
+ * for each one that is absent. Only missing keys are added — existing values are never touched.
+ *
+ * Built-in components only load when their config key is present: componentLoader iterates the
+ * resolved config's keys, so a registered built-in with no matching key is never activated. Fresh
+ * installs get those keys from defaultConfig.yaml, but an in-place upgrade carries the pre-existing
+ * config forward, so a built-in introduced in a newer release (e.g. `secretCustody` in 5.2) stays
+ * dormant until its key appears. This restores parity with a fresh install. Callers pass the keys
+ * for the built-ins registered in THIS runtime, so nothing is added for a component the running
+ * distribution doesn't ship.
+ *
+ * @param keys - top-level config keys to ensure exist
+ * @returns the keys that were added (empty when none were missing)
+ */
+export function ensureConfigKeysPresent(keys: string[]): string[] {
+	const configFilePath = getConfigFilePath();
+	if (!configFilePath || !fs.existsSync(configFilePath)) return [];
+
+	const configDoc = parseYamlDoc(configFilePath);
+	if (configDoc.errors?.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Error parsing ${configFilePath} ${configDoc.errors}`,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+		);
+	}
+
+	const added: string[] = [];
+	for (const key of keys) {
+		if (!key || configDoc.hasIn([key])) continue;
+		configDoc.setIn([key], {});
+		added.push(key);
+	}
+	if (added.length === 0) return [];
+
+	// Worker threads re-read the config from disk and never run this backfill, so a key that only
+	// exists in this thread's memory activates nowhere that serves requests: report nothing when the
+	// write was refused rather than logging an activation the request path did not get.
+	if (
+		!persistConfigDuringBoot(configFilePath, () =>
+			atomicWriteFile(configFilePath, String(configDoc), { ownerOnly: true })
+		)
+	)
+		return [];
+
+	// Mirror the additions into the already-memoized config so a built-in gated on the new key
+	// activates on the CURRENT boot: componentLoader reads the root config from getConfigObj(),
+	// which is cached early in boot — before an upgrade backfill runs — so a file-only write would
+	// otherwise not take effect until the next restart. flatConfigObj is backfilled alongside it so
+	// getFlatConfigObj()/getConfigValue() also see the new key on this boot rather than undefined.
+	if (configObj) {
+		for (const key of added) {
+			if (configObj[key] === undefined) configObj[key] = {};
+			const flatKey = key.toLowerCase();
+			if (flatConfigObj && flatConfigObj[flatKey] === undefined) flatConfigObj[flatKey] = configObj[key];
+		}
+	}
+	return added;
+}
+
+export function getEnvBuiltInComponents(): { name: string; packageIdentifier: string }[] {
+	const componentDefinitions = process.env.HARPER_BUILTIN_COMPONENTS;
+	if (!componentDefinitions) return [];
+	const builtInComponents: { name: string; packageIdentifier: string }[] = [];
+	for (const [index, componentDefinition] of componentDefinitions.split(',').entries()) {
+		const definition = componentDefinition.trim();
+		if (!definition) continue;
+		const separator = definition.indexOf('=');
+		const name = separator === -1 ? '' : definition.slice(0, separator).trim();
+		const packageIdentifier = separator === -1 ? '' : definition.slice(separator + 1).trim();
+		if (!name || !packageIdentifier) {
+			logger.warn(`Skipping HARPER_BUILTIN_COMPONENTS entry ${index + 1}: expected name=packageIdentifier.`);
+			continue;
+		}
+		builtInComponents.push({ name, packageIdentifier });
+	}
+	return builtInComponents;
+}
+
+/**
+ * Built-in components introduced in a recent release whose config key must be backfilled onto
+ * in-place-upgraded instances. Fresh installs get these from defaultConfig.yaml, but an upgrade
+ * carries the old config forward without them, leaving the component dormant (harper-pro#585:
+ * secretCustody and WAF added in 5.2).
+ *
+ * Deliberately scoped to genuinely-new built-ins — NOT every registered built-in. Component
+ * activation is presence-gated (componentLoader iterates the config's keys), so re-adding a
+ * long-standing key like `replication` would silently re-enable a component an operator disabled
+ * by deleting its block. A newly-introduced built-in has no such history: at upgrade time its
+ * absence is always "carried over from before it existed," never "intentionally removed."
+ *
+ * Consequence: once a backfilled key is on the safe-list, KEY DELETION IS NO LONGER A DISABLE
+ * MECHANISM for it — every boot re-adds the key and re-activates the component. Disabling must be
+ * explicit: set a falsy value (e.g. `secretCustody: false`). ensureConfigKeysPresent only writes
+ * when the key is entirely absent (hasIn is presence-based, true for `false`/`null`), and the
+ * loader treats a falsy value as disabled (`if (!config[name]) continue`), so an explicit `false`
+ * survives the backfill. This is the correct trade for a security-custody component — disabling it
+ * should be a deliberate act, not an accident of config drift (the exact failure mode of #585) —
+ * but document the falsy-disable convention wherever the key is exposed to operators.
+ * Add a key here only when shipping a new built-in that must activate on already-upgraded instances.
+ */
+const UPGRADE_BACKFILL_BUILTIN_KEYS = ['secretCustody', 'waf'];
+
+/**
+ * Ensure the config keys for recently-introduced built-in components exist, so a component added in
+ * a newer release activates on an in-place-upgraded instance (see UPGRADE_BACKFILL_BUILTIN_KEYS).
+ * Only keys for built-ins registered in THIS runtime (HARPER_BUILTIN_COMPONENTS) are considered, so
+ * nothing is written for a component the running distribution doesn't ship — e.g. secretCustody is
+ * Pro-only and is never added on OSS core, which registers no built-ins.
+ *
+ * Safe to call on every boot: idempotent (writes only when a key is genuinely missing) and cheap (a
+ * config read plus a key check). Running it unconditionally — rather than only on the upgrade path —
+ * means a transient write failure self-heals on the next boot, and version transitions that ship no
+ * data-migration directive are still covered. Never throws.
+ *
+ * @returns the keys that were added (empty when none were missing)
+ */
+export function ensureBuiltInComponentConfigKeys(): string[] {
+	if (!process.env.HARPER_BUILTIN_COMPONENTS) return [];
+	const registered = new Set(getEnvBuiltInComponents().map(({ name }) => name));
+	const keys = UPGRADE_BACKFILL_BUILTIN_KEYS.filter((key) => registered.has(key));
+	if (keys.length === 0) return [];
+	try {
+		return ensureConfigKeysPresent(keys);
+	} catch (error) {
+		logger.error('Failed to backfill built-in component config keys', error);
+		return [];
+	}
+}
+
+/**
+ * If in memory config obj is undefined or init is being forced,
+ * read and parses the Harper config file and add to config object.
+ * @param force
+ */
+export function initConfig(force = false) {
+	if (flatConfigObj === undefined || force) {
+		let bootPropsFilePath;
+		if (!hdbUtils.noBootFile()) {
+			bootPropsFilePath = hdbUtils.getPropsFilePath();
+			try {
+				fs.accessSync(bootPropsFilePath, fs.constants.F_OK | fs.constants.R_OK);
+			} catch (err) {
+				logger.error(err);
+				throw handleHDBError(
+					new Error(),
+					`Harper properties file at path ${bootPropsFilePath} does not exist`,
+					HTTP_STATUS_CODES.BAD_REQUEST
+				);
+			}
+		}
+
+		const configFilePath = getConfigFilePath(bootPropsFilePath);
+		let configDoc;
+
+		// if this is true, user is upgrading from version prior to 4.0.0. We need to initialize existing
+		// params.
+		if (configFilePath.includes('config/settings.js')) {
+			try {
+				initOldConfig(configFilePath);
+				return;
+			} catch (initErr) {
+				// If user has an old boot prop file but hdb is not installed init old config will throw ENOENT error.
+				// We want to squash that error so that new version of HDB can be installed.
+				if (initErr.code !== hdbTerms.NODE_ERROR_CODES.ENOENT) throw initErr;
+			}
+		}
+		try {
+			configDoc = parseYamlDoc(configFilePath);
+		} catch (err) {
+			if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
+				logger.trace(`Harper config file not found at ${configFilePath}. 
+				This can occur during early stages of install where the config file has not yet been created`);
+				return;
+			} else {
+				logger.error(err);
+				throw handleHDBError(
+					new Error(),
+					`Error reading Harper config file at ${configFilePath}`,
+					HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+				);
+			}
+		}
+
+		if (configDoc.errors?.length > 0) {
+			throw new ServerError(
+				`Error parsing ${configFilePath}: YAMLParseError ${formatConfigParseErrorDetails(configDoc.errors[0])}`
+			);
+		}
+
+		const installing = process.argv[2]?.toLowerCase() === hdbTerms.SERVICE_ACTIONS_ENUM.INSTALL;
+		checkForUpdatedConfig(configDoc, installing ? undefined : configFilePath);
+
+		// Config-shaping env vars delivered via component .env files (loadEnv) cannot take effect —
+		// warn loudly instead of silently no-opping (#1513; components must not shape instance config)
+		try {
+			// the config file lives in the root directory, so its dirname is the authoritative base:
+			// it also anchors a relative or missing rootPath value in the config doc
+			const configFileDir = path.dirname(configFilePath);
+			const rootPath = path.resolve(
+				configFileDir,
+				resolveConfiguredPath(configDoc.getIn(['rootPath']) as string | undefined, configFileDir) ?? configFileDir
+			);
+			const componentsRoot =
+				resolveConfiguredPath(
+					(configDoc.getIn(['componentsRoot']) ?? configDoc.getIn(['customFunctions', 'root'])) as string | undefined,
+					rootPath
+				) ?? path.join(rootPath, 'components');
+			warnComponentEnvConfigVars(componentsRoot, process.env.RUN_HDB_APP);
+		} catch (error) {
+			logger.warn(`Could not scan component .env files for config vars: ${error.message}`);
+		}
+
+		// Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables
+		applyRuntimeEnvVarConfig(configDoc, installing ? null : configFilePath, {
+			deferStateCommit: installing,
+		});
+
+		// Validates config doc and if required sets default values for some parameters.
+		validateConfig(configDoc);
+		const parsedConfig = configDoc.toJSON();
+		(server as any).config = parsedConfig;
+		flatConfigObj = setActiveConfig(parsedConfig);
+		configGenerationCount++;
+
+		// If config has old version of logrotate enabled let user know it has been deprecated.
+		if (flatConfigObj['logging_rotation_rotate']) {
+			for (const key in DEPRECATED_CONFIG) {
+				if (flatConfigObj[key])
+					logger.error(
+						`Config ${DEPRECATED_CONFIG[key]} has been deprecated. Please check https://docs.harperdb.io/docs/ for further details.`
+					);
+			}
+		}
+
+		logger.trace(CONFIG_INIT_MSG);
+	}
+}
+
+/**
+ * When running an upgraded version there is a chance these config params won't exist.
+ * To address this we check for them and write them to config file if needed.
+ * @param configDoc
+ * @param configFilePath
+ */
+function checkForUpdatedConfig(configDoc, configFilePath) {
+	let updateFile = false;
+	if (!configDoc.hasIn(['storage', 'path'])) {
+		configDoc.setIn(['storage', 'path'], 'database');
+		updateFile = true;
+	}
+
+	if (!configDoc.hasIn(['logging', 'rotation', 'path'])) {
+		configDoc.setIn(['logging', 'rotation', 'path'], 'log');
+		updateFile = true;
+	}
+
+	if (!configDoc.hasIn(['authentication'])) {
+		configDoc.addIn(['authentication'], {
+			cacheTTL: 30000,
+			enableSessions: true,
+			operationTokenTimeout: configDoc.getIn(['operationsApi', 'authentication', 'operationTokenTimeout']) ?? '1d',
+			refreshTokenTimeout: configDoc.getIn(['operationsApi', 'authentication', 'refreshTokenTimeout']) ?? '30d',
+		});
+
+		updateFile = true;
+	}
+
+	if (!configDoc.hasIn(['analytics'])) {
+		configDoc.addIn(['analytics'], {
+			aggregatePeriod: 60,
+			replicate: false,
+		});
+
+		updateFile = true;
+	}
+
+	if (updateFile && configFilePath) {
+		logger.trace('Updating config file with missing config params');
+		persistConfigDuringBoot(configFilePath, () =>
+			atomicWriteFile(configFilePath, String(configDoc), { ownerOnly: true })
+		);
+	}
+}
+
+/**
+ * Validates the config doc and adds any default values to doc.
+ * NOTE - If any default values are set in configValidator they also need to be 'setIn' in this function.
+ * @param configDoc
+ */
+function validateConfig(configDoc, skipFsValidation = false) {
+	const configJson = configDoc.toJSON();
+
+	// Config might have some legacy values that will be modified by validator. We need to set old to new here before
+	// validator sets any defaults
+	configJson.componentsRoot = configJson.componentsRoot ?? configJson?.customFunctions?.root;
+	if (configJson?.http?.threads) configJson.threads = configJson?.http?.threads;
+
+	if (configJson.http?.port && configJson.http?.port === configJson.http?.securePort) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.CONFIG_VALIDATION('http.port and http.securePort cannot be the same value'),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+
+	if (
+		configJson.operationsApi?.network?.port &&
+		configJson.operationsApi?.network?.port === configJson.operationsApi?.network?.securePort
+	) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.CONFIG_VALIDATION(
+				'operationsApi.network.port and operationsApi.network.securePort cannot be the same value'
+			),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+
+	// The operations API and the REST/http servers are distinct servers that cannot share a port. The operations API
+	// runs on the main thread without SO_REUSEPORT while the http servers run on the workers with it, so a shared port is
+	// silently claimed by whichever binds first (the operations server), leaving the http server — and its WebSocket
+	// upgrade handler — unable to bind. That presents as secure-port WebSocket upgrades hanging. Fail loudly here rather
+	// than letting the collision go undetected. (mqtt websocket intentionally shares http.port and replication defaults
+	// to the operations port, so only the http/operationsApi pairing is checked.) See issue #1412.
+	const configuredPorts = [
+		['http.port', configJson.http?.port],
+		['http.securePort', configJson.http?.securePort],
+		['operationsApi.network.port', configJson.operationsApi?.network?.port],
+		['operationsApi.network.securePort', configJson.operationsApi?.network?.securePort],
+	];
+	const portLabels = new Map();
+	for (const [label, value] of configuredPorts) {
+		// Skip non-numeric values (unset, or a malformed boolean/array/object) — those are caught by the schema
+		// validator below. Numeric strings pass (isNumber('9926') === true) so a string env-var port still matches a
+		// numeric YAML port. Skip 0: it requests an OS-assigned port, so distinct sections set that way won't collide.
+		if (!isNumber(value)) continue;
+		const port = Number(value);
+		if (port === 0) continue;
+		const collidingLabel = portLabels.get(port);
+		// Skip http-internal and operationsApi-internal collisions; those are reported with dedicated messages above.
+		if (collidingLabel && collidingLabel.split('.')[0] !== label.split('.')[0]) {
+			throw handleHDBError(
+				new Error(),
+				HDB_ERROR_MSGS.CONFIG_VALIDATION(`${collidingLabel} and ${label} cannot be the same value (${port})`),
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+		portLabels.set(port, label);
+	}
+
+	const validation = configValidator(configJson, skipFsValidation);
+	const error = validation.error ?? effectiveHttpConfigValidator(flattenConfig(configDoc.toJSON())).error;
+	if (error) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.CONFIG_VALIDATION(error.message),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+
+	// These parameters can be set by the validator if they arent provided by user,
+	// for this reason we need to update the config yaml doc after the validator has run.
+	if (typeof validation.value.threads === 'object')
+		configDoc.setIn(['threads', 'count'], validation.value.threads.count);
+	else configDoc.setIn(['threads'], validation.value.threads);
+	configDoc.setIn(['componentsRoot'], validation.value.componentsRoot); // TODO: check this works with old config
+	configDoc.setIn(['logging', 'root'], validation.value.logging.root);
+	configDoc.setIn(['storage', 'path'], validation.value.storage.path);
+	configDoc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
+	const domainSocket = validation.value?.operationsApi?.network?.domainSocket;
+	configDoc.setIn(['operationsApi', 'network', 'domainSocket'], domainSocket);
+	const domainSocketWarning = getDomainSocketPathLengthWarning(validation.value.rootPath, domainSocket);
+	if (domainSocketWarning) logger.warn(domainSocketWarning);
+	if (isLegacySqlApplicationEntry(configJson.sql))
+		logger.warn(
+			"The root config entry 'sql' is an application, but 'sql' now configures Harper's SQL engine. Redeploy that application under a different name and remove the 'sql' entry; until then the SQL engine settings cannot be configured."
+		);
+}
+
+/**
+ * Updates the in memory flattened config object. Does not update the config file.
+ * This is mainly here to accommodate older versions of environmentManager and unit tests.
+ * @param param
+ * @param value
+ */
+export function updateConfigObject(param: string, value: any) {
+	if (flatConfigObj === undefined) {
+		// This is here to allow unit tests to work when HDB is not installed.
+		flatConfigObj = {};
+	}
+
+	configGenerationCount++;
+	const configObjKey = lookupConfigParam(param);
+	if (configObjKey === undefined) {
+		logger.trace(`Unable to update config object because config param '${param}' does not exist`);
+		return;
+	}
+
+	if (value === undefined) delete flatConfigObj[configObjKey.toLowerCase()];
+	else flatConfigObj[configObjKey.toLowerCase()] = value;
+
+	// Keep the nested config tree in sync too: componentLoader (root components) and other
+	// nested-path readers derive behavior — e.g. a component's network port/protocol — from
+	// getConfigObj()'s tree, not the flattened map, so an override that only touched flatConfigObj
+	// was invisible to them. configObj is unset only before a live config has ever been installed
+	// (setActiveConfig), i.e. during install; don't auto-vivify it, since getConfigObj() reads its
+	// falsiness as "not yet initialized" and an empty object would short-circuit that lazy init
+	// permanently.
+	if (configObj != null && !NON_NESTED_CONFIG_PARAMS.has(configObjKey)) {
+		const pathSegments = configObjKey.split('_');
+		let node = configObj;
+		for (let i = 0; i < pathSegments.length - 1; i++) {
+			const segment = pathSegments[i];
+			if (node[segment] === undefined) {
+				// Auto-vivifying ancestors only to delete the leaf would leave empty sections behind,
+				// which componentLoader.ts would treat as components to load.
+				if (value === undefined) return;
+				node[segment] = {};
+			} else if (typeof node[segment] !== 'object' || node[segment] === null) {
+				// A legacy scalar shorthand for this key (e.g. `threads: 4`); descending would replace
+				// it with {} out from under other readers. Leaves the two views disagreeing on this
+				// param, so say so rather than diverging silently.
+				logger.trace(
+					`Config param '${configObjKey}' not mirrored into the nested config: '${segment}' holds a scalar value`
+				);
+				return;
+			}
+			node = node[segment];
+		}
+		// squashObj never writes an undefined value as an enumerable key either; root-config readers
+		// (e.g. bin/run.ts) iterate configObj's own keys and assume every one holds a real value.
+		const leaf = pathSegments[pathSegments.length - 1];
+		if (value === undefined) delete node[leaf];
+		else node[leaf] = value;
+	}
+}
+
+/**
+ * Canonical config param for an arg name, or `undefined` when the name is not a config param.
+ * `Object.hasOwn` because a bare lookup resolves inherited names: `constructor` yields an
+ * `Object.prototype` member that then fails `.split('_')` or `.toLowerCase()`.
+ */
+function lookupConfigParam(arg: string): string | undefined {
+	if (typeof arg !== 'string') return undefined;
+	const name = arg.toLowerCase();
+	return Object.hasOwn(CONFIG_PARAM_MAP, name) ? CONFIG_PARAM_MAP[name] : undefined;
+}
+
+const COMPONENT_PARAM_SUFFIXES = ['_package', '_port'];
+
+function suffixEscapedComponentName(arg: string): string | undefined {
+	if (typeof arg !== 'string') return undefined;
+	const suffix = COMPONENT_PARAM_SUFFIXES.find((candidate) => arg.endsWith(candidate));
+	if (suffix === undefined) return undefined;
+	const component = arg.slice(0, -suffix.length);
+	return component === '' ? undefined : component;
+}
+
+/**
+ * Component entries (`my-component_package`, `my-component_port`) are operator-named, so they
+ * cannot be enumerated in CONFIG_PARAM_MAP and bypass it. This escape is the one way to write a
+ * root component entry without going through deploy_component, so a reserved name is excluded.
+ */
+function isSuffixEscapedParam(arg: string): boolean {
+	const component = suffixEscapedComponentName(arg);
+	return component !== undefined && !isReservedComponentName(component);
+}
+
+// Written only by set_configuration, as whole values: kept out of CONFIG_PARAM_MAP so a bare env var or CLI arg of
+// the same name (a generic MODELS, say) is never applied at boot.
+const SET_CONFIGURATION_ONLY_PARAMS: ReadonlySet<string> = new Set([
+	'models',
+	hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION,
+	hdbTerms.STUDIO_CONFIG_PARAMS.LANDING,
+]);
+
+function lookupConfigWriteParam(arg: string): string | undefined {
+	const name = arg.toLowerCase();
+	if (SET_CONFIGURATION_ONLY_PARAMS.has(name)) return name;
+	return lookupConfigParam(arg) ?? (isSuffixEscapedParam(arg) ? arg : undefined);
+}
+
+function findReservedComponentParams(args: object): string[] {
+	const reserved = [];
+	for (const arg in args) {
+		if (!Object.hasOwn(args, arg)) continue;
+		const component = suffixEscapedComponentName(arg);
+		if (component !== undefined && isReservedComponentName(component)) reserved.push(arg);
+	}
+	return reserved;
+}
+
+const MAX_REPORTED_UNRECOGNIZED = 10;
+
+/**
+ * Render unrecognized names for an error that also reaches the operations log: control characters
+ * are stripped so a name containing a newline cannot forge a log line, and the list is capped so a
+ * body carrying thousands of unknown keys cannot produce an unbounded message.
+ */
+function describeUnrecognized(names: string[]): string {
+	const shown = names
+		.slice(0, MAX_REPORTED_UNRECOGNIZED)
+		// eslint-disable-next-line no-control-regex
+		.map((name) => name.replace(/[\u0000-\u001f\u007f]/g, '?'));
+	const remaining = names.length - shown.length;
+	return remaining > 0 ? `${shown.join(', ')} (and ${remaining} more)` : shown.join(', ');
+}
+
+function findUnrecognizedParams(args: object): string[] {
+	let unrecognized;
+	for (const arg in args) {
+		if (lookupConfigWriteParam(arg) === undefined) (unrecognized ??= []).push(arg);
+	}
+	return unrecognized ?? [];
+}
+
+/**
+ * Updates and validates a config value in config file. Can also create a backup of config before updating.
+ * @param param - the config value to update
+ * @param value - the value to set the config to
+ * @param parsedArgs - an object of param/values to update
+ * @param createBackup - if true backup file is created
+ * @param update_config_obj - if true updates the in memory flattened config object
+ */
+export function updateConfigValue(
+	param: string,
+	value: any,
+	parsedArgs = undefined,
+	createBackup = false,
+	update_config_obj = false,
+	skipParamMap = false,
+	options?: { fromOperation?: boolean }
+) {
+	if (flatConfigObj === undefined) {
+		initConfig();
+	}
+
+	const configFilePath = getRootConfigFilePath(getConfigValue(CONFIG_PARAM_MAP.hdb_root));
+	const configDoc = parseYamlDoc(configFilePath);
+	const previousDocument = options?.fromOperation ? String(configDoc) : undefined;
+	let schemasArgs;
+
+	// Don't do the update if the values are the same.
+	// Env vars arrive as strings ('true', '9925', '["x"]'); flatConfigObj has
+	// typed values (true, 9925, ['x']). Run the env value through castConfigValue
+	// — the same coercion the write path applies below — and deep-compare. Plain
+	// loose equality (the previous approach) handled string<->number but not
+	// string<->boolean or string<->array, which made the check fire spuriously
+	// every boot for any non-string env var.
+	if (parsedArgs && flatConfigObj && !options?.fromOperation) {
+		let doUpdate = false;
+		for (const arg in parsedArgs) {
+			const castedValue = castConfigValue(arg, parsedArgs[arg]);
+			if (!isEqual(castedValue, flatConfigObj[arg.toLowerCase()])) {
+				doUpdate = true;
+				break;
+			}
+		}
+
+		if (!doUpdate) {
+			logger.trace(`No changes detected in config parameters, skipping update`);
+			return;
+		}
+	}
+
+	if (parsedArgs === undefined && param.toLowerCase() === CONFIG_PARAMS.DATABASES) {
+		schemasArgs = value;
+	} else if (parsedArgs === undefined) {
+		let configParam;
+		if (skipParamMap) {
+			configParam = param;
+		} else {
+			configParam = lookupConfigParam(param);
+			if (configParam === undefined) {
+				throw handleHDBError(
+					new Error(),
+					`Unable to update config, unrecognized config parameter: ${param}`,
+					HTTP_STATUS_CODES.BAD_REQUEST,
+					undefined,
+					undefined,
+					true
+				);
+			}
+		}
+
+		const splitParam = configParam.split('_');
+		const newValue = castConfigValue(configParam, value);
+		clearScalarAncestors(configDoc, splitParam);
+		configDoc.setIn([...splitParam], newValue);
+	} else {
+		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
+		for (const arg in parsedArgs) {
+			let configParam = lookupConfigWriteParam(arg);
+
+			// If setting http.securePort to the same value as http.port, set http.port to null to avoid clashing ports
+			if (
+				configParam === CONFIG_PARAMS.HTTP_SECUREPORT &&
+				parsedArgs[arg] === flatConfigObj[CONFIG_PARAMS.HTTP_PORT]?.toString()
+			) {
+				configDoc.setIn(['http', 'port'], null);
+			}
+
+			// If setting operationsApi.network.securePort to the same value as operationsApi.network.port, set operationsApi.network.port to null to avoid clashing ports
+			if (
+				configParam === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT &&
+				parsedArgs[arg] === flatConfigObj[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT.toLowerCase()]?.toString()
+			) {
+				configDoc.setIn(['operationsApi', 'network', 'port'], null);
+			}
+
+			// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
+			if (configParam === CONFIG_PARAMS.DATABASES) {
+				schemasArgs = parsedArgs[arg];
+				continue;
+			}
+			if (configParam?.startsWith('threads_')) {
+				// if threads was a number, recreate the threads object
+				const threadCount = configDoc.getIn(['threads']) as number;
+				if (threadCount >= 0) {
+					configDoc.deleteIn(['threads']);
+					configDoc.setIn(['threads', 'count'], threadCount);
+				}
+			}
+
+			if (configParam !== undefined) {
+				let splitParam = configParam.split('_');
+				const legacyParam = hdbTerms.LEGACY_CONFIG_PARAMS[arg.toUpperCase()];
+				if (legacyParam && legacyParam.startsWith('customFunctions') && configDoc.hasIn(legacyParam.split('_'))) {
+					configParam = legacyParam;
+					splitParam = legacyParam.split('_');
+				}
+
+				let newValue = castConfigValue(configParam, parsedArgs[arg]);
+				if (configParam === 'rootPath' && newValue?.endsWith('/')) newValue = newValue.slice(0, -1);
+				try {
+					clearScalarAncestors(configDoc, splitParam);
+					// The Studio reader ignores a `studio` that is not a map; a list survives the scalar clear and would
+					// make setIn throw, so the write replaces it rather than failing to land.
+					if (SET_CONFIGURATION_ONLY_PARAMS.has(configParam) && splitParam.length > 1) {
+						const parent = configDoc.getIn(splitParam.slice(0, -1));
+						if (parent !== undefined && !YAML.isMap(parent)) configDoc.deleteIn(splitParam.slice(0, -1));
+					}
+					configDoc.setIn([...splitParam], newValue);
+				} catch (err) {
+					logger.error(err);
+				}
+			}
+		}
+	}
+
+	if (schemasArgs) setSchemasConfig(configDoc, schemasArgs);
+
+	// Validates config doc and if required sets default values for some parameters.
+	validateConfig(configDoc);
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
+
+	if (configDoc.errors?.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Error parsing harperdb-config.yaml ${configDoc.errors}`,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+		);
+	}
+	const nextDocument = String(configDoc);
+	if (previousDocument === nextDocument) return;
+	if (createBackup === true) backupConfigFile(configFilePath, hdbRoot);
+	atomicWriteFile(configFilePath, nextDocument, { ownerOnly: true });
+	if (update_config_obj) {
+		flatConfigObj = setActiveConfig(configDoc.toJSON());
+		configGenerationCount++;
+	}
+	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
+}
+
+function backupConfigFile(configPath, hdbRoot) {
+	try {
+		const backupDir = getBackupDirPath(hdbRoot);
+		const backupFolderPath = path.join(
+			backupDir,
+			`${new Date(Date.now()).toISOString().replaceAll(':', '-')}-${hdbTerms.HARPER_CONFIG_FILE}.bak`
+		);
+		fs.ensureDirSync(backupDir);
+		// Not a copy: a copy takes the source's mode, and the source may predate owner-only config writes.
+		atomicWriteFile(backupFolderPath, fs.readFileSync(configPath), { ownerOnly: true, replaces: configPath });
+		logger.trace(`Config file: ${configPath} backed up to: ${backupFolderPath}`);
+	} catch (err) {
+		logger.error(BACKUP_ERR);
+		logger.error(err);
+	}
+}
+
+/**
+ * Flattens `obj` and installs it as the live config — the nested tree getConfigObj() hands out and
+ * updateConfigObject() mirrors overrides into. Only callers that own the live config may do this:
+ * flattenConfig() also runs on docs that are discarded moments later (the defaults doc, the
+ * user-supplied doc installer.ts reads for HDB_CONFIG), and no reader of configObj can tell one of
+ * those from the real thing.
+ * @param obj
+ * @returns the flattened config
+ */
+function setActiveConfig(obj) {
+	const flatObj = flattenConfig(obj);
+	configObj = obj;
+	return flatObj;
+}
+
+const PRESERVED_PROPERTIES = ['databases'];
+/**
+ * Flattens the JSON version of Harper config with underscores separating each parent/child key.
+ * Does NOT install `obj` as the live config — see setActiveConfig() for that.
+ * @param obj
+ * @returns {null}
+ */
+export function flattenConfig(obj) {
+	if (obj.http) Object.assign(obj.http, obj?.customFunctions?.network);
+	if (obj?.operationsApi?.network) obj.operationsApi.network = { ...obj.http, ...obj.operationsApi.network };
+	if (obj?.operationsApi) obj.operationsApi.tls = { ...obj.tls, ...obj.operationsApi.tls };
+
+	return squashObj(obj);
+
+	function squashObj(obj) {
+		let result = {};
+		for (let i in obj) {
+			if (!Object.hasOwn(obj, i)) continue;
+
+			if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
+				const flatObj = squashObj(obj[i]);
+				for (const x in flatObj) {
+					if (!Object.hasOwn(flatObj, x)) continue;
+
+					if (x !== 'package') i = i.toLowerCase();
+					const key = i + '_' + x;
+					// This is here to catch config param which has been renamed/moved
+					if (!CONFIG_PARAMS[key.toUpperCase()] && CONFIG_PARAM_MAP[key]) {
+						result[CONFIG_PARAM_MAP[key].toLowerCase()] = flatObj[x];
+					}
+
+					result[key] = flatObj[x];
+				}
+			}
+			if (obj[i] !== undefined) result[i.toLowerCase()] = obj[i];
+		}
+		return result;
+	}
+}
+
+/**
+ * Cast config values.
+ * @param param
+ * @param value
+ * @returns {*|number|string|string|null|boolean}
+ */
+function castConfigValue(param, value) {
+	if (isNumber(value)) {
+		return parseFloat(value);
+	}
+
+	if (value === true || value === false) {
+		return value;
+	}
+
+	if (Array.isArray(value)) {
+		return value;
+	}
+
+	if (hdbUtils.isObject(value)) {
+		return value;
+	}
+
+	if (value === null) {
+		return value;
+	}
+
+	if (typeof value === 'string' && value.toLowerCase() === 'true') {
+		return true;
+	}
+
+	if (typeof value === 'string' && value.toLowerCase() === 'false') {
+		return false;
+	}
+
+	// undefined is not used in our yaml, just null.
+	if (value === undefined || value.toLowerCase() === 'undefined') {
+		return null;
+	}
+
+	//in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
+	//if it fails we assume it is just a regular string
+	if (
+		typeof value === 'string' &&
+		((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']')))
+	) {
+		try {
+			return JSON.parse(value);
+		} catch {
+			//no-op
+		}
+	}
+
+	return hdbUtils.autoCast(value);
+}
+
+/**
+ * Get Configuration - this function returns all the config settings
+ * @returns {{}}
+ */
+export function getConfiguration() {
+	const bootPropsFilePath = hdbUtils.getPropsFilePath();
+	const configFilePath = getConfigFilePath(bootPropsFilePath);
+	const configDoc = parseYamlDoc(configFilePath);
+
+	return configDoc.toJSON();
+}
+
+// A malformed Studio setting is dropped when read rather than failing a boot, so this write is where it is refused.
+async function assertStudioSettingsValid(configFields) {
+	const problems: string[] = [];
+	let studioConfiguration;
+	for (const field in configFields) {
+		const param = field.toLowerCase();
+		if (param !== hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION && param !== hdbTerms.STUDIO_CONFIG_PARAMS.LANDING) continue;
+		// A reasserting env layer would put its own value back at the next start, so the write would silently revert.
+		const pinnedBy = envLayerNaming(param.replace('_', '.'));
+		if (pinnedBy && pinnedBy !== 'HARPER_DEFAULT_CONFIG')
+			throw new ClientError(`Cannot set ${param}: ${pinnedBy} defines it. Change that variable first.`, 409);
+		// Imported lazily: it imports this module.
+		studioConfiguration ??= await import('./studioConfiguration.ts');
+		const value = castConfigValue(param, configFields[field]);
+		if (param === hdbTerms.STUDIO_CONFIG_PARAMS.NAVIGATION)
+			studioConfiguration.validateStudioNavigation(value, problems, false);
+		else studioConfiguration.validateStudioLanding(value, problems);
+	}
+	if (problems.length > 0) throw new ClientError(`Unable to update config: ${problems.join('; ')}`, 400);
+}
+
+// `set_configuration` is the one config writer that also fans out (`replicated: true`), so a value
+// accepted here lands on every peer at once and the next rolling restart takes the whole cluster
+// down together (harper-pro#558). Boot-time writers are deliberately not gated the same way: config
+// that already exists has to stay bootable, so it is recovered at the point of use instead
+// (server/threads/threadHeapMemory.ts).
+function assertThreadHeapMemoryStartable(configFields) {
+	for (const field in configFields) {
+		const configParam = CONFIG_PARAM_MAP[field.toLowerCase()];
+		let configured;
+		if (configParam === CONFIG_PARAMS.THREADS_MAXHEAPMEMORY) configured = configFields[field];
+		else if (configParam === CONFIG_PARAMS.THREADS) configured = readSectionHeapMemory(configFields[field]);
+		else continue;
+		const value = castConfigValue(CONFIG_PARAMS.THREADS_MAXHEAPMEMORY, configured);
+		if (typeof value !== 'number' || isStartableThreadHeapMemory(value)) continue;
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.CONFIG_VALIDATION(
+				`'threads.maxHeapMemory' must be greater than or equal to ${hdbTerms.MIN_THREAD_HEAP_MEMORY_MB}`
+			),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+}
+
+// A whole `threads` section reaches the same config key, and `threads` canonicalizes to itself
+// rather than to `threads_count`. It arrives either as an object or as the JSON string
+// castConfigValue parses, and flattenConfig lowercases every key on the way back out, so the nested
+// name has to be matched the same way the top-level one is.
+function readSectionHeapMemory(section) {
+	const parsed = castConfigValue(CONFIG_PARAMS.THREADS, section);
+	if (!hdbUtils.isObject(parsed)) return undefined;
+	for (const key in parsed) if (key.toLowerCase() === 'maxheapmemory') return parsed[key];
+}
+
+/**
+ * Set Configuration - this function sets new configuration
+ * @param setConfigJson
+
+ */
+export async function setConfiguration(setConfigJson) {
+	// `hdb_auth_header` is the 4.x spelling of `hdbAuthHeader`, and `impersonate` is a generic
+	// operation-body field (server/operationsServer.ts): control fields, never config params.
+	// eslint-disable-next-line no-unused-vars
+	const { operation, hdb_user, hdbAuthHeader, hdb_auth_header, impersonate, replicated, ...configFields } =
+		setConfigJson;
+	// Operation-control field, not a config param: enforce boolean (matching other
+	// `replicated` surfaces, e.g. analyticsValidator) before any local write so a
+	// malformed value like the string "false" — which is truthy — can't apply config
+	// locally or trigger an unintended fan-out.
+	if (replicated !== undefined && typeof replicated !== 'boolean') {
+		throw handleHDBError(
+			new Error(),
+			`'replicated' must be a boolean`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	const reservedComponentParams = findReservedComponentParams(configFields);
+	if (reservedComponentParams.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Unable to update config, cannot configure a component whose name is reserved for Harper's own configuration section: ${describeUnrecognized(reservedComponentParams)}`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	// Before any local write: the writer skips names it cannot resolve, so a request mixing
+	// recognized and unrecognized names would otherwise apply the recognized half and still report
+	// success.
+	const unrecognized = findUnrecognizedParams(configFields);
+	if (unrecognized.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Unable to update config, unrecognized config parameter${unrecognized.length > 1 ? 's' : ''}: ${describeUnrecognized(unrecognized)}`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	assertThreadHeapMemoryStartable(configFields);
+	await assertStudioSettingsValid(configFields);
+	if (Object.keys(configFields).some((field) => field.toLowerCase() === 'models')) {
+		const { envLayerNamingModels } = await import('../resources/models/bootstrap.ts');
+		const pinnedBy = envLayerNamingModels();
+		if (pinnedBy && pinnedBy !== 'HARPER_DEFAULT_CONFIG')
+			throw new ClientError(`Cannot set models: ${pinnedBy} defines models. Change that variable first.`, 409);
+	}
+	try {
+		// Imported lazily: the publication lock's module loads this one.
+		const { withRootConfigPublicationLock } = await import('../components/rootConfigPublication.ts');
+		await withRootConfigPublicationLock(async () =>
+			updateConfigValue(undefined, undefined, configFields, true, false, false, { fromOperation: true })
+		);
+		if (replicated) {
+			// Opt-in fan-out to all cluster nodes (#660). replicateOperation forwards the
+			// body with `replicated: false`, so peers apply locally without re-replicating;
+			// per-node outcomes are returned on `response.replicated`. `replicated` must
+			// stay out of configFields on both origin and peers, or it would be written to
+			// the config file as a config param.
+			const response = await server.replication.replicateOperation(setConfigJson);
+			response.message = CONFIGURE_SUCCESS_RESPONSE;
+			return response;
+		}
+		return CONFIGURE_SUCCESS_RESPONSE;
+	} catch (err) {
+		if (typeof err === 'string' || err instanceof String) {
+			throw handleHDBError(err, err, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+		}
+		throw err;
+	}
+}
+
+export function readConfigFile() {
+	const bootPropsFilePath = hdbUtils.getPropsFilePath();
+	try {
+		fs.accessSync(bootPropsFilePath, fs.constants.F_OK | fs.constants.R_OK);
+	} catch (err) {
+		if (!hdbUtils.noBootFile()) {
+			logger.error(err);
+			throw handleHDBError(
+				new Error(),
+				`Harper properties file at path ${bootPropsFilePath} does not exist`,
+				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+			);
+		}
+	}
+
+	const configFilePath = getConfigFilePath(bootPropsFilePath);
+	const configDoc = parseYamlDoc(configFilePath);
+
+	return configDoc.toJSON();
+}
+
+export function parseYamlDoc(filePath) {
+	return YAML.parseDocument(fs.readFileSync(filePath, 'utf8'), { simpleKeys: true } as any);
+}
+
+/**
+ * Apply HARPER_DEFAULT_CONFIG, HARPER_CONFIG and HARPER_SET_CONFIG environment variables at runtime
+ *
+ * This function performs the following:
+ * 1. Loads configuration state to track sources
+ * 2. Detects user edits (drift) to protect them from HARPER_DEFAULT_CONFIG
+ * 3. Applies HARPER_DEFAULT_CONFIG (respects user edits)
+ * 4. Applies HARPER_CONFIG (merge layer: reasserts its keys, yields only to HARPER_SET_CONFIG)
+ * 5. Applies HARPER_SET_CONFIG (overrides everything)
+ * 6. Handles deletions when keys removed from env vars
+ * 7. Saves updated state and persists changes to config file (if configFilePath provided)
+ *
+ * NOTE: This function performs multiple conversions (YAML → JSON → YAML) which is not
+ * efficient but provides clear separation of concerns. The conversions are necessary
+ * to handle YAML structure conflicts (e.g., when a boolean like 'threads: true' needs
+ * to become an object like 'threads: {count: 4}').
+ *
+ * @param {Document} configDoc - YAML document to modify (mutated in place)
+ * @param {string} [configFilePath] - Path to config file (optional, skips file write if not provided)
+ * @param {Object} [options] - Options to pass to applyRuntimeEnvConfig (e.g., {isInstall: true})
+ */
+function applyRuntimeEnvVarConfig(
+	configDoc,
+	configFilePath,
+	options: {
+		isInstall?: boolean;
+		userPaths?: Iterable<string>;
+		deferStateCommit?: boolean;
+	} = {}
+): (() => boolean) | undefined {
+	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
+	const configEnvValue = process.env.HARPER_CONFIG;
+	const setEnvValue = process.env.HARPER_SET_CONFIG;
+	const anyEnvValue = defaultEnvValue || configEnvValue || setEnvValue;
+
+	// Get rootPath for state file location
+	const rootPath = configDoc.getIn(['rootPath']);
+	if (!rootPath) {
+		// Only an error if there is config to apply; otherwise there is simply nothing to do.
+		if (anyEnvValue) logger.warn('Cannot apply runtime env config: rootPath not found in config');
+		return;
+	}
+
+	// Skip entirely (zero overhead) only when nothing is set AND there is no prior state to
+	// clean up. If a var was applied on a previous boot and then removed, all three env vars
+	// are absent now but applyRuntimeEnvConfig must still run to restore originals and clear
+	// the snapshot — so don't short-circuit in that case.
+	if (!anyEnvValue && !hasPersistedEnvConfigState(rootPath)) return;
+
+	// Convert to JSON for processing
+	const configObj = configDoc.toJSON();
+
+	let saveEnvConfigState;
+	let confirmEnvConfigState;
+	let commitEnvConfigState: () => boolean;
+	try {
+		// Apply env vars with source tracking and drift detection
+		({
+			saveState: saveEnvConfigState,
+			confirmConfigWritten: confirmEnvConfigState,
+			commitState: commitEnvConfigState,
+		} = prepareRuntimeEnvConfig(configObj, rootPath, options));
+
+		// If securePort was set to the same value as port, auto-null port to avoid clashing
+		if (configObj.http?.port && configObj.http?.port === configObj.http?.securePort) {
+			configObj.http.port = null;
+		}
+		if (
+			configObj.operationsApi?.network?.port &&
+			configObj.operationsApi?.network?.port === configObj.operationsApi?.network?.securePort
+		) {
+			configObj.operationsApi.network.port = null;
+		}
+
+		// Update the YAML document's contents in place so comments are preserved
+		syncObjectToYamlDoc(configDoc, configObj);
+	} catch (error) {
+		logger.error(`Failed to apply runtime env config: ${error.message}`);
+		throw error;
+	}
+
+	// Install has no config file yet and no process to keep alive, so its snapshot write stays
+	// mandatory - an install that never recorded originals should fail, not proceed.
+	if (!configFilePath) {
+		if (options.deferStateCommit) return commitEnvConfigState;
+		commitEnvConfigState();
+		return;
+	}
+
+	// Every worker thread runs initConfig and derives the same merged config, so letting them all
+	// persist it means N threads racing over one pair of files for a result they already agree on.
+	// The main thread owns the on-disk copy; a worker runs on the in-memory one.
+	if (!isMainThread) return;
+
+	// Persist changes to file
+	try {
+		if (configDoc.errors?.length > 0) {
+			throw handleHDBError(
+				new Error(),
+				`Error parsing harperdb-config.yaml: ${configDoc.errors}`,
+				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+			);
+		}
+		// Stage, write the file, promote by rename: the confirmed state is the only record of the
+		// file's pre-env values, so no write an exhausted volume can refuse may stand between it and
+		// disk. See DESIGN.md, boot-path config persistence.
+		let stateStaged = false;
+		if (persistConfigDuringBoot(`${rootPath} env config state`, () => (stateStaged = saveEnvConfigState()))) {
+			let configPersisted = false;
+			let configRewritten = false;
+			try {
+				configPersisted = persistConfigDuringBoot(configFilePath, () => {
+					configRewritten = atomicWriteFile(configFilePath, String(configDoc), {
+						skipIfUnchanged: true,
+						ownerOnly: true,
+					});
+				});
+			} finally {
+				if (!configPersisted && stateStaged) discardConfigState(rootPath as string);
+			}
+			if (configPersisted) {
+				if (stateStaged) confirmEnvConfigState();
+				// Distinguished, because this is the line that answers "did something rewrite my config?"
+				logger.debug(
+					configRewritten
+						? 'Config file updated with runtime env var values'
+						: 'Config file already matched the runtime env var values'
+				);
+			}
+		}
+	} catch (error) {
+		logger.error(`Failed to write config file after applying runtime env vars: ${error.message}`);
+		throw error;
+	}
+}
+
+/**
+ * This function reads config settings from old settings file(before 4.0.0), aligns old keys to new keys, gets old
+ * values, and updates the in-memory object.
+ * --Located here instead of upgradeUtilities.js to prevent circular dependency--
+ * @param oldConfigPath - a string with the old settings path ending in config/settings.js
+ */
+export function initOldConfig(oldConfigPath: string) {
+	const oldHdbProperties = PropertiesReader(oldConfigPath);
+	flatConfigObj = {};
+	configGenerationCount++;
+
+	for (const configParam in CONFIG_PARAM_MAP) {
+		const value = oldHdbProperties.get(configParam.toUpperCase());
+		if (hdbUtils.isEmpty(value) || (typeof value === 'string' && value.trim().length === 0)) {
+			continue;
+		}
+		let paramKey = CONFIG_PARAM_MAP[configParam].toLowerCase();
+		if (paramKey === CONFIG_PARAMS.LOGGING_ROOT) {
+			flatConfigObj[paramKey] = path.dirname(value as string);
+		} else {
+			flatConfigObj[paramKey] = value;
+		}
+	}
+	return flatConfigObj;
+}
+
+/**
+ * Gets a config value directly from harperdb-config.yaml
+ * @param param
+ * @returns {undefined}
+ */
+export function getConfigFromFile(param: string) {
+	const config_file = readConfigFile();
+	return getPath(config_file, param.replaceAll('_', '.'));
+}
+
+export function getConfigObj() {
+	if (!configObj) {
+		initConfig();
+		return configObj;
+	}
+
+	return configObj;
+}
+
+export function getFlatConfigObj() {
+	if (!flatConfigObj) initConfig();
+	return flatConfigObj;
+}

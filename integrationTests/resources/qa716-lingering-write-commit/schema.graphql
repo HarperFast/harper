@@ -1,0 +1,25 @@
+# QA-716 fixture schema. Orders.status is the secondary index under test; Inventory carries a
+# staged write on a second table in the same transaction; Reservation adds a third plus a TTL, so
+# its staged write races background eviction while the deferred commit is in flight.
+#
+# expiration 8 rather than 3: search stops returning a row the moment expiresAt passes, so the
+# window is wall-clock time from the write, and a contended shard can spend a 3s one on a single
+# round trip.
+type Orders @table @export {
+	id: ID @primaryKey
+	bucket: String
+	status: String @indexed
+	sku: String
+	seq: Int
+}
+
+type Inventory @table @export {
+	sku: ID @primaryKey
+	fulfilledCount: Int
+}
+
+type Reservation @table(expiration: 8, scanInterval: 1) @export {
+	id: ID @primaryKey
+	sku: String @indexed
+	qty: Int
+}

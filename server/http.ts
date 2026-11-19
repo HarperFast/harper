@@ -6,36 +6,60 @@
 import { currentThreadId } from '@harperfast/rocksdb-js';
 import { Scope } from '../components/Scope.ts';
 import { Socket } from 'node:net';
+import { setMaxListeners } from 'node:events';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { getConfigPath } from '../config/configUtils.js';
-import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
-import { createTLSSelector } from '../security/keys.ts';
-import { createSecureServer } from 'node:http2';
+import { atomicWriteFile, getConfigPath } from '../config/configUtils.ts';
+import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.ts';
+import {
+	applicationSocketName,
+	isolatedApplicationRoute,
+	thisThreadsIsolatedApplication,
+} from './threads/isolatedApplications.ts';
+import { claimListener, listenerOwner, shouldBindListenerHere } from './threads/workerPools.ts';
+import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
+import { allowedSourcesFor, watchNetworkAccess } from '../security/networkAccess.ts';
+import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
-import { createServer, IncomingMessage } from 'node:http';
-import { Request, BunRequest, isBun } from './serverHelpers/Request.ts';
-import { appendHeader, Headers } from './serverHelpers/Headers.ts';
+import { createServer, IncomingMessage, STATUS_CODES, validateHeaderName, validateHeaderValue } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
+import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
+import {
+	appendHeader,
+	addVaryHeader,
+	bridgeChainHeadersToNodeResponse,
+	Headers,
+	mergeChainHeadersIntoFallback,
+	toWriteHeadHeaders,
+} from './serverHelpers/Headers.ts';
+import {
+	decodeProxyHeader,
+	applyProxyHeader,
+	applyDefaultPeerCertificate,
+	withProxyProtocol,
+} from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
-import { recordAction, recordActionBinary } from '../resources/analytics/write.ts';
-import { Readable, Writable } from 'node:stream';
-import { mkdirSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
+import { checkAnalyticsEnabled, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import { METRIC } from '../resources/analytics/metadata.ts';
+import { Readable, Writable, finished, pipeline } from 'node:stream';
+import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, UpgradeListener } from './Server.ts';
-import { setPortServerMap, SERVERS } from './serverRegistry.ts';
+import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, type UpgradeListener } from './Server.ts';
+import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
-import { throttle } from './throttle.ts';
-import { makeCallbackChain as buildCallbackChain } from './middlewareChain.ts';
+import { rejectWhenLoopDelayed, throttle } from './throttle.ts';
+import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
+import { isolatedApplicationUnavailable } from './isolatedHostGuard.ts';
+import { corsAccessListAllows } from '../utility/corsAccessList.ts';
 import { WebSocketServer } from 'ws';
+import { loadNativePackage } from '../utility/packageUtils.js';
 
-const { errorToString } = harperLogger;
-server.http = httpServer;
-server.request = onRequest;
-server.ws = onWebSocket;
-server.upgrade = onUpgrade;
+const { errorToString, errorForLog } = harperLogger;
 const websocketServers = {};
+let bunWebSocketServer;
 const httpServers = {},
 	httpChain = {},
 	httpResponders: {
@@ -51,29 +75,184 @@ let httpOptions: HttpOptions = {};
 export const universalHeaders: [string, string][] = [];
 // Bun-specific: stores fetch handler configs per port, used by threadServer.js to call Bun.serve()
 export const bunServeConfigs: Record<string | number, any> = {};
-// Bun-specific: stores non-function listeners (e.g. Fastify servers) per port for fallback delegation
-const bunFallbackServers: Record<string | number, any> = {};
-const udsCleanupPaths: { socketPath: string; yamlPath: string }[] = [];
+// uWS backend (#914): stores { socketPath, secure, handler } configs keyed by UDS path. When
+// HARPER_UWS_UDS is set, the per-worker UDS mirror is served by uWebSockets.js instead of a Node
+// http server; threadServer.js consumes these and calls createUwsServer(). Symphony must forward
+// client identity via X-Forwarded-For (not the PROXY protocol) on these sockets, as the Bun path does.
+export const uwsServeConfigs: Record<string, any> = {};
+// Stores non-function listeners (e.g. Fastify servers) per port for fallback delegation on the
+// backends that don't register their own Node http server (Bun, and the uWS HTTP path). Keeping
+// them out of SERVERS is what prevents a competing Node server from binding the same port.
+const fallbackServers: Record<string | number, any> = {};
+// `ino`/`dev` are set once this worker's own bind is confirmed (see recordUdsBindSuccess) and are
+// what make cleanupUdsFiles/markUdsBindFailed ownership-aware: on an overlapping restart (see
+// restartWorkers()), the replacement worker rebinds this exact path before the outgoing worker
+// exits, so by the time the outgoing worker cleans up, the identity on disk may already belong to
+// the replacement, not to it. Captured as bigint (statSync's `{ bigint: true }` form): a plain
+// Number loses precision above 2^53, which some filesystems (e.g. XFS with inode64) can exceed,
+// letting two genuinely different inodes compare equal.
+const udsCleanupPaths: { socketPath: string; yamlPath: string; identity?: { dev: bigint; ino: bigint } }[] = [];
+// Sockets whose listen() has failed (see threadServer.js's fail-soft UDS handling). A TLS mirror's
+// YAML metadata is written on its own schedule (SNICallback readiness / cert reload), independent of
+// whether the mirror socket ever actually bound, so a failed bind must both cancel any metadata write
+// still pending and remove one already on disk — otherwise a fronting proxy keeps advertising a socket
+// nothing is listening on.
+const failedUdsPaths = new Set<string>();
 
 export function registerUdsCleanupPaths(socketPath: string, yamlPath: string) {
 	udsCleanupPaths.push({ socketPath, yamlPath });
 }
 
+export function hasUdsMirror(): boolean {
+	return udsCleanupPaths.some((entry) => !failedUdsPaths.has(entry.socketPath));
+}
+
+/**
+ * Record that this worker's own bind at `socketPath` succeeded, capturing the (dev, inode) pair that
+ * proves ownership. Call right after a mirror socket starts listening (see the bind sites in
+ * threadServer.js — the Node/h2/raw-socket mirrors via listenOnDomainSocket's onListening, the Bun
+ * path right after Bun.serve() returns, and the uWS path once createUwsServer() resolves). A no-op
+ * if `socketPath` was never registered.
+ */
+export function recordUdsBindSuccess(socketPath: string) {
+	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
+	if (!entry) return;
+	try {
+		const stat = statSync(socketPath, { bigint: true });
+		entry.identity = { dev: stat.dev, ino: stat.ino };
+	} catch (error) {
+		// Extremely unlikely (we just bound this path), but silent failure here is expensive: the
+		// entry is permanently treated as unowned, so this worker leaks both files at shutdown with
+		// nothing in the logs to explain why.
+		harperLogger.warn(`Could not stat freshly bound UDS mirror at ${socketPath}`, error);
+	}
+}
+
+/**
+ * 'owned' — the (dev, inode) this worker recorded at bind time still matches what's on disk.
+ * 'foreign' — a socket exists at the path, but with a different identity (or none was ever
+ *   recorded): something else — almost always a replacement worker — currently owns it. Also the
+ *   safe default when statSync fails for any reason other than ENOENT (e.g. EACCES): we can't
+ *   confirm the path is genuinely empty, so treat it as though something we can't verify owns it.
+ * 'absent' — statSync confirmed ENOENT: nothing is on disk at the path. There is no live owner to
+ *   protect.
+ */
+function ownershipOf(entry: {
+	socketPath: string;
+	identity?: { dev: bigint; ino: bigint };
+}): 'owned' | 'foreign' | 'absent' {
+	let current: { dev: bigint; ino: bigint };
+	try {
+		const stat = statSync(entry.socketPath, { bigint: true });
+		current = { dev: stat.dev, ino: stat.ino };
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'foreign';
+	}
+	return entry.identity !== undefined && current.dev === entry.identity.dev && current.ino === entry.identity.ino
+		? 'owned'
+		: 'foreign';
+}
+
+/**
+ * Mark a Unix domain socket's listen() as failed: suppress its metadata, and remove any already
+ * written UNLESS a live socket at this path currently belongs to someone else (a replacement worker
+ * that already rebound it). Unlike cleanupUdsFiles, a failed bind never produced a socket of its own,
+ * so 'absent' here just means no bind ever won this path — not evidence of a live replacement — and
+ * is safe to retract stale metadata for (see server/DESIGN.md's UDS ownership note for why this can't
+ * require 'owned': its callers, an overlong path and a per-thread mirror skipped because its pool owns
+ * it, never run listen(), so this worker's own identity is never recorded).
+ */
+export function markUdsBindFailed(socketPath: string) {
+	failedUdsPaths.add(socketPath);
+	const entry = udsCleanupPaths.find((candidate) => candidate.socketPath === socketPath);
+	if (!entry || ownershipOf(entry) === 'foreign') return;
+	try {
+		unlinkSync(entry.yamlPath);
+	} catch {}
+}
+
+export function isUdsBindFailed(socketPath: string): boolean {
+	return failedUdsPaths.has(socketPath);
+}
+
 export function cleanupUdsFiles() {
-	for (const { socketPath, yamlPath } of udsCleanupPaths) {
+	for (const entry of udsCleanupPaths) {
+		// ownershipOf() and the unlinks below are separate syscalls, so a replacement that unlinks
+		// and rebinds in the gap between them would still lose its files — unavoidable in Node
+		// (no unlink-if-inode-matches primitive), but this narrows that window from the
+		// seconds-wide one this fix closes down to microseconds.
+		const ownership = ownershipOf(entry);
+		// Consume this entry's recorded identity on first use, regardless of outcome. This function
+		// runs twice per worker (threadServer.js's SHUTDOWN handler, while this worker's own
+		// socket is still open, then again from process.on('exit') after closeServers() has
+		// released it) — and a freed inode can be handed to an unrelated later bind before the
+		// second call runs. Leaving the stale value in place would let that second call
+		// coincidentally re-match a path it no longer has any claim to; clearing it here makes a
+		// repeat call a guaranteed no-op instead of a second chance to delete a stranger's files.
+		entry.identity = undefined;
+		// Unlike markUdsBindFailed (where 'absent' is genuinely safe — its callers run instead of a
+		// bind attempt, on a path nothing else binds, with no window for anyone else to be mid-flight),
+		// this function's second call (process.on('exit')) can land seconds after the first, while
+		// a concurrently-booting replacement — on the non-overlapping-restart platforms, started
+		// right after this worker's SHUTDOWN, not after it fully exits — may have already written
+		// its own fresh yaml (SNICallback.ready resolves independently of its bind) without having
+		// bound its socket yet. Treating that window's 'absent' as retractable would delete the
+		// replacement's yaml out from under it. Only 'owned' is safe here; a stale yaml this worker
+		// never bound (or no longer owns) is left for markUdsBindFailed or the startup sweep.
+		if (ownership !== 'owned') continue;
 		try {
-			unlinkSync(socketPath);
+			unlinkSync(entry.socketPath);
 		} catch {}
 		try {
-			unlinkSync(yamlPath);
+			unlinkSync(entry.yamlPath);
 		} catch {}
 	}
 }
 
-/** Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server. */
-export function writeUdsMetadata(yamlPath: string, port: number | string, secureServer: any) {
+/**
+ * Write YAML metadata for a UDS mirror socket, describing the TLS certs from the corresponding secure server.
+ * Returns whether the file now holds it. A server in a network access scope writes nothing until that
+ * scope's allowlist has been read, so a restricted port is never advertised as unrestricted.
+ */
+export function writeUdsMetadata(
+	yamlPath: string,
+	port: number | string,
+	secureServer: any,
+	protocol?: string,
+	mtlsForwarding = true,
+	route: { application: string; hosts: string[] } | undefined = isolatedApplicationRoute()
+): boolean {
+	const allowedSources = secureServer.networkAccessScope && allowedSourcesFor(secureServer.networkAccessScope);
+	if (secureServer.networkAccessScope && !allowedSources) return false;
 	const contexts = secureServer.secureContexts;
 	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
+	// Routing identity, separate from certificate coverage: a proxy sends this application's hosts to
+	// this socket alone, whatever hostnames the (shared, possibly wildcard) certificates carry.
+	if (route) {
+		yaml += `application: ${JSON.stringify(route.application)}\n`;
+		if (route.hosts.length === 0) yaml += `applicationHosts: []\n`;
+		else {
+			yaml += `applicationHosts:\n`;
+			for (const host of route.hosts) yaml += `  - ${JSON.stringify(host)}\n`;
+		}
+	}
+	// Which application protocol this socket speaks (absent = http/1.1, the historical
+	// default) — lets a fronting proxy route by negotiated ALPN.
+	if (protocol) yaml += `protocol: ${protocol}\n`;
+	// Whether the mirrored port verifies client certificates: a fronting proxy that
+	// terminates TLS should request client certs (mtlsRequired: reject when absent)
+	// and forward the verified chain via PROXY v2 TLVs. Only advertised when the
+	// mirror can actually decode that header (mtlsForwarding=false for the uWS
+	// mirror, which speaks X-Forwarded-For and has no PROXY parsing).
+	if (mtlsForwarding && secureServer.verifiesClientCerts) {
+		yaml += `mtls: true\n`;
+		if (secureServer.mtlsRequired) yaml += `mtlsRequired: true\n`;
+	}
+	// absent = unrestricted
+	if (allowedSources?.length > 0) {
+		yaml += `allowedSources:\n`;
+		for (const cidr of allowedSources) yaml += `  - ${JSON.stringify(cidr)}\n`;
+	}
 	yaml += `certificates:\n`;
 	if (contexts?.size > 0) {
 		const seen = new Set();
@@ -106,15 +285,48 @@ export function writeUdsMetadata(yamlPath: string, port: number | string, secure
 		}
 	}
 	try {
-		writeFileSync(yamlPath, yaml);
+		atomicWriteFile(yamlPath, yaml, { maxRetries: 0 });
+		return true;
 	} catch (error) {
 		harperLogger.error('Error writing UDS metadata to ' + yamlPath, error);
+		return false;
 	}
 }
 
-/** Clean all files in the sockets directory. Call from main thread on process startup. */
+export function publishUdsMetadata(ready: Promise<unknown>, secureServer: any, writeMetadata: () => boolean) {
+	// A certificate change arms the watch too, so a scoped mirror is still published after a boot TLS
+	// pass that rejected `ready`; re-watching republishes.
+	const publish = secureServer.networkAccessScope
+		? () => watchNetworkAccess(secureServer.networkAccessScope, writeMetadata)
+		: writeMetadata;
+	ready.then(publish, (error) => harperLogger.error('TLS initialization failed for a UDS mirror', error));
+	secureServer.secureContextsListeners?.push(publish);
+}
+
+export function ensureSocketsDirectory(): string | undefined {
+	const socketsDir = join(env.getHdbBasePath(), 'sockets');
+	try {
+		mkdirSync(socketsDir, { recursive: true, mode: 0o700 });
+		if (process.platform === 'win32') return socketsDir;
+		const mode = statSync(socketsDir).mode & 0o777;
+		if (mode !== 0o700) {
+			chmodSync(socketsDir, 0o700);
+			harperLogger.warn(`Set UDS sockets directory ${socketsDir} to mode 700 (was ${mode.toString(8)})`);
+		}
+		return socketsDir;
+	} catch (error) {
+		harperLogger.error('Unable to secure UDS sockets directory ' + socketsDir + ', skipping UDS mirrors', error);
+		return undefined;
+	}
+}
+
+/**
+ * Clean all files in the sockets directory. Call from main thread on process startup, before any
+ * worker can bind. Unconditional on the current TLS_UNIXDOMAINSOCKETS setting — the directory is
+ * Harper-owned and holds nothing but mirror .sock/.yaml files, so a crash that left stale ones
+ * behind while UDS was enabled must still be swept even if this boot has since disabled it.
+ */
 export function cleanupSocketsDirectory() {
-	if (!env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) return;
 	const socketsDir = join(env.getHdbBasePath(), 'sockets');
 	try {
 		for (const file of readdirSync(socketsDir)) {
@@ -125,11 +337,78 @@ export function cleanupSocketsDirectory() {
 	} catch {}
 }
 
+export function cleanupApplicationSockets(application: string) {
+	const socketsDir = join(env.getHdbBasePath(), 'sockets');
+	const prefix = applicationSocketName(application, '');
+	try {
+		for (const file of readdirSync(socketsDir)) {
+			if (!file.startsWith(prefix) || (!file.endsWith('.sock') && !file.endsWith('.yaml'))) continue;
+			try {
+				unlinkSync(join(socketsDir, file));
+			} catch {}
+		}
+	} catch {}
+}
+
+// Entries in `universalHeaders` that were pushed by `applySecurityHeaders`, so a config
+// hot-reload can remove exactly the entries it owns without clobbering entries pushed by
+// other components.
+let ownedSecurityHeaders: [string, string][] = [];
+
+/** Validate and apply `http.securityHeaders` config into `universalHeaders`, replacing any entries owned by a prior call. */
+function applySecurityHeaders(securityHeaders: HttpOptions['securityHeaders']) {
+	for (const entry of ownedSecurityHeaders) {
+		const index = universalHeaders.indexOf(entry);
+		if (index !== -1) universalHeaders.splice(index, 1);
+	}
+	ownedSecurityHeaders = [];
+	if (!securityHeaders) return;
+	if (typeof securityHeaders !== 'object' || Array.isArray(securityHeaders)) {
+		harperLogger.error('Invalid http.securityHeaders value: expected a map of header names to values');
+		return;
+	}
+	for (const [name, rawValue] of Object.entries(securityHeaders)) {
+		const value = '' + rawValue;
+		try {
+			validateHeaderName(name);
+			validateHeaderValue(name, value);
+		} catch (error) {
+			harperLogger.error(`Invalid http.securityHeaders entry "${name}": ${errorToString(error)}`);
+			continue;
+		}
+		const entry: [string, string] = [name, value];
+		ownedSecurityHeaders.push(entry);
+		universalHeaders.push(entry);
+	}
+}
+
+/** Merge `universalHeaders` into `headers` as defaults: a header the app already set (matched by name) is never overridden (app-wins precedence). */
+function applyUniversalHeaders(headers: { has(name: string): boolean; set(name: string, value: string): void }) {
+	for (const [key, value] of universalHeaders) {
+		if (!headers.has(key)) headers.set(key, value);
+	}
+}
+
+// Only the first http scope to load (the root config) owns securityHeaders: 'http' is a
+// trusted plugin key, so an application config.yaml with an `http:` block re-invokes
+// handleApplication, and without this guard that call would wipe root-configured headers.
+let securityHeadersOwned = false;
+
+/** Test seam: reset the module-level guard so tests can re-invoke handleApplication. */
+export function _resetSecurityHeadersOwnedForTest(): void {
+	applySecurityHeaders(undefined);
+	securityHeadersOwned = false;
+}
+
 export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll() as HttpOptions;
+	const ownsSecurityHeaders = !securityHeadersOwned;
+	securityHeadersOwned = true;
+	if (ownsSecurityHeaders) applySecurityHeaders(httpOptions.securityHeaders);
 	scope.options.on('change', (_key) => {
 		// TODO: Check to see if the key is something we can or can't handle
 		httpOptions = scope.options.getAll() as HttpOptions;
+		if (ownsSecurityHeaders) applySecurityHeaders(httpOptions.securityHeaders);
 	});
 }
 export function getHttpOptions() {
@@ -162,7 +441,9 @@ export function deliverSocket(fdOrSocket, port, data) {
 					if (data) socket.emit('data', data);
 				} else if (retries < 5) retry(retries + 1);
 				else {
-					harperLogger.error(`Server on port ${port} was not registered`);
+					harperLogger
+						.status({ problem: 'server.port-registration', expires: 120 })
+						.error(`Server on port ${port} was not registered`);
 					socket.destroy();
 				}
 			}, 1000);
@@ -256,7 +537,12 @@ function getPorts(options) {
 	if (port) ports.push({ port, secure: true });
 	port = options?.port;
 	if (port) ports.push({ port, secure: false });
-	if (ports.length === 0) {
+	// The operations API must never fall back to the app http ports: it binds on its own
+	// configured port(s)/domain socket only. Falling back here lets a port-less operations-api
+	// registration (e.g. an app config that carries an `operationsApi` block with no port)
+	// claim http.port/http.securePort on the main thread with noReusePort and no upgrade
+	// handler, which locks the http workers out of those ports and breaks all WebSockets (#1420).
+	if (ports.length === 0 && options?.usageType !== 'operations-api') {
 		// if no port is provided, default to http port
 		ports = [];
 		if (env.get(terms.CONFIG_PARAMS.HTTP_PORT) != null)
@@ -295,23 +581,305 @@ export function httpServer(listener, options) {
 			httpResponders[options?.runFirst ? 'unshift' : 'push'](entry);
 		} else if (isBun) {
 			// On Bun, store non-function listeners (e.g. Fastify's http.Server) for fallback delegation
-			bunFallbackServers[port] = listener;
+			registerFallbackServer(port, listener);
+		} else if ((httpServers[port] as any)?.uws) {
+			// uWS HTTP path (#914, HARPER_UWS_HTTP): the port is backed by uWebSockets.js, not a Node
+			// http server, so a raw non-function listener (e.g. Fastify's http.Server via
+			// server.http(fastify.server)) must NOT go through registerServer() — that would put it in
+			// SERVERS and threadServer would bind a Node http server competing with uWS on the same TCP
+			// port. Divert it to the fallback map like the Bun path; makeUwsHandler delegates unhandled
+			// requests to it via inject(). The { uws: true } marker is guaranteed present here: the
+			// getServer(port) call above (same loop iteration) sets it before this branch runs.
+			registerFallbackServer(port, listener);
 		} else {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
 		}
-		httpChain[port] = makeCallbackChain(httpResponders, port);
+		buildChains(httpChain, httpResponders, port);
 	}
 
 	return servers;
 }
+
+/**
+ * Pipe a stream response body to a Node http response, tracking bytes-sent analytics and tearing
+ * the whole chain down on client disconnect or a source error. A bare `pipe()` doesn't forward the
+ * source's 'error' event to the destination, and Node throws an unhandled 'error' as an
+ * uncaughtException — a generator that throws mid-iteration (e.g. an SSE resource) would otherwise
+ * crash the process and leave the response hanging instead of closing (#1763). `pipeline()` wires
+ * up destroy-propagation in both directions (client disconnect destroys the source, a source error
+ * destroys the response) and, unlike a clean `.end()`, closes the response abruptly on error — which
+ * correctly signals a failed/truncated transfer to the client instead of implying it completed.
+ *
+ * A body that writes its own head (`handlesHeaders`, an unknown-size Blob) reaches here with the head
+ * unwritten: a failure before its first byte is still an HTTP error, which `pipeline()` cannot answer.
+ */
+export function pipeBodyToResponse(
+	body: Readable,
+	nodeResponse: any,
+	handlerPath: string,
+	method: string,
+	endTime: number
+) {
+	if (nodeResponse.destroyed || nodeResponse.writableEnded) {
+		body.destroy();
+		return;
+	}
+	let bytesSent = 0;
+	body.on('data', (data) => {
+		bytesSent += typeof data === 'string' ? Buffer.byteLength(data) : data.length;
+	});
+	const complete = (error?: Error | null) => {
+		if (error) {
+			// a client closing the connection mid-stream surfaces as a premature-close error here;
+			// that's a routine disconnect, not a failure worth a warning
+			if ((error as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') harperLogger.warn(errorForLog(error));
+		} else {
+			recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
+			recordAction(bytesSent, 'bytes-sent', handlerPath, method);
+			endConnectionIfClientExpectsClose(nodeResponse);
+		}
+	};
+	if (nodeResponse.headersSent) pipeline(body, nodeResponse, complete);
+	else pipeBeforeHeaders(body, nodeResponse, complete);
+}
+
+function prematureCloseError(): NodeJS.ErrnoException {
+	return Object.assign(new Error('Premature close'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
+}
+
+function pipeBeforeHeaders(body: Readable, nodeResponse: any, complete: (error?: Error | null) => void) {
+	let failed = false;
+	let bodyEnded = false;
+	const fail = (error: NodeJS.ErrnoException) => {
+		// Later source events (a 'close' after its 'error') must not abort the replacement response
+		if (failed) return;
+		const premature = error.code === 'ERR_STREAM_PREMATURE_CLOSE';
+		const declaredStatus = errorStatus(error);
+		if (!premature) harperLogger[declaredStatus && declaredStatus < 500 ? 'info' : 'warn'](errorForLog(error));
+		// An error after the source ended must not cut off the response the pipe is still flushing
+		if (bodyEnded) return;
+		failed = true;
+		body.unpipe?.(nodeResponse);
+		body.destroy?.();
+		if (
+			!premature &&
+			!nodeResponse.headersSent &&
+			!nodeResponse.destroyed &&
+			!nodeResponse.writableEnded &&
+			answerBeforeHeaders(nodeResponse, error)
+		)
+			return;
+		nodeResponse.destroy(error);
+	};
+	// 'error' goes on first: a source that is destroyed with an error emits it on a later tick
+	body.on('error', (error) => fail(error ?? prematureCloseError()));
+	body.on('end', () => {
+		bodyEnded = true;
+	});
+	body.on('close', () => {
+		if (!bodyEnded && !nodeResponse.writableEnded && !nodeResponse.destroyed) fail(prematureCloseError());
+	});
+	finished(nodeResponse, (error) => {
+		if (failed) {
+			if (!error) endConnectionIfClientExpectsClose(nodeResponse);
+			return;
+		}
+		if (error || !nodeResponse.writableFinished) body.destroy?.();
+		complete(error);
+	});
+	// A source destroyed before the listeners above attached emits nothing later
+	if (body.destroyed && !body.readableEnded) fail(body.errored ?? prematureCloseError());
+	else body.pipe(nodeResponse);
+}
+
+function errorStatus(error: any): number | undefined {
+	const status = Number(error?.statusCode ?? error?.status);
+	return Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
+}
+
+const STAGED_ENTITY_HEADERS = [
+	'content-length',
+	'content-type',
+	'content-range',
+	'content-encoding',
+	'etag',
+	'last-modified',
+	'accept-ranges',
+];
+
+function answerBeforeHeaders(nodeResponse: any, error: any): boolean {
+	const declaredStatus = errorStatus(error);
+	const status = declaredStatus ?? 500;
+	try {
+		for (const name of STAGED_ENTITY_HEADERS) nodeResponse.removeHeader(name);
+		nodeResponse.setHeader('Cache-Control', 'no-store');
+		// the body is ours, so a length the error declared for another one would leave the client waiting
+		const declared = toWriteHeadHeaders(error?.headers);
+		const headers = {};
+		for (const name in declared) if (name.toLowerCase() !== 'content-length') headers[name] = declared[name];
+		nodeResponse.writeHead(status, headers);
+		// Only a message written for clients is sent; others (a blob or filesystem error) can name a path.
+		// The class name stays: it is the public error code.
+		nodeResponse.end(
+			(error?.expose ?? error instanceof ClientError)
+				? errorToString(error)
+				: `${error?.constructor?.name ?? 'Error'}: ${STATUS_CODES[status]}`
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Bun's node:http never derives keep-alive from the request, so a stream-ended response delivers its
+ * full body and then leaves the client attached until its own timeout (#2210). Ending the *request's*
+ * socket is the only remedy that works there, and it is graceful, so nothing is truncated (measured
+ * on plain TCP and TLS). DESIGN.md carries the measurements and the alternatives that don't work.
+ */
+function endConnectionIfClientExpectsClose(nodeResponse: any) {
+	if (!isBun) return;
+	const nodeRequest = nodeResponse.req;
+	if (nodeRequest?.httpVersionMajor !== 1) return;
+	const socket = nodeRequest.socket;
+	// a peer that RSTs right after the terminal chunk can leave this callback holding a destroyed
+	// socket; end()ing it would throw from inside stream internals, i.e. an uncaughtException
+	if (!socket || socket.destroyed) return;
+	const connection = nodeRequest.headers?.connection;
+	const tokens = typeof connection === 'string' ? connection.split(',') : [];
+	if (hasConnectionToken(tokens, 'close')) {
+		socket.end();
+		return;
+	}
+	// HTTP/1.0 persistence needs an explicit keep-alive AND a length to read to, so a 1.0 response
+	// that got no Content-Length is delimited by the close — the same line Node draws
+	if (
+		nodeRequest.httpVersionMinor === 0 &&
+		!(hasConnectionToken(tokens, 'keep-alive') && nodeResponse.hasHeader?.('content-length'))
+	)
+		socket.end();
+}
+
+function hasConnectionToken(tokens: string[], wanted: string) {
+	for (const token of tokens) {
+		if (token.trim().toLowerCase() === wanted) return true;
+	}
+	return false;
+}
+
+/**
+ * A `threadType` registration makes the port that worker type's own (see server/threads/workerPools.ts).
+ * Owned and unowned listeners never share a port: the unowned ones expect every HTTP worker to bind it,
+ * and an owned port is bound only by its pool, which loads no application.
+ */
+function claimPortForThreadType(port: number | string, options: ServerOptions | undefined) {
+	const threadType = options?.threadType;
+	const owner = listenerOwner(port);
+	if (!threadType) {
+		if (owner !== undefined)
+			throw new Error(`Port ${port} is owned by '${owner}' workers, so it cannot serve listeners on every worker`);
+		return;
+	}
+	if (httpServers[port] && owner === undefined)
+		throw new Error(`Port ${port} already serves listeners on every worker, so '${threadType}' workers cannot own it`);
+	claimListener(port, threadType);
+}
+
+function isReadMethod(method) {
+	return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+}
+
+function readRejectionHeaders(isOperationsServer: boolean) {
+	const prefix = isOperationsServer ? 'operationsApi_network' : 'http';
+	const cors = env.get(prefix + '_cors');
+	const accessList = env.get(prefix + '_corsAccessList');
+	const allowCredentials = env.get(terms.CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
+	const allowHeaders =
+		env.get(terms.CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';
+	return (origin: string | null | undefined) => {
+		const headers = new Headers({ 'content-type': 'text/plain' });
+		applyUniversalHeaders(headers);
+		if (cors) {
+			addVaryHeader(headers, 'Origin');
+			if (origin && corsAccessListAllows(accessList, origin)) {
+				headers.set('Access-Control-Allow-Origin', origin);
+				if (allowCredentials) headers.set('Access-Control-Allow-Credentials', 'true');
+				headers.set('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
+				headers.set('Access-Control-Allow-Headers', allowHeaders);
+			}
+		}
+		return headers;
+	};
+}
+
+function throttleRequests(
+	port,
+	handler,
+	onLimitExceeded,
+	requestQueueLimit,
+	readRequestQueueLimit,
+	queueWrites = true
+) {
+	const writes = queueWrites
+		? throttle(handler, onLimitExceeded, requestQueueLimit, `HTTP request queue on port ${port}`)
+		: handler;
+	const reads =
+		readRequestQueueLimit === false
+			? handler
+			: rejectWhenLoopDelayed(
+					handler,
+					onLimitExceeded,
+					readRequestQueueLimit ?? 5000,
+					`HTTP read admission on port ${port}`
+				);
+	if (reads === handler && writes === handler) return handler;
+	return (request, response) => {
+		if (isReadMethod(request.method)) return reads(request, response);
+		if (queueWrites && checkAnalyticsEnabled()) request.receivedAt = performance.now();
+		return writes(request, response);
+	};
+}
+
 function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
+	claimPortForThreadType(port, options);
+	const threadType = options?.threadType;
 	const { mtls: isMtls, usageType } = options || {};
 	const isOperationsServer = usageType === 'operations-api';
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
 	if (!httpServers[port]) {
 		// TODO: These should all come from httpOptions or operationsApiOptions
 		const serverPrefix = isOperationsServer ? 'operationsApi_network' : (usageType ?? 'http');
+		// uWS plaintext-HTTP path (#914, HARPER_UWS_HTTP): back a non-secure TCP HTTP port with
+		// uWebSockets.js directly instead of a Node http server. This is the flag used to run the
+		// integration suite through uWS (no symphony/UDS needed). WebSocket upgrades are wired on this
+		// path via onWebSocket's uWS branch; it's opt-in and separate from HARPER_UWS_UDS.
+		const lastColon = String(port).lastIndexOf(':');
+		const uwsPort = lastColon > 0 ? +String(port).slice(lastColon + 1) : +port;
+		if (
+			process.env.HARPER_UWS_HTTP &&
+			!secure &&
+			!isOperationsServer &&
+			!String(port).includes('/') &&
+			!Number.isNaN(uwsPort)
+		) {
+			uwsServeConfigs[port] = {
+				port: uwsPort,
+				host: lastColon > 0 ? String(port).slice(0, lastColon).replace(/[[\]]/g, '') : undefined,
+				secure: false,
+				handler: makeUwsHandler(
+					port,
+					isOperationsServer,
+					env.get(serverPrefix + '_requestQueueLimit'),
+					env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
+				),
+			};
+			// Marker so the httpServers guard is satisfied and the caller has a truthy handle; the
+			// actual listen happens in threadServer.js from uwsServeConfigs. onWebSocket() detects
+			// this marker (server.uws) and wires native uWS WebSocket handling into the same config.
+			httpServers[port] = { uws: true, port } as any;
+			return httpServers[port];
+		}
 		const keepAliveTimeout = env.get(serverPrefix + '_keepAliveTimeout');
 		const requestTimeout = env.get(serverPrefix + '_timeout');
 		const headersTimeout = env.get(serverPrefix + '_headersTimeout');
@@ -322,9 +890,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 			// we set this higher (2x times the default in v22, 8x times the default in v20) because it can help with
 			// performance
 			highWaterMark: 128 * 1024,
-			noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
-			keepAlive: true,
-			keepAliveInitialDelay: 600, // lower the initial delay to 10 minutes, we want to be proactive about closing unused connections
+			...socketOptionDefaults,
 			maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 		};
 		const mtls = env.get(serverPrefix + '_mtls');
@@ -332,7 +898,6 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		let http2;
 
 		if (secure) {
-			const tlsConfig = env.get('tls');
 			// check if we want to enable HTTP/2; operations server doesn't use HTTP/2 because it doesn't allow the
 			// ALPNCallback to work with our custom protocol for replication
 			http2 = env.get(serverPrefix + '_http2');
@@ -347,18 +912,21 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				requestCert: Boolean(mtls || isMtls),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(usageType ?? 'server', mtls),
-				ciphers: tlsConfig.ciphers ?? tlsConfig[0]?.ciphers,
+				// the listener-level cipher string is the only one OpenSSL honors (SNI contexts can't
+				// carry their own), so resolve it from every configured source
+				ciphers: getEffectiveTlsCiphers(usageType ?? 'server', mtls || isMtls),
 			});
 		}
 		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			const startTime = performance.now();
+			const receivedAt = (nodeRequest as any).receivedAt;
 			let requestId = 0;
 			try {
 				const request = new Request(nodeRequest, nodeResponse);
 				if (isOperationsServer) request.isOperationsServer = true;
 				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
 				// assign a more WHATWG compliant headers object, this is our real standard interface
-				let response = await httpChain[port](request);
+				let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
 				if (!response) {
 					// this means that the request was completely handled, presumably through the
 					// nodeResponse and we are actually just done
@@ -371,16 +939,12 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-				for (let [key, value] of universalHeaders) {
-					response.headers.set(key, value);
-				}
+				if (universalHeaders.length > 0) applyUniversalHeaders(response.headers);
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
 					// to interact with a node HTTP server object.
-					for (const headerPair of response.headers || []) {
-						nodeResponse.setHeader(headerPair[0], headerPair[1]);
-					}
+					bridgeChainHeadersToNodeResponse(response.headers, nodeResponse);
 					nodeRequest.baseRequest = request;
 					nodeResponse.baseResponse = response;
 					return httpServers[port].emit('unhandled', nodeRequest, nodeResponse);
@@ -439,87 +1003,102 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 								}
 							}
 						} // else the fast path, if we don't have to defer
-						else nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						// toWriteHeadHeaders converts iterable headers to an object writeHead accepts (a flat
+						// array form is required otherwise, and `Array.from` would pass invalid nested tuples).
+						else nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 					}
 					if (sentBody) nodeResponse.end(body);
+				} else if (universalHeaders.length > 0 && !nodeResponse.headersSent) {
+					// Known limitation: a handler that synchronously calls writeHead before
+					// returning { handlesHeaders: true } has already sent headers and cannot
+					// receive universal headers (no in-tree component does this).
+					// handlesHeaders responses (e.g. static's send() stream) write their own headers
+					// directly to nodeResponse; pre-set universal headers as defaults — a header the
+					// stream sets itself (same name) will overwrite these
+					for (const [key, value] of universalHeaders) {
+						if (!nodeResponse.hasHeader(key)) nodeResponse.setHeader(key, value);
+					}
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
-				recordAction(
-					executionTime,
-					'duration',
-					handlerPath,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
-				recordActionBinary(status < 400, 'success', handlerPath, method);
-				recordActionBinary(1, 'response_' + status, handlerPath, method);
-				logRequest(nodeRequest, status, requestId, executionTime);
+				const cacheType =
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
+				if (receivedAt !== undefined)
+					recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
 				if (!sentBody) {
 					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
-					if (body[Symbol.iterator] || body[Symbol.asyncIterator]) body = Readable.from(body);
+					// Only wrap non-stream iterables. Re-wrapping an existing Node stream in
+					// `Readable.from()` is redundant and breaks destroy propagation: on client
+					// disconnect we destroy the wrapper, which does NOT close the wrapped stream
+					// (so e.g. an SSE PassThrough never sees 'close' and its session leaks). A
+					// real stream already has `.pipe`, so it flows through the branch below.
+					else if (!(body instanceof Readable) && (body[Symbol.iterator] || body[Symbol.asyncIterator]))
+						body = Readable.from(body);
+
+					// the head may still turn into an error status, so record what the response carries on close
+					if (body?.pipe && !nodeResponse.headersSent && !nodeResponse.destroyed)
+						nodeResponse.once('close', () =>
+							recordOutcome(nodeResponse.statusCode, nodeRequest, requestId, executionTime, handlerPath, method)
+						);
+					else recordOutcome(status, nodeRequest, requestId, executionTime, handlerPath, method);
 
 					// if it is a stream, pipe it
-					if (body?.pipe) {
-						body.pipe(nodeResponse);
-						if (body.destroy)
-							nodeResponse.on('close', () => {
-								body.destroy();
-							});
-						let bytesSent = 0;
-						body.on('data', (data) => {
-							bytesSent += data.length;
-						});
-						body.on('end', () => {
-							recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
-							recordAction(bytesSent, 'bytes-sent', handlerPath, method);
-						});
-					}
+					if (body?.pipe) pipeBodyToResponse(body, nodeResponse, handlerPath, method, endTime);
 					// else just send the buffer/string
 					else if (body?.then)
 						body.then((body) => {
 							nodeResponse.end(body);
 						}, onError);
 					else nodeResponse.end(body);
-				}
+				} else recordOutcome(status, nodeRequest, requestId, executionTime, handlerPath, method);
 			} catch (error) {
 				onError(error);
 			}
 			function onError(error) {
 				const headers = error.headers;
-				const status = error.statusCode || 500;
+				// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
+				const statusCode = error.statusCode ?? error.status;
+				const status = statusCode || 500;
 				try {
-					nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+					if (universalHeaders.length > 0 && !nodeResponse.headersSent) {
+						// universal headers apply to error responses too; writeHead's explicit
+						// headers take precedence, so error-provided headers still win
+						for (const [key, value] of universalHeaders) {
+							if (!nodeResponse.hasHeader(key)) nodeResponse.setHeader(key, value);
+						}
+					}
+					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
 				} catch {} // silently ignore errors writing headers, because they may have been set already
 				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
 				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
-				if (error.statusCode) {
-					if (error.statusCode === 500) harperLogger.warn(error);
-					else harperLogger.info(error);
-				} else harperLogger.error(error);
+				if (statusCode) {
+					if (statusCode === 500) harperLogger.warn(errorForLog(error));
+					else harperLogger.info(errorForLog(error));
+				} else harperLogger.error(errorForLog(error));
 			}
 		};
-		// create a throttled version of the request handler, so we can throttle POST requests
-		const throttledRequestHandler = throttle(
+		const rejectionHeaders = readRejectionHeaders(isOperationsServer);
+		const queuedRequestHandler = throttleRequests(
+			port,
 			requestHandler,
 			(nodeRequest: IncomingMessage, nodeResponse: any) => {
 				// if the request queue is taking too long, we want to return an error
+				if (isReadMethod(nodeRequest.method)) {
+					for (const [name, value] of rejectionHeaders(nodeRequest.headers.origin)) nodeResponse.setHeader(name, value);
+				}
 				nodeResponse.statusCode = 503;
 				nodeResponse.end('Service unavailable, exceeded request queue limit');
 				recordAction(true, 'service-unavailable', port);
 			},
-			env.get(serverPrefix + '_requestQueueLimit')
+			env.get(serverPrefix + '_requestQueueLimit'),
+			env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
 		);
 		const server = (httpServers[port] = (
 			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
-		)(options, (nodeRequest: IncomingMessage, nodeResponse: any) => {
-			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
-			// want to block or slow down other activity
-			const method = nodeRequest.method;
-			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-			else throttledRequestHandler(nodeRequest, nodeResponse);
-		}));
+		)(options, queuedRequestHandler));
+		if (http2) (server as any).servesHttp2 = true;
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
 		// number or it will actually crash the server
@@ -535,6 +1114,10 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		if (secure) {
 			if (!server.ports) server.ports = [];
 			server.ports.push(port);
+			server.appliedCiphers = options.ciphers ?? null;
+			server.verifiesClientCerts = Boolean(mtls || isMtls);
+			server.mtlsRequired = Boolean(mtlsRequired);
+			if (isOperationsServer) server.networkAccessScope = 'operations';
 			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
@@ -550,44 +1133,331 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		// Operations API domain socket connections bypass auth (equivalent to local access)
 		if (isOperationsServer && String(port).includes('/')) server.bypassLocalAuth = true;
 
-		// Create a corresponding Unix Domain Socket mirror for secure ports
-		if (secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
-			const socketsDir = join(env.getHdbBasePath(), 'sockets');
-			mkdirSync(socketsDir, { recursive: true });
-			const socketName = `${getWorkerIndex()}-${port}`;
+		// Create a corresponding Unix Domain Socket mirror for secure ports, on the threads that bind the port
+		const socketsDir =
+			secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS) && shouldBindListenerHere(port)
+				? ensureSocketsDirectory()
+				: undefined;
+		if (socketsDir) {
+			const isolatedApplication = thisThreadsIsolatedApplication();
+			const socketName = isolatedApplication
+				? applicationSocketName(isolatedApplication, port)
+				: `${getWorkerIndex()}-${port}`;
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
+			if (threadType) claimListener(udsPath, threadType);
 
-			// Create a plain HTTP server (no TLS) with the same request handler
-			const udsServer = createServer(
-				{
-					keepAliveTimeout,
-					headersTimeout,
-					requestTimeout,
-					highWaterMark: 128 * 1024,
-					noDelay: true,
-					keepAlive: true,
-					keepAliveInitialDelay: 600,
-					maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
-				},
-				(nodeRequest: IncomingMessage, nodeResponse: any) => {
-					const method = nodeRequest.method;
-					if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
-					else throttledRequestHandler(nodeRequest, nodeResponse);
-				}
-			);
+			if (process.env.HARPER_UWS_UDS) {
+				// uWS backend (#914): serve the UDS mirror with uWebSockets.js instead of a Node http
+				// server. threadServer.js consumes uwsServeConfigs and calls createUwsServer(). uWS does
+				// not parse the PROXY protocol, so symphony must use sourceAddressHeader: 'xForwardedFor'
+				// for this socket (the same mode it uses for the Bun path).
+				uwsServeConfigs[udsPath] = {
+					socketPath: udsPath,
+					secure: true,
+					handler: makeUwsHandler(
+						port,
+						isOperationsServer,
+						env.get(serverPrefix + '_requestQueueLimit'),
+						env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT)
+					),
+				};
+				// Let onWebSocket() install its wsHandler on this mirror too
+				server.udsMirrorUwsConfig = uwsServeConfigs[udsPath];
+			} else {
+				// Create a plain HTTP server (no TLS) with the same request handler
+				const udsServer = createServer(
+					{
+						keepAliveTimeout,
+						headersTimeout,
+						requestTimeout,
+						highWaterMark: 128 * 1024,
+						...socketOptionDefaults,
+						maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
+					},
+					queuedRequestHandler
+				);
 
-			udsServer.isPerThreadSocket = true;
-			enableProxyProtocol(udsServer);
-			SERVERS[udsPath] = udsServer;
+				udsServer.isPerThreadSocket = true;
+				// Mirror the secure server's mTLS config so a client cert forwarded by the
+				// fronting proxy (PROXY v2 TLVs) authenticates exactly like one this worker
+				// terminated itself.
+				udsServer.verifiesClientCerts = server.verifiesClientCerts;
+				udsServer.mtlsRequired = server.mtlsRequired;
+				if (mtls) udsServer.mtlsConfig = mtls;
+				enableProxyProtocol(udsServer);
+				SERVERS[udsPath] = udsServer;
+				// Let onWebSocket() attach its 'upgrade' dispatch to this mirror too — a Node
+				// HTTP server with no 'upgrade' listener destroys upgrade sockets with no
+				// response and no log.
+				server.udsMirror = udsServer;
+			}
 			registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () => writeUdsMetadata(yamlPath, port, server);
-			options.SNICallback.ready.then(writeMetadata);
-			server.secureContextsListeners.push(writeMetadata);
+			// Skip (and don't re-arm) the write if this mirror's listen() already failed — see
+			// markUdsBindFailed(). SNICallback readiness and cert reloads are independent of the
+			// socket's bind outcome, so without this check a failed mirror could still get advertised.
+			const writeMetadata = () =>
+				failedUdsPaths.has(udsPath) || writeUdsMetadata(yamlPath, port, server, undefined, !process.env.HARPER_UWS_UDS);
+			publishUdsMetadata(options.SNICallback.ready, server, writeMetadata);
+
+			// Optional cleartext HTTP/2 mirror (spike: HARPER_H2C_UDS=1). A separate socket
+			// (`<worker>-<port>-h2.sock`) so a fronting proxy can route by negotiated ALPN:
+			// h2 connections here, http/1.1 to the plain mirror above. The metadata yaml
+			// carries `protocol: h2` so the proxy can discover which socket speaks what.
+			if (process.env.HARPER_H2C_UDS) {
+				const udsPathH2 = join(socketsDir, `${socketName}-h2.sock`);
+				const yamlPathH2 = join(socketsDir, `${socketName}-h2.yaml`);
+				if (threadType) claimListener(udsPathH2, threadType);
+				const h2Server = createH2CServer({}, queuedRequestHandler);
+				// A stray non-h2 client (or a truncated preface) fails the session, not the worker.
+				h2Server.on('sessionError', (error: Error) => {
+					harperLogger.debug('h2c UDS session error:', error);
+				});
+				const h2Front = createH2CProxyFront(h2Server) as any;
+				h2Front.isPerThreadSocket = true;
+				// Same mTLS mirroring as the h1 UDS server. Set on both servers: the
+				// compat req.socket.server resolves through the accepting net server
+				// (the front), but guard against Node reassigning socket.server during
+				// the h2 connection handoff.
+				h2Front.verifiesClientCerts = server.verifiesClientCerts;
+				h2Front.mtlsRequired = server.mtlsRequired;
+				(h2Server as any).verifiesClientCerts = server.verifiesClientCerts;
+				(h2Server as any).mtlsRequired = server.mtlsRequired;
+				if (mtls) {
+					h2Front.mtlsConfig = mtls;
+					(h2Server as any).mtlsConfig = mtls;
+				}
+				SERVERS[udsPathH2] = h2Front;
+				registerUdsCleanupPaths(udsPathH2, yamlPathH2);
+
+				const writeMetadataH2 = () => failedUdsPaths.has(udsPathH2) || writeUdsMetadata(yamlPathH2, port, server, 'h2');
+				publishUdsMetadata(options.SNICallback.ready, server, writeMetadataH2);
+			}
 		}
 	}
 	return httpServers[port];
+}
+
+/**
+ * uWS backend (#914): builds the per-request handler for a uWS UDS server. Mirrors the Bun
+ * fetchHandler's post-processing (httpChain, unhandled, universalHeaders, Server-Timing,
+ * analytics, logging) but returns a plain Harper response descriptor for createUwsServer to
+ * serialize onto the uWS HttpResponse. When the chain doesn't handle the request (status === -1)
+ * and a Fastify fallback is registered for the port, it delegates via inject() (see injectToFastify),
+ * mirroring the Bun path — so legacy Fastify routes work behind uWS too.
+ */
+export function makeUwsHandler(
+	port: number | string,
+	isOperationsServer: boolean,
+	requestQueueLimit?: number,
+	readRequestQueueLimit?: number | false | null
+) {
+	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
+	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
+	// mutates. `headers` is normalized in place the same way the Bun path does.
+	const handle = async (request: any) => {
+		const startTime = performance.now();
+		const receivedAt = request.receivedAt;
+		let requestId = 0;
+		if (isOperationsServer) request.isOperationsServer = true;
+		if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
+		let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
+		if (!response) response = unhandled(request);
+		let headers = response.headers;
+		if (!headers?.set) headers = new Headers(headers);
+		if (response.status === -1) {
+			// The chain didn't handle it. If a Fastify fallback is registered for this port (legacy
+			// custom-function routes via server.http(fastify.server)), delegate to it via inject(),
+			// mirroring the Bun path; otherwise it's a genuine 404. Neither branch below reuses
+			// `headers` above (both build a fresh Headers from the fallback response), so universal
+			// headers must be (re-)applied on whichever Headers object actually gets returned.
+			const fastify = fastifyInstances[port];
+			if (fastify) {
+				const injectResult = await injectToFastify(fastify, {
+					method: request.method,
+					url: request.url,
+					headers: request.headers.asObject,
+					body: request.body, // stream; inject() consumes it as the payload
+					user: request.user,
+					ip: isOperationsServer ? request.ip : undefined,
+				});
+				const respHeaders = new Headers();
+				for (const [k, v] of Object.entries(injectResult.headers)) {
+					if (v == null) continue;
+					// Keep Set-Cookie multi-valued (Harper Headers + writeHeaders emit each separately);
+					// only comma-join other repeated headers.
+					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
+					else respHeaders.set(k, String(v));
+				}
+				mergeChainHeadersIntoFallback(headers, respHeaders);
+				if (universalHeaders.length > 0) applyUniversalHeaders(respHeaders);
+				logHttpRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
+				const responseStream = injectResult.stream();
+				// Event-stream (SSE) responses must reach the client incrementally — stream the body and,
+				// on client disconnect, destroy the inject response so the Fastify reply's teardown runs
+				// (matches the Bun path). Finite responses buffer so Content-Length stays set.
+				if (String(injectResult.headers['content-type'] ?? '').includes('text/event-stream')) {
+					const injectResponse = injectResult.raw?.res;
+					if (injectResponse && typeof injectResponse.destroy === 'function') {
+						responseStream.once('close', () => injectResponse.destroy());
+					}
+					return { status: injectResult.statusCode, headers: respHeaders, body: responseStream };
+				}
+				const chunks: Buffer[] = [];
+				for await (const chunk of responseStream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				return {
+					status: injectResult.statusCode,
+					headers: respHeaders,
+					body: chunks.length > 0 ? Buffer.concat(chunks) : null,
+				};
+			}
+			logHttpRequest(request, 404, requestId, performance.now() - startTime);
+			const notFoundHeaders = new Headers({ 'content-type': 'text/plain' });
+			mergeChainHeadersIntoFallback(headers, notFoundHeaders);
+			if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
+			return { status: 404, headers: notFoundHeaders, body: 'Not found\n' };
+		}
+		if (universalHeaders.length > 0) applyUniversalHeaders(headers);
+		const status = response.status || 200;
+		const endTime = performance.now();
+		const executionTime = endTime - startTime;
+		if (!response.handlesHeaders) {
+			let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
+			if (response.wasCacheMiss) serverTiming += ', miss';
+			appendHeader(headers, 'Server-Timing', serverTiming, true);
+		}
+		const cacheType =
+			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+		recordAction(executionTime, 'duration', request.handlerPath, request.method, cacheType);
+		if (receivedAt !== undefined)
+			recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
+		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
+		if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
+		logHttpRequest(request, status, requestId, executionTime);
+		// Static handlers (the only handlesHeaders producers) return a `send` SendStream that writes
+		// its own headers/body to a Node ServerResponse via .pipe(). uWS has no such object, and a
+		// SendStream doesn't start until piped, so streaming it directly hangs (headers never flush).
+		// Pipe it into a Writable shim that captures the headers and buffers the file, mirroring the
+		// Bun path. Non-handlesHeaders bodies keep streaming through normalizeUwsBody.
+		if (response.handlesHeaders && response.body && typeof response.body.pipe === 'function') {
+			// send() may return 304 (conditional GET) or 206/416 (Range) — honor the status it set.
+			const sent = await bufferSendStream(response.body, headers, status, request.signal);
+			return { status: sent.status, headers, handlesHeaders: true, body: sent.body };
+		}
+		let body = response.body;
+		if (body == null) body = null;
+		else if (!isFinalUwsBody(body)) body = await normalizeUwsBody(body, request);
+		return { status, headers, handlesHeaders: response.handlesHeaders, body };
+	};
+	const rejectionHeaders = readRejectionHeaders(isOperationsServer);
+	return throttleRequests(
+		port,
+		handle,
+		(request: any) => {
+			recordAction(true, 'service-unavailable', port);
+			return {
+				status: 503,
+				headers: isReadMethod(request.method)
+					? rejectionHeaders(request.headers.get('origin'))
+					: new Headers({ 'content-type': 'text/plain' }),
+				body: 'Service unavailable, exceeded request queue limit',
+			};
+		},
+		requestQueueLimit,
+		readRequestQueueLimit
+	);
+}
+
+/**
+ * Drive a `send` SendStream to completion against a Writable shim, capturing the headers it writes
+ * (setHeader/writeHead) onto `headers` and the status it sets (statusCode/writeHead) and buffering
+ * the file body. `send` targets an http.ServerResponse (setHeader/writeHead/statusCode/finished);
+ * uWS has none, so we adapt — mirrors the Bun fetchHandler's SendStream path. The captured status
+ * carries send's conditional-GET (304) and Range (206/416) results. Buffering is fine for static
+ * assets and keeps Content-Length set. `defaultStatus` is used when send sets none.
+ */
+function bufferSendStream(
+	body: any,
+	headers: Headers,
+	defaultStatus: number,
+	signal?: AbortSignal
+): Promise<{ body: Buffer; status: number }> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		const dest: any = new Writable({
+			write(chunk, _encoding, callback) {
+				chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				callback();
+			},
+			final(callback) {
+				callback();
+				resolve({ body: Buffer.concat(chunks), status: dest.statusCode || defaultStatus });
+			},
+		});
+		Object.assign(dest, {
+			setHeader: (n: string, v: any) => headers.set(n, v),
+			getHeader: (n: string) => headers.get(n),
+			removeHeader: (n: string) => (headers as any).delete(n.toLowerCase()),
+			// send conveys 304/206/416 via statusCode and/or writeHead's status arg — capture both so
+			// conditional-GET and Range responses aren't flattened to the default 200.
+			writeHead: (s: number, hdrs?: any) => {
+				if (s) dest.statusCode = s;
+				if (hdrs) for (const k in hdrs) headers.set(k, hdrs[k]);
+			},
+			statusCode: defaultStatus,
+			headersSent: false,
+			// 'on-finished' (used by 'send') treats a non-false `finished` as already-done and destroys
+			// the read stream before data flows; keep it false so it waits for the 'finish' event.
+			finished: false,
+		});
+		const onAbort = () => {
+			body.destroy?.();
+			dest.destroy?.();
+			reject(new Error('client aborted'));
+		};
+		if (signal) {
+			if (signal.aborted) return onAbort();
+			signal.addEventListener('abort', onAbort, { once: true });
+		}
+		body.on('error', reject);
+		dest.on('error', reject);
+		body.pipe(dest);
+	});
+}
+
+function isFinalUwsBody(body: unknown): body is string | Uint8Array {
+	return typeof body === 'string' || body instanceof Uint8Array;
+}
+
+/**
+ * uWS: normalize a Harper response body into what the adapter can serialize. Finite bodies collapse
+ * to a string/Buffer; a Node stream or async-iterable is returned as a Readable so writeResponse can
+ * stream it incrementally (buffering an SSE/event-stream body here would never return). A client
+ * disconnect stops the collapse of a sync iterable.
+ */
+async function normalizeUwsBody(
+	body: any,
+	request: { readonly isAborted: boolean }
+): Promise<string | Buffer | Uint8Array | Readable | null> {
+	if (body == null) return null;
+	if (isFinalUwsBody(body)) return body;
+	if (body instanceof Blob) return Buffer.from(await body.arrayBuffer());
+	if (typeof body.then === 'function') return normalizeUwsBody(await body, request);
+	// Already a Node stream — stream it as-is (re-wrapping in Readable.from breaks destroy propagation).
+	if (typeof body.pipe === 'function') return body;
+	// Async-iterable (e.g. an event queue) — adapt to a Readable and stream it.
+	if (body[Symbol.asyncIterator]) return Readable.from(body);
+	// Sync iterable — small/finite, collapse to a buffer.
+	if (body[Symbol.iterator]) {
+		const chunks: Buffer[] = [];
+		for (const chunk of body) {
+			if (request.isAborted) throw new Error('client aborted');
+			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		}
+		return Buffer.concat(chunks);
+	}
+	return String(body);
 }
 
 /**
@@ -595,6 +1465,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
  * that will be passed to Bun.serve() when listenOnPorts() is called in threadServer.js.
  */
 function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions) {
+	claimPortForThreadType(port, options);
 	const { usageType } = options || {};
 	const isOperationsServer = usageType === 'operations-api';
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
@@ -608,26 +1479,27 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				const request = new BunRequest(webRequest, bunServer, secure) as any;
 				if (isOperationsServer) request.isOperationsServer = true;
 				if (httpOptions.logging?.id) request.requestId = requestId = getRequestId();
-				let response = await httpChain[port](request);
+				let response = isolatedApplicationUnavailable(request, isOperationsServer) ?? (await httpChain[port](request));
 				if (!response) {
 					response = unhandled(request);
 				}
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-				for (let [key, value] of universalHeaders) {
-					response.headers.set(key, value);
-				}
+				if (universalHeaders.length > 0) applyUniversalHeaders(response.headers);
 				if (response.status === -1) {
-					const fallbackServer = bunFallbackServers[port];
+					const fallbackServer = fallbackServers[port];
 					if (fallbackServer) {
 						// Delegate to the fallback server (e.g. Fastify) via node:http compatibility.
 						// We create a Node-compatible IncomingMessage/ServerResponse and emit 'request'
 						// on the fallback server, then capture the response.
-						return await bunDelegateToNodeServer(fallbackServer, webRequest, request);
+						return await bunDelegateToNodeServer(fallbackServer, webRequest, request, response.headers);
 					}
-					logBunRequest(request, 404, requestId, performance.now() - startTime);
-					return new Response('Not found\n', { status: 404 });
+					logHttpRequest(request, 404, requestId, performance.now() - startTime);
+					const notFoundHeaders = new globalThis.Headers();
+					mergeChainHeadersIntoFallback(response.headers, notFoundHeaders);
+					if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
+					return new Response('Not found\n', { status: 404, headers: notFoundHeaders });
 				}
 				const status = response.status || 200;
 				const endTime = performance.now();
@@ -663,6 +1535,13 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 						if (body.size) responseHeaders.set('Content-Length', String(body.size));
 						body = body.stream();
 					}
+				} else if (universalHeaders.length > 0) {
+					// handlesHeaders responses write their own headers via the pipe shim below;
+					// pre-set universal headers as defaults — the stream's own setHeader calls
+					// (same name) overwrite these
+					for (const [key, value] of universalHeaders) {
+						responseHeaders.set(key, value);
+					}
 				}
 				// Propagate Connection: close so Bun closes the TCP connection after this response,
 				// preventing stale keep-alive sockets from causing silent hangs on subsequent requests.
@@ -671,16 +1550,12 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				}
 				const handlerPath = request.handlerPath;
 				const method = request.method;
-				recordAction(
-					executionTime,
-					'duration',
-					handlerPath,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
+				const cacheType =
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
+				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
 				recordActionBinary(status < 400, 'success', handlerPath, method);
-				recordActionBinary(1, 'response_' + status, handlerPath, method);
-				logBunRequest(request, status, requestId, executionTime);
+				if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, handlerPath, method);
+				logHttpRequest(request, status, requestId, executionTime);
 				// Convert body to something Bun's Response can accept
 				if (body instanceof ReadableStream) {
 					return new Response(body, { status, headers: responseHeaders });
@@ -732,27 +1607,68 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				}
 				return new Response(body, { status, headers: responseHeaders });
 			} catch (error) {
-				const status = error.statusCode || 500;
-				logBunRequest(null, status, requestId, performance.now() - startTime);
-				if (error.statusCode) {
-					if (error.statusCode === 500) harperLogger.warn(error);
-					else harperLogger.info(error);
-				} else harperLogger.error(error);
+				// the HTTP status may be carried as `statusCode` (our error classes) or `status` (e.g. a thrown plain object)
+				const statusCode = error.statusCode ?? error.status;
+				const status = statusCode || 500;
+				logHttpRequest(null, status, requestId, performance.now() - startTime);
+				if (statusCode) {
+					if (statusCode === 500) harperLogger.warn(errorForLog(error));
+					else harperLogger.info(errorForLog(error));
+				} else harperLogger.error(errorForLog(error));
+				const errorHeaders = error.headers;
+				if (errorHeaders || universalHeaders.length > 0) {
+					const headers = new globalThis.Headers();
+					// error.headers may be an iterable Headers or a plain object, same as
+					// toWriteHeadHeaders accepts on the Node path
+					if (errorHeaders?.[Symbol.iterator]) {
+						for (const [key, value] of errorHeaders) headers.append(key, String(value));
+					} else if (errorHeaders) {
+						for (const [key, value] of Object.entries(errorHeaders)) {
+							if (Array.isArray(value)) for (const item of value) headers.append(key, String(item));
+							else headers.set(key, String(value));
+						}
+					}
+					// universal headers apply to error responses too; error-provided headers win
+					applyUniversalHeaders(headers);
+					return new Response(errorToString(error), { status, headers });
+				}
 				return new Response(errorToString(error), { status });
 			}
 		};
 
 		// Store the config for Bun.serve() — will be started by threadServer.js listenOnPorts()
+		// The operations API is main-thread-only and must NOT use SO_REUSEPORT — it's the one
+		// exclusive port, which lets tooling (e.g. the integration-test loopback pool) detect an
+		// address that's already in use instead of silently co-binding. Mirrors the Node path,
+		// which sets server.noReusePort for isOperationsServer (see above).
+		const rejectionHeaders = readRejectionHeaders(isOperationsServer);
 		const config: any = {
-			fetch: fetchHandler,
-			reusePort: process.platform !== 'darwin' && process.platform !== 'win32',
+			fetch: throttleRequests(
+				port,
+				fetchHandler,
+				(request) => {
+					recordAction(true, 'service-unavailable', port);
+					return new Response('Service unavailable, exceeded request queue limit', {
+						status: 503,
+						headers: [...rejectionHeaders(request.headers.get('origin'))],
+					});
+				},
+				undefined,
+				env.get(terms.CONFIG_PARAMS.HTTP_READREQUESTQUEUELIMIT),
+				false
+			),
+			reusePort: !isOperationsServer && process.platform !== 'darwin' && process.platform !== 'win32',
 		};
 		if (secure) {
 			// TLS config for Bun
+			// The resolved listener cipher string (getEffectiveTlsCiphers) is deliberately not applied
+			// here: Bun terminates TLS with BoringSSL, which has no OpenSSL @SECLEVEL concept, and the
+			// pseudo-server carries no appliedCiphers stamp so updateTLS's restart warning stays quiet.
 			const mtls = env.get(serverPrefix + '_mtls');
 			const tlsSelector = createTLSSelector(usageType ?? 'server', mtls);
 			// Create a pseudo-server object so the TLS selector can store secureContexts on it
 			const pseudoServer: any = { ports: [port], secureContexts: null, secureContextsListeners: [] };
+			if (isOperationsServer) pseudoServer.networkAccessScope = 'operations';
 			tlsSelector.initialize(pseudoServer);
 			config.tlsSelector = tlsSelector;
 			config.pseudoServer = pseudoServer;
@@ -772,76 +1688,238 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
  * Bridge a Bun fetch request to a Node.js http.Server (e.g. Fastify) by using Fastify's inject()
  * method to send the request through its internal router without needing a real socket.
  */
-let bunFastifyInstances: Record<string | number, any> = {};
-export function registerBunFastifyInstance(port: string | number, instance: any) {
-	bunFastifyInstances[port] = instance;
+let fastifyInstances: Record<string | number, any> = {};
+export function registerFastifyInstance(port: string | number, instance: any) {
+	fastifyInstances[port] = instance;
+}
+
+export function registerFallbackServer(port: string | number, listener: any) {
+	fallbackServers[port] = listener;
 }
 const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
 
-async function bunDelegateToNodeServer(
+/**
+ * Run a request through a Fastify instance via inject() — its internal router, no socket needed.
+ * Shared by the Bun and uWS fallback-delegation paths. Strips any forged pre-auth header from the
+ * client and, when Harper's auth middleware resolved a user without credentials (e.g. AUTHORIZE_LOCAL
+ * for loopback in dev), forwards it so Fastify can skip its own auth — only when no Authorization
+ * header was supplied, otherwise Fastify's Passport validates the credentials normally.
+ * `payloadAsStream` makes inject() resolve as soon as the response headers are written and exposes
+ * the body as a Readable, so a long-lived SSE response (the MCP server-push GET) streams instead of
+ * buffering forever.
+ */
+function injectToFastify(
+	fastify: any,
+	req: {
+		method: string;
+		url: string;
+		headers: Record<string, any>;
+		body?: Buffer | Readable;
+		user?: any;
+		ip?: string;
+	}
+) {
+	const headers: Record<string, any> = {};
+	for (const key in req.headers) {
+		const lowerKey = key.toLowerCase();
+		if (lowerKey !== INTERNAL_USER_HEADER && lowerKey !== terms.INTERNAL_CLIENT_ADDRESS_HEADER)
+			headers[key] = req.headers[key];
+	}
+	if (req.ip) headers[terms.INTERNAL_CLIENT_ADDRESS_HEADER] = req.ip;
+	// Both callers pass already-lowercased header keys (uWS lowercases at the protocol level →
+	// RequestHeaders.asObject; Bun's webRequest.headers.forEach yields lowercase), so the literal
+	// 'authorization' lookup is reliable — the pre-auth user is only forwarded when the client sent
+	// no credentials of its own.
+	if (req.user && !headers['authorization']) {
+		headers[INTERNAL_USER_HEADER] = JSON.stringify(req.user);
+	}
+	return fastify.inject({ method: req.method, url: req.url, headers, payload: req.body, payloadAsStream: true });
+}
+
+export async function bunDelegateToNodeServer(
 	nodeServer: any,
 	webRequest: globalThis.Request,
-	bunRequest?: any
+	bunRequest?: any,
+	chainHeaders?: any
 ): Promise<Response> {
 	// Check if there's a Fastify instance registered for this port (preferred path)
-	for (const port in bunFallbackServers) {
-		if (bunFallbackServers[port] === nodeServer && bunFastifyInstances[port]) {
-			const fastify = bunFastifyInstances[port];
+	for (const port in fallbackServers) {
+		if (fallbackServers[port] === nodeServer && fastifyInstances[port]) {
+			const fastify = fastifyInstances[port];
 			const url = new URL(webRequest.url);
 			const body = webRequest.body ? Buffer.from(await webRequest.arrayBuffer()) : undefined;
 			const headers: Record<string, string> = {};
 			webRequest.headers.forEach((value, key) => {
-				// Strip any forged pre-auth header from real clients
-				if (key.toLowerCase() !== INTERNAL_USER_HEADER) headers[key] = value;
+				headers[key] = value;
 			});
-			// If Harper's auth middleware authenticated this request without credentials (e.g. via
-			// AUTHORIZE_LOCAL for loopback connections in dev mode), pass the user so Fastify can
-			// skip its own auth. Only applies when there is no Authorization header — if credentials
-			// were provided, let Fastify's Passport validate them normally.
-			if (bunRequest?.user && !headers['authorization']) {
-				headers[INTERNAL_USER_HEADER] = JSON.stringify(bunRequest.user);
-			}
-			const injectResult = await fastify.inject({
+			const injectResult = await injectToFastify(fastify, {
 				method: webRequest.method,
 				url: url.pathname + url.search,
 				headers,
-				payload: body,
+				body,
+				user: bunRequest?.user,
+				ip: bunRequest?.isOperationsServer ? bunRequest.ip : undefined,
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
-				if (v != null) webHeaders.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+				if (v == null) continue;
+				if (Array.isArray(v)) {
+					if (k.toLowerCase() === 'set-cookie') {
+						for (const single of v) webHeaders.append(k, String(single));
+					} else webHeaders.set(k, v.join(', '));
+				} else webHeaders.set(k, String(v));
 			}
 			// Propagate Connection: close so Bun closes the TCP connection after this response,
 			// preventing stale keep-alive sockets from causing silent hangs on subsequent requests.
 			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
 				webHeaders.set('connection', 'close');
 			}
-			return new Response(injectResult.rawPayload?.length > 0 ? injectResult.rawPayload : null, {
+			mergeChainHeadersIntoFallback(chainHeaders, webHeaders);
+			if (universalHeaders.length > 0) applyUniversalHeaders(webHeaders);
+			const responseStream = injectResult.stream();
+			// Event-stream responses (MCP SSE) must reach the client incrementally — return
+			// the body as a stream. Everything else keeps the prior buffered behavior:
+			// drain to a single payload so Content-Length stays set and callers see no change.
+			const contentType = String(injectResult.headers['content-type'] ?? '');
+			if (contentType.includes('text/event-stream')) {
+				// Propagate client disconnect back to the hijacked Fastify reply. When Bun
+				// cancels the response body it destroys this stream; destroying the inject
+				// response (the same object the SSE adapter listens on for 'close') runs the
+				// adapter's teardown, which unsubscribes the session's queue 'data' listener
+				// and drops the registry entry. Without this the inject bridge would never
+				// signal disconnect and the session would leak — its attached data listener
+				// keeps the registry's idle-prune backstop from ever reclaiming it.
+				const injectResponse = injectResult.raw?.res;
+				if (injectResponse && typeof injectResponse.destroy === 'function') {
+					responseStream.once('close', () => injectResponse.destroy());
+				}
+				return new Response(Readable.toWeb(responseStream) as unknown as BodyInit, {
+					status: injectResult.statusCode,
+					headers: webHeaders,
+				});
+			}
+			const chunks: Buffer[] = [];
+			for await (const chunk of responseStream) chunks.push(Buffer.from(chunk));
+			const payload = Buffer.concat(chunks);
+			return new Response(payload.length > 0 ? payload : null, {
 				status: injectResult.statusCode,
 				headers: webHeaders,
 			});
 		}
 	}
 	// No Fastify instance found — return 404
-	return new Response('Not found\n', { status: 404 });
+	const notFoundHeaders = new globalThis.Headers();
+	mergeChainHeadersIntoFallback(chainHeaders, notFoundHeaders);
+	if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
+	return new Response('Not found\n', { status: 404, headers: notFoundHeaders });
 }
 
-function makeCallbackChain(responders: typeof httpResponders, portNum: number | string, requestArgIndex: number = 0) {
+type SerializedRoute = { host?: string; urlPath?: string; order: string[] };
+// Resolved order captured at chain-build time, keyed identically to httpChain/upgradeChains/
+// websocketChains (kind → port → routes). Reporting the stored build-time order rather than
+// recomputing from current responders guarantees get_status matches the callback chain actually
+// serving that port: buildChains() writes both in the same pass, so a description can never
+// describe an order the port isn't running (#1573).
+const resolvedChainDescriptions: Record<string, Record<string, SerializedRoute[]>> = {
+	http: {},
+	upgrade: {},
+	websocket: {},
+};
+
+// Preserve the original port type because route selection uses strict equality.
+const builtChainPorts: Record<string, Map<string, number | string>> = {
+	http: new Map(),
+	upgrade: new Map(),
+	websocket: new Map(),
+};
+
+// A late registration on 'all' must rebuild every already-bound concrete port (#2418).
+function buildChains(
+	chains: Record<string, Function>,
+	listeners: HttpEntry[],
+	port: number | string,
+	requestArgIndex: number = 0,
+	kind: string = 'http'
+) {
+	builtChainPorts[kind].set(String(port), port);
+	if (port !== 'all') {
+		chains[port] = makeCallbackChain(listeners, port, requestArgIndex, kind);
+		return;
+	}
+	for (const builtPort of builtChainPorts[kind].values()) {
+		chains[builtPort] = makeCallbackChain(listeners, builtPort, requestArgIndex, kind);
+	}
+}
+
+function makeCallbackChain(
+	responders: typeof httpResponders,
+	portNum: number | string,
+	requestArgIndex: number = 0,
+	kind: string = 'http'
+) {
+	const onCycle = () => {
+		harperLogger.warn(
+			`Cycle detected in ${kind} middleware before/after ordering on port ${portNum}; falling back to registration order.`
+		);
+	};
+	// describeChains reuses the same resolvers as buildCallbackChain, so this is the served order.
+	// onCycle is omitted: the build call owns the single cycle warning, and on a cycle describeChains
+	// falls back to registration order exactly as the built chain does.
+	const routes: SerializedRoute[] = describeChains(responders, portNum).map((route) => ({
+		host: route.host,
+		urlPath: route.urlPath,
+		order: route.order.map((entry) => entry.name ?? '(anonymous)'),
+	}));
+	resolvedChainDescriptions[kind][portNum] = routes;
+	if (harperLogger.debug) {
+		for (const route of routes) {
+			const scope = route.host || route.urlPath ? ` [${route.host ?? '*'}${route.urlPath ?? ''}]` : '';
+			harperLogger.debug(
+				`Resolved ${kind} middleware chain on port ${portNum}${scope}: ${route.order.join(' → ') || '(empty)'}`
+			);
+		}
+	}
 	return buildCallbackChain(
 		responders,
 		portNum,
 		unhandled,
-		() => {
+		onCycle,
+		requestArgIndex,
+		({ entryName, kind: refKind, target }) => {
 			harperLogger.warn(
-				`Cycle detected in middleware before/after ordering on port ${portNum}; falling back to registration order.`
+				`Middleware ordering: ${entryName ? `'${entryName}'` : 'a handler'} requested \`${refKind}: '${target}'\` but no handler named '${target}' is registered on port ${portNum}, so the constraint is ignored. Handler names are the config keys as registered (e.g. 'rest').`
 			);
-		},
-		requestArgIndex
+		}
 	);
 }
+
+/**
+ * Returns the resolved middleware order for every built HTTP, upgrade, and WebSocket chain on the
+ * current thread, as plain serializable data (listeners omitted). Surfaced via the `get_status`
+ * operation so chain placement can be verified on a running instance (#1573). The 'all' pseudo-port
+ * is excluded: makeCallbackChain builds a chain for it, but it is not a bound listener (its
+ * responders already fold into every concrete port's chain).
+ *
+ * Note: this reflects the calling thread's built chains. All HTTP worker threads register
+ * identically, so any worker's view is representative.
+ */
+export function describeMiddlewareChains() {
+	const concretePorts = (byPort: Record<string, SerializedRoute[]>) => {
+		const out: Record<string, SerializedRoute[]> = {};
+		for (const port of Object.keys(byPort)) if (port !== 'all') out[port] = byPort[port];
+		return out;
+	};
+	return {
+		http: concretePorts(resolvedChainDescriptions.http),
+		upgrade: concretePorts(resolvedChainDescriptions.upgrade),
+		websocket: concretePorts(resolvedChainDescriptions.websocket),
+	};
+}
 function unhandled(request) {
-	if (request.user) {
-		// pass on authentication information to the next server
+	if (request.user && request._nodeRequest) {
+		// pass on authentication information to the next server (Node fallback delegation via the
+		// 'unhandled' event chain). The Bun/uWS adapters have no _nodeRequest; they forward the
+		// resolved user to the Fastify fallback via injectToFastify's INTERNAL_USER_HEADER instead.
 		request._nodeRequest.user = request.user;
 	}
 	return {
@@ -869,8 +1947,25 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 const upgradeListeners = [],
 	upgradeChains = {};
 
+// uWS-served listeners (HARPER_UWS_HTTP ports, HARPER_UWS_UDS mirrors) accept WebSocket
+// handshakes natively in app.ws() — the Node 'upgrade' event never fires there, so
+// server.upgrade() middleware cannot run pre-handshake (auth still runs in the WS
+// connection chain, matching the Node path's upgrade-then-authorize order). Warn instead
+// of silently skipping the middleware. The default handler onWebSocket() registers is
+// exempt: its job (ws.handleUpgrade) is what uWS performs natively.
+function warnIfUpgradeMiddlewareUnreachable(listener: UpgradeListener, port: number | string) {
+	if ((listener as any).isDefaultWsUpgrade) return;
+	const server: any = httpServers[port];
+	if (server?.uws || server?.udsMirrorUwsConfig) {
+		harperLogger.warn(
+			`Upgrade middleware ('${getComponentName()}') is not applied on uWS-served listeners for port ${port}; uWS accepts WebSocket handshakes natively, so pre-handshake upgrade middleware only runs on Node-served listeners.`
+		);
+	}
+}
+
 function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 	for (const { port } of getPorts(options)) {
+		warnIfUpgradeMiddlewareUnreachable(listener, port);
 		const entry = {
 			listener,
 			port: options?.port || port,
@@ -881,7 +1976,7 @@ function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 			host: options?.host || undefined,
 		};
 		upgradeListeners[options?.runFirst ? 'unshift' : 'push'](entry);
-		upgradeChains[port] = makeCallbackChain(upgradeListeners, port);
+		buildChains(upgradeChains, upgradeListeners, port, 0, 'upgrade');
 	}
 }
 
@@ -890,6 +1985,7 @@ type OnWebSocketOptions = {
 	securePort?: number;
 	maxPayload?: number;
 	usageType?: string;
+	threadType?: string;
 	mtls?: boolean;
 	runFirst?: boolean;
 	name?: string;
@@ -900,6 +1996,21 @@ type OnWebSocketOptions = {
 };
 const websocketListeners = [],
 	websocketChains = {};
+export function hasOpenWebSockets(): boolean {
+	for (const port in websocketServers) {
+		if (websocketServers[port].clients.size > 0) return true;
+	}
+	return false;
+}
+export function closeWebSockets() {
+	const closed: Promise<void>[] = [];
+	for (const port in websocketServers) {
+		closed.push(new Promise<void>((resolve) => websocketServers[port].close(() => resolve()))); // an upgrade still arriving gets a 503
+		for (const ws of websocketServers[port].clients) ws.close(1001, 'Server shutting down');
+	}
+	return Promise.all(closed);
+}
+
 /**
  *
  * @param {Listener} listener
@@ -917,8 +2028,64 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 
 		const server = getHTTPServer(port, secure, options);
 
-		if (!websocketServers[port]) {
-			websocketServers[port] = new WebSocketServer({
+		const installUwsWsHandler = (cfg: any) => {
+			if (!cfg || cfg.wsHandler) return;
+			// Registration-order complement to warnIfUpgradeMiddlewareUnreachable(): middleware
+			// registered before this uWS transport existed is equally unreachable.
+			for (const entry of upgradeListeners) {
+				if (entry.port == port && !(entry.listener as any).isDefaultWsUpgrade) {
+					harperLogger.warn(
+						`Upgrade middleware ('${entry.name}') is not applied on uWS-served listeners for port ${port}; uWS accepts WebSocket handshakes natively, so pre-handshake upgrade middleware only runs on Node-served listeners.`
+					);
+				}
+			}
+			// Honor a configured WebSocket maxPayload on the uWS transport too (else it defaults to 100 MiB).
+			if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
+			cfg.wsHandler = (ws: any, upgrade: any) => {
+				try {
+					// UwsRequest.signal falls back to a controller nothing can fire. Wire a real one, the
+					// same way uwsServer.ts's HTTP path wires res.onAborted.
+					const ac = new AbortController();
+					// One controller per connection, but one abort listener per in-flight message-handling
+					// transaction (resources/transaction.ts) — a busy connection can hold more than
+					// EventEmitter's default 10-listener warning threshold on perfectly normal traffic.
+					setMaxListeners(0, ac.signal);
+					ws.once('close', () => ac.abort());
+					const request: any = new UwsRequest({
+						method: 'GET',
+						url: upgrade.url,
+						headers: upgrade.headers,
+						secure,
+						ip: upgrade.ip,
+						signal: ac.signal,
+					});
+					request.isWebSocket = true;
+					if (isolatedApplicationUnavailable(request, options.usageType === 'operations-api')) {
+						return ws.close(1013, 'Try again later');
+					}
+					const chainCompletion = httpChain[port](request);
+					websocketChains[port](ws, request, chainCompletion);
+				} catch (error) {
+					harperLogger.warn('Error in handling WS connection', error);
+					try {
+						ws.close();
+					} catch {}
+				}
+			};
+		};
+		// A uWS-served UDS mirror (HARPER_UWS_UDS) needs the wsHandler regardless of whether the
+		// port itself is uWS- or Node-backed.
+		installUwsWsHandler((server as any)?.udsMirrorUwsConfig);
+		if ((server as any)?.uws) {
+			// uWS-backed port (HARPER_UWS_HTTP): uWS owns the socket, so route upgrades through uWS's
+			// native app.ws() rather than the Node ws.WebSocketServer + server 'upgrade' event. We wire a
+			// wsHandler into the shared uwsServeConfig; createUwsServer registers app.ws() when it listens.
+			installUwsWsHandler(uwsServeConfigs[port]);
+		} else if (!websocketServers[port]) {
+			const WebSocketServerForPort = isBun
+				? (bunWebSocketServer ??= loadNativePackage('ws', 'index.js').WebSocketServer)
+				: WebSocketServer;
+			websocketServers[port] = new WebSocketServerForPort({
 				noServer: true,
 				// TODO: this should be a global config and not per ws listener
 				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
@@ -928,6 +2095,9 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 				try {
 					const request = new Request(incomingMessage);
 					request.isWebSocket = true;
+					if (isolatedApplicationUnavailable(request, options.usageType === 'operations-api')) {
+						return ws.close(1013, 'Try again later');
+					}
 					const chainCompletion = httpChain[port](request);
 					harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
 					websocketChains[port](ws, request, chainCompletion);
@@ -937,30 +2107,34 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			});
 
 			// Add the default upgrade handler if it doesn't exist.
-			onUpgrade(
-				(request, socket, head, next) => {
-					// If the request has already been upgraded, continue without upgrading
-					if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
-						return next(request, socket, head);
-					}
+			const defaultUpgradeHandler = (request, socket, head, next) => {
+				// If the request has already been upgraded, continue without upgrading
+				if (request.__harperdbRequestUpgraded || request.__harperRequestUpgraded) {
+					return next(request, socket, head);
+				}
 
-					// Otherwise, upgrade the socket and then continue
-					return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
-						request.__harperdbRequestUpgraded = true;
-						request.__harperRequestUpgraded = true;
-						next(request, socket, head);
-						websocketServers[port].emit('connection', ws, request);
-					});
-				},
-				{ port }
-			);
+				// Otherwise, upgrade the socket and then continue
+				return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
+					request.__harperdbRequestUpgraded = true;
+					request.__harperRequestUpgraded = true;
+					next(request, socket, head);
+					websocketServers[port].emit('connection', ws, request);
+				});
+			};
+			(defaultUpgradeHandler as any).isDefaultWsUpgrade = true;
+			onUpgrade(defaultUpgradeHandler, { port });
 
 			// Call the upgrade middleware chain
-			server.on('upgrade', (request, socket, head) => {
+			const dispatchUpgrade = (request, socket, head) => {
 				if (upgradeChains[port]) {
 					upgradeChains[port](request, socket, head);
 				}
-			});
+			};
+			server.on('upgrade', dispatchUpgrade);
+			// The UDS mirror is a separate http.Server; without its own 'upgrade' listener
+			// Node destroys upgrade sockets silently (zero-byte close), so WS worked on the
+			// TCP port but died on the mirror.
+			(server as any).udsMirror?.on('upgrade', dispatchUpgrade);
 		}
 
 		servers.push(server);
@@ -975,19 +2149,16 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			host: options?.host || undefined,
 		};
 		websocketListeners[options?.runFirst ? 'unshift' : 'push'](wsEntry);
-		websocketChains[port] = makeCallbackChain(websocketListeners, port, 1);
+		buildChains(websocketChains, websocketListeners, port, 1, 'websocket');
 
 		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
-		httpChain[port] = makeCallbackChain(httpResponders, port);
+		buildChains(httpChain, httpResponders, port);
 	}
 
 	return servers;
 }
 
-// PROXY protocol v1 max header length per spec: 108 bytes
-const PROXY_V1_MAX_HEADER = 108;
-
-function enableProxyProtocol(httpServer) {
+export function enableProxyProtocol(httpServer, prehandoffTimeout = 10_000) {
 	// In Node.js v24+, the HTTP parser's data path goes through the C++ stream layer
 	// and does not call socket.emit('data') via JavaScript method dispatch.
 	// Overriding socket.emit or socket.push has no effect on the HTTP parser's data intake.
@@ -998,50 +2169,115 @@ function enableProxyProtocol(httpServer) {
 	// process.nextTick fires before any I/O callbacks, so it is guaranteed to run before
 	// the first network data chunk reaches the socket — making the interception race-free.
 	httpServer.prependListener('connection', (socket) => {
+		// TLSSocket-shaped defaults so mTLS-aware auth paths see a "no client cert"
+		// TLS connection unless the PROXY v2 header forwards a verified identity.
+		applyDefaultPeerCertificate(socket);
 		process.nextTick(() => {
 			// Capture the HTTP parser's 'data' listener(s) registered during this connection event.
 			const dataListeners = socket.listeners('data') as ((chunk: Buffer) => void)[];
 			if (dataListeners.length === 0) return;
 			socket.removeAllListeners('data');
-
-			let proxyDone = false;
-			socket.on('data', (chunk: Buffer) => {
-				if (!proxyDone) {
-					proxyDone = true;
-					// Fast path: PROXY v1 always starts with "PROXY " (0x50 0x52 0x4f 0x58 0x59 0x20)
-					if (
-						chunk.length >= 6 &&
-						chunk[0] === 0x50 &&
-						chunk[1] === 0x52 &&
-						chunk[2] === 0x4f &&
-						chunk[3] === 0x58 &&
-						chunk[4] === 0x59 &&
-						chunk[5] === 0x20
-					) {
-						const header = chunk.toString('latin1', 0, Math.min(PROXY_V1_MAX_HEADER, chunk.length));
-						const eol = header.indexOf('\r\n');
-						if (eol !== -1) {
-							// "PROXY TCP4 <src-ip> <dst-ip> <src-port> <dst-port>"
-							const parts = header.slice(0, eol).split(' ');
-							if (parts.length === 6) {
-								// Override the UDS socket's undefined remoteAddress/remotePort with the real client values.
-								Object.defineProperty(socket, 'remoteAddress', { value: parts[2], configurable: true });
-								Object.defineProperty(socket, 'remotePort', { value: parseInt(parts[4], 10), configurable: true });
-							}
-							// Forward only the bytes after the PROXY header to the HTTP parser.
-							const rest = chunk.subarray(eol + 2);
-							if (rest.length > 0) {
-								for (const listener of dataListeners) listener.call(socket, rest);
-							}
-							return;
-						}
-					}
-				}
-				// Not a PROXY header (or already handled) — forward unchanged.
+			const forward = (chunk: Buffer) => {
 				for (const listener of dataListeners) listener.call(socket, chunk);
-			});
+			};
+
+			// Accumulates a possibly-split PROXY header. Raw protocols (MQTT/replication) can't
+			// recover from a corrupted first packet, so we must not forward a partial header —
+			// it can arrive across multiple data events.
+			let pending: Buffer | null = null;
+			// Bounds how long a stalled peer can hold the pending-header buffer, matching
+			// withProxyProtocol's prehandoffTimeout for the same threat on the raw-socket path.
+			// Cleared (not just disabled) once the header resolves, so it can't fire on a later,
+			// unrelated keep-alive timeout.
+			const onPrehandoffTimeout = () => socket.destroy();
+			socket.setTimeout(prehandoffTimeout, onPrehandoffTimeout);
+			const onData = (chunk: Buffer) => {
+				if (pending) chunk = Buffer.concat([pending, chunk]);
+
+				const decision = decodeProxyHeader(chunk);
+				if (decision.kind === 'incomplete') {
+					pending = chunk;
+					return;
+				}
+				pending = null;
+				socket.setTimeout(0);
+				socket.removeListener('timeout', onPrehandoffTimeout);
+				// Hand the socket back to its original listeners before forwarding. The wrapper
+				// must not outlive the header decision: protocol handoffs assume the listener
+				// they registered is the one attached (e.g. Node's HTTP upgrade path removes its
+				// parser's 'data' listener before ws takes over — with a lingering wrapper, WS
+				// frames would keep feeding the freed, re-poolable HTTP parser and corrupt
+				// whichever connection it is issued to next).
+				socket.removeListener('data', onData);
+				for (const listener of dataListeners) socket.on('data', listener);
+				if (decision.kind === 'none') {
+					// Not a PROXY header — forward everything unchanged.
+					return forward(chunk);
+				}
+				applyProxyHeader(socket, decision);
+				// Forward only the bytes after the PROXY header to the protocol parser.
+				const rest = chunk.subarray(decision.headerLength);
+				if (rest.length > 0) forward(rest);
+			};
+			socket.on('data', onData);
 		});
 	});
+}
+
+/**
+ * Front a cleartext HTTP/2 server with optional PROXY (v1 or v2) handling on a Unix
+ * domain socket.
+ *
+ * enableProxyProtocol() can't be used here: Node's Http2Session consumes the socket's
+ * native handle directly, so data never surfaces as JS 'data' events to intercept. The
+ * PROXY header must instead be consumed *before* the socket is handed to the HTTP/2
+ * server. Bytes beyond the header (typically the coalesced h2 connection preface) are
+ * unshifted back onto the socket; the native session picks them up (verified on Node 24
+ * — covered by a unit test so a Node upgrade regressing this fails loudly).
+ *
+ * The returned server's close() also gracefully closes live h2 sessions (GOAWAY,
+ * in-flight streams finish) so closeServers()'s generic server.close() drains instead
+ * of riding its 5s force-exit backstop — the h1 mirror gets this via http.Server's
+ * closeIdleConnections drain, which a net.Server doesn't have.
+ */
+export function createH2CProxyFront(h2Server, prehandoffTimeout = 10_000) {
+	const sessions = new Set<any>();
+	const prehandoffSockets = new Set<any>();
+	let closing = false;
+	h2Server.on('session', (session) => {
+		// A connection can be mid-handoff (header read, session not yet created) when
+		// close() runs — its session forms after the close sweep, so close it here or
+		// it would never receive GOAWAY and would ride the 5s force-exit backstop.
+		if (closing) session.close();
+		sessions.add(session);
+		session.on('close', () => sessions.delete(session));
+	});
+	// http2's compat req.socket proxies through to the underlying socket, so the
+	// overridden remoteAddress and the synthesized peer cert reach request handlers.
+	// withProxyProtocol also swallows socket errors and bounds the header wait until
+	// handoff, when the h2 session's own handlers take over.
+	const front = createNetServer(
+		{ noDelay: true },
+		withProxyProtocol((socket) => {
+			prehandoffSockets.delete(socket);
+			h2Server.emit('connection', socket);
+		}, prehandoffTimeout)
+	);
+	front.prependListener('connection', (socket) => {
+		prehandoffSockets.add(socket);
+		socket.on('close', () => prehandoffSockets.delete(socket));
+	});
+	const netClose = front.close.bind(front);
+	front.close = (callback?: (error?: Error) => void) => {
+		closing = true;
+		for (const session of sessions) session.close();
+		// Header-waiting sockets carry no in-flight work; drop them so they can't hold
+		// the close callback open for the rest of the pre-handoff timeout.
+		for (const socket of prehandoffSockets) socket.destroy();
+		h2Server.close();
+		return netClose(callback);
+	};
+	return front;
 }
 
 function defaultNotFound(request, response) {
@@ -1052,7 +2288,7 @@ function defaultNotFound(request, response) {
 }
 let httpLogger: any;
 
-function logBunRequest(request: any, status: number, requestId: number, executionTime?: number) {
+function logHttpRequest(request: any, status: number, requestId: number, executionTime?: number) {
 	const logging = httpOptions.logging;
 	if (logging) {
 		if (!httpLogger) {
@@ -1070,6 +2306,19 @@ function logBunRequest(request: any, status: number, requestId: number, executio
 	}
 }
 
+function recordOutcome(
+	status: number,
+	nodeRequest: IncomingMessage,
+	requestId: number,
+	executionTime: number,
+	handlerPath: string,
+	method: string
+) {
+	recordActionBinary(status < 400, 'success', handlerPath, method);
+	if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, handlerPath, method);
+	logRequest(nodeRequest, status, requestId, executionTime);
+}
+
 export function logRequest(nodeRequest: IncomingMessage, status: number, requestId: number, executionTime?: number) {
 	const logging = httpOptions.logging;
 	if (logging) {
@@ -1084,10 +2333,11 @@ export function logRequest(nodeRequest: IncomingMessage, status: number, request
 		);
 	}
 }
-function headersToString(headers: any) {
+const CREDENTIAL_HEADER = /^(?:authorization|proxy-authorization|cookie)$/i;
+export function headersToString(headers: any) {
 	const result: string[] = [];
 	for (const name in headers) {
-		result.push(`${name}: ${headers[name]}`);
+		result.push(`${name}: ${CREDENTIAL_HEADER.test(name) ? '[REDACTED]' : headers[name]}`);
 	}
 	return result.join(', ');
 }
@@ -1101,3 +2351,8 @@ export function getRequestId() {
 	}
 	return Number(Atomics.add(nextRequestId, 0, 1n));
 }
+
+server.http = httpServer;
+server.request = onRequest;
+server.ws = onWebSocket;
+server.upgrade = onUpgrade;

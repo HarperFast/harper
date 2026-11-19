@@ -1,0 +1,2 @@
+loadEnv:
+  files: .env

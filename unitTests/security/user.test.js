@@ -6,17 +6,19 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 require('../testUtils.js');
+const assert = require('node:assert');
 const chai = require('chai');
 const chaiAsPromised = require('chai-as-promised').default;
 chai.use(chaiAsPromised);
 const { expect } = chai;
-const env_mgr = require('#src/utility/environment/environmentManager');
+const env_mgr = require('#js/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
-const { databases } = require('#src/resources/databases');
+const { databases, table } = require('#src/resources/databases');
 const password = require('#src/utility/password');
-let user = require('#src/security/user');
+const user = require('#src/security/user');
 
 const TEST_PASSWORD = 'test1234!';
+const originalHashFunction = env_mgr.get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION);
 
 async function dropTestUsers() {
 	await user.dropUser({ username: 'test_user' }).catch(() => {});
@@ -37,11 +39,11 @@ async function addTestUser() {
 }
 
 function setHashFunction(hashFunction) {
-	delete require.cache[require.resolve('#src/security/user')];
-	delete require.cache[require.resolve('#src/utility/password')];
 	env_mgr.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, hashFunction);
-	require('#src/utility/password');
-	user = require('#src/security/user');
+}
+
+async function storedHashFunction(username) {
+	return (await databases.system.hdb_user.get(username)).hash_function;
 }
 
 describe('user.ts Unit Tests', () => {
@@ -61,11 +63,14 @@ describe('user.ts Unit Tests', () => {
 				},
 			});
 		} catch {}
-		await user.setUsersWithRolesCache();
 	});
 
 	afterEach(async () => {
 		await dropTestUsers();
+	});
+
+	after(() => {
+		env_mgr.setProperty(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION, originalHashFunction);
 	});
 
 	describe('Test addUser', () => {
@@ -101,6 +106,13 @@ describe('user.ts Unit Tests', () => {
 			expect(users.get('test_user_md5').password.length).to.be.greaterThan(10);
 			expect(users.get('test_user_sha256').password.length).to.be.greaterThan(10);
 			expect(users.get('test_user_argon2id').password.length).to.be.greaterThan(10);
+			expect(await storedHashFunction('test_user_undefined')).to.equal('sha256');
+			expect(await storedHashFunction('test_user_md5')).to.equal('md5');
+			expect(await storedHashFunction('test_user_sha256')).to.equal('sha256');
+			expect(await storedHashFunction('test_user_argon2id')).to.equal('argon2id');
+			expect((await user.findAndValidateUser('test_user_argon2id', 'pass-argon2id')).username).to.equal(
+				'test_user_argon2id'
+			);
 		});
 
 		it('should throw an error if role is not found', async () => {
@@ -128,6 +140,16 @@ describe('user.ts Unit Tests', () => {
 			await user.alterUser(alterUserObj);
 			const findUser = await user.userInfo({ hdb_user: { username: 'test_user' } });
 			expect(findUser.username).to.equal('test_user');
+		});
+
+		it('should store a changed password with the hash function configured at that time', async () => {
+			setHashFunction('sha256');
+			await addTestUser();
+			setHashFunction('argon2id');
+			await user.alterUser({ operation: 'alter_user', username: 'test_user', password: 'new-password' });
+			expect(await storedHashFunction('test_user')).to.equal('argon2id');
+			expect((await user.findAndValidateUser('test_user', 'new-password')).username).to.equal('test_user');
+			await expect(user.findAndValidateUser('test_user', TEST_PASSWORD)).to.be.rejected;
 		});
 
 		it('should throw an error if validation fails', async () => {
@@ -178,7 +200,6 @@ describe('user.ts Unit Tests', () => {
 				role: 'super_user',
 				active: true,
 			});
-			await user.setUsersWithRolesCache();
 			const result = await user.findAndValidateUser('test_user', TEST_PASSWORD);
 			expect(result.username).to.equal('test_user');
 		});
@@ -209,6 +230,249 @@ describe('user.ts Unit Tests', () => {
 			const result = await user.getSuperUser();
 			expect(result.role.role).to.equal('super_user');
 			await dropTestUsers();
+		});
+	});
+
+	describe('Test system table permissions', () => {
+		const COMPONENT_TABLE = 'hdb_test_component_state';
+		const READ_ONLY_ROLE = 'test_read_only_role';
+		const SUPER_USER = 'test_system_perms_su';
+		const READ_ONLY_USER = 'test_system_perms_read_only';
+		let componentTable;
+
+		before(async () => {
+			const { addRole } = require('#src/security/role');
+			try {
+				await addRole({
+					role: READ_ONLY_ROLE,
+					id: READ_ONLY_ROLE,
+					permission: { super_user: false },
+				});
+			} catch {}
+			await user.addUser({
+				operation: 'add_user',
+				role: READ_ONLY_ROLE,
+				username: READ_ONLY_USER,
+				password: TEST_PASSWORD,
+				active: true,
+			});
+			await user.addUser({
+				operation: 'add_user',
+				role: 'super_user',
+				username: SUPER_USER,
+				password: TEST_PASSWORD,
+				active: true,
+			});
+			assert.ok(!Object.keys(require('../../json/systemSchema.json')).includes(COMPONENT_TABLE));
+			await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD);
+			componentTable = table({
+				database: 'system',
+				table: COMPONENT_TABLE,
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+		});
+
+		after(async () => {
+			await user.dropUser({ username: READ_ONLY_USER }).catch(() => {});
+			await user.dropUser({ username: SUPER_USER }).catch(() => {});
+			await componentTable?.dropTable().catch(() => {});
+		});
+
+		async function cachedRolePermissions(username) {
+			const resolved = await user.findAndValidateUser(username, TEST_PASSWORD);
+			return resolved.role.permission;
+		}
+
+		it('should grant a super_user read on a system table created after the cache was built', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			assert.deepStrictEqual(permission.system.tables[COMPONENT_TABLE], {
+				read: true,
+				insert: false,
+				update: false,
+				delete: false,
+				attribute_permissions: [],
+			});
+		});
+
+		it('should not grant a non-super_user read on a component-created system table', async () => {
+			const permission = await cachedRolePermissions(READ_ONLY_USER);
+			assert.strictEqual(permission.system.tables[COMPONENT_TABLE].read, false);
+		});
+
+		it('should keep writes denied on a component-created system table for a super_user', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			const tablePermissions = permission.system.tables[COMPONENT_TABLE];
+			assert.strictEqual(tablePermissions.insert, false);
+			assert.strictEqual(tablePermissions.update, false);
+			assert.strictEqual(tablePermissions.delete, false);
+		});
+
+		it('should still resolve install-time system tables', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			assert.strictEqual(permission.system.tables.hdb_user.read, true);
+			assert.strictEqual(permission.system.tables.hdb_role.read, true);
+		});
+
+		it('should return undefined for a table that is not in the system database', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			assert.strictEqual(permission.system.tables.hdb_not_a_real_table, undefined);
+			assert.strictEqual('hdb_not_a_real_table' in permission.system.tables, false);
+		});
+
+		it('should be a plain cloneable object, since operations are forwarded to worker threads', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			const { tables } = permission.system;
+			assert.doesNotThrow(() => structuredClone(tables));
+			assert.strictEqual(structuredClone(tables)[COMPONENT_TABLE].read, true);
+			assert.doesNotThrow(() => `${tables}`);
+		});
+
+		it('should reach identities holding an earlier reference to the map', async () => {
+			const { databaseEventsEmitter } = require('#src/resources/databases');
+			const held = (await cachedRolePermissions(SUPER_USER)).system.tables;
+			const LATE_TABLE = 'hdb_test_late_component';
+			const late = table({
+				database: 'system',
+				table: LATE_TABLE,
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			try {
+				assert.notStrictEqual(held[LATE_TABLE], undefined);
+				assert.strictEqual(held[LATE_TABLE].read, true);
+			} finally {
+				await late?.dropTable().catch(() => {});
+				delete databases.system[LATE_TABLE];
+				databaseEventsEmitter.emit('dropTable', LATE_TABLE, 'system');
+			}
+		});
+
+		it('should not let one role mutate the permissions every other role reads', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			const entry = permission.system.tables[COMPONENT_TABLE];
+			assert.strictEqual(Object.isFrozen(entry), true);
+			assert.throws(() => {
+				'use strict';
+				entry.insert = true;
+			}, TypeError);
+			const other = await cachedRolePermissions(READ_ONLY_USER);
+			assert.strictEqual(other.system.tables[COMPONENT_TABLE].insert, false);
+			assert.strictEqual(permission.system.tables[COMPONENT_TABLE].insert, false);
+		});
+
+		it('should reuse one map per read permission and not share across them', async () => {
+			const first = user.getUserWithRole(SUPER_USER).role.permission.system.tables;
+			const second = user.getUserWithRole(READ_ONLY_USER).role.permission.system.tables;
+			assert.notStrictEqual(first, second, 'different read permissions must not share a map');
+			const suAgain = (await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD)).role.permission.system.tables;
+			assert.strictEqual(suAgain, first, 'the same read permission must reuse one map instance');
+		});
+
+		it('should hold a table named __proto__ as an own property', async () => {
+			const { databaseEventsEmitter } = require('#src/resources/databases');
+			databases.system.__proto__ = { primaryKey: 'id' };
+			databaseEventsEmitter.emit('updateTable', { databaseName: 'system' });
+			try {
+				const { tables } = (await cachedRolePermissions(SUPER_USER)).system;
+				assert.strictEqual(Object.hasOwn(tables, '__proto__'), true);
+				assert.ok(Object.keys(tables).includes('__proto__'));
+				assert.strictEqual(tables['__proto__'].read, true);
+				assert.strictEqual(structuredClone(tables)['__proto__'].read, true);
+			} finally {
+				delete databases.system['__proto__'];
+				databaseEventsEmitter.emit('dropTable', '__proto__', 'system');
+			}
+		});
+
+		it('should stop resolving a table once it leaves the registry', async () => {
+			const { databaseEventsEmitter } = require('#src/resources/databases');
+			const registered = databases.system[COMPONENT_TABLE];
+			delete databases.system[COMPONENT_TABLE];
+			databaseEventsEmitter.emit('dropTable', COMPONENT_TABLE, 'system');
+			try {
+				const permission = await cachedRolePermissions(SUPER_USER);
+				assert.strictEqual(permission.system.tables[COMPONENT_TABLE], undefined);
+			} finally {
+				databases.system[COMPONENT_TABLE] = registered;
+				databaseEventsEmitter.emit('updateTable', registered);
+			}
+		});
+
+		it('should enumerate the component-created table alongside the install-time ones', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			const systemSchema = require('../../json/systemSchema.json');
+			const enumerated = Object.keys(permission.system.tables);
+			for (const installTable of Object.keys(systemSchema)) {
+				assert.ok(enumerated.includes(installTable));
+			}
+			assert.ok(enumerated.includes(COMPONENT_TABLE));
+		});
+
+		it('should carry the component-created table through a JSON round trip', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			const roundTripped = JSON.parse(JSON.stringify(permission.system.tables));
+			assert.strictEqual(roundTripped[COMPONENT_TABLE].read, true);
+		});
+
+		it('should not honor a system-table grant the role declared for itself', async () => {
+			const { insert } = require('#src/dataLayer/insert');
+			const SELF_GRANT_ROLE = 'test_self_granted_system_role';
+			const SELF_GRANT_USER = 'test_self_granted_system_user';
+			await insert({
+				operation: 'insert',
+				schema: 'system',
+				table: 'hdb_role',
+				records: [
+					{
+						role: SELF_GRANT_ROLE,
+						id: SELF_GRANT_ROLE,
+						permission: {
+							super_user: false,
+							system: {
+								tables: {
+									[COMPONENT_TABLE]: {
+										read: true,
+										insert: false,
+										update: false,
+										delete: false,
+										attribute_permissions: [],
+									},
+								},
+							},
+						},
+					},
+				],
+			});
+			await user.addUser({
+				operation: 'add_user',
+				role: SELF_GRANT_ROLE,
+				username: SELF_GRANT_USER,
+				password: TEST_PASSWORD,
+				active: true,
+			});
+			await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD);
+			try {
+				const permission = await cachedRolePermissions(SELF_GRANT_USER);
+				assert.strictEqual(permission.system.tables[COMPONENT_TABLE].read, false);
+			} finally {
+				await user.dropUser({ username: SELF_GRANT_USER }).catch(() => {});
+			}
+		});
+
+		it('should remove cached superuser system access when impersonating that user', async () => {
+			const { applyImpersonation } = require('#src/security/impersonation');
+			const original = await user.findAndValidateUser(SUPER_USER, TEST_PASSWORD);
+			assert.strictEqual(original.role.permission.system.tables[COMPONENT_TABLE].read, true);
+			const impersonated = await applyImpersonation(original, { username: SUPER_USER });
+			assert.strictEqual(impersonated.role.permission.system.tables[COMPONENT_TABLE].read, false);
+			assert.strictEqual(original.role.permission.system.tables[COMPONENT_TABLE].read, true);
+			assert.strictEqual((await cachedRolePermissions(SUPER_USER)).system.tables[COMPONENT_TABLE].read, true);
+		});
+
+		it('should expose the shape hasPermissions reads, keyed by table name', async () => {
+			const permission = await cachedRolePermissions(SUPER_USER);
+			const { tables } = permission.system;
+			assert.strictEqual(tables[COMPONENT_TABLE].read, true);
+			assert.ok(Array.isArray(tables[COMPONENT_TABLE].attribute_permissions));
 		});
 	});
 });

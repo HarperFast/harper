@@ -1,0 +1,8 @@
+# QA-146 — Custom-Resource HTTP contract probe.
+# A single backing table so we have a place to anchor exported custom Resources.
+# All the interesting behavior lives in resources.js custom Resource subclasses.
+
+type Kv @table @export {
+	id: ID @primaryKey
+	v: String
+}

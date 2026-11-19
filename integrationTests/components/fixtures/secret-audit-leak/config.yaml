@@ -1,0 +1,7 @@
+# QA-517 — hdb_secret audit-log / generic-table plaintext leak probe.
+# hdb_secret is a built-in system table (no app schema needed). registerCustody.js is wired in via
+# HARPER_BUILTIN_COMPONENTS (see the test file), but that only registers the module under
+# TRUSTED_RESOURCE_PLUGINS — it must ALSO appear as a top-level component key here (same pattern
+# as qa487's qa487RegisterDecryptor) for componentLoader to actually process/load it.
+rest: true
+qa517RegisterCustody: true

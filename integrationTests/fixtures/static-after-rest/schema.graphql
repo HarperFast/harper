@@ -1,0 +1,17 @@
+# harper#1574 (feat/static-after-ordering) — a realistic SPA-style app: an exported REST
+# resource (Product) plus a static SPA fallback configured with `after: 'rest'` so REST
+# routes are matched before the catch-all. Secret is gated to a custom role, to probe the
+# auth-ordering subtlety: `after: 'rest'` suppresses the static handler's default
+# `before: 'authentication'` hoist, so we need a real auth-gated resource to confirm
+# unauthenticated requests still get denied rather than swallowed by the SPA fallback.
+
+type Product @table @export {
+	id: ID @primaryKey
+	name: String
+	price: Float
+}
+
+type Secret @table @export {
+	id: ID @primaryKey
+	value: String
+}

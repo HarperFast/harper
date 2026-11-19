@@ -22,6 +22,17 @@ In reviewing the third party package or dependency, the following questions shou
 
 Generally, dependencies are added by simply adding them to the dependencies list in package.json. If the dependency is not necessary for the actual execution of the application (testing or building), it can be placed in devDependencies, or in optionalDependencies (we have done that with packages with binary compilations).
 
+## react-native-fs (removed from the published tree, not a dependency)
+
+This is the inverse of the entries below — a dependency we take deliberate steps to _not_ ship.
+
+- Where it comes from: `alasql` declares `optionalDependencies: { "react-native-fs": "^2.20.0" }`, and `react-native-fs` peer-depends on `react-native` **without** marking it optional. npm 7+ auto-installs peer dependencies, so resolving alasql pulls in `react-native`, `react`, `hermes`, `metro` and `react-devtools-core` — ~140MB and ~200 packages (#1937).
+- Why none of it is needed: every `require('react-native-fs')` in `alasql/dist/alasql.fs.js` sits behind a `utils.isReactNative` guard, so it is unreachable under Node. Harper only uses `alasql.parse` plus its function extensions.
+- How it is removed: `build-tools/bundleDependencies.ts` omits unused optional `react-native-fs` declarations from copied package manifests before bundling the locked JavaScript closure. Its reachability walk preserves children shared with other production dependencies and never severs an explicit required producer. Development-installed manifests and the repository lock stay intact.
+- Why bundling: root `overrides` do not constrain a consumer's install, and npm 12 [no longer honors shrinkwraps](https://docs.npmjs.com/cli/v12/using-npm/changelog/). The published `bundleDependencies` ships the tested JavaScript bytes for registry, tarball and global installs. Native-containing roots remain regular, exact-pinned dependencies so npm selects the consumer's platform; their ranged transitives and externally supplied optional peers are outside the bundle's reproducibility guarantee.
+- Docker image: a standard global install uses the same portable bundle. The copied AlaSQL manifest no longer declares the unused optional edge, so the image no longer re-adds the React Native subtree. PR consumer tests run `npm ci` after installation, and archive/installed checks reject native binaries in the bundle and verify locked versions and shared storage-module resolution.
+- Eventual removal: retire the React Native rule once AlaSQL stops declaring that optional dependency. The helper also cuts optional-peer-only `utf-8-validate` references when they appear in the bundled closure; explicit producers are preserved.
+
 ## graphql
 
 - Need for usage: For supporting GraphQL schemas and queries.
@@ -57,13 +68,22 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Can be deferred: Yes, this only loaded when secure sand-boxing is enabled and modules are loaded.
 - Eventual removal: Same as above
 
+## uWebSockets.js
+
+- Need for usage: Optional high-performance HTTP/WebSocket backend (#914), gated default-off behind HARPER_UWS_UDS (plaintext UDS behind symphony) / HARPER_UWS_HTTP (direct plaintext TCP). Loaded lazily only when a flag is set.
+- Size/memory cost: Prebuilt native V8 addon (~1MB per platform binary; the GitHub tarball contains all platform binaries).
+- Security: Actively maintained C++ HTTP server; no npm advisory registry entry (installed from a pinned GitHub tarball, not from npm).
+- Binary compilation: Yes — ABI-locked, platform-specific prebuilt `.node` binaries committed in the repo. No musl/Alpine (glibc only). Harper declares version 20.68.0 as an optional peer; operators enabling the backend must install the pinned GitHub tarball separately. It remains a devDependency so Harper's uWS test jobs install it without adding the GitHub tarball to consumers' production locks.
+- Overlap: Overlaps `ws` (WebSockets) and the Node/Bun HTTP paths; this is an alternative transport, not an addition.
+- Eventual removal: Kept as long as it demonstrates a meaningful throughput/latency win over the Node path; the flags let it be dropped without touching the default path.
+
 ## ws
 
 - Need for usage: We need to support WebSockets
 - Security: Had vulnerabilities, but quickly addressed: https://security.snyk.io/package/npm/ws
 - Environment interaction: None
-- Overlap: None
-- Binary compilation: Has optional dependencies with binary compilation for acceleration
+- Overlap: Bun substitutes its own implementation for the bare `ws` specifier. Harper explicitly loads the installed server entry on Bun so queued frames retain Node's exactly-once socket/drain behavior; Node and uWS keep their existing backend selection.
+- Binary compilation: `bufferutil` is an optional native addon for masking acceleration. Harper does not declare `utf-8-validate`: `ws` uses Node's built-in [`buffer.isUtf8`](https://nodejs.org/api/buffer.html#bufferisutf8input) (introduced in Node 18.14 and 19.4) on the Node versions declared in `package.json`'s `engines`. The development lock still includes an older addon produced by the integration test framework's Harper peer, also referenced by React Native's optional peers. Release bundling deliberately leaves `ws` and its optional native `bufferutil` accelerator as ordinary dependencies so consumers can override this transport independently. Optional-only peers are excluded from the bundle closure. Optional UTF-8 peer declarations are cut only when they occur inside copied bundled manifests; explicit producers and required peers are preserved. See `build-tools/DESIGN.md` for the bundle boundary.
 - Eventual removal: Because this is a standard-based API, this will hopefully be rolled into a core JavaScript runtime feature at some point (and already is in Deno).
 
 ## json-bigint (forked as json-bigint-fixes)
@@ -94,6 +114,15 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Can be deferred: Potentially, we could load it on-demand
 - Eventual removal: We could write our own code that read/writes multiple files from/to a tar file
 
+## tar-stream
+
+- Need for usage: The low-level USTAR pack/extract streams underneath `tar-fs`. Used directly by the RocksDB backup path (`dataLayer/rocksdbBackup.ts`) to append the database's file-backed blobs (and the generated READMEs) into the `get_backup` archive: the native engine backup emits a plain tar, and its entries are streamed on while blob/README entries are packed and appended before the single end-of-archive trailer. Declared as a direct dependency (rather than relied on transitively via `tar-fs`) so the import contract is stable across package-manager layouts.
+- Size/memory cost: Approximately 30KB
+- Security: None known
+- Overlap: Pulled in transitively by `tar-fs` already; declaring it direct only pins the contract, no new tree.
+- Can be deferred: Only loaded on the `get_backup` blob path
+- Eventual removal: We could write our own minimal USTAR encoder (the engine binding already ships one)
+
 ## gunzip-maybe
 
 - Need for usage: Used by deploy component
@@ -115,7 +144,7 @@ Generally, dependencies are added by simply adding them to the dependencies list
 ## chokidar
 
 - Need for usage: Reliable file watching. This is the industry standard file watcher and deals with the many edge cases that node.js's watch (file replacement and changing inode for example) and watchFile (nothing but a terrible poller on a timer) don't handle well.
-- 153KB
+- ~109KB installed including readdirp (measured with chokidar 5.0.0)
 - Security: No known issues.
 - Eventual removal: This is a very well maintained package and is the industry standard for file watching. We could remove with very careful usage of `watch`, but would probably require a lot of testing and edge case handling.
 
@@ -125,6 +154,13 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Size: 49.6kB
 - Security: No known issues.
 - Eventual removal: This is a very well maintained package and is the industry standard for serving static files. We could remove with very careful usage of `fs` and `http`, but would probably require a lot of testing and edge case handling.
+
+## compression, compression-1.7 (alias of compression@1.7.4), on-finished, on-headers (devDependencies)
+
+- Need for usage: `unitTests/server/serverHelpers/nodeAdapterMiddleware.test.js` drives `Request.withNodeAdapter()` with the real Node middleware that first broke it (harper#2527): `compression` (1.8, and 1.7.4 under the `compression-1.7` alias because that is the version Next.js vendors and it gates on `_header`/`_implicitHeader()` rather than `headersSent`/`writeHead()`), `send` (already a dependency), and the `on-finished` / `on-headers` hooks they use. A synthetic handler cannot reproduce the ordering and backpressure contract these packages rely on.
+- Size: about 170 kB installed including `compressible`, `negotiator`, `vary` and `bytes`; test-only, never loaded in production.
+- Security: jshttp / expressjs maintained; no known issues.
+- Eventual removal: drop when Harper ships its own Node-middleware conformance fixture, or when the `@harperfast/nextjs` integration suite covers the adapter end to end.
 
 ## easy-ocsp
 
@@ -173,9 +209,44 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No.
 - Eventual removal: We could implement SigV4 ourselves (~300 lines) and call Bedrock's HTTP endpoint with native `fetch`, matching the pattern used by the other three backends. Worth revisiting if SDK version churn becomes a maintenance burden or if the optional-peerDep pattern proves operator-unfriendly. The dynamic-import boundary means the swap is contained to `components/bedrock/index.ts`.
 
+## @aws-sdk/client-s3, @aws-sdk/lib-storage (optional peerDependencies)
+
+- Need for usage: the `export_to_s3` operation (`dataLayer/export.ts`) and the `import_from_s3` operation (`dataLayer/bulkLoad.ts`, via `utility/AWS/AWSConnector.ts`) — reading an S3 object to import, and multipart-uploading an export result to S3.
+- Classification: **optional `peerDependency`**, not a direct dependency, mirroring `@aws-sdk/client-bedrock-runtime` above. `package.json` declares both in `peerDependenciesMeta.<pkg>.optional: true`. `AWSConnector.ts` and `dataLayer/export.ts` `require()` the SDKs lazily, through the shared `utility/AWS/awsSdkLoader.ts` helper, only when an S3 export/import actually runs. The helper first tries a normal `require()` (finds an SDK installed alongside Harper itself); if that's `MODULE_NOT_FOUND` for one of these two packages, it retries with a `node:module` `createRequire` anchored at the configured Harper instance root (`rootPath`/`ROOTPATH`, e.g. `/home/harperdb/harper` in the official Docker image) — the volume an operator actually owns and where `npm install @aws-sdk/client-s3 @aws-sdk/lib-storage` naturally lands, since Harper's own code lives in a separate global `node_modules` tree the operator doesn't control (`$NPM_CONFIG_PREFIX/lib/node_modules/harper`) that a rootPath-local install would never reach via Node's normal `require` walk. If both attempts fail, `export_to_s3` and `import_from_s3` throw a 501 `MissingAwsSdkError` naming the rootPath: "S3 export/import requires the optional AWS SDK — npm install @aws-sdk/client-s3 @aws-sdk/lib-storage in the Harper instance root (<rootPath>), or alongside Harper globally". Every other operation is unaffected. The official Docker image (`Dockerfile`) preinstalls both packages globally alongside Harper, so S3 export/import works out of the box there — only npm/tarball consumers who never touch it get to skip the install.
+- Size/memory cost: ~18 MB unpacked including transitive `@smithy/*` packages. Paid by the official Docker image (preinstalled) and by npm/tarball operators who explicitly add both SDKs to their own project's `package.json`; skipped by everyone else.
+- Security: AWS-maintained, weekly-cadence releases. CVE history is in the standard AWS SDK channel; Harper does not freeze the patch range — operators install the version their project pins.
+- Environment interaction: None at Harper load time (the `require()` only fires when `export_to_s3` or `import_from_s3` is invoked). At runtime, the SDK uses the credentials passed in the operation body (`aws_access_key_id`/`aws_secret_access_key`/`region`), not the ambient AWS credential chain.
+- Overlap: None — no other Harper code path touches S3.
+- Transitive dependencies: Large `@smithy/*` set shared with `@aws-sdk/client-bedrock-runtime`'s tree. Acceptable because installation is opt-in via peerDep.
+- Can be deferred: Yes, by design — lazily required on first S3 export/import call. Customers who never use these two operations never load it.
+- Binary compilation: No.
+- Eventual removal: Unlikely — S3's multipart upload and streamed-download semantics (`@aws-sdk/lib-storage`'s `Upload`, `GetObjectCommand`) are non-trivial to reimplement correctly. The lazy-load boundary means any future replacement is contained to `utility/AWS/awsSdkLoader.ts`, `utility/AWS/AWSConnector.ts`, and `dataLayer/export.ts`.
+
+## @harperfast/skills
+
+- Need for usage: Ships the `harper-best-practices` skill content (rule index + per-rule guidance for schema design, relationships, auth, caching, vector indexing, TypeScript type-stripping, deployment, etc.) that the built-in agent uses to ground itself (#626). Sourcing it from the published package versions the guidance with the Harper release instead of drifting from a separately-updated copy.
+- Size/memory cost: ~412KB on disk, no transitive dependencies. The package's single export (`.`) surfaces the skill content as JS — `skillSummary`, `ruleNames`, and a `rules` name→markdown map — so the rule bodies are resident in the worker's heap once imported (~400KB of markdown). Only the `SKILL.md` overview (~1.2K tokens) is fed into the agent's system prompt eagerly; individual rule bodies are handed to the model on demand via the `harper_best_practice` tool, so context spend still stays lazy.
+- Security: No reported vulnerabilities; a first-party Harper package.
+- Environment interaction: None. The skill content is consumed via the package's module exports — no filesystem access or dynamic resolution.
+- Overlap: None.
+- Can be deferred: No — it's a declared runtime dependency imported by the agent module. If the built-in agent is disabled the code path isn't exercised, but the module is still installed and imported like any other dependency.
+- Binary compilation: No.
+- Eventual removal: The best-practices content could be vendored directly into `harper` if the separate package ever became a maintenance burden, at the cost of losing independent versioning/updates.
+
+## weak-lru-cache
+
+- Need for usage: Powers the PrimaryRocksDatabase record cache. Stores record values under a WeakRef-based LRU so cached records are GC-reclaimable once they cycle out of the LRU stages — a strong-reference cache would be an unbounded leak, since every accessed record would be retained indefinitely. lmdb-js uses the same library for its CachingStore. Values are stored via `setValue`/`getValue` (WeakRef semantics) rather than `set`/`get` (strong semantics).
+- Size/memory cost: ~6 KB. The cache itself is bounded by the LRU capacity; each slot holds only a WeakRef to the record, so GC can reclaim entries not recently accessed.
+- Security: No reported vulnerabilities. Authored and maintained by David Beaumont / lmdb-js author (same authorship chain as lmdb-js, already a trusted dependency).
+- Environment interaction: `storage.recordCacheSize` sizes the record cache. Harper constructs one `LRFUExpirer` per thread and passes it to every record cache, because the library's default expirer is shared with lmdb-js's caches and takes its size from whichever cache a thread constructs first.
+- Overlap: lmdb-js already vendors this for its CachingStore; adding it as a direct dep aligns with the existing usage pattern and avoids importing a private lmdb-js internal.
+- Can be deferred: No — the WeakLRUCache is constructed at store-open time for tables with caching enabled.
+- Binary compilation: No.
+- Eventual removal: Could be replaced by a custom WeakRef-based LRU if the dependency ever lapses, or removed if a native VT-only freshness check (without a JS-side record cache) proves sufficient.
+
 ## busboy
 
-- Need for usage: Streaming multipart/form-data parser for the operations API. Required so `deploy_component` payloads can exceed the Node.js 2 GB Buffer cap by being piped straight into extraction (gunzip + tar-fs) instead of buffered. Used only on the operations API ingest path; outbound multipart bodies on the CLI are formatted inline in `bin/multipartBuilder.ts` and do not depend on busboy.
+- Need for usage: Streaming multipart/form-data parser for the operations API. Required so `deploy_component` payloads can exceed the Node.js 2 GB Buffer cap by being piped straight into extraction (gunzip + tar-fs) instead of buffered. Also used by REST to stream named form fields and Blob files to static resource methods, with collection in inherited POST/PUT/PATCH methods; outbound multipart bodies on the CLI are formatted inline in `bin/multipartBuilder.ts` and do not depend on busboy.
 - Size/memory cost: ~50 KB on disk including its sole transitive dep `streamsearch` (~7 KB). Memory overhead is per-request and bounded by busboy's configured `fieldSize`/`fields` limits plus the natural backpressure of the file Readable it emits.
 - Security: No CVEs against busboy ≥ 1.0. Pre-1.0 had a couple of low-severity DoS reports against the field/parts limits, all fixed by the configurable limits we now use (`fieldSize`, `fields`, `files`). Active maintenance by the Fastify org (busboy is the underpinning of @fastify/multipart and most Node multipart implementations).
 - Environment interaction: None. Pure Node streams, no global mutation, no polyfills.
@@ -184,3 +255,59 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Binary compilation: No.
 - Can be deferred: The require happens only when `server/serverHelpers/multipartParser.ts` is imported, which is loaded by `registerContentHandlers` at operations-server boot. Realistically always loaded.
 - Eventual removal: Could be replaced by writing our own streaming multipart parser (a few hundred lines plus tests for edge cases) if maintenance ever lapses, or by Node.js's `request.formData()` once that API supports streaming file parts without buffering (currently it doesn't on the standard Node http server interface used by Fastify).
+
+## typescript@7 (not a dependency — invoked via npx, pinned separately from the `typescript` devDependency)
+
+- Need for usage: TypeScript 7 merges the native (Go-ported) compiler preview directly into the `typescript` package's `tsc` binary — there is no separate `tsgo` binary or `@typescript/native-preview` package at 7.0.2+. Wired as an opt-in `npm run typecheck:fast` script — a faster local/CI type-check loop alongside the existing `tsc`-based `build`, not a replacement for either.
+- Not a `package.json` dependency: `typecheck:fast` runs `npx -y -p typescript@<pinned-version> tsc ...` rather than adding this as a `devDependency`. This is deliberate, and for the same reason as before: an earlier version of this change had the equivalent tool (`@typescript/native-preview`) as a plain `devDependency`, which meant `npm ci` fetched it for every CI job (unit, integration, smoke, stress), not just the opt-in checker. Since the package name here is `typescript` — the same name as our existing 5.x devDependency — it also could not be added as a second `package.json` entry at a different version without colliding; `npx -p typescript@7.0.2` sidesteps this too, resolving and running the pinned 7.x tarball from npm's npx cache without touching the project's installed 5.x `typescript`. Running it via `npx` on-demand confines a pruned-tarball failure to `typecheck:fast` alone, matching its actually-opt-in nature. Trade-off: no `package-lock.json` integrity-hash pinning for this tool (the exact version is still pinned in the npx invocation itself, just not hash-verified against a lockfile entry).
+- Security: Microsoft-maintained TypeScript compiler, same publisher/package as the 5.x devDependency.
+- Overlap: Complements, does not replace, the `typescript` devDependency, which stays on 5.x because it emits the published `dist/`. 7.0.x miscompiles a computed `import()` in CommonJS output under `rewriteRelativeImportExtensions` (microsoft/typescript-go#4771, fixed for 7.1), and 6.0+ stops emitting `dist/resources/Table.d.ts` until `makeTable()` has an explicit public type. `renovate.json` holds the devDependency off 6.0.x–7.0.x and gates majors on the Dependency Dashboard. The 5.x and 7.x versions never coexist in `node_modules` at once: 5.x is the installed devDependency, 7.x is fetched on-demand by `npx` purely for `typecheck:fast`.
+- Eventual removal: Once the `typescript` devDependency moves to a 7.x release whose emitted `dist/` matches 5.x apart from formatting, this becomes redundant and `typecheck:fast` can be dropped.
+
+## @inquirer/input, @inquirer/password, @inquirer/select, @inquirer/confirm
+
+- Need for usage: Interactive CLI prompting (`bin/login.ts`, `bin/deploySetup.ts`, `utility/install/installer.ts`, `upgrade/upgradePrompt.ts`). Replaces `inquirer@8.2.7` and `prompt@1.3.0`, both removed in the same change (HarperFast/harper#1038). Declared as the four individual subpath packages Harper actually calls (`input`, `password`, `select`, `confirm`) rather than the `@inquirer/prompts` umbrella, which bundles all ten prompt implementations — including `editor`, which pulls in `@inquirer/external-editor` and its `chardet`/`iconv-lite` — behind one import. That matters here specifically because `utility/interactivePrompts.ts` loads on the server **boot** path (`bin/run.ts` → `hdbInfoController` → `upgradePrompt` → this module, for the downgrade-confirmation gate), not just from interactive CLI entry points, so the umbrella's unused prompt types were dead weight paid on every server start. Within that module, each of the four is further loaded via a lazy `import()` on first actual prompt call rather than at module evaluation, so a boot path that reaches `upgradePrompt` without ever needing a prompt (the common case) pays nothing at all. `@inquirer/core` (the package all four depend on, and the one that raises `ExitPromptError` on Ctrl-C) is **not** a direct dependency here — it's resolved transitively through them. Cancel detection in `utility/interactivePrompts.ts` matches `error.name === 'ExitPromptError'` rather than an `instanceof` check against `@inquirer/core`'s class, specifically so detecting a cancel never needs its own import: by the time a real cancel can happen, whichever prompt package was actually invoked has already pulled `@inquirer/core` in as its own dependency.
+- Size/memory cost: 648KB unpacked, 14 packages total (measured via a clean, isolated `npm install --omit=dev` of exactly these four package names — no umbrella, no direct `@inquirer/core`): `@inquirer/ansi`, `@inquirer/confirm`, `@inquirer/core`, `@inquirer/figures`, `@inquirer/input`, `@inquirer/password`, `@inquirer/select`, `@inquirer/type`, `cli-width`, `fast-string-truncated-width`, `fast-string-width`, `fast-wrap-ansi`, `mute-stream`, `signal-exit` — identical tree either way, since `@inquirer/core` is installed regardless of whether it's a direct or transitive edge; only `package.json`'s own dependency list changes. This replaces `inquirer@8.2.7` (pulled in `rxjs`, ~12MB) and `prompt@1.3.0` (pulled in `winston` + `async`, ~5MB) — combined ~18MB removed for a 648KB addition, roughly a third the size of the `@inquirer/prompts` umbrella (~1.6MB for the same clean-install method, once the six unused prompt types and `external-editor`'s tree are included). `@inquirer/type` declares `@types/node` as an _optional_ peerDependency (unlike `inquirer@8`'s chain, which pulled it in as a real production dependency via `@inquirer/external-editor`); the isolated install confirms it is not installed. (`npm ls @types/node` inside this repo's own checkout will still show it — that's dedup against the `@types/node` this repo's own devDependencies already hoist to the top level, not evidence of a production install. `npm ls @types/node --omit=dev` is the check that matters, and it's empty.)
+- Security: No reported vulnerabilities. Actively maintained by the same author (SBoudrias) as the `inquirer` package it replaces; no `rxjs` in the dependency graph (the entire class of issue that made `inquirer@8` heavy).
+- Environment interaction: None beyond normal stdin/stdout TTY interaction for the prompt it's running.
+- Overlap: None — this is the sole prompting library now; `inquirer` and `prompt` are both removed.
+- Can be deferred: Yes, at the package level — each prompt's dynamic `import()` only fires on first real call. The call sites themselves (login, install, deploy setup, upgrade downgrade-confirmation) are synchronous CLI flows that block on the answer once a prompt is actually shown.
+- Binary compilation: No.
+- Eventual removal: Low-priority to remove given the size is already minimal; a future removal would mean hand-rolling readline-based prompting for the same four call sites.
+
+## @harperfast/hnsw (optional dependency)
+
+- Need for usage: Supplies the file-primary memory-mapped HNSW index used by new eligible audited HNSW indexes by default and by indexes that explicitly set `nativePlane: true`. Harper keeps primary-key mappings and the replay cursor vector in RocksDB; graph nodes and adjacency exist only in the native file.
+- Size/memory cost: The JS/package metadata is about 250 KB unpacked plus one platform-specific native binary. Runtime mapped-file size is approximately 1,088 bytes per 768-dimensional int8 node at the default layer-0 cap of 64 (`nativePlaneLayer0Cap`); mappings are shared by the OS page cache across workers.
+- Security: First-party Apache-2.0 Harper package. It runs native code in-process, so Harper exact-pins the package and its own manifest exact-pins every platform prebuild to the same version. The dedicated CI job loads the registry prebuild and tests Harper against it.
+- Environment interaction: Lazily loaded while deciding whether a new audited index can use the default, or when native mode is explicit/persisted; it creates a memory-mapped `.hnsw` derived-index file next to the index store and may create a `.stale` invalidation sidecar. `HNSW_NO_NATIVE_DEFAULT=1` prevents automatic selection for new indexes without changing persisted modes. It does not modify globals or install polyfills.
+- Overlap: None for a native index. Existing HNSW descriptors without `nativePlane`, incompatible indexes, and declarations with `nativePlane: false` continue to use the JS/RocksDB graph; native indexes use insert, mutation, and search through the shared post-commit derived-index runtime.
+- Transitive dependencies: Only exact-version, platform-specific optional prebuild packages; no JS runtime dependency tree.
+- Binary compilation: Supported Linux glibc x64/arm64, macOS arm64, and Windows x64 targets use prebuilds. Other targets attempt a Rust source build. Because the root package is optional Harper still installs if that build fails, but opted-in indexes remain unavailable until the module is present.
+- Can be deferred: Yes by setting `nativePlane: false` per index or `HNSW_NO_NATIVE_DEFAULT=1` before declaring new indexes. During a rolling cluster upgrade, keep the switch enabled everywhere until every node supports replicated-attribute fallback. An explicitly enabled or persisted native index returns 503 and retries rebuild when the module is unavailable.
+- Eventual removal: Set `nativePlane: false` on native indexes, allow each schema reindex to rebuild the ordinary JS/CF graph, disable the automatic default, then remove the optional dependency and adapter integration.
+
+## @harperfast/fulltext (optional dependency)
+
+- Need for usage: Supplies the Tantivy-backed native index used by Harper full-text derived indexes. Harper remains the source of truth; each node builds and advances its local index from committed records through the shared derived-index runtime.
+- Size/memory cost: The exact-pinned 0.9.0 root package includes JavaScript facades and types plus one platform-specific native package. A local macOS arm64 install measured with `du -sk` uses 856 KiB for the root and 9,944 KiB for its platform package; these are allocated disk sizes, not resident memory. Runtime memory and native index size depend on the indexed text, analyzer, and stored-field options.
+- Security: First-party Apache-2.0 Harper package wrapping Tantivy. It runs native code in-process, so Harper exact-pins the root package and the package exact-pins every platform prebuild to the same version.
+- Environment interaction: Lazily loaded only when a full-text index is activated. It creates Tantivy index files in Harper's derived-index directory; those files are disposable local state and are rebuilt or replayed from Harper records after loss or incompatibility. Upgrading the 0.5.0 engine shipped in Harper 5.3.4 requires a full local rebuild on every node; see the [deployment and recovery guidance](resources/FULL_TEXT.md#upgrading-an-existing-native-index).
+- Overlap: None. Harper owns schema, transactions, replication, source-record reads, derived-index coordination and opt-in analytics scheduling/export; the package owns native indexing, persistence, search execution and native/facade telemetry accounting. Harper requires native ABI 14, query API 8 and telemetry API 1.
+- Transitive dependencies: Only exact-version, platform-specific optional prebuild packages; no JavaScript runtime dependency tree.
+- Binary compilation: Supported Linux glibc x64/arm64, macOS arm64, and Windows x64 targets use prebuilds. Because the root package is optional, Harper still installs if a native package is unavailable, but a declared full-text index cannot activate until the module is installed.
+- Can be deferred: Yes. The module is not loaded for tables without full-text indexes.
+- Eventual removal: Remove full-text declarations and their local derived-index files, then remove the optional dependency and Harper adapter. Source records remain authoritative and unaffected.
+
+## Historical full-text upgrade engines (isolated test fixtures)
+
+- Need for usage: Released fulltext 0.5.0, 0.7.0 and 0.8.0 write genuine old checkpoints; the current engine must rebuild incompatible indexes or reuse compatible ones, and prior engines verify safe reopen or downgrade refusal. Source-record IDs and checkpoints are generated during the tests, so static index files do not replace these checks.
+- Installation boundary: Harper directly pins the current optional engine; all non-development fulltext entries in the lockfile select 0.9.0. Root dependencies contain no historical fulltext aliases. Separate exact-pinned manifests and integrity-checked lockfiles live under `unitTests/resources/fixtures/fulltext-upgrade/`; the native CI job provisions all three outside the checkout, and existing integration lanes provision only 0.5.0. The previous-engine child exits before the current engine accesses the same index. Production code never imports historical engines or relaxes current ABI validation.
+- Local qualification: Run `npm run test:fulltext:install-previous -- /absolute/scratch/fulltext-upgrade`, then set `HARPER_FULLTEXT_UPGRADE_ROOT` to that directory when running the native lifecycle, schema-upgrade, crash-recovery or deployed full-text integration suites. Ordinary resource tests skip historical migration cases when the variable is absent; an explicit but invalid installation fails. CI supplies it; the native unit job also forbids pending tests.
+- Cost and removal: The dedicated job installs three root packages and their supported platform prebuilds. Integration lanes install only the 0.5.0 fixture; ordinary installs do not provision these migration fixtures. Renovate leaves fixture versions fixed; remove each manifest, lockfile and matching coverage when migration from that version is no longer supported.
+
+## Local Harper development peer
+
+- Need for usage: `@harperfast/integration-testing` requires a Harper peer. npm does not treat the root checkout as an installed peer, so it otherwise installs a second released Harper and its older fulltext dependency. The development-only `harper: file:.` link supplies this checkout; the framework-scoped `$harper` override accepts the local prerelease without disabling other peer validation.
+- Boundaries: Build before running integration tests or `npx harper`. CI removes the self-link before uploading dependency artifacts and recreates it with npm after download. Release packaging removes development dependencies and this scoped override; production consumers receive neither the link nor the framework. Historical engines remain isolated migration fixtures.
+- Eventual removal: Remove the self dependency and scoped override together when a released framework makes its Harper peer optional and the explicit/local binary route is qualified. Do not override fulltext inside an older Harper runtime.

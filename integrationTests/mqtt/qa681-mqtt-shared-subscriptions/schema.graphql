@@ -1,0 +1,7 @@
+# QA-681 fixture schema. Non-retained publishes to Events/* give a transient fan-out stream with
+# no per-key coalescing, which is what makes delivery countable.
+type Events @table @export {
+	id: ID @primaryKey
+	seq: Int
+	tag: String
+}

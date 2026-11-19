@@ -9,6 +9,18 @@ export type HttpEntry = {
 };
 
 /**
+ * A single route's resolved middleware order. `order` is the topologically sorted
+ * list of entries the chain will invoke, outermost first. `host`/`urlPath` are the
+ * route scope (both undefined for the default route). This is the observable form of
+ * what `buildRoutedChain`/`buildLinearChain` actually execute — see `describeChains`.
+ */
+export type ResolvedChain = {
+	host?: string;
+	urlPath?: string;
+	order: HttpEntry[];
+};
+
+/**
  * Topological sort of middleware entries respecting `before`/`after` constraints.
  * Uses the original registration index as a tiebreaker so config order is preserved
  * when there are no constraints between two entries.
@@ -92,7 +104,7 @@ export function topoSort(entries: HttpEntry[], onCycle?: () => void): HttpEntry[
  */
 export function buildLinearChain(sorted: HttpEntry[], fallback: Function): Function {
 	let next = fallback;
-	for (let i = sorted.length; i > 0; ) {
+	for (let i = sorted.length; i > 0;) {
 		const { listener } = sorted[--i];
 		const callback = next;
 		next = (...args: any[]) => listener(...args, callback);
@@ -125,25 +137,57 @@ export function resolveDeps(entries: HttpEntry[], nameToEntry: Map<string, HttpE
 }
 
 /**
- * Normalizes a urlPath by stripping a single trailing slash (except for the root '/').
- * '/api' and '/api/' are treated equivalently for routing/matching.
+ * Normalizes a urlPath by ensuring a leading slash and stripping trailing slashes.
+ * '/api', 'api', and '/api/' are treated equivalently for routing/matching — pathnames
+ * always begin with '/', so a slash-less urlPath could otherwise never match anything (#1583).
+ * A urlPath that constrains nothing — the root mount ('/'), empty, or undefined — normalizes
+ * to undefined: root-mounted handlers join the default chain and no prefix is stripped from
+ * their requests (#1766).
  */
 export function normalizeUrlPath(urlPath: string | undefined): string | undefined {
-	if (!urlPath || urlPath.length <= 1) return urlPath;
-	return urlPath.endsWith('/') ? urlPath.slice(0, -1) : urlPath;
+	if (!urlPath) return undefined;
+	if (!urlPath.startsWith('/')) urlPath = '/' + urlPath;
+	urlPath = urlPath.replace(/\/+$/, '');
+	return urlPath.length <= 1 ? undefined : urlPath;
+}
+
+/**
+ * Extracts the hostname from a Host/`:authority` header value: the port is dropped and an IPv6
+ * literal is unwrapped from its brackets ('[::1]:9926' -> '::1'), so a bracket-less configured
+ * host can match. Lowercased because hostnames are case-insensitive (RFC 4343) — a configured
+ * 'API.example.com' must match the 'api.example.com' a client actually sends. A trailing dot
+ * (the absolute-FQDN form some resolvers/clients emit, e.g. 'api.example.com.') is stripped —
+ * it names the same origin per RFC 1035.
+ */
+export function hostnameFromHeader(hostHeader: string): string {
+	if (hostHeader.startsWith('[')) {
+		const end = hostHeader.indexOf(']');
+		if (end !== -1) return hostHeader.slice(1, end).toLowerCase();
+	}
+	const colon = hostHeader.indexOf(':');
+	const hostname = (colon === -1 ? hostHeader : hostHeader.slice(0, colon)).toLowerCase();
+	return hostname.endsWith('.') ? hostname.slice(0, -1) : hostname;
+}
+
+/**
+ * Reads the request's authority for host matching: `request.host` (Harper's `Request` class)
+ * already resolves this correctly for both HTTP/1 (`Host` header) and HTTP/2 (`:authority`
+ * pseudo-header — HTTP/2 clients don't send `Host` at all). The header fallbacks below only
+ * cover request-like objects that don't carry that getter (e.g. bare fakes in tests).
+ */
+export function requestAuthority(request: any): string {
+	return request.host ?? request.headers?.asObject?.[':authority'] ?? request.headers?.asObject?.host ?? '';
 }
 
 /**
  * Returns true when `request` satisfies the route's host and urlPath constraints.
  * urlPath matching is prefix-based and segment-boundary-aware:
  *   '/api' matches '/api' and '/api/foo' but NOT '/api2'.
- * Trailing slashes on `route.urlPath` are ignored.
+ * Trailing slashes on `route.urlPath` are ignored. Host matching ignores the port and case.
  */
 export function matchesRoute(request: any, route: { host?: string; urlPath?: string }): boolean {
 	if (route.host) {
-		const hostHeader: string = request.headers?.asObject?.host ?? '';
-		const requestHost = hostHeader.split(':')[0];
-		if (requestHost !== route.host) return false;
+		if (hostnameFromHeader(requestAuthority(request)) !== route.host.toLowerCase()) return false;
 	}
 	const urlPath = normalizeUrlPath(route.urlPath);
 	if (urlPath) {
@@ -167,6 +211,12 @@ export function stripPrefix(request: any, prefix: string): any {
 			if (prop === 'pathname') {
 				const origPathname: string = target.pathname ?? '/';
 				return origPathname === normalizedPrefix ? '/' : origPathname.slice(normalizedPrefix.length);
+			}
+			// Runtime-agnostic access to the unstripped pathname — '/mount' and '/mount/' both
+			// strip to '/', so handlers that must distinguish them (e.g. static's mount-root
+			// redirect, #1583) read this instead of runtime internals like _nodeRequest.
+			if (prop === 'originalPathname') {
+				return target.pathname ?? '/';
 			}
 			if (prop === 'url') {
 				const origPathname: string = target.pathname ?? '/';
@@ -196,16 +246,28 @@ export function stripPrefix(request: any, prefix: string): any {
  * The matched (and prefix-stripped) request is substituted back into the same
  * position before forwarding to the inner chain.
  */
-export function buildRoutedChain(
-	portEntries: HttpEntry[],
-	fallback: Function,
-	onCycle?: () => void,
-	requestArgIndex: number = 0
-): Function {
-	// Global name registry across all routes (first registration wins)
-	const nameToEntry = new Map<string, HttpEntry>();
+/**
+ * Resolves the per-route middleware order for a port that has sub-routes.
+ * Returns each sub-route in dispatch priority order (host+path > host-only > path-only;
+ * longer paths win ties), followed by the default route last. Each route's `order` is the
+ * `after`-dependency-resolved, topologically sorted entry list the chain will invoke.
+ *
+ * This is the single source of ordering truth: `buildRoutedChain` builds callbacks from it,
+ * and `describeChains` reports it, so the observed order can never drift from the served one.
+ */
+export function resolveRoutedChains(portEntries: HttpEntry[], onCycle?: () => void): ResolvedChain[] {
+	// Global name registry, but restricted to unmounted (no host/urlPath) entries — e.g.
+	// `authentication` — so it only ever supplies dependencies that are meant to apply everywhere.
+	// A mounted route's own plugins are resolved separately per-group below; if this stayed global
+	// across ALL routes (mounted or not), two applications mounted at different hosts/paths that
+	// each happen to register a same-named plugin (e.g. both enable `rest`) would resolve `after:
+	// 'rest'` to whichever one registered first — silently splicing one application's handler into
+	// another's request chain (review finding).
+	const globalNameToEntry = new Map<string, HttpEntry>();
 	for (const entry of portEntries) {
-		if (entry.name && !nameToEntry.has(entry.name)) nameToEntry.set(entry.name, entry);
+		if (entry.name && !entry.host && !entry.urlPath && !globalNameToEntry.has(entry.name)) {
+			globalNameToEntry.set(entry.name, entry);
+		}
 	}
 
 	// Group entries by (host, normalized urlPath) so that '/api' and '/api/' coalesce.
@@ -221,50 +283,149 @@ export function buildRoutedChain(
 	const defaultGroup = routeGroups.find((g) => !g.host && !g.urlPath);
 	const subRouteGroups = routeGroups.filter((g) => g.host || g.urlPath);
 
-	const subRouteChains = subRouteGroups.map((group) => {
-		const resolved = resolveDeps(group.entries, nameToEntry);
-		return { host: group.host, urlPath: group.urlPath, chain: buildLinearChain(topoSort(resolved, onCycle), fallback) };
+	const subRoutes: ResolvedChain[] = subRouteGroups.map((group) => {
+		// This route's own plugins take priority over the global (unmounted) registry for the
+		// same name, so a same-named handler local to this mount always wins over an unrelated
+		// unmounted one — but the lookup never reaches into another mounted route's plugins.
+		const localNameToEntry = new Map(globalNameToEntry);
+		const seenInGroup = new Set<string>();
+		for (const entry of group.entries) {
+			if (entry.name && !seenInGroup.has(entry.name)) {
+				seenInGroup.add(entry.name);
+				localNameToEntry.set(entry.name, entry);
+			}
+		}
+		return {
+			host: group.host,
+			urlPath: group.urlPath,
+			order: topoSort(resolveDeps(group.entries, localNameToEntry), onCycle),
+		};
 	});
 
-	subRouteChains.sort((a, b) => {
+	subRoutes.sort((a, b) => {
 		const aSpec = (a.host ? 2 : 0) + (a.urlPath ? 1 : 0);
 		const bSpec = (b.host ? 2 : 0) + (b.urlPath ? 1 : 0);
 		if (aSpec !== bSpec) return bSpec - aSpec;
 		return (b.urlPath?.length ?? 0) - (a.urlPath?.length ?? 0);
 	});
 
-	const defaultChain = buildLinearChain(topoSort(defaultGroup?.entries ?? [], onCycle), fallback);
+	return [...subRoutes, { order: topoSort(defaultGroup?.entries ?? [], onCycle) }];
+}
+
+export function buildRoutedChain(
+	portEntries: HttpEntry[],
+	fallback: Function,
+	onCycle?: () => void,
+	requestArgIndex: number = 0
+): Function {
+	const resolved = resolveRoutedChains(portEntries, onCycle);
+	// resolveRoutedChains returns sub-routes (dispatch order) followed by the default route last.
+	const defaultChain = buildLinearChain(resolved[resolved.length - 1].order, fallback);
+	// hostLower/urlPathWithSlash are computed once here rather than per request/per candidate:
+	// `route.urlPath` is already normalized by resolveRoutedChains, but `route.host` isn't
+	// (plugin-config hosts via routeFor aren't pre-lowercased), and matchesRoute's generic form
+	// would otherwise re-run toLowerCase()/a regex/a concat on every probe of every request —
+	// this dispatch is the mainline path once a port has any mounted route.
+	const subRouteChains = resolved.slice(0, -1).map((route) => ({
+		hostLower: route.host?.toLowerCase(),
+		urlPath: route.urlPath,
+		urlPathWithSlash: route.urlPath ? route.urlPath + '/' : undefined,
+		chain: buildLinearChain(route.order, fallback),
+	}));
+	const anyHostRoute = subRouteChains.some((route) => route.hostLower);
 
 	return function dispatch(...args: any[]) {
 		const request = args[requestArgIndex];
+		// The request's authority is the same for every candidate probed below, so it's
+		// extracted once per request rather than once per candidate — and skipped entirely
+		// when no mounted route in this chain matches on host at all.
+		const requestHost = anyHostRoute ? hostnameFromHeader(requestAuthority(request)) : undefined;
+		const pathname: string = request.pathname ?? '/';
 		for (const route of subRouteChains) {
-			if (matchesRoute(request, route)) {
-				if (route.urlPath) {
-					const newArgs = args.slice();
-					newArgs[requestArgIndex] = stripPrefix(request, route.urlPath);
-					return route.chain(...newArgs);
-				}
-				return route.chain(...args);
+			if (route.hostLower && requestHost !== route.hostLower) continue;
+			if (route.urlPath) {
+				if (pathname !== route.urlPath && !pathname.startsWith(route.urlPathWithSlash as string)) continue;
+				const newArgs = args.slice();
+				newArgs[requestArgIndex] = stripPrefix(request, route.urlPath);
+				return route.chain(...newArgs);
 			}
+			return route.chain(...args);
 		}
 		return defaultChain(...args);
 	};
+}
+
+export type UnresolvedOrderingRef = { entryName?: string; kind: 'before' | 'after'; target: string };
+
+/**
+ * Returns the `before`/`after` references among `entries` that name no registered entry.
+ * topoSort silently ignores these, so they deserve a diagnostic (see makeCallbackChain).
+ */
+export function findUnresolvedOrderingRefs(entries: HttpEntry[]): UnresolvedOrderingRef[] {
+	const names = new Set<string>();
+	for (const { name } of entries) {
+		if (name) names.add(name);
+	}
+	const unresolved: UnresolvedOrderingRef[] = [];
+	for (const { name, before, after } of entries) {
+		if (before && !names.has(before)) unresolved.push({ entryName: name, kind: 'before', target: before });
+		if (after && !names.has(after)) unresolved.push({ entryName: name, kind: 'after', target: after });
+	}
+	return unresolved;
 }
 
 /**
  * Builds the complete middleware chain for a given port from the full responders list.
  * Uses a flat linear chain when no sub-routes are present (fast path),
  * or a route-dispatching chain when any entry has urlPath or host.
+ *
+ * @param onUnresolved - called (once per unresolved reference) when a `before`/`after` names no
+ * registered entry, so a typo or legacy config key doesn't silently drop the ordering constraint.
+ * Reported on the chain's first dispatch, not at build time: the chain is rebuilt on every
+ * registration, so an early build may reference an entry that a later registration resolves.
  */
 export function makeCallbackChain(
 	responders: HttpEntry[],
 	portNum: number | string,
 	fallback: Function,
 	onCycle?: () => void,
-	requestArgIndex: number = 0
+	requestArgIndex: number = 0,
+	onUnresolved?: (ref: UnresolvedOrderingRef) => void
 ): Function {
 	const portEntries = responders.filter(({ port }) => port === portNum || port === 'all');
-	if (portEntries.some((e) => e.urlPath || e.host))
-		return buildRoutedChain(portEntries, fallback, onCycle, requestArgIndex);
-	return buildLinearChain(topoSort(portEntries, onCycle), fallback);
+	const chain = portEntries.some((e) => e.urlPath || e.host)
+		? buildRoutedChain(portEntries, fallback, onCycle, requestArgIndex)
+		: buildLinearChain(topoSort(portEntries, onCycle), fallback);
+	if (onUnresolved) {
+		const unresolved = findUnresolvedOrderingRefs(portEntries);
+		if (unresolved.length > 0) {
+			let reported = false;
+			return (...args: any[]) => {
+				if (!reported) {
+					reported = true;
+					for (const ref of unresolved) onUnresolved(ref);
+				}
+				return chain(...args);
+			};
+		}
+	}
+	return chain;
+}
+
+/**
+ * Describes the resolved middleware order for a port without building callbacks.
+ * Mirrors `makeCallbackChain`'s branch selection and reuses the same resolvers, so the
+ * returned order is exactly what a request on that port would traverse. Used for the
+ * chain-build debug log and for `get_status` introspection (issue #1573).
+ */
+export function describeChains(
+	responders: HttpEntry[],
+	portNum: number | string,
+	onCycle?: () => void
+): ResolvedChain[] {
+	// Must use the exact same port selection and routing branch as makeCallbackChain so that, for a
+	// given portNum, the described order equals the order the built chain actually serves.
+	const portEntries = responders.filter(({ port }) => port === portNum || port === 'all');
+	if (portEntries.some((e) => e.urlPath || e.host)) return resolveRoutedChains(portEntries, onCycle);
+	return [{ order: topoSort(portEntries, onCycle) }];
 }

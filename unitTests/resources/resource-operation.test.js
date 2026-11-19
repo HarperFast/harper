@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 require('#src/server/serverHelpers/serverUtilities');
 // might want to enable an iteration with NATS being assigned as a source

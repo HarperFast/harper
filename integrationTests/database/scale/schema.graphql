@@ -1,0 +1,22 @@
+# Scale + multi-index integration test fixture (Category 12 / §5.1).
+#
+# Route — a table modelling a production redirect-rule store: each record carries
+# five distinct @indexed fields (source_domain, path_prefix, country_code, device_type,
+# campaign_tag). Large-scale tests insert into this single table and exercise:
+#   - correctness under 100 K-record load
+#   - multi-secondary-index AND-condition searches
+#   - free-page reclamation after bulk delete
+#
+# For the 1 M-record nightly path the same table is reused; only the insert loop
+# changes in the test code.
+
+type Route @table @export {
+	id: Long @primaryKey
+	source_domain: String @indexed
+	path_prefix: String @indexed
+	country_code: String @indexed
+	device_type: String @indexed
+	campaign_tag: String @indexed
+	target_url: String
+	status_code: Int
+}

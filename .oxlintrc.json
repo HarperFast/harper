@@ -1,6 +1,7 @@
 {
 	"$schema": "./node_modules/oxlint/configuration_schema.json",
 	"plugins": ["unicorn", "typescript", "oxc"],
+	"jsPlugins": ["./build-tools/oxlint-plugin-harper.mjs"],
 	"categories": {},
 	"rules": {
 		"no-undef": "error",
@@ -27,8 +28,29 @@
 		"no-dupe-keys": "off",
 		"unicorn/no-useless-spread": "off",
 		"unicorn/no-invalid-fetch-options": "off",
-		"oxc/const-comparisons": "off"
+		"oxc/const-comparisons": "off",
+		"no-restricted-imports": [
+			"error",
+			{
+				"paths": [
+					{
+						"name": "node:assert/strict",
+						"message": "Use plain node:assert; call assert.strictEqual/deepStrictEqual for strict checks (AGENTS.md test style)."
+					},
+					{
+						"name": "assert/strict",
+						"message": "Use plain node:assert; call assert.strictEqual/deepStrictEqual for strict checks (AGENTS.md test style)."
+					}
+				]
+			}
+		]
 	},
+	"overrides": [
+		{
+			"files": ["integrationTests/**"],
+			"rules": { "harper/no-literal-true-assertion": "error" }
+		}
+	],
 	"settings": {
 		"jsdoc": {
 			"ignorePrivate": false,
@@ -52,6 +74,7 @@
 		"server": "readonly",
 		"databases": "readonly",
 		"tables": "readonly",
+		"transaction": "readonly",
 		"createBlob": "readonly",
 		"lockdown": "readonly",
 		"threads": "readonly",
@@ -60,5 +83,5 @@
 		"logger": "readonly",
 		"Bun": "readonly"
 	},
-	"ignorePatterns": ["unitTests/security/jsLoader/fixtures"]
+	"ignorePatterns": ["unitTests/security/jsLoader/fixtures", "integrationTests/**/fixture-broken-*/**"]
 }

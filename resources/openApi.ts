@@ -1,20 +1,70 @@
 import { packageJson } from '../utility/packageUtils.js';
-import { Resources } from './Resources.ts';
+import harperLogger from '../utility/logging/harper_logger.ts';
+import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
+import {
+	DATA_TYPES,
+	JSON_SCHEMA_SCALAR_TYPES,
+	type AttributeLike,
+	type JsonSchemaFragment,
+	attributeToSchema,
+	isProgrammaticSchema,
+	isUndeclaredRequiredAttribute,
+	projectPropertiesToAttributes,
+	resolveAttributes,
+	resolveDeclaredType,
+	schemaErrorMessage,
+} from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
-// Maps graphql primitive types to open api types
-const DATA_TYPES = {
-	Int: 'integer',
-	Float: 'number',
-	Long: 'integer',
-	ID: 'string',
-	String: 'string',
-	Boolean: 'boolean',
-	Date: 'string',
-	Bytes: 'string',
-	BigInt: 'integer',
-};
+const warnedInvalidResourceSchemas = new WeakSet<object>();
+
+function warnInvalidResourceSchema(resource: unknown, path: string, error: unknown): void {
+	if ((typeof resource === 'object' && resource !== null) || typeof resource === 'function') {
+		if (warnedInvalidResourceSchemas.has(resource)) return;
+		warnedInvalidResourceSchemas.add(resource);
+	}
+	harperLogger.warn(`OpenAPI skipped invalid schema for resource "${path}": ${schemaErrorMessage(error)}`);
+}
+
+/**
+ * Emit an attribute as an OpenAPI 3.0.3 property schema. Shares its traversal with the MCP deriver so
+ * the two can't describe the same nested fragment differently; the primitive mapping stays
+ * OpenAPI-specific (`format` carries the Harper type name, which MCP has no equivalent for).
+ * Returns `undefined` for a `@hidden` attribute — callers skip it.
+ */
+function attributeToOpenApiSchema(
+	attr: AttributeLike,
+	valueConstraints = true,
+	preserveTypeOptionality = false
+): JsonSchemaFragment | undefined {
+	return attributeToSchema(attr, {
+		dialect: 'openapi-3.0.3',
+		valueConstraints,
+		preserveTypeOptionality,
+		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name, !valueConstraints),
+	});
+}
+
+/** Shared by the nested emitter and the top-level attribute loop so both warn on an unknown type. */
+function openApiPrimitive(
+	type: string | undefined,
+	attributeName: string | undefined,
+	isDeclaredReference = false
+): JsonSchemaFragment {
+	if (type === 'Any') return { format: type };
+	if (type === 'Blob') return { type: 'string' };
+	if (type === undefined) return {};
+	if (isDeclaredReference && !Object.hasOwn(DATA_TYPES, type) && !JSON_SCHEMA_SCALAR_TYPES.has(type)) return {};
+	const resolved = resolveDeclaredType(type, `OpenAPI property "${attributeName || '<unnamed>'}"`);
+	if (!resolved) return {};
+	// 3.0.x has no `'null'` type — nullability is the `nullable` keyword, so a bare `type: 'null'`
+	// becomes an untyped nullable schema rather than a type the dialect can't express.
+	if (resolved === 'null') return { nullable: true, enum: [null] };
+	// Preserve the Harper type name as `format` for the types where it adds information, matching the
+	// top-level `Type()` emitter.
+	return Object.hasOwn(DATA_TYPES, type) ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
+}
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
 const DESCRIPTION_200 = 'successful operation';
@@ -32,9 +82,9 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				url: serverHttpURL,
 			},
 		],
-		paths: {},
+		paths: Object.create(null),
 		components: {
-			schemas: {},
+			schemas: Object.create(null),
 			securitySchemes: {
 				basicAuth: {
 					type: 'http',
@@ -62,95 +112,140 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 			api.components.schemas[def.type] = {};
 			const defProps: Record<string, unknown> = {};
 			const defRequired: string[] = [];
-			for (const prop of def.properties) {
+			// Iterate the Array form of the type's attributes. After the graphql parser
+			// alignment, top-level typeDefs from `resources.allTypes` carry both
+			// `.attributes` (Array, internal) and `.properties` (Record, canonical) —
+			// we want the Array here. For nested sub-attribute defs (passed via
+			// `prop` recursion below), `.properties` remains the Array form attached
+			// by `Object.defineProperty` in graphql.ts. Coalesce so both call sites work.
+			const subAttributes = def.attributes ?? def.properties;
+			if (!subAttributes) {
+				return;
+			}
+			for (const prop of subAttributes) {
+				// @hidden: suppress the property from the emitted OpenAPI document.
+				if (prop.hidden) continue;
+				let entry: any;
 				if (DATA_TYPES[prop.type]) {
-					defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+					entry = new Type(DATA_TYPES[prop.type], prop.type);
 				} else if (prop.properties) {
-					defProps[prop.name] = new Ref(prop.type);
+					entry = new Ref(prop.type);
 					includeDefinitionInSchema(prop);
-				} else if (prop.elements?.properties) {
-					defProps[prop.name] = new ArrayRef(prop.elements.type);
-					includeDefinitionInSchema(prop.elements);
+				} else if (prop.type === 'array' && prop.elements) {
+					// Sub-attribute array. Primitive element types (e.g. [String], [Int]) go to a
+					// Type-typed items entry; complex-typed elements recurse like the top-level path.
+					if (prop.elements.properties) {
+						entry = new ArrayRef(prop.elements.type);
+						includeDefinitionInSchema(prop.elements);
+					} else if (DATA_TYPES[prop.elements.type]) {
+						entry = { type: 'array', items: new Type(DATA_TYPES[prop.elements.type], prop.elements.type) };
+					} else {
+						// Unknown / `Any` element — emit a loose array shape rather than dropping.
+						entry = { type: 'array', items: { format: prop.elements.type } };
+					}
+				}
+				if (entry) {
+					if (prop.description) entry.description = prop.description;
+					defProps[prop.name] = entry;
 				}
 				if (prop.nullable === false) {
 					defRequired.push(prop.name);
 				}
 			}
 			// ... down here we actually define the value for the new type.
-			api.components.schemas[def.type] = new ResourceSchema(defProps, !def.sealed, defRequired);
+			api.components.schemas[def.type] = new ResourceSchema(defProps, !def.sealed, defRequired, def.description);
 		}
 	};
 
-	for (const [, resource] of resources) {
+	resourceLoop: for (const [, resource] of resources) {
 		// skip invalid and error resources
 		if (!resource.path || resource.Resource.isError) continue;
+		// @hidden type-level: drop the Resource from the OpenAPI document entirely.
+		// Data remains queryable through Harper's other interfaces under RBAC.
+		if (resource.Resource.hidden === true) continue;
+		// request-contract resources (`defineResource`/`Resource.withSchema`) at a static (non-parameterised)
+		// path are emitted below, alongside their parameterised counterparts, off the declared contract —
+		// not the table-CRUD assumptions this loop makes (primary key, generated schema component, etc).
+		if (resource.Resource.requestContract) continue;
 
 		const { path } = resource;
 		const strippedPath = path.split('/').pop(); // strip any namespace from path
-		let { attributes, sealed } = resource.Resource;
+		let { sealed } = resource.Resource;
+		let attributes;
 		const { prototype, primaryKey = 'id' } = resource.Resource;
-		if (!attributes && resources.allTypes.has(resource.path)) {
-			const possibleType = resources.allTypes.get(resource.path);
-			sealed = possibleType.sealed;
-			attributes = possibleType.properties;
+		// Class-level description from @table docstring or programmatic `static description`.
+		// Used as both the schema-level `description` (in components.schemas) and as a prefix
+		// on each path-level operation description.
+		const tableDoc: string | undefined = resource.Resource.description;
+		// A programmatic Resource may declare `static properties` (Record) without an `attributes`
+		// Array; project it so per-property schemas are emitted instead of a skeletal object.
+		try {
+			attributes = resolveAttributes(resource.Resource);
+			if (!attributes.length && resources.allTypes.has(resource.path)) {
+				const possibleType = resources.allTypes.get(resource.path);
+				sealed = possibleType.sealed;
+				attributes = resolveAttributes(possibleType);
+			}
+		} catch (error) {
+			warnInvalidResourceSchema(resource.Resource, resource.path, error);
+			continue;
 		}
 		if (!primaryKey) continue;
-		const props = {};
+		const props = Object.create(null);
 		const queryParamsArray = [];
 		const resourceRequired: string[] = [];
 
 		if (attributes) {
-			for (const { type, name, elements, relationship, definition, nullable } of attributes) {
+			for (const attr of attributes) {
+				const { type, name, elements, relationship, definition, nullable, hidden } = attr;
+				if (hidden) continue;
 				const def = definition ?? elements?.definition;
-				if (def) {
-					includeDefinitionInSchema(def);
-				}
-
-				if (nullable === false) {
-					resourceRequired.push(name);
-				}
+				if (def) includeDefinitionInSchema(def);
+				if (nullable === false || attr.requiredOnSchema) resourceRequired.push(name);
 				if (relationship) {
-					if (type === 'array') {
-						props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } };
-					} else {
-						props[name] = { $ref: SCHEMA_COMP_REF + type };
-					}
+					props[name] =
+						type === 'array'
+							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } }
+							: { $ref: SCHEMA_COMP_REF + type };
+				} else if (def) {
+					props[name] =
+						type === 'array'
+							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } }
+							: { $ref: SCHEMA_COMP_REF + def.type };
 				} else {
-					if (def) {
-						if (type === 'array') {
-							props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } };
-						} else {
-							props[name] = { $ref: SCHEMA_COMP_REF + def.type };
-						}
-					} else if (type === 'array') {
-						if (elements.type === 'Any') {
-							props[name] = { type: 'array', items: { format: elements.type } };
-						} else {
-							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
-						}
-					} else if (type === 'Any') {
-						props[name] = { format: type };
-					} else {
-						props[name] = new Type(DATA_TYPES[type], type);
+					try {
+						props[name] = attributeToOpenApiSchema(attr, isProgrammaticSchema(attributes)) ?? {};
+					} catch (error) {
+						warnInvalidResourceSchema(resource.Resource, `${resource.path}.${name}`, error);
+						continue resourceLoop;
 					}
 				}
-				queryParamsArray.push(new Parameter(name, 'query', props[name]));
+				if (type === 'array' && attr.description && (relationship || def)) {
+					props[name].description = attr.description;
+				}
+				if (!isUndeclaredRequiredAttribute(attr)) queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
 		}
 
-		const propsArray = Object.keys(props);
+		const propsArray = attributes
+			.filter((attribute) => !isUndeclaredRequiredAttribute(attribute) && Object.hasOwn(props, attribute.name))
+			.map((attribute) => attribute.name);
 		const primaryKeyParam = new Parameter(primaryKey, 'path', { type: 'string', format: 'ID' });
 		primaryKeyParam.required = true;
 		primaryKeyParam.description = 'primary key of record';
 		const propertyParamPath = new Parameter('property', 'path', { enum: propsArray });
 		propertyParamPath.required = true;
-		api.components.schemas[strippedPath] = new ResourceSchema(props, !sealed, resourceRequired);
+		api.components.schemas[strippedPath] = new ResourceSchema(props, !sealed, resourceRequired, tableDoc);
 
 		const hasPost = prototype.post !== Resource.prototype.post || prototype.update;
 		const hasPut = typeof prototype.put === 'function';
 		const hasGet = typeof prototype.get === 'function';
 		const hasDelete = typeof prototype.delete === 'function';
 		const hasPatch = typeof prototype.patch === 'function';
+
+		// Prepend the class-level docstring to each verb's path-level description when present.
+		// Otherwise the existing hardcoded sentence stands alone.
+		const withDoc = (sentence: string) => (tableDoc ? `${tableDoc} ${sentence}` : sentence);
 
 		const url = `/${path}/`;
 		if (!api.paths[url]) {
@@ -176,7 +271,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						}
 					),
 				},
-				'create a new record auto-assigning a primary key'
+				withDoc('create a new record auto-assigning a primary key')
 			);
 		}
 
@@ -192,7 +287,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				queryParamsArray,
 				security,
 				{ '200': new Response200({ type: 'array', items: { $ref: SCHEMA_COMP_REF + strippedPath } }) },
-				'search for records by the specified property name and value pairs'
+				withDoc('search for records by the specified property name and value pairs')
 			);
 		}
 
@@ -200,7 +295,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 			api.paths[url].delete = new Delete(
 				queryParamsArray,
 				security,
-				'delete all the records that match the provided query',
+				withDoc('delete all the records that match the provided query'),
 				{
 					'204': new Response204(),
 				}
@@ -225,7 +320,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				[primaryKeyParam],
 				security,
 				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
-				'retrieve a record by its primary key'
+				withDoc('retrieve a record by its primary key')
 			);
 		}
 
@@ -235,7 +330,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				security,
 				strippedPath,
 				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
-				"create or update the record with the URL path that maps to the record's primary key"
+				withDoc("create or update the record with the URL path that maps to the record's primary key")
 			);
 		}
 
@@ -245,7 +340,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				security,
 				strippedPath,
 				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
-				"patch the record with the URL path that maps to the record's primary key"
+				withDoc("patch the record with the URL path that maps to the record's primary key")
 			);
 		}
 
@@ -253,7 +348,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 			api.paths[urlById].delete = new Delete(
 				[primaryKeyParam],
 				security,
-				'delete a record with the given primary key',
+				withDoc('delete a record with the given primary key'),
 				{
 					'204': new Response204(),
 				}
@@ -273,9 +368,128 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					'200': new Response200({ enum: propsArray }),
 				},
 
-				'used to retrieve the specified property of the specified record'
+				withDoc('used to retrieve the specified property of the specified record')
 			);
 		}
+	}
+
+	// Contract routes describe authored input/output schemas independently of table CRUD assumptions.
+	const emitContractRoutes = (url: string, entry: { Resource: any }, pathParams: any[]) => {
+		if (!entry?.Resource) return;
+		const { prototype } = entry.Resource;
+		if (!prototype) return;
+
+		const tableDoc: string | undefined = entry.Resource.description;
+		const withDoc = (sentence: string) => (tableDoc ? `${tableDoc} ${sentence}` : sentence);
+		const genericResponseSchema = { type: 'object' };
+		// custom (non-table) resources have no generated schema component, so request bodies default to
+		// loosely typed — UNLESS a request contract declares the query/body/response,
+		// in which case each verb is driven off the shared JsonSchemaFragment below.
+		const genericRequestBody = { content: { 'application/json': { schema: { type: 'object' } } } };
+		const inputSchemas = entry.Resource.inputSchemas ?? {};
+		const outputSchemas = entry.Resource.outputSchemas ?? {};
+		// query params declared on the verb's contract, appended to the path params
+		const paramsFor = (verb: string) => [...pathParams, ...queryParametersFromFragment(inputSchemas[verb]?.query)];
+		const bodyFor = (verb: string) => {
+			const input = inputSchemas[verb];
+			if (!input?.body) return genericRequestBody;
+			const requestBody: any = { content: { 'application/json': { schema: fragmentToOpenApiSchema(input.body) } } };
+			if (input.bodyRequired) requestBody.required = true;
+			return requestBody;
+		};
+		const responseFor = (verb: string) =>
+			outputSchemas[verb] ? fragmentToOpenApiSchema(outputSchemas[verb]) : genericResponseSchema;
+
+		const hasPost = prototype.post !== Resource.prototype.post || prototype.update;
+		const hasPut = typeof prototype.put === 'function';
+		const hasGet = typeof prototype.get === 'function';
+		const hasDelete = typeof prototype.delete === 'function';
+		const hasPatch = typeof prototype.patch === 'function';
+
+		if (!api.paths[url]) api.paths[url] = {};
+		api.paths[url].options = new Options(
+			pathParams,
+			security,
+			{ '200': new ResponseOptions200() },
+			'retrieve information about the communication options available for a target resource or the server as a whole, without performing any resource action'
+		);
+		if (hasGet) {
+			api.paths[url].get = new Get(
+				paramsFor('get'),
+				security,
+				{ '200': new Response200(responseFor('get')) },
+				withDoc('handle a GET request for this route')
+			);
+		}
+		if (hasPost) {
+			api.paths[url].post = {
+				description: withDoc('handle a POST request for this route'),
+				parameters: paramsFor('post'),
+				security,
+				requestBody: bodyFor('post'),
+				responses: { '200': new Response200(responseFor('post')) },
+			};
+		}
+		if (hasPut) {
+			api.paths[url].put = {
+				description: withDoc('handle a PUT request for this route'),
+				parameters: paramsFor('put'),
+				security,
+				requestBody: bodyFor('put'),
+				responses: { '200': new Response200(responseFor('put')) },
+			};
+		}
+		if (hasPatch) {
+			api.paths[url].patch = {
+				description: withDoc('handle a PATCH request for this route'),
+				parameters: paramsFor('patch'),
+				security,
+				requestBody: bodyFor('patch'),
+				responses: { '200': new Response200(responseFor('patch')) },
+			};
+		}
+		if (hasDelete) {
+			api.paths[url].delete = new Delete(
+				paramsFor('delete'),
+				security,
+				withDoc('handle a DELETE request for this route'),
+				{
+					'204': new Response204(),
+				}
+			);
+		}
+	};
+
+	// Request-contract resources declared at a static (non-parameterised) path (e.g. `defineResource({path:
+	// '/OrderIntake', ...})`) — skipped by the table-CRUD loop above, emitted here off the declared contract.
+	for (const [, entry] of resources) {
+		if (!entry) continue;
+		if (!entry.path || !entry.Resource?.requestContract || entry.Resource.isError || entry.Resource.hidden === true)
+			continue;
+		const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
+		emitContractRoutes(path, entry, []);
+	}
+
+	// Parameterised routes (e.g. `/widget/:id/action/:action`) live outside the resource Map; emit them as templated
+	// paths with `{param}` path parameters so they appear in the OpenAPI document like any other endpoint.
+	for (const route of resources.paramRoutes ?? []) {
+		const entry = route.entry;
+		if (!entry?.path || entry.Resource?.isError) continue;
+		// @hidden: drop the Resource from the OpenAPI document entirely.
+		if (entry.Resource?.hidden === true) continue;
+
+		const { template, params } = routePatternToTemplate(route.segments);
+		const url = `/${template}`;
+		const pathParams = params.map((param) => {
+			const parameter = new Parameter(param.name, 'path', { type: 'string' });
+			parameter.required = true;
+			parameter.description = param.wildcard
+				? 'captures the remaining path segments'
+				: `value bound from the :${param.name} path segment`;
+			return parameter;
+		});
+
+		emitContractRoutes(url, entry, pathParams);
 	}
 
 	for (const [, value] of resources.allTypes) {
@@ -377,17 +591,21 @@ function Delete(parameters, security, description, responses) {
 	this.responses = responses;
 }
 
-function ResourceSchema(properties, additionalProperties?: boolean, required?: string[]) {
+function ResourceSchema(properties, additionalProperties?: boolean, required?: string[], description?: string) {
 	this.type = 'object';
 	this.properties = properties;
 	this.additionalProperties = additionalProperties;
-	this.required = required;
+	// Omit an empty list rather than emitting `required: []`. JSON Schema draft-04, which OpenAPI
+	// 3.0.3 inherits, requires at least one element, so `[]` fails strict validators — and a schema
+	// whose attributes are all nullable produces exactly that.
+	if (required?.length) this.required = required;
+	if (description) this.description = description;
 }
 
-function Type(type, format) {
+function Type(type, format?) {
 	this.type = type;
 	if (type === 'string' || type === 'number' || type === 'integer') {
-		if (format !== 'String') {
+		if (format !== undefined && format !== 'String') {
 			this.format = format;
 		}
 	}
@@ -406,4 +624,31 @@ function Parameter(name, i, type) {
 	this.name = name;
 	this.in = i;
 	this.schema = type;
+}
+
+/**
+ * Project a shared `JsonSchemaFragment` (from a request contract's inputSchemas/outputSchemas) into an
+ * OpenAPI schema object. The fragment vocabulary already mirrors JSON Schema, so this mostly copies the
+ * standard keys recursively and drops Harper-only metadata (primaryKey, assignCreatedTime, hidden).
+ */
+function fragmentToOpenApiSchema(fragment: any): any {
+	if (!fragment || typeof fragment !== 'object') return { type: 'object' };
+	try {
+		const [attribute] = projectPropertiesToAttributes({ value: fragment }, true);
+		return attributeToOpenApiSchema(attribute, true, true) ?? {};
+	} catch (error) {
+		warnInvalidResourceSchema(fragment, 'request contract', error);
+		return {};
+	}
+}
+
+/** Build OpenAPI query `Parameter`s from a contract verb's query fragment (`{ type:'object', properties }`). */
+function queryParametersFromFragment(queryFragment: any): any[] {
+	if (!queryFragment?.properties) return [];
+	const required = new Set(queryFragment.required ?? []);
+	return Object.entries(queryFragment.properties).map(([name, sub]) => {
+		const parameter = new Parameter(name, 'query', fragmentToOpenApiSchema(sub));
+		if (required.has(name)) parameter.required = true;
+		return parameter;
+	});
 }

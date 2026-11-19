@@ -5,14 +5,14 @@ import axios from 'axios';
 import { pack, unpack } from 'msgpackr';
 import { EventSource } from 'eventsource';
 import { WebSocket } from 'ws';
-import { setupTestApp } from './setupTestApp.mjs';
+import { setupTestApp, baseUrl, wsBaseUrl } from './setupTestApp.mjs';
 
 describe('test WebSockets connections and messaging', () => {
 	let ws1, ws2;
 	before(async function () {
 		this.timeout(5000);
 		await setupTestApp();
-		ws1 = new WebSocket('ws://localhost:9926/Echo');
+		ws1 = new WebSocket(`${wsBaseUrl}/Echo`);
 
 		await new Promise((resolve, reject) => {
 			ws1.on('open', resolve);
@@ -44,7 +44,7 @@ describe('test WebSockets connections and messaging', () => {
 		assert.equal(message.action, 'another ping');
 	});
 	it('ping echo server with content type', async function () {
-		let ws = new WebSocket('ws://localhost:9926/Echo.msgpack');
+		let ws = new WebSocket(`${wsBaseUrl}/Echo.msgpack`);
 		await new Promise((resolve, reject) => {
 			ws.on('open', resolve);
 			ws.on('error', reject);
@@ -60,7 +60,7 @@ describe('test WebSockets connections and messaging', () => {
 		assert.equal(message.action, 'ping');
 	});
 	it('ping echo EventSource', async function () {
-		let event_source = new EventSource('http://localhost:9926/Echo');
+		let event_source = new EventSource(`${baseUrl}/Echo`);
 		let greetings_message;
 
 		let message = await new Promise((resolve) => {
@@ -80,7 +80,7 @@ describe('test WebSockets connections and messaging', () => {
 	});
 	it('default subscribe on WS', async function () {
 		this.timeout(5000);
-		ws2 = new WebSocket('ws://localhost:9926/SimpleRecord/5');
+		ws2 = new WebSocket(`${wsBaseUrl}/SimpleRecord/5`);
 		await new Promise((resolve, reject) => {
 			ws2.on('open', resolve);
 			ws2.on('error', reject);
@@ -94,12 +94,12 @@ describe('test WebSockets connections and messaging', () => {
 				}
 			});
 			try {
-				let response = await axios.put('http://localhost:9926/SimpleRecord/5', {
+				let response = await axios.put(`${baseUrl}/SimpleRecord/5`, {
 					id: '5',
 					name: 'new name',
 				});
 				assert.equal(response.status, 204);
-				response = await axios.patch('http://localhost:9926/SimpleRecord/5', {
+				response = await axios.patch(`${baseUrl}/SimpleRecord/5`, {
 					id: '5',
 					newProperty: 'test',
 				});

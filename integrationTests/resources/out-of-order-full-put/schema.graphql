@@ -1,0 +1,7 @@
+type Item @table(audit: true) @export {
+	id: ID @primaryKey
+	a: String
+	b: String
+	c: String
+	counter: Int
+}

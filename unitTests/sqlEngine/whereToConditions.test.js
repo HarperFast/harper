@@ -1,0 +1,151 @@
+'use strict';
+
+/**
+ * Index-awareness in whereToConditions: a conjunct on an unindexed attribute
+ * must be left as a residual (post-scan Filter), NOT pushed into the Resource
+ * API condition tree — otherwise Table.search calls searchByIndex on the
+ * unindexed attribute and throws "…is not indexed" at runtime. Regression guard
+ * for mixed indexed/unindexed WHERE (e.g. `WHERE status = 'active' AND
+ * createdAt < X`), which the bulk-conditional-mutation integration test
+ * exercises end-to-end.
+ */
+
+const assert = require('assert');
+const {
+	whereToConditions,
+	conditionUsesIndex,
+	conditionIsPushable,
+} = require('#src/sqlEngine/optimizer/whereToConditions');
+
+const col = (name) => ({ kind: 'column', name });
+const lit = (value) => ({ kind: 'literal', value });
+const binop = (op, name, v) => ({ kind: 'binop', op, left: col(name), right: lit(v) });
+const ATTRS = [
+	{ name: 'status', type: 'String', indexed: true },
+	{ name: 'createdAt', indexed: false },
+];
+
+describe('sqlEngine whereToConditions: index-aware residualization', () => {
+	it('residualizes an unindexed conjunct and pushes only the indexed one', () => {
+		const pred = { kind: 'logical', op: 'and', args: [binop('=', 'status', 'active'), binop('<', 'createdAt', 123)] };
+		const { conditions, residual } = whereToConditions(pred, ATTRS);
+		assert.strictEqual(conditions.length, 1);
+		assert.strictEqual(conditions[0].attribute, 'status');
+		assert.ok(residual, 'unindexed createdAt predicate must be residualized');
+		assert.strictEqual(residual.left && residual.left.name, 'createdAt');
+	});
+
+	it('pushes nothing when every conjunct is unindexed (→ legacy fallback)', () => {
+		const { conditions, residual } = whereToConditions(binop('<', 'createdAt', 123), ATTRS);
+		assert.strictEqual(conditions.length, 0);
+		assert.ok(residual);
+	});
+
+	it('without attributes keeps legacy behavior (push any representable condition)', () => {
+		const pred = { kind: 'logical', op: 'and', args: [binop('=', 'status', 'active'), binop('<', 'createdAt', 123)] };
+		const { conditions, residual } = whereToConditions(pred);
+		assert.strictEqual(conditions.length, 2);
+		assert.ok(!residual);
+	});
+
+	it('keeps a full-scan comparator on an INDEXED attr pushable (driven by another condition)', () => {
+		// `status = 'active' AND status LIKE '%act%'` → contains on the indexed
+		// `status` is pushable as a secondary filter; it must NOT be residualized.
+		const pred = {
+			kind: 'logical',
+			op: 'and',
+			args: [binop('=', 'status', 'active'), { attribute: 'status', comparator: 'contains', value: 'act' }],
+		};
+		// Build via a like-shaped node so leafToCondition produces the contains form.
+		const likePred = {
+			kind: 'logical',
+			op: 'and',
+			args: [
+				binop('=', 'status', 'active'),
+				{ kind: 'like', expr: col('status'), pattern: lit('%act%'), negated: false },
+			],
+		};
+		const { conditions, residual } = whereToConditions(likePred, ATTRS);
+		assert.strictEqual(conditions.length, 2, 'both conditions on indexed status are pushed');
+		assert.ok(!residual, 'nothing residualized for all-indexed conditions');
+		assert.ok(pred); // (documents the equivalent condition shape)
+	});
+
+	it('pushes IS NULL as a filter-only condition, since no index holds an omitted attribute', () => {
+		const attrs = [
+			{ name: 'status', indexed: true },
+			{ name: 'b', indexed: true, indexNulls: true },
+			{ name: 'sparse', indexed: true, indexNulls: false },
+		];
+		const isNull = (name) => ({ kind: 'isNull', expr: col(name), negated: false });
+		const isNullCondition = { attribute: 'b', comparator: 'ne', value: null, negated: true };
+		const pushed = whereToConditions(
+			{ kind: 'logical', op: 'and', args: [binop('=', 'status', 'x'), isNull('b')] },
+			attrs
+		);
+		assert.deepStrictEqual(pushed.conditions, [
+			{ attribute: 'status', comparator: 'equals', value: 'x' },
+			isNullCondition,
+		]);
+		assert.strictEqual(pushed.residual, undefined);
+		assert.strictEqual(conditionUsesIndex(isNullCondition, attrs), false, 'IS NULL can never drive the scan');
+
+		const alone = whereToConditions(isNull('b'), attrs);
+		assert.strictEqual(
+			alone.conditions.some((condition) => conditionUsesIndex(condition, attrs)),
+			false
+		);
+
+		const notNull = whereToConditions({ kind: 'isNull', expr: col('b'), negated: true }, attrs);
+		assert.deepStrictEqual(notNull.conditions, [{ attribute: 'b', comparator: 'ne', value: null }]);
+		assert.strictEqual(conditionUsesIndex(notNull.conditions[0], attrs), true);
+
+		const residual = whereToConditions(isNull('sparse'), attrs);
+		assert.deepStrictEqual(residual.conditions, []);
+		assert.deepStrictEqual(residual.residual, isNull('sparse'));
+	});
+
+	it('conditionUsesIndex (driver): indexed+seekable yes; unindexed or full-scan comparator no', () => {
+		assert.strictEqual(conditionUsesIndex({ attribute: 'status', comparator: 'equals', value: 'x' }, ATTRS), true);
+		assert.strictEqual(conditionUsesIndex({ attribute: 'createdAt', comparator: 'lt', value: 1 }, ATTRS), false);
+		assert.strictEqual(conditionUsesIndex({ attribute: 'status', comparator: 'contains', value: 'x' }, ATTRS), false);
+	});
+
+	it('conditionIsPushable (search-safe): indexed yes regardless of comparator; unindexed no', () => {
+		assert.strictEqual(conditionIsPushable({ attribute: 'status', comparator: 'contains', value: 'x' }, ATTRS), true);
+		assert.strictEqual(conditionIsPushable({ attribute: 'createdAt', comparator: 'lt', value: 1 }, ATTRS), false);
+	});
+});
+
+describe('sqlEngine whereToConditions: literal-on-the-left comparisons', () => {
+	const PK_ATTRS = [{ name: 'id', indexed: true, isPrimaryKey: true }];
+	const litBinop = (op, v, name) => ({ kind: 'binop', op, left: lit(v), right: col(name) });
+	it('flips asymmetric comparators (lt<->gt, le<->ge) when the literal is on the left', () => {
+		for (const [litOp, colOp, value, expectedComparator] of [
+			['<', '>', 5, 'gt'],
+			['>', '<', 7, 'lt'],
+			['<=', '>=', 5, 'ge'],
+			['>=', '<=', 7, 'le'],
+			['=', '=', 5, 'equals'],
+		]) {
+			const litLeft = whereToConditions(litBinop(litOp, value, 'id'), PK_ATTRS);
+			const colLeft = whereToConditions(binop(colOp, 'id', value), PK_ATTRS);
+			assert.deepStrictEqual(litLeft, colLeft, `${value} ${litOp} id`);
+			assert.deepStrictEqual(litLeft.conditions, [{ attribute: 'id', comparator: expectedComparator, value }]);
+			assert.strictEqual(litLeft.residual, undefined);
+		}
+	});
+	it('fuses a two-sided PK range when a bound has the literal on the left', () => {
+		const pred = { kind: 'logical', op: 'and', args: [litBinop('<=', 5, 'id'), binop('<=', 'id', 7)] };
+		const { conditions, residual } = whereToConditions(pred, PK_ATTRS);
+		assert.deepStrictEqual(conditions, [{ attribute: 'id', comparator: 'gele', value: [5, 7] }]);
+		assert.strictEqual(residual, undefined);
+	});
+	it('leaves NULL-literal range comparisons residualized regardless of operand order', () => {
+		for (const op of ['<', '<=', '>', '>=']) {
+			const litLeft = whereToConditions(litBinop(op, null, 'id'), PK_ATTRS);
+			assert.deepStrictEqual(litLeft.conditions, []);
+			assert.ok(litLeft.residual);
+		}
+	});
+});

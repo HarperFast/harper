@@ -25,8 +25,11 @@ import { setGenerative } from '../../resources/models/backendRegistry.ts';
 import {
 	assignFiniteTokenCount,
 	composeSignal,
+	isContextWindowRejection,
+	MAX_ERROR_BODY_BYTES,
 	normalizeOrigin,
 	parseJsonResponse,
+	readBoundedJson,
 	requireCredential,
 	requireModel,
 } from '../../resources/models/backendHelpers.ts';
@@ -59,6 +62,12 @@ const MAX_SSE_BUFFER_CHARS = 1 << 20;
 const MAX_TOOL_CALL_ARGS_CHARS = 1 << 20;
 // Cap for upstream `error.message` we surface to operators.
 const MAX_UPSTREAM_ERROR_MESSAGE_CHARS = 500;
+// Maximum number of distinct tool-call accumulator entries. Anthropic keys by
+// `index` from content_block_start events; a hostile upstream can open unbounded
+// entries if content_block_stop never arrives for earlier indices.
+const MAX_TOOL_CALL_ACCUMULATOR_ENTRIES = 128;
+// Total tool-call argument chars across all content blocks in one stream.
+const MAX_TOTAL_TOOL_CALL_ARGS_CHARS = 8 * 1024 * 1024; // 8 MiB
 
 const log = harperLogger.forComponent('anthropic').conditional;
 
@@ -81,6 +90,15 @@ export interface AnthropicBackendConfig {
  * `tools: true` — Anthropic has first-class tool-use support via
  * `tool_use` / `tool_result` content blocks.
  */
+const CAPABILITIES: ModelCapabilities = Object.freeze({
+	embed: false,
+	generate: true,
+	stream: true,
+	tools: true,
+	adapters: false,
+	structuredOutput: false,
+});
+
 export class AnthropicBackend implements ModelBackend {
 	readonly name = 'anthropic';
 	readonly #baseUrl: string;
@@ -98,7 +116,7 @@ export class AnthropicBackend implements ModelBackend {
 	}
 
 	capabilities(): ModelCapabilities {
-		return { embed: false, generate: true, stream: true, tools: true, adapters: false };
+		return CAPABILITIES;
 	}
 
 	async generate(input: GenerateInput, opts: BackendOpts<GenerateOpts>): Promise<ModelCallResult<GenerateResult>> {
@@ -138,6 +156,7 @@ export class AnthropicBackend implements ModelBackend {
 		// partial strings.
 		const toolBuf = new Map<number, AnthropicToolCallAccumulator>();
 		let finalFinishReason: GenerateResult['finishReason'] | undefined;
+		let totalArgChars = 0;
 
 		for await (const event of readSse(res.body)) {
 			const chunk: GenerateChunk = {};
@@ -165,6 +184,13 @@ export class AnthropicBackend implements ModelBackend {
 				event.index !== undefined &&
 				event.content_block?.type === 'tool_use'
 			) {
+				// Cap total accumulator entries: `index` is upstream-controlled and
+				// a content_block_stop may never arrive, leaking entries indefinitely.
+				if (toolBuf.size >= MAX_TOOL_CALL_ACCUMULATOR_ENTRIES) {
+					throw new AnthropicBackendError(
+						`Anthropic tool-call accumulator exceeded ${MAX_TOOL_CALL_ACCUMULATOR_ENTRIES} distinct tool-call entries`
+					);
+				}
 				toolBuf.set(event.index, {
 					id: event.content_block.id,
 					name: event.content_block.name,
@@ -181,6 +207,12 @@ export class AnthropicBackend implements ModelBackend {
 						if (acc.argumentsBuf.length + event.delta.partial_json.length > MAX_TOOL_CALL_ARGS_CHARS) {
 							throw new AnthropicBackendError(
 								`Anthropic tool-call arguments exceed ${MAX_TOOL_CALL_ARGS_CHARS} chars (index ${event.index})`
+							);
+						}
+						totalArgChars += event.delta.partial_json.length;
+						if (totalArgChars > MAX_TOTAL_TOOL_CALL_ARGS_CHARS) {
+							throw new AnthropicBackendError(
+								`Anthropic tool-call arguments exceed total stream cap of ${MAX_TOTAL_TOOL_CALL_ARGS_CHARS} chars`
 							);
 						}
 						acc.argumentsBuf += event.delta.partial_json;
@@ -235,7 +267,10 @@ export class AnthropicBackend implements ModelBackend {
 			signal,
 		});
 		if (!res.ok) {
-			throw new AnthropicBackendError(`Anthropic ${path} returned HTTP ${res.status}${await readErrorSuffix(res)}`);
+			const suffix = await readErrorSuffix(res);
+			const failure = new AnthropicBackendError(`Anthropic ${path} returned HTTP ${res.status}${suffix}`, res.status);
+			if (isContextWindowRejection(res.status, suffix)) failure.contextWindowExceeded = true;
+			throw failure;
 		}
 		return res;
 	}
@@ -261,9 +296,14 @@ export function registerAnthropicBackend(args: {
 }
 
 export class AnthropicBackendError extends ServerError {
-	constructor(message: string) {
+	/** HTTP status returned by the upstream provider, when the failure came from an HTTP response.
+	 * Distinct from ServerError's statusCode, which is Harper's own response status (#1593). */
+	declare upstreamStatus?: number;
+	declare contextWindowExceeded?: boolean;
+	constructor(message: string, upstreamStatus?: number) {
 		super(message);
 		this.name = 'AnthropicBackendError';
+		if (upstreamStatus !== undefined) this.upstreamStatus = upstreamStatus;
 	}
 }
 
@@ -271,7 +311,12 @@ export class AnthropicBackendError extends ServerError {
 
 async function readErrorSuffix(res: Response): Promise<string> {
 	try {
-		const body = (await res.json()) as { error?: { message?: unknown; type?: unknown } };
+		const body = await readBoundedJson<{ error?: { message?: unknown; type?: unknown } }>(
+			res,
+			'Anthropic error response',
+			AnthropicBackendError,
+			MAX_ERROR_BODY_BYTES
+		);
 		const message = body?.error?.message;
 		if (typeof message === 'string' && message.length > 0) {
 			const truncated =
@@ -415,7 +460,10 @@ function toAnthropicTool(t: ToolDef): AnthropicTool {
 function mapStopReason(reason?: string | null): GenerateResult['finishReason'] {
 	switch (reason) {
 		case 'max_tokens':
+		case 'model_context_window_exceeded':
 			return 'length';
+		case 'refusal':
+			return 'content_filter';
 		case 'tool_use':
 			return 'tool_calls';
 		case 'end_turn':

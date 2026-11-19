@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const sinon = require('sinon');
 const fs = require('fs-extra');
@@ -220,6 +221,366 @@ describe('Test operationsValidation module', () => {
 			};
 			const result = validator.dropCustomFunctionProjectValidator(req);
 			expect(result.message).to.equal('Project name can only contain alphanumeric, dash and underscores characters');
+		});
+	});
+
+	describe('Test deployComponentValidator staging and activation', () => {
+		it('accepts a stage request', () => {
+			assert.strictEqual(validator.deployComponentValidator({ project: 'my_app', activate: false }), undefined);
+		});
+
+		it("rejects a string 'false' for activate, which would otherwise deploy the release it staged", () => {
+			// `validateBySchema` throws away Joi's converted value, so a coercing boolean would validate here
+			// and then read as truthy in the handler.
+			const result = validator.deployComponentValidator({ project: 'my_app', activate: 'false' });
+			assert.match(result.message, /activate/);
+		});
+
+		it('rejects a restart alongside a stage, which changes nothing to restart into', () => {
+			const result = validator.deployComponentValidator({ project: 'my_app', activate: false, restart: true });
+			assert.match(result.message, /restart/);
+		});
+
+		it('accepts an activation addressed by deployment id', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				deployment_id: '1b4e28ba-2fa1-11d2-883f-0016d3cca427',
+			});
+			assert.strictEqual(result, undefined);
+		});
+
+		it('rejects a deployment id that is not a lowercase UUID, since it names a staging directory', () => {
+			// Uppercase included: a case-insensitive filesystem would resolve it to the real directory while
+			// every string compare against it fails.
+			for (const deployment_id of ['../escape', 'not-a-uuid', '', '1B4E28BA-2FA1-11D2-883F-0016D3CCA427']) {
+				const result = validator.deployComponentValidator({ project: 'my_app', deployment_id });
+				assert.match(result.message, /deployment_id/, deployment_id);
+			}
+		});
+
+		it('rejects a traversal-bearing internal deployment id, which also names a staging directory', () => {
+			const result = validator.deployComponentValidator({ project: 'my_app', _deploymentId: '../../escape' });
+			assert.match(result.message, /_deploymentId/);
+		});
+
+		it('rejects build and routing inputs on an activation, whose artifact already decided them', () => {
+			for (const extra of [
+				{ package: 'npm:app' },
+				{ payload: 'dGFy' },
+				{ activate: false },
+				{ install_command: 'npm ci' },
+				{ credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok' }] },
+				{ urlPath: '/app' },
+				{ host: 'example.com' },
+				{ isolated: true },
+			]) {
+				const result = validator.deployComponentValidator({
+					project: 'my_app',
+					deployment_id: '1b4e28ba-2fa1-11d2-883f-0016d3cca427',
+					...extra,
+				});
+				assert.notStrictEqual(result, undefined, JSON.stringify(extra));
+			}
+		});
+	});
+
+	describe('Test deployComponentValidator credentials', () => {
+		it('accepts a valid credentials array', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'npm:@myorg/app@1.0.0',
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: '@myorg' }],
+			});
+			expect(result).to.equal(undefined);
+		});
+
+		it('rejects a credential entry missing a token', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com' }],
+			});
+			expect(result.message).to.contain('token');
+		});
+
+		it('rejects an invalid scope', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok', scope: 'noatsign' }],
+			});
+			expect(result.message).to.contain('scope');
+		});
+
+		it('rejects credentials that is not an array', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: { registry: 'https://npm.pkg.github.com', token: 'tok' },
+			});
+			expect(result.message).to.contain('credentials');
+		});
+
+		it('rejects a token containing a newline (.npmrc line injection)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok\nregistry=https://evil.example.com/' }],
+			});
+			expect(result.message).to.contain('token');
+		});
+
+		it('rejects a registry containing a newline (.npmrc line injection)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com\n//evil.example.com/:_authToken=x', token: 'tok' }],
+			});
+			expect(result.message).to.contain('registry');
+		});
+
+		it('still accepts a bare-host registry (newline guard must not over-restrict)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'npm:@myorg/app@1.0.0',
+				credentials: [{ registry: 'npm.pkg.github.com', token: 'tok' }],
+			});
+			expect(result).to.equal(undefined);
+		});
+
+		it('accepts a secret-reference entry (token resolved from hdb_secret at deploy time)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'npm:@myorg/app@1.0.0',
+				credentials: [{ registry: 'https://npm.pkg.github.com', secret: 'GH_TOKEN', scope: '@myorg' }],
+			});
+			expect(result).to.equal(undefined);
+		});
+
+		it('rejects an entry that supplies both token and secret (exactly one required)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok', secret: 'GH_TOKEN' }],
+			});
+			expect(result.message).to.contain('secret');
+		});
+
+		it('rejects an entry supplying neither token nor secret', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com' }],
+			});
+			expect(result.message).to.contain('secret');
+		});
+
+		it('rejects an invalid secret name', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com', secret: 'bad name/with slash' }],
+			});
+			expect(result.message).to.contain('secret');
+		});
+
+		it('rejects the pre-rename registryAuth field (clean break, #1717 never shipped GA)', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'npm:@myorg/app@1.0.0',
+				registryAuth: [{ registry: 'https://npm.pkg.github.com', token: 'tok' }],
+			});
+			expect(result.message).to.contain('registryAuth');
+		});
+
+		it('accepts a git-host entry, with a token or a secret reference (#1792)', () => {
+			for (const entry of [
+				{ host: 'github.com', token: 'ghp_tok' },
+				{ host: 'github.com', secret: 'GH_TOKEN' },
+				{ host: 'gitlab.com', token: 'glpat', username: 'oauth2' },
+				{ host: 'git.example.com:8443', token: 'tok' },
+			]) {
+				const result = validator.deployComponentValidator({
+					project: 'my_app',
+					package: 'github:myorg/private-app',
+					credentials: [entry],
+				});
+				expect(result, JSON.stringify(entry)).to.be.undefined;
+			}
+		});
+
+		it('accepts npm and git entries in the same credentials array', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				package: 'github:myorg/private-app',
+				credentials: [
+					{ registry: 'https://npm.pkg.github.com', token: 'npm_tok', scope: '@myorg' },
+					{ host: 'github.com', token: 'git_tok' },
+				],
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects a git entry supplying both a token and a secret', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ host: 'github.com', token: 'tok', secret: 'GH_TOKEN' }],
+			});
+			expect(result).to.be.ok;
+		});
+
+		it('rejects a git entry supplying neither a token nor a secret', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ host: 'github.com' }],
+			});
+			expect(result).to.be.ok;
+		});
+
+		it('rejects a host carrying a scheme, path, or userinfo (a credential is matched by host)', () => {
+			for (const host of ['https://github.com', 'github.com/myorg/repo', 'user@github.com', 'git hub.com']) {
+				const result = validator.deployComponentValidator({
+					project: 'my_app',
+					credentials: [{ host, token: 'tok' }],
+				});
+				expect(result, host).to.be.ok;
+			}
+		});
+
+		it('rejects an unknown key on an entry (a stray secret-bearing field must not persist)', () => {
+			// allowUnknown is on for the operation, but a credential entry with an extra key would carry
+			// that key through ingest into config/hdb_deployment and replication — reject it here.
+			for (const entry of [
+				{ registry: 'https://npm.pkg.github.com', token: 'tok', password: 'literal' },
+				{ host: 'github.com', secret: 'GH_TOKEN', password: 'literal' },
+			]) {
+				const result = validator.deployComponentValidator({
+					project: 'my_app',
+					package: 'github:myorg/private-app',
+					credentials: [entry],
+				});
+				expect(result, JSON.stringify(entry)).to.be.ok;
+			}
+		});
+
+		it('rejects an entry that is neither kind, or that is ambiguously both', () => {
+			const neither = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ proxy: 'example.com', token: 'tok' }],
+			});
+			expect(neither).to.be.ok;
+			// `registry` and `host` are the kind discriminators; an entry carrying both has no single
+			// kind, so it must not be silently treated as one of them.
+			const both = validator.deployComponentValidator({
+				project: 'my_app',
+				credentials: [{ registry: 'https://npm.pkg.github.com', host: 'github.com', token: 'tok' }],
+			});
+			expect(both).to.be.ok;
+		});
+	});
+
+	describe('Test deployComponentValidator function', () => {
+		it('accepts valid package-based deploy request', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', package: '@scope/pkg' });
+			expect(result).to.be.undefined;
+		});
+
+		it('accepts urlPath alongside package', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', package: '@scope/pkg', urlPath: '/api' });
+			expect(result).to.be.undefined;
+		});
+
+		it('accepts urlPath on a payload deploy (harper#3043)', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', urlPath: '/api' });
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects urlPath containing ..', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				urlPath: '../etc/passwd',
+			});
+			expect(result).to.be.ok;
+			expect(result.message).to.include('urlPath');
+		});
+
+		it('rejects empty urlPath', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', urlPath: '' });
+			expect(result).to.be.ok;
+		});
+
+		it('accepts host alongside package', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: '@scope/pkg',
+				host: 'api.example.com',
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('accepts host and urlPath together', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: '@scope/pkg',
+				host: 'api.example.com',
+				urlPath: '/v1',
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('accepts host on a payload deploy (harper#3043)', () => {
+			const result = validator.deployComponentValidator({ project: 'my-app', host: 'api.example.com' });
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects a host carrying a port or path — it would never match the router host compare', () => {
+			for (const host of ['api.example.com:9926', 'api.example.com/v1', 'https://api.example.com']) {
+				const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', host });
+				expect(result, host).to.be.ok;
+				expect(result.message, host).to.include('host');
+			}
+		});
+
+		it('accepts a bare IPv6 literal but rejects the bracketed form the router cannot match', () => {
+			expect(validator.deployComponentValidator({ project: 'my-app', package: 'pkg', host: '::1' })).to.be.undefined;
+			const bracketed = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', host: '[::1]' });
+			expect(bracketed).to.be.ok;
+			expect(bracketed.message).to.include('host');
+		});
+
+		it('rejects a dot-segment urlPath — clients strip them, so the mount would be unreachable', () => {
+			for (const urlPath of ['.', './v1', '/v1/./x']) {
+				const result = validator.deployComponentValidator({ project: 'my-app', package: 'pkg', urlPath });
+				expect(result, urlPath).to.be.ok;
+				expect(result.message, urlPath).to.include('urlPath');
+			}
+		});
+
+		it('still accepts a dotfile-style segment name', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				urlPath: '/.well-known',
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects missing project', () => {
+			const result = validator.deployComponentValidator({ package: 'pkg' });
+			expect(result).to.be.ok;
+			expect(result.message).to.include('project');
+		});
+
+		it('accepts a numeric deployment_timeout', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				deployment_timeout: 180000,
+			});
+			expect(result).to.be.undefined;
+		});
+
+		it('rejects a non-numeric deployment_timeout', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my-app',
+				package: 'pkg',
+				deployment_timeout: 'soon',
+			});
+			expect(result).to.be.ok;
+			expect(result.message).to.include('deployment_timeout');
 		});
 	});
 });

@@ -4,6 +4,7 @@ const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
 const assert = require('assert');
+const { Readable } = require('node:stream');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
@@ -48,13 +49,6 @@ function setupSandbox() {
 	sandbox.stub(logger, 'info').callsFake(() => {});
 }
 
-function testCallBack(err, data) {
-	if (err) {
-		throw err;
-	}
-	return data;
-}
-
 describe('Test serverHandlers.js module ', () => {
 	before(() => {
 		setupSandbox();
@@ -72,7 +66,11 @@ describe('Test serverHandlers.js module ', () => {
 
 	describe('handleServerUncaughtException()', () => {
 		it('Should send error to console and log before exiting process', () => {
+			// handleServerUncaughtException uses process._realExit when available (set
+			// by workerProcessGuard) so the worker process guard does not intercept
+			// this intentional Harper-fatal exit. Stub both names to cover either path.
 			process_exit_stub = sandbox.stub(process, 'exit').callsFake(() => {});
+			const real_exit_stub = sandbox.stub(process, '_realExit').callsFake(() => {});
 			serverHandlers_rw.handleServerUncaughtException(TEST_ERR);
 
 			assert.ok(console_stub.calledOnce === true, 'Error should be sent to console as an error');
@@ -85,10 +83,12 @@ describe('Test serverHandlers.js module ', () => {
 				fatal_log_stub.args[0][0].includes(TEST_ERR.message) === true,
 				'Error should be passed to logger.fatal()'
 			);
-			assert.ok(process_exit_stub.calledOnce === true, 'Error should cause process to exit');
-			assert.ok(process_exit_stub.args[0][0] === 1, 'Process should exit with exit code 1');
+			const exitStub = real_exit_stub.called ? real_exit_stub : process_exit_stub;
+			assert.ok(exitStub.calledOnce === true, 'Error should cause process to exit');
+			assert.ok(exitStub.args[0][0] === 1, 'Process should exit with exit code 1');
 
 			process_exit_stub.restore();
+			real_exit_stub.restore();
 		});
 	});
 
@@ -132,6 +132,21 @@ describe('Test serverHandlers.js module ', () => {
 			assert.ok(test_result.msg.error === test_error.message, 'Resp message should equal custom error message object');
 		});
 
+		it('Should include code and retryable in the body for a retryable error (e.g. a still-building index)', () => {
+			const test_error = testUtils.deepClone(TEST_ERR);
+			test_error.statusCode = 503;
+			test_error.message = '"path" is not indexed yet, can not search for this attribute';
+			test_error.code = 'INDEX_REBUILDING';
+			test_error.retryable = true;
+
+			const test_result = serverHandlers_rw.serverErrorHandler(test_error, {}, new TestMockResp());
+
+			assert.ok(test_result.status_code === 503, 'Resp status code should be 503');
+			assert.ok(test_result.msg.error === test_error.message, 'Resp should include the error message');
+			assert.ok(test_result.msg.code === 'INDEX_REBUILDING', 'Resp should include the machine-readable code');
+			assert.ok(test_result.msg.retryable === true, 'Resp should mark the error retryable');
+		});
+
 		it('Should send a response with custom message object when included when an object is passed', () => {
 			const test_error = { blah: 'Custom error message!' };
 
@@ -148,112 +163,6 @@ describe('Test serverHandlers.js module ', () => {
 
 			assert.ok(test_result.status_code === 500, 'Resp status code should be 500');
 			assert.ok(test_result.msg.error === test_error, 'Resp error message should equal string value');
-		});
-	});
-
-	describe('reqBodyValidationHandler()', () => {
-		it('Should not reject if request is valid', () => {
-			const test_req = { body: { operation: 'create_schema' } };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(test_result === undefined, 'Method should return null value for passing scenario');
-		});
-
-		it('Should throw error if request has no body', () => {
-			const test_req = {};
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
-		});
-
-		it('Should throw error if request includes an empty body object', () => {
-			const test_req = { body: {} };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
-		});
-
-		it('Should throw error if request body is a string/not valid JSON', () => {
-			const test_req = { body: 'Operation: create_schema' };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
-		});
-
-		it('Should throw error if request body does not include an `operation` property', () => {
-			const test_req = { body: { schema: 'new schema value' } };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(
-				test_result.http_resp_msg === "Request body must include an 'operation' property.",
-				'Method should throw error for JSON body without operation property'
-			);
-		});
-
-		it('Should throw error if request body does not include an value in its `operation` property', () => {
-			const test_req = { body: { operation: null } };
-			let test_result;
-
-			try {
-				test_result = serverHandlers_rw.reqBodyValidationHandler(test_req, {}, testCallBack);
-			} catch (err) {
-				test_result = err;
-			}
-
-			assert.ok(
-				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
-				'Method should throw error w/ BAD_REQUEST code'
-			);
-			assert.ok(
-				test_result.http_resp_msg === "Request body must include an 'operation' property.",
-				'Method should throw error for JSON body without operation property'
-			);
 		});
 	});
 
@@ -301,6 +210,18 @@ describe('Test serverHandlers.js module ', () => {
 				assert.ok(data === undefined, 'Should not return anything for valid auth');
 				assert.ok(test_req.body.hdb_user === null, 'Method should assign null for hdb_user on request body');
 			});
+		});
+
+		it('Should require auth for create auth tokens with an inline role object', async () => {
+			auth_stub.resolves(TEST_USER);
+			const test_req = testUtils.deepClone(TEST_AUTH_REQ);
+			test_req.body.username = 'attribution-only';
+			test_req.body.role = { permission: { operations: ['read_only'] } };
+
+			await new Promise((resolve, reject) =>
+				serverHandlers_rw.authHandler(test_req, {}, (err) => (err ? reject(err) : resolve()))
+			);
+			assert.ok(test_req.body.hdb_user === TEST_USER, 'Scoped-token mint must carry the authenticated requester');
 		});
 
 		it('Should throw error if thrown from auth', () => {
@@ -410,6 +331,38 @@ describe('Test serverHandlers.js module ', () => {
 			);
 		});
 
+		it('Should remove caller-supplied authorization bypass values before dispatch', async () => {
+			for (const property of ['bypass_auth', 'bypassAuth']) {
+				for (const bypassAuth of [true, false]) {
+					const body = { operation: 'create_schema', [property]: bypassAuth };
+					const request = { body };
+
+					await serverHandlers_rw.handlePostRequest(request);
+
+					assert.strictEqual(Object.hasOwn(request.body, property), false);
+					assert.strictEqual(choose_op_stub.lastCall.args[0], request.body);
+				}
+			}
+		});
+
+		it('Should reject a null request body with a client error', async () => {
+			await assert.rejects(serverHandlers_rw.handlePostRequest({ body: null }), /Invalid request body/);
+			assert.strictEqual(choose_op_stub.callCount, 0);
+		});
+
+		it('Should reject prototype-mutating properties from parsed request bodies', async () => {
+			for (const unsafeProperty of ['__proto__', 'constructor', 'prototype']) {
+				const body = { operation: 'create_schema' };
+				Object.defineProperty(body, unsafeProperty, {
+					value: { bypass_auth: true },
+					enumerable: true,
+				});
+
+				await assert.rejects(serverHandlers_rw.handlePostRequest({ body }), /is not allowed/);
+			}
+			assert.strictEqual(choose_op_stub.callCount, 0, 'unsafe request bodies must not reach dispatch');
+		});
+
 		it('Should handle error thrown from chooseOperation', async () => {
 			choose_op_stub.throws(TEST_ERR);
 			let test_result;
@@ -441,6 +394,66 @@ describe('Test serverHandlers.js module ', () => {
 			assert.ok(process_local_trans_stub.calledOnce === true, 'processLocalTransaction was not called');
 			assert.ok(error_log_stub.calledOnce === true, 'Error not logged');
 			assert.ok(error_log_stub.args[0][0] === TEST_ERR, 'Error message not logged');
+		});
+
+		it('Should forward source stream errors through the gzip pipe instead of crashing the worker', async () => {
+			const source = Readable.from(
+				(async function* () {
+					yield Buffer.from('partial');
+					throw new Error('blob read failed');
+				})()
+			);
+			source.headers = new Map([['content-type', 'application/octet-stream']]);
+			process_local_trans_stub.resolves(source);
+			const stream_req = { body: { operation: 'get_deployment_payload' }, headers: { 'accept-encoding': 'gzip' } };
+			const headers_set = {};
+			const stream_res = { header: (name, value) => (headers_set[name] = value) };
+
+			const result = await serverHandlers_rw.handlePostRequest(stream_req, stream_res);
+
+			assert.ok(result !== source, 'gzip path should return the piped stream');
+			assert.strictEqual(headers_set['content-encoding'], 'gzip');
+			// Without the error forwarding, the source error fires with no listener and kills the
+			// process via uncaughtException; with it, the returned stream rejects.
+			await assert.rejects(
+				(async () => {
+					// eslint-disable-next-line no-unused-vars, no-empty
+					for await (const chunk of result) {
+					}
+				})(),
+				/blob read failed/
+			);
+		});
+
+		it('Should destroy the source stream when the gzip side is torn down (client disconnect)', async () => {
+			// An endless source, like a large blob mid-stream when the client goes away.
+			const source = new Readable({ read() {} });
+			source.headers = new Map([['content-type', 'application/octet-stream']]);
+			process_local_trans_stub.resolves(source);
+			const stream_req = { body: { operation: 'get_backup' }, headers: { 'accept-encoding': 'gzip' } };
+			const stream_res = { header: () => {} };
+
+			const result = await serverHandlers_rw.handlePostRequest(stream_req, stream_res);
+			result.destroy(); // what Fastify does to the stream it was handed when the client disconnects
+			await new Promise((resolve) => setImmediate(resolve));
+
+			assert.strictEqual(source.destroyed, true, 'source must be destroyed so its fd/blob read releases');
+		});
+
+		it('Should pass a preCompressed stream through without recompressing', async () => {
+			const source = Readable.from([Buffer.from('already-gzipped-bytes')]);
+			source.headers = new Map([['content-type', 'application/octet-stream']]);
+			source.preCompressed = true;
+			process_local_trans_stub.resolves(source);
+			const stream_req = { body: { operation: 'get_deployment_payload' }, headers: { 'accept-encoding': 'gzip' } };
+			const headers_set = {};
+			const stream_res = { header: (name, value) => (headers_set[name] = value) };
+
+			const result = await serverHandlers_rw.handlePostRequest(stream_req, stream_res);
+
+			assert.strictEqual(result, source, 'preCompressed stream must pass through untouched');
+			assert.strictEqual(headers_set['content-encoding'], undefined);
+			assert.strictEqual(headers_set['content-type'], 'application/octet-stream');
 		});
 	});
 });

@@ -1,0 +1,11 @@
+# Regression anchor for harper#1970 -- a same-key multi-write transaction must diff each write's
+# blobs against the EARLIER WRITE IN THE SAME TRANSACTION, not the pre-transaction snapshot, so
+# every superseded intermediate blob is reclaimed.
+#
+# BlobChain (audit: false) lives in its own database so {dataRootDir}/blobs/sametxnblob/ contains
+# exclusively this spec's files (blob files partition per database, not per table).
+type BlobChain @table(database: "sametxnblob", audit: false) @export {
+	id: ID @primaryKey
+	blob: Blob
+	tag: String
+}

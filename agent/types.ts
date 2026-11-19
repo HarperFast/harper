@@ -1,0 +1,136 @@
+/**
+ * Shared types for the built-in Harper Agent component (#626).
+ *
+ * `AgentMessage` mirrors `resources/models/types.ts:Message` rather than
+ * re-exporting it: the session row is durable storage and shouldn't trail
+ * shape changes in the model-access surface.
+ */
+
+import type { ToolCall, ToolDef } from '../resources/models/types.ts';
+
+export type AgentRunStatus = 'idle' | 'running' | 'awaiting_approval' | 'completed' | 'aborted' | 'error';
+
+export interface AgentMessage {
+	role: 'system' | 'user' | 'assistant' | 'tool';
+	content: string;
+	toolCalls?: ToolCall[];
+	toolCallId?: string;
+	/** Wall-clock timestamp of when this item entered the transcript. */
+	createdAt: number;
+	/** Assistant messages only: what the model call that produced this message reported. */
+	usage?: AgentCallUsage;
+}
+
+/** One model call's usage as reported; a field the backend or pricing did not supply is absent. */
+export interface AgentCallUsage {
+	promptTokens?: number;
+	completionTokens?: number;
+	costUsd?: number;
+}
+
+/**
+ * A session's usage folded from its transcript (`summarizeSessionUsage`). A total is present only
+ * while every call in the session reported it, so an absent total with `calls > 0` means unmeasured.
+ */
+export interface AgentSessionUsage {
+	calls: number;
+	promptTokens?: number;
+	completionTokens?: number;
+	costUsd?: number;
+}
+
+export interface ApprovalRequest {
+	id: string;
+	toolName: string;
+	arguments: object;
+	/** Tool-call id from the assistant message that produced this request. Used to resume execution. */
+	toolCallId: string;
+	/** Human-readable rationale for why approval is required (e.g. 'destructive', 'first_use'). */
+	reason: string;
+	createdAt: number;
+	resolved?: boolean;
+	approved?: boolean;
+	resolvedAt?: number;
+	/** Set to true once the loop has consumed the resolved approval (executed or refused). */
+	consumed?: boolean;
+}
+
+export interface AgentSessionRow {
+	session_id: string;
+	user: string;
+	status: AgentRunStatus;
+	messages: AgentMessage[];
+	pendingApprovals: ApprovalRequest[];
+	model?: string;
+	provider?: string;
+	createdAt: number;
+	updatedAt: number;
+	lastError?: string;
+	/** Usage of billed model calls whose reply was rejected and kept out of `messages`; folded into the session's usage. */
+	rejectedCalls?: AgentCallUsage[];
+}
+
+export interface AgentToolHandler {
+	(args: object, ctx: AgentToolContext): Promise<unknown>;
+}
+
+export interface AgentTool {
+	def: ToolDef;
+	handler: AgentToolHandler;
+	/** When true, invocations of this tool require an approval gate unless `autoApprove` is set. */
+	destructive?: boolean;
+}
+
+export interface AgentToolContext {
+	sessionId: string;
+	signal?: AbortSignal;
+	/** Filesystem scope roots accessible to FS tools. Read-only after composition. */
+	scopes: AgentScopes;
+	/** Byte cap the loop applies to each tool result; read tools size their pages to fit under it. */
+	maxResultBytes?: number;
+}
+
+export interface AgentScopes {
+	componentsRoot: string;
+	logDir: string;
+	/** Root of the read-only `config` scope; absent when its target named no file or directory at boot. */
+	configDir?: string;
+	/** Set when the `config` scope is a single file: its name, directly under `configDir`. */
+	configFile?: string;
+	/** Directories no fs tool reads from or writes into, whatever the scope; compared by real path on every call. */
+	keyDirs: string[];
+}
+
+/** Resolved `agent.httpFetch`: on, off, or limited to the listed hosts. Fixed at boot. */
+export type HttpFetchConfig = boolean | { allow: string[] };
+
+/** Resolved `agent.tools`: which operator-only tool groups the toolset composes. Fixed at boot. */
+export interface AgentToolSwitches {
+	filesystem: boolean;
+	schedule: boolean;
+	inspector: boolean;
+	bestPractices: boolean;
+}
+
+export interface AgentConfig {
+	enabled: boolean;
+	provider?: string;
+	model?: string;
+	maxTurns: number;
+	maxTokens: number;
+	/** Largest tool result, in bytes of serialized JSON, the loop appends to the transcript. */
+	maxToolResultBytes: number;
+	/** Per-session cap on prompt + completion tokens. Unset: uncapped. */
+	maxSessionTokens?: number;
+	/** Per-session cap in USD, from the serving model entry's `pricing`. Unset: uncapped. */
+	maxCostUsd?: number;
+	autoApprove: boolean;
+	allowDestructive: boolean;
+	user: string;
+	componentsScope?: string;
+	configScope?: string;
+	httpFetch: HttpFetchConfig;
+	tools: AgentToolSwitches;
+	/** Operator text appended to the agent's system prompt (after the built-in grounding + best practices). */
+	systemPromptAppend?: string;
+}

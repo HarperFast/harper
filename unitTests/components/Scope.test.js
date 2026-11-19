@@ -1,9 +1,10 @@
 const { Scope, MissingDefaultFilesOptionError } = require('#src/components/Scope');
 const { Models } = require('#src/resources/models/Models');
 const { EventEmitter } = require('node:events');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { join, basename } = require('node:path');
 const { tmpdir } = require('node:os');
+const { pathToFileURL } = require('node:url');
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { stringify } = require('yaml');
 const { spy } = require('sinon');
@@ -12,8 +13,10 @@ const { Resources } = require('#src/resources/Resources');
 const { EntryHandler } = require('#src/components/EntryHandler');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { writeFile } = require('node:fs/promises');
-const { waitFor } = require('./waitFor.js');
+const { waitFor } = require('../waitFor.js');
+const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
+const { deployLifecycle, _resetForTests: resetDeployLifecycle } = require('#src/components/deployLifecycle');
 
 describe('Scope', () => {
 	beforeEach(() => {
@@ -28,13 +31,97 @@ describe('Scope', () => {
 		resetRestartNeeded();
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		restoreReadRetryBudget();
 		resetRestartNeeded();
+		// Yield to the event loop so any in-flight chokidar watcher teardown
+		// (from scope.close() in the test body) and any pending readFile
+		// promises inside EntryHandler can settle before we remove the
+		// temp directory. Otherwise, deleting test.js while a watcher event
+		// is in flight surfaces a benign ENOENT through the watcher's error
+		// path after the EntryHandler/OptionsWatcher have already removed
+		// their listeners, which mocha sees as a duplicate done() with an
+		// error. Observed flake on Node v24/v26 (tighter watcher timing).
+		await new Promise((resolve) => setImmediate(resolve));
 		try {
 			rmSync(this.directory, { recursive: true, force: true });
 			// eslint-disable-next-line sonarjs/no-ignored-exceptions
 		} catch {
 			// best effort to clean up - but doesn't matter too much since this is a temp directory
+		}
+	});
+
+	it('runs its teardown once when closed again (a repeated SHUTDOWN)', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
+		await scope.ready;
+		let closes = 0;
+		scope.on('close', () => void closes++);
+		const first = scope.close();
+		assert.strictEqual(scope.close(), first);
+		await first;
+		await scope.close();
+		assert.equal(closes, 1);
+	});
+
+	it('removes listeners and releases component subscriptions even when a close listener rejects', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope(this.appName, this.resources, this.server)
+		);
+		await scope.ready;
+
+		const sub = scope.secrets.subscribe('SCOPED_SECRET');
+		let siblingSub;
+		try {
+			const initial = await sub.next();
+			assert.equal(initial.done, false);
+
+			scope.on('ready', () => {});
+			const closeFailure = new Error('close listener failed');
+			scope.on('close', async () => {
+				throw closeFailure;
+			});
+			scope.on('close', async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				siblingSub = scope.secrets.subscribe('SCOPED_SECRET');
+				await siblingSub.next();
+			});
+
+			await assert.rejects(scope.close(), (error) => error === closeFailure);
+			assert.equal(
+				scope.listenerCount('ready'),
+				0,
+				'scope.close() must remove remaining listeners even when a close listener rejects'
+			);
+			assert.strictEqual(
+				sub.closed,
+				true,
+				'scope.close() must release component secret subscriptions even when a close listener rejects'
+			);
+			assert.strictEqual(
+				siblingSub?.closed,
+				true,
+				'scope.close() must wait for sibling async close listeners before releasing component secret subscriptions'
+			);
+			const nextResult = await Promise.race([
+				sub.next(),
+				new Promise((resolve) => setImmediate(() => resolve({ timedOut: true }))),
+			]);
+			assert.deepStrictEqual(nextResult, { value: undefined, done: true });
+		} finally {
+			await sub.return?.();
+			await siblingSub?.return?.();
 		}
 	});
 
@@ -96,7 +183,7 @@ describe('Scope', () => {
 		const entryHandlerCloseSpy = spy();
 		entryHandlerNoArgs.on('close', entryHandlerCloseSpy);
 
-		scope.close();
+		await scope.close();
 		assert.equal(scopeCloseSpy.callCount, 1, 'close event should be emitted once');
 		assert.equal(scopeOptionsCloseSpy.callCount, 1, 'close event for options should be emitted once');
 		assert.equal(entryHandlerCloseSpy.callCount, 1, 'close event for entry handler should be emitted once');
@@ -153,7 +240,7 @@ describe('Scope', () => {
 		const entryHandlerCloseSpy = spy();
 		entryHandler.on('close', entryHandlerCloseSpy);
 
-		scope.close();
+		await scope.close();
 		assert.equal(scopeCloseSpy.callCount, 1, 'close event should be emitted once');
 		assert.equal(scopeOptionsCloseSpy.callCount, 1, 'close event for options should be emitted once');
 		assert.equal(entryHandlerCloseSpy.callCount, 1, 'close event for entry handler should be emitted once');
@@ -180,7 +267,7 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), true, 'requestRestart was called');
 
-		scope.close();
+		await scope.close();
 	});
 
 	it('should call requestRestart if no options handler is provided', async () => {
@@ -207,7 +294,89 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), true, 'requestRestart was called');
 
-		scope.close();
+		await scope.close();
+	});
+
+	it('should call requestRestart when the plugin config block is deleted', async () => {
+		// Deleting a component's block emits `remove`, not `change`. Absence is the
+		// canonical disabled state for opt-in built-ins (e.g. the /v1 models gateway),
+		// so removal must restart just like a change would — otherwise the component
+		// keeps serving until some unrelated restart.
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { enabled: true } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+
+		await scope.ready;
+
+		assert.equal(restartNeeded(), false, 'requestRestart should not be called yet');
+
+		// Rewrite the config with the plugin's block deleted entirely
+		await writeFile(this.configFilePath, stringify({ otherPlugin: { enabled: true } }));
+
+		await waitFor(() => restartNeeded());
+
+		assert.equal(restartNeeded(), true, 'requestRestart should be called on block removal');
+
+		await scope.close();
+	});
+
+	it('should call requestRestart when a truthy-default scope receives its source config', async () => {
+		// A config file still empty when the read ladder is spent settles `Scope.ready` on the
+		// defaults, so componentLoader runs handleApplication with no config of this scope's own.
+		// The operator's config landing afterwards reaches nothing on its own: componentLoader is
+		// long past its await, and the arrival is a `ready`, not the `change` the files/urlPath
+		// listener watches.
+		useShortReadRetryBudget();
+		writeFileSync(this.configFilePath, '');
+		const scopeName = 'static';
+
+		const scope = new Scope(this.appName, scopeName, this.directory, this.configFilePath, this.resources, this.server);
+
+		await scope.ready;
+
+		assert.equal(restartNeeded(), false, 'requestRestart should not be called yet');
+
+		await writeFile(this.configFilePath, stringify({ [scopeName]: { files: 'alternate/**' } }));
+
+		await waitFor(() => restartNeeded());
+
+		assert.equal(restartNeeded(), true, 'requestRestart should be called when the config arrives');
+
+		await scope.close();
+	}).timeout(10000);
+
+	it('should NOT call requestRestart on block removal when the plugin handles remove itself', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { enabled: true } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+
+		await scope.ready;
+
+		const removeSpy = spy();
+		scope.options.on('remove', removeSpy);
+
+		await writeFile(this.configFilePath, stringify({ otherPlugin: { enabled: true } }));
+
+		await waitFor(() => removeSpy.callCount > 0);
+
+		assert.equal(removeSpy.callCount, 1, 'plugin remove handler should be invoked');
+		assert.equal(restartNeeded(), false, 'plugin owns removal handling; no restart requested');
+
+		await scope.close();
 	});
 
 	it('should emit error for missing default entry handler', async () => {
@@ -248,7 +417,36 @@ describe('Scope', () => {
 
 		assert.equal(restartNeeded(), false, 'requestRestart should not be called');
 
-		scope.close();
+		await scope.close();
+	});
+
+	it('logs a forwarded child error when no scope error listener remains', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { foo: 'bar' } }));
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			this.resources,
+			this.server
+		);
+		await scope.ready;
+
+		assert.doesNotThrow(() => scope.options.emit('error', new Error('child listener failed')));
+		await scope.close();
+	});
+
+	it('invalidates a runtime first loaded by a scope created during deploy', async () => {
+		deployLifecycle._handle({ name: this.appName, phase: 'start' });
+		try {
+			const applicationScope = new ApplicationScope(this.appName, this.resources, this.server);
+			applicationScope.runtimeRoot = this.directory;
+			applicationScope.recordLoadedModule(pathToFileURL(this.testFilePath).href, Buffer.from('"foo";'));
+
+			assert.equal(await applicationScope.finishDeploy(), true);
+		} finally {
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+		}
 	});
 
 	it('should support custom entry handlers', async () => {
@@ -282,7 +480,7 @@ describe('Scope', () => {
 		customEntryHandlerPathOnlyArg.on('close', entryHandleCloseSpy1);
 		customEntryHandlerPathAndFunctionArgs.on('close', entryHandleCloseSpy2);
 
-		scope.close();
+		await scope.close();
 
 		assert.equal(entryHandleCloseSpy1.callCount, 1, 'close event for custom entry handler should be emitted once');
 		assert.equal(entryHandleCloseSpy2.callCount, 1, 'close event for custom entry handler should be emitted once');
@@ -322,6 +520,1374 @@ describe('Scope', () => {
 		await waitFor(() => handleEntrySpy.callCount > 0);
 		assert.ok(handleEntrySpy.callCount > 0, 'Entry handler should be called');
 
-		scope.close();
+		await scope.close();
+	});
+
+	it('should not create entry handler from options change before handleEntry is called (RE-8)', async () => {
+		// Reproduce the race in RE-8: OptionsWatcher fires a `change` event for the
+		// `files` key BEFORE handleApplication (and thus handleEntry) runs. In the
+		// broken code, #optionsWatcherChangeListener would create an entry handler
+		// without any plugin callback attached. Chokidar's initial scan would then
+		// emit `add` events with no consumer. When handleEntry was later called it
+		// reused the existing handler — but the initial `add` events were already gone.
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
+
+		await scope.ready;
+
+		// Simulate the race: emit a `change` event on scope.options for the `files`
+		// key, as if OptionsWatcher's second config read (triggered by chokidar's own
+		// `ready` event) completed before handleApplication called handleEntry. In the
+		// broken code this created an entry handler immediately, starting a chokidar
+		// scan with no plugin callback attached.
+		scope.options.emit('change', ['files'], 'test.js', { files: 'test.js' });
+
+		// Yield to the event loop long enough for any spuriously-created entry handler
+		// to start its chokidar watcher and complete its initial scan. In the broken
+		// code the scan would fire `add` events here with no listener; in the fixed
+		// code no entry handler is created at all during the change event.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		// Now call handleEntry — this is what jsResource.handleApplication does.
+		// If the bug is present, the entry handler already exists (from the change
+		// listener) and its initial scan has already fired and is gone. The callback
+		// would never receive the initial `add` event and the test would time out.
+		const handleEntrySpy = spy();
+		const entryHandler = scope.handleEntry(handleEntrySpy);
+		assert.ok(entryHandler instanceof EntryHandler, 'Entry handler should be created');
+
+		// The callback must receive the initial `add` event for test.js.
+		// In the buggy code this would time out because initial scan events are lost.
+		await waitFor(() => handleEntrySpy.callCount > 0, {
+			timeout: 2000,
+			message: 'handleEntry callback must be called with initial add event (RE-8 regression)',
+		});
+
+		const firstCall = handleEntrySpy.getCall(0).args[0];
+		assert.equal(firstCall.eventType, 'add', 'initial event should be `add`');
+		assert.equal(firstCall.absolutePath, this.testFilePath, 'initial event should be for the test file');
+
+		await scope.close();
+	});
+
+	describe('deploy lifecycle integration', () => {
+		// These cases ensure that when a deploy is in flight for the parent
+		// component, file changes from the deploy itself (extract + npm install)
+		// don't drive restart-request storms — see harper#488 and
+		// components/deployLifecycle.ts.
+
+		afterEach(() => {
+			resetDeployLifecycle();
+		});
+
+		it('suppresses requestRestart while a deploy is in flight for the same component', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+			scope.handleEntry();
+
+			// Sanity: outside a deploy, file change drives restart
+			await writeFile(this.testFilePath, '"baz";');
+			await waitFor(() => restartNeeded());
+			assert.equal(restartNeeded(), true);
+			resetRestartNeeded();
+
+			// Enter a deploy
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+
+			// File changes during the deploy must NOT request restart
+			scope.requestRestart();
+			assert.equal(restartNeeded(), false, 'requestRestart was suppressed during deploy');
+
+			// Exit the deploy — the suppressed request is replayed once, after the gate is lowered.
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+			assert.equal(restartNeeded(), true, 'a lasting restart request is replayed after deploy:end');
+
+			await scope.close();
+		});
+
+		it('does not suppress requestRestart for an unrelated component', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+
+			deployLifecycle._handle({ name: 'some-other-component', phase: 'start' });
+
+			scope.requestRestart();
+			assert.equal(
+				restartNeeded(),
+				true,
+				'requestRestart for this component must not be suppressed by an unrelated deploy'
+			);
+
+			await scope.close();
+		});
+
+		it('keeps entry handlers created during deploy paused until deploy:end', async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				let deployWaitResolved = false;
+				const deployWait = scope.waitForDeployCompletion().then(() => {
+					deployWaitResolved = true;
+				});
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+				assert.equal(entries.length, 0, 'a handler created mid-deploy must not scan the intermediate tree');
+				assert.equal(deployWaitResolved, false, 'component loading remains gated by the active deploy');
+
+				deployLifecycle._handle({ name: this.appName, phase: 'end' });
+				await deployWait;
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'the handler scans after deploy:end resumes it');
+			} finally {
+				if (deployLifecycle.isDeployInFlight(this.appName)) {
+					deployLifecycle._handle({ name: this.appName, phase: 'end' });
+				}
+				await scope.close();
+			}
+		});
+
+		it('loads the installed tree when the deploy in flight was released from loads', async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'startup-left-behind' });
+			deployLifecycle.releaseLoads(this.appName, 'startup-left-behind');
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				await scope.waitForDeployCompletion();
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'the handler scans instead of pausing behind the released deploy');
+			} finally {
+				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'startup-left-behind' });
+				await scope.close();
+			}
+		});
+
+		it('resumes a scope paused behind a deploy when that deploy is released', async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'released-later' });
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				const deployWait = scope.waitForDeployCompletion();
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+
+				deployLifecycle.releaseLoads(this.appName, 'released-later');
+				await deployWait;
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'releasing the deploy resumes the paused handler');
+			} finally {
+				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'released-later' });
+				await scope.close();
+			}
+		});
+
+		it("loads the installed tree while a rollout holds the component's watchers in a thread still loading", async () => {
+			deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'rollout', watchersOnly: true });
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				await scope.waitForDeployCompletion();
+				await entryHandler.ready;
+				assert.ok(entries.length > 0, 'the handler scans instead of pausing behind a rollout that may wait on it');
+			} finally {
+				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'rollout' });
+				await scope.close();
+			}
+		});
+
+		it('holds a loaded scope through a rollout, and replays a restart it asked for once the rollout ends', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+			deployLifecycle._componentsLoaded();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			try {
+				await scope.ready;
+				const entryHandler = scope.handleEntry();
+				await entryHandler.ready;
+				resetRestartNeeded();
+				deployLifecycle._handle({ name: this.appName, phase: 'start', deploymentId: 'rollout', watchersOnly: true });
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+				scope.requestRestart();
+				assert.equal(restartNeeded(), false, 'the restart waits for the rollout');
+				deployLifecycle._handle({ name: this.appName, phase: 'end', deploymentId: 'rollout' });
+				assert.equal(restartNeeded(), true, 'and is replayed once it ends');
+			} finally {
+				resetRestartNeeded();
+				await scope.close();
+			}
+		});
+
+		it('resumes a mid-deploy scope when the deploy owner exits', async () => {
+			const ownerThreadId = 41;
+			deployLifecycle._handle({
+				name: this.appName,
+				phase: 'start',
+				deploymentId: 'orphaned-deploy',
+				ownerThreadId,
+			});
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope(this.appName, this.resources, this.server)
+			);
+			try {
+				const entries = [];
+				const entryHandler = scope.handleEntry({ files: 'test.js' }, (entry) => entries.push(entry));
+				const deployWait = scope.waitForDeployCompletion();
+				await waitFor(() => entryHandler._liveWatcherCountForTests === 0);
+
+				deployLifecycle._reclaimOwner(ownerThreadId);
+				await deployWait;
+				await entryHandler.ready;
+
+				assert.equal(deployLifecycle.isDeployInFlight(this.appName), false);
+				assert.ok(entries.length > 0, 'reclaiming the dead owner resumes the paused handler');
+			} finally {
+				await scope.close();
+			}
+		});
+
+		it('pauses entry handlers and emits the changed-file diff on deploy:end without losing plugin listeners', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+
+			// Register a plugin-style entry handler with a callback. Codex caught
+			// the original close+recreate design dropping these callbacks; this
+			// case guards against that regression.
+			const entries = [];
+			const entryHandler = scope.handleEntry((entry) => entries.push(entry));
+			await entryHandler.ready;
+			const callsBeforeDeploy = entries.length;
+			assert.ok(callsBeforeDeploy > 0, 'plugin handler fires for initial files');
+
+			// Enter and exit a deploy without touching the EntryHandler instance.
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+			// Settle the pause's pending watcher.close() promise before resuming.
+			await new Promise((r) => setTimeout(r, 50));
+			await writeFile(this.testFilePath, '"deployed";');
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+
+			// The same EntryHandler instance keeps the plugin's callback and translates the resumed
+			// watcher's fresh add into the logical change relative to the pre-deploy generation.
+			await waitFor(() => entries.length > callsBeforeDeploy, 3000);
+			assert.equal(entries.at(-1).eventType, 'change');
+
+			// And the EntryHandler instance is unchanged — listener attachment is
+			// preserved, not re-issued through a fresh wrapper.
+			assert.strictEqual(scope.handleEntry(), entryHandler, 'same EntryHandler instance after pause/resume');
+
+			// Subsequent post-deploy file changes still fire the plugin handler
+			// (the wired listener is still attached).
+			const callsAfterResume = entries.length;
+			await writeFile(this.testFilePath, '"after-deploy";');
+			await waitFor(() => entries.length > callsAfterResume);
+			assert.ok(entries.length > callsAfterResume, 'post-deploy change fires the plugin handler');
+
+			await scope.close();
+		});
+
+		it('re-emits deploy:start and deploy:end on the scope for plugins to observe', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: {} }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+
+			const startSpy = spy();
+			const endSpy = spy();
+			scope.on('deploy:start', startSpy);
+			scope.on('deploy:end', endSpy);
+
+			deployLifecycle._handle({ name: this.appName, phase: 'start' });
+			deployLifecycle._handle({ name: this.appName, phase: 'end' });
+
+			assert.equal(startSpy.callCount, 1);
+			assert.deepEqual(startSpy.getCall(0).args, [this.appName]);
+			assert.equal(endSpy.callCount, 1);
+			assert.deepEqual(endSpy.getCall(0).args, [this.appName]);
+
+			await scope.close();
+		});
+
+		it('detaches deploy lifecycle listeners on scope.close()', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: {} }));
+
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			await scope.ready;
+
+			const beforeClose = deployLifecycle.listenerCount('deploy:start');
+			await scope.close();
+			const afterClose = deployLifecycle.listenerCount('deploy:start');
+
+			assert.equal(
+				afterClose,
+				beforeClose - 1,
+				'scope.close() should remove its deploy:start listener from the module emitter'
+			);
+		});
+	});
+
+	// The `server` proxy is what turns config into routing: it names every middleware entry after
+	// the plugin and resolves the plugin's `urlPath`/`host` into the route the dispatcher matches.
+	describe('server proxy routing injection', () => {
+		const registerAndCapture = async (config, options, mount) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: config }));
+			const http = spy();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			scope.server.http(() => {}, options);
+			await scope.close();
+			return http.getCall(0).args[1];
+		};
+
+		it('names the entry after the plugin and resolves the configured urlPath', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' });
+			assert.equal(injected.name, this.pluginName);
+			assert.equal(injected.urlPath, '/assets/');
+		});
+
+		it('resolves a plugin-name-relative urlPath rather than passing it through raw', async () => {
+			// A plugin that spreads its whole config section into these options (REST does) used to
+			// hand the router the literal './', which normalized to the unmatchable route '/.'
+			const injected = await registerAndCapture({ urlPath: './' }, { urlPath: './' });
+			assert.equal(injected.urlPath, `/${this.pluginName}/`);
+		});
+
+		it('lets an explicit call option override the configured urlPath, still resolved', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' }, { urlPath: 'other' });
+			assert.equal(injected.urlPath, '/other/');
+		});
+
+		it('carries the configured host', async () => {
+			const injected = await registerAndCapture({ host: 'api.example.com' });
+			assert.equal(injected.host, 'api.example.com');
+		});
+
+		it('leaves routing undefined when nothing configures it', async () => {
+			const injected = await registerAndCapture({ files: 'test.js' });
+			assert.equal(injected.urlPath, undefined);
+			assert.equal(injected.host, undefined);
+		});
+
+		it('routes by the application mount declared in the root config', async () => {
+			const injected = await registerAndCapture({ urlPath: 'assets' }, undefined, {
+				host: 'api.example.com',
+				urlPath: '/v1',
+			});
+			assert.equal(injected.host, 'api.example.com');
+			assert.equal(injected.urlPath, '/v1/assets/');
+		});
+
+		it('mount host wins over a host the application shipped', async () => {
+			const injected = await registerAndCapture({ host: 'www.shipped.example' }, undefined, {
+				host: 'api.example.com',
+			});
+			assert.equal(injected.host, 'api.example.com');
+		});
+
+		// The mount is applied ONLY at the routing boundary. The router strips it before a handler
+		// runs, so entry URL paths — and the resource paths graphqlSchema/jsResource derive from
+		// them — must stay mount-relative or REST would look up a path nothing registered.
+		it('does not leak the mount into the config the entry pipeline reads', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js', urlPath: 'assets' } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				{ urlPath: '/v1' }
+			);
+			await scope.ready;
+			assert.equal(scope.options.getAll().urlPath, 'assets', 'plugin config stays as authored');
+			await scope.close();
+		});
+
+		it('keeps Bearer validators active across scope.close() for shutdown draining and rejects registration after close', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+			let unregisterCalls = 0;
+			const registeredValidators = [];
+			const registerBearerValidator = (validator) => {
+				registeredValidators.push(validator);
+				return () => unregisterCalls++;
+			};
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { registerBearerValidator })
+			);
+			await scope.ready;
+
+			const validator = async () => undefined;
+			const unregister = scope.server.registerBearerValidator(validator);
+			assert.deepStrictEqual(registeredValidators, [validator]);
+
+			await scope.close();
+			assert.equal(
+				unregisterCalls,
+				0,
+				'scope.close() must not unregister validators before shutdown draining finishes'
+			);
+
+			unregister();
+			assert.equal(unregisterCalls, 1);
+
+			assert.throws(() => scope.server.registerBearerValidator(validator), /closed scope/);
+
+			let unregisterOnAbortCalls = 0;
+			const abortScope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, {
+					registerBearerValidator: () => () => unregisterOnAbortCalls++,
+				})
+			);
+			await abortScope.ready;
+			abortScope.server.registerBearerValidator(validator);
+			abortScope.disposeBearerValidators();
+			assert.equal(
+				unregisterOnAbortCalls,
+				1,
+				'disposeBearerValidators() unregisters validators registered on an aborted scope load'
+			);
+			assert.throws(
+				() => abortScope.server.registerBearerValidator(validator),
+				/closed scope/,
+				'late async registration after disposeBearerValidators() must throw even before scope.close()'
+			);
+			await abortScope.close();
+
+			const componentLoader = require('#src/components/componentLoader');
+			const failedAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-app-'));
+			const failedPluginName = 'failedBearerPlugin';
+			let failedScope;
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName] = {
+				async handleApplication(scope) {
+					failedScope = scope;
+					scope.server.registerBearerValidator(() => null);
+					throw new Error('simulated handleApplication failure');
+				},
+			};
+			try {
+				writeFileSync(join(failedAppDir, 'harperdb-config.yaml'), stringify({ [failedPluginName]: {} }));
+				let unregisterOnFailedLoadCalls = 0;
+				await componentLoader.loadComponent(failedAppDir, { isWorker: true, set() {} }, 'test', {
+					applicationScope: new ApplicationScope('test', this.resources, {
+						registerBearerValidator: () => () => unregisterOnFailedLoadCalls++,
+					}),
+				});
+				assert.ok(failedScope, 'handleApplication must have been invoked by loadComponent');
+				assert.equal(
+					unregisterOnFailedLoadCalls,
+					1,
+					'loadComponent must call disposeBearerValidators() when handleApplication rejects'
+				);
+			} finally {
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName];
+				componentLoader.loadedPaths.clear();
+				await failedScope?.close();
+				rmSync(failedAppDir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	// REST deduplicates its registration per route, so the route identity must be injective: two
+	// configurations that resolve to different routes must not produce the same one. Composing the
+	// mount with the plugin's *raw* urlPath collided (mount '/a' + 'bc' and mount '/ab' + 'c' both
+	// gave '/abc'), which would silently skip the second application's REST registration.
+	describe('routeFor', () => {
+		const routeFor = async (config, mount, options) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: config }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			const route = scope.routeFor(options);
+			await scope.close();
+			return route;
+		};
+
+		it('distinguishes routes that a raw concatenation would collide', async () => {
+			const a = await routeFor({ urlPath: 'bc' }, { urlPath: '/a' });
+			const b = await routeFor({ urlPath: 'c' }, { urlPath: '/ab' });
+			assert.equal(a.urlPath, '/a/bc/');
+			assert.equal(b.urlPath, '/ab/c/');
+			assert.notEqual(a.urlPath, b.urlPath);
+		});
+
+		it('resolves the same route for configurations that are genuinely the same mount', async () => {
+			// A mount of '/api' with no plugin path and a plugin path of '/api' with no mount both
+			// answer on '/api' — the same chain, so REST should register once.
+			const mounted = await routeFor({}, { urlPath: '/api' });
+			const pluginOnly = await routeFor({ urlPath: '/api' }, undefined);
+			assert.equal(mounted.urlPath, pluginOnly.urlPath);
+		});
+
+		it('keeps host and path separable', async () => {
+			const route = await routeFor({}, { host: 'api.example.com', urlPath: '/v1' });
+			assert.deepEqual(route, { host: 'api.example.com', urlPath: '/v1/' });
+		});
+
+		it('matches what the server proxy injects', async () => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { urlPath: 'assets' } }));
+			const http = spy();
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http }),
+				undefined,
+				undefined,
+				{ host: 'api.example.com', urlPath: '/v1' }
+			);
+			await scope.ready;
+			const expected = scope.routeFor(undefined);
+			scope.server.http(() => {});
+			const injected = http.getCall(0).args[1];
+			assert.equal(injected.urlPath, expected.urlPath);
+			assert.equal(injected.host, expected.host);
+			await scope.close();
+		});
+	});
+
+	describe('externalBasePath', () => {
+		const scopeWithMount = async (mount) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, { http: spy() }),
+				undefined,
+				undefined,
+				mount
+			);
+			await scope.ready;
+			return scope;
+		};
+
+		it('prefixes the mount so a client-facing path points inside the mount', async () => {
+			const scope = await scopeWithMount({ urlPath: '/v1' });
+			assert.equal(scope.externalBasePath('/assets/'), '/v1/assets/');
+			assert.equal(scope.externalBasePath('/'), '/v1/');
+			await scope.close();
+		});
+
+		it('is identity when the application has no path mount', async () => {
+			const scope = await scopeWithMount(undefined);
+			assert.equal(scope.externalBasePath('/assets/'), '/assets/');
+			await scope.close();
+
+			const hostOnly = await scopeWithMount({ host: 'api.example.com' });
+			assert.equal(hostOnly.externalBasePath('/assets/'), '/assets/');
+			await hostOnly.close();
+		});
+	});
+
+	describe('initial load failure (#1917)', () => {
+		let openScopes;
+
+		beforeEach(() => {
+			openScopes = [];
+		});
+
+		// Closed here rather than at the end of each test so a failed assertion cannot leave a chokidar
+		// watcher running over the directory afterEach is about to delete.
+		afterEach(async () => {
+			await Promise.all(openScopes.map((scope) => scope.close()));
+		});
+
+		const scopeForFiles = async (files) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			openScopes.push(scope);
+			await scope.ready;
+			return scope;
+		};
+
+		it("settles waitForInitialLoads with the entry handler's own error", async () => {
+			const scope = await scopeForFiles('test.js');
+			const failure = new Error('invalid schema');
+			scope.handleEntry(async () => {
+				throw failure;
+			});
+
+			const initialLoad = scope.waitForInitialLoads();
+			await assert.rejects(initialLoad, (error) => error === failure);
+
+			// The settled load is dropped from the pending set, so a later wait has nothing to await.
+			await new Promise((resolve) => setImmediate(resolve));
+			await scope.waitForInitialLoads();
+		});
+
+		it('settles waitForInitialLoads when the entry handler throws synchronously', async () => {
+			const scope = await scopeForFiles('test.js');
+			const failure = new Error('synchronous schema failure');
+			scope.handleEntry(() => {
+				throw failure;
+			});
+
+			await assert.rejects(scope.waitForInitialLoads(), (error) => error === failure);
+		});
+
+		it('raises no unhandled rejection when the initial load fails', async () => {
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			let scope;
+			try {
+				scope = await scopeForFiles('test.js');
+				scope.handleEntry(async () => {
+					throw new Error('invalid schema');
+				});
+				await assert.rejects(scope.waitForInitialLoads());
+				// Node reports an unhandled rejection at the end of a macrotask, so give it two.
+				await new Promise((resolve) => setImmediate(resolve));
+				await new Promise((resolve) => setImmediate(resolve));
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+			assert.deepStrictEqual(unhandled, [], 'a failed initial load must not leak an unhandled rejection');
+		});
+
+		it('reports a handler rejection after the initial load without leaking an unhandled rejection', async () => {
+			const scope = await scopeForFiles('test.js');
+			let calls = 0;
+			scope.handleEntry(async () => {
+				if (++calls > 1) throw new Error('reload failed');
+			});
+			await scope.waitForInitialLoads();
+
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				await writeFile(this.testFilePath, '"changed";');
+				await waitFor(() => calls > 1, { timeout: 5000, message: 'the change must reach the entry handler' });
+				for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+			assert.deepStrictEqual(unhandled, [], 'a post-initial-load handler rejection must not leak');
+		});
+
+		it('drains sibling initial-load operations before surfacing the failure', async () => {
+			writeFileSync(join(this.directory, 'broken.js'), '"broken";');
+			writeFileSync(join(this.directory, 'slow.js'), '"slow";');
+			const scope = await scopeForFiles('*.js');
+
+			let releaseSlow;
+			const slow = new Promise((resolve) => {
+				releaseSlow = resolve;
+			});
+			let slowFinished = false;
+			const entryHandler = scope.handleEntry(async (entry) => {
+				if (entry.absolutePath.endsWith('broken.js')) throw new Error('broken.js is invalid');
+				if (!entry.absolutePath.endsWith('slow.js')) return;
+				await slow;
+				slowFinished = true;
+			});
+
+			const initialLoad = scope.waitForInitialLoads();
+			let settled = false;
+			const markSettled = () => {
+				settled = true;
+			};
+			initialLoad.then(markSettled, markSettled);
+
+			// Draining only begins once the initial scan reports ready; before that a fail-fast
+			// implementation and a draining one are indistinguishable. A fail-fast drain settles within
+			// microtasks of `ready`, so turns of the event loop separate the two without a wall clock.
+			await entryHandler.ready;
+			for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(
+				settled,
+				false,
+				'the load must not report the failure while a sibling operation still holds the load lock'
+			);
+
+			releaseSlow();
+			await assert.rejects(initialLoad, /broken\.js is invalid/);
+			assert.strictEqual(slowFinished, true, 'the sibling operation must have run to completion');
+		});
+
+		it('closes the scope when handleApplication rejects during loadComponent, leaving no watchers, subscriptions, or listeners', async () => {
+			const componentLoader = require('#src/components/componentLoader');
+			const failedAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-scope-cleanup-'));
+			const failedAppName = basename(failedAppDir);
+			const failedPluginName = 'failedScopeCleanupPlugin';
+			let failedScope;
+			let entryHandler;
+			let secretSubscription;
+			let optionsClosed = false;
+			let closeListenerCalls = 0;
+
+			const deployStartBefore = deployLifecycle.listenerCount('deploy:start');
+			const deployEndBefore = deployLifecycle.listenerCount('deploy:end');
+			const loggedErrors = [];
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName] = {
+				async handleApplication(scope) {
+					failedScope = scope;
+					const originalScopeError = scope.logger.error;
+					scope.logger.error = function (...args) {
+						loggedErrors.push(args);
+						return originalScopeError?.apply(this, args);
+					};
+					scope.options.on('close', () => {
+						optionsClosed = true;
+					});
+					entryHandler = scope.handleEntry();
+					await entryHandler.ready;
+					secretSubscription = scope.secrets.subscribe('SCOPED_SECRET');
+					const firstSecret = await secretSubscription.next();
+					assert.strictEqual(firstSecret.done, false);
+					scope.on('error', () => {});
+					scope.on('close', () => {
+						closeListenerCalls++;
+						throw new Error('secondary close listener error');
+					});
+					throw new Error('simulated handleApplication failure');
+				},
+			};
+
+			const recordedResources = new Map();
+			try {
+				writeFileSync(join(failedAppDir, 'test.js'), '"hello";');
+				writeFileSync(
+					join(failedAppDir, 'harperdb-config.yaml'),
+					stringify({ [failedPluginName]: { files: 'test.js' } })
+				);
+				await componentLoader.loadComponent(
+					failedAppDir,
+					{
+						isWorker: true,
+						set(pathKey, resource) {
+							recordedResources.set(pathKey, resource);
+						},
+					},
+					'test',
+					{
+						appName: failedAppName,
+						applicationScope: new ApplicationScope(failedAppName, this.resources, this.server),
+					}
+				);
+
+				assert.ok(failedScope, 'handleApplication must have been invoked by loadComponent');
+				assert.strictEqual(failedScope.closed, true, 'failed scope must be marked closed');
+				assert.throws(
+					() => failedScope.handleEntry(),
+					/Cannot handle entries on closed scope/,
+					'calling handleEntry() on a closed scope must throw instead of starting a watcher'
+				);
+				assert.strictEqual(closeListenerCalls, 1, 'loadComponent must close the scope when handleApplication rejects');
+				assert.strictEqual(optionsClosed, true, 'failed scope OptionsWatcher must be closed');
+				assert.strictEqual(
+					entryHandler._liveWatcherCountForTests,
+					0,
+					'failed scope EntryHandler watcher must be closed'
+				);
+				assert.strictEqual(secretSubscription.closed, true, 'failed scope secret subscriptions must be closed');
+				const nextSecret = await Promise.race([
+					secretSubscription.next(),
+					new Promise((resolve) => setImmediate(() => resolve({ timedOut: true }))),
+				]);
+				assert.deepStrictEqual(nextSecret, { value: undefined, done: true });
+				assert.strictEqual(
+					deployLifecycle.listenerCount('deploy:start'),
+					deployStartBefore,
+					'failed scope must detach its deploy:start listener'
+				);
+				assert.strictEqual(
+					deployLifecycle.listenerCount('deploy:end'),
+					deployEndBefore,
+					'failed scope must detach its deploy:end listener'
+				);
+				assert.strictEqual(failedScope.listenerCount('error'), 0, 'failed scope listeners must be removed');
+				assert.ok(
+					loggedErrors.some((args) =>
+						args.some((arg) => String(arg?.message ?? arg).includes('secondary close listener error'))
+					),
+					'loadComponent must log a close listener error instead of swallowing it'
+				);
+				const errorResource = recordedResources.get('/');
+				assert.ok(errorResource, 'loadComponent must still record the failure');
+				assert.match(
+					String(errorResource.error?.message ?? ''),
+					/simulated handleApplication failure/,
+					'original handleApplication error must be preserved even if a close listener throws'
+				);
+			} finally {
+				await secretSubscription?.return?.();
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName];
+				componentLoader.loadedPaths.clear();
+				await failedScope?.close().catch(() => {});
+				await new Promise((resolve) => setImmediate(resolve));
+				rmSync(failedAppDir, { recursive: true, force: true });
+			}
+		});
+
+		it('releases the plugin lock before closing and bounds a never-settling close listener on a failed load', async () => {
+			const componentLoader = require('#src/components/componentLoader');
+			const { Status } = require('#src/server/status/index');
+			const { getTerminateTimeout, setTerminateTimeout } = require('#src/server/threads/manageThreads');
+			const { listenersByType } = require('#src/server/threads/threadMessageState');
+			const { whenScopesClosed } = require('#src/components/scopeShutdown');
+			const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+			const failedAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-scope-hang-'));
+			const failedAppName = basename(failedAppDir);
+			const failedPluginName = 'failedScopeHangPlugin';
+			const lockId = `${failedAppName}\0${failedPluginName}`;
+			const priorTerminateTimeout = getTerminateTimeout();
+			let failedScope;
+			let secretSubscription;
+			let lockFreeDuringClose = false;
+			let releaseLateRejection;
+			const loggedWarnings = [];
+			const loggedErrors = [];
+
+			setTerminateTimeout(100);
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName] = {
+				async handleApplication(scope) {
+					failedScope = scope;
+					const originalScopeWarn = scope.logger.warn;
+					scope.logger.warn = function (...args) {
+						loggedWarnings.push(args);
+						return originalScopeWarn?.apply(this, args);
+					};
+					const originalScopeError = scope.logger.error;
+					scope.logger.error = function (...args) {
+						loggedErrors.push(args);
+						return originalScopeError?.apply(this, args);
+					};
+					secretSubscription = scope.secrets.subscribe('SCOPED_SECRET');
+					await secretSubscription.next();
+					scope.on('error', () => {});
+					scope.on('close', () => {
+						throw new Error('early close listener failure before timeout');
+					});
+					scope.on('close', () => {
+						const acquired = Status.primaryStore.tryLock(lockId);
+						if (acquired) {
+							lockFreeDuringClose = true;
+							Status.primaryStore.unlock(lockId);
+						}
+						return new Promise((_, reject) => {
+							releaseLateRejection = () => reject(new Error('late close listener failure after timeout'));
+						});
+					});
+					throw new Error('simulated failure with hanging close');
+				},
+			};
+
+			try {
+				const shutdownListenersBefore = (listenersByType.get(ITC_EVENT_TYPES.SHUTDOWN) ?? []).length;
+				writeFileSync(join(failedAppDir, 'harperdb-config.yaml'), stringify({ [failedPluginName]: {} }));
+				const startedAt = Date.now();
+				const loadOutcome = await Promise.race([
+					componentLoader
+						.loadComponent(failedAppDir, { isWorker: true, set() {} }, 'test', {
+							appName: failedAppName,
+							applicationScope: new ApplicationScope(failedAppName, this.resources, this.server),
+						})
+						.then(() => 'settled'),
+					new Promise((resolve) => setTimeout(() => resolve('timed-out'), 2000)),
+				]);
+				const elapsedMs = Date.now() - startedAt;
+
+				assert.strictEqual(loadOutcome, 'settled', `bounded close must not hang loadComponent (took ${elapsedMs}ms)`);
+				assert.ok(failedScope, 'handleApplication must have been invoked');
+				assert.strictEqual(
+					lockFreeDuringClose,
+					true,
+					'sequentiallyHandleApplication must release the (app, plugin) lock before scope.close() runs'
+				);
+				assert.strictEqual(
+					secretSubscription.closed,
+					true,
+					'bounded close timeout must still finalize scope subscriptions'
+				);
+				assert.strictEqual(failedScope.listenerCount('error'), 0, 'bounded close timeout must remove scope listeners');
+				assert.ok(
+					loggedWarnings.some((args) =>
+						args.some((arg) => String(arg).includes('waiting for component scope') && String(arg).includes('to close'))
+					),
+					'bounded close timeout must log a warning'
+				);
+				assert.ok(
+					loggedErrors.some((args) =>
+						args.some((arg) => String(arg?.message ?? arg).includes('early close listener failure before timeout'))
+					),
+					'an early close listener rejection before another listener times out must still be surfaced'
+				);
+				for (const listener of (listenersByType.get(ITC_EVENT_TYPES.SHUTDOWN) ?? []).slice(shutdownListenersBefore)) {
+					listener({ type: ITC_EVENT_TYPES.SHUTDOWN }, null);
+				}
+				let scopeCloseSettled = false;
+				const directScopeClose = failedScope.close().then(
+					() => {
+						scopeCloseSettled = true;
+					},
+					() => {
+						scopeCloseSettled = true;
+					}
+				);
+				let shutdownCloseSettled = false;
+				const shutdownClose = whenScopesClosed().then(
+					() => {
+						shutdownCloseSettled = true;
+					},
+					() => {
+						shutdownCloseSettled = true;
+					}
+				);
+				for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+				assert.strictEqual(
+					scopeCloseSettled,
+					false,
+					'failedScope.close() must wait for in-flight close listeners that outlived the failed-load bound'
+				);
+				assert.strictEqual(
+					shutdownCloseSettled,
+					false,
+					'SHUTDOWN must wait for in-flight close listeners that outlived the failed-load bound'
+				);
+				releaseLateRejection?.();
+				await Promise.race([
+					Promise.all([directScopeClose, shutdownClose]),
+					new Promise((_, reject) => setTimeout(() => reject(new Error('shutdownClose timed out')), 2000)),
+				]);
+				assert.strictEqual(
+					scopeCloseSettled,
+					true,
+					'failedScope.close() must settle once the late close listener finishes'
+				);
+				assert.strictEqual(
+					shutdownCloseSettled,
+					true,
+					'whenScopesClosed() must settle once the late close listener finishes'
+				);
+				assert.ok(
+					loggedErrors.some((args) =>
+						args.some((arg) => String(arg?.message ?? arg).includes('late close listener failure after timeout'))
+					),
+					'a close listener rejection arriving after the timeout must be logged'
+				);
+			} finally {
+				releaseLateRejection?.();
+				setTerminateTimeout(priorTerminateTimeout);
+				await secretSubscription?.return?.();
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedPluginName];
+				componentLoader.loadedPaths.clear();
+				await new Promise((resolve) => setImmediate(resolve));
+				rmSync(failedAppDir, { recursive: true, force: true });
+			}
+		});
+
+		it('waits for handleApplication to settle after a watchdog timeout before closing the scope, and skips late lock-wait callbacks', async () => {
+			const componentLoader = require('#src/components/componentLoader');
+			const { Status } = require('#src/server/status/index');
+			const { statusForComponent, STATUS } = require('#src/components/status/index');
+			const watchdogAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.watchdog-scope-'));
+			const watchdogAppName = basename(watchdogAppDir);
+			const watchdogPluginName = 'watchdogScopeCleanupPlugin';
+			const lockWaitAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.lockwait-scope-'));
+			const lockWaitAppName = basename(lockWaitAppDir);
+			const lockWaitPluginName = 'lockWaitScopeCleanupPlugin';
+			const lockId = `${lockWaitAppName}\0${lockWaitPluginName}`;
+
+			let watchdogScope;
+			let lateEntryHandler;
+			let lateSecretSub;
+			let lateCloseCalls = 0;
+			let lockWaitPluginCalls = 0;
+			let lockHeld = false;
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[watchdogPluginName] = {
+				async handleApplication(scope) {
+					watchdogScope = scope;
+					await new Promise((resolve) => setTimeout(resolve, 60));
+					lateEntryHandler = scope.handleEntry();
+					await lateEntryHandler.ready;
+					lateSecretSub = scope.secrets.subscribe('SCOPED_SECRET');
+					await lateSecretSub.next();
+					scope.once('close', () => {
+						lateCloseCalls++;
+					});
+				},
+			};
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[lockWaitPluginName] = {
+				async handleApplication() {
+					lockWaitPluginCalls++;
+				},
+			};
+
+			try {
+				writeFileSync(join(watchdogAppDir, 'test.js'), '"hello";');
+				writeFileSync(
+					join(watchdogAppDir, 'harperdb-config.yaml'),
+					stringify({ [watchdogPluginName]: { files: 'test.js', timeout: 20 } })
+				);
+				await componentLoader.loadComponent(watchdogAppDir, { isWorker: true, set() {} }, 'test', {
+					appName: watchdogAppName,
+					applicationScope: new ApplicationScope(watchdogAppName, this.resources, this.server),
+				});
+
+				assert.ok(watchdogScope, 'watchdog plugin handleApplication must have started');
+				assert.strictEqual(
+					lateCloseCalls,
+					1,
+					'close must wait for handleApplication to settle so a close listener registered after the watchdog fires still runs'
+				);
+				assert.strictEqual(
+					lateEntryHandler?._liveWatcherCountForTests,
+					0,
+					'EntryHandler created before handleApplication settled must be closed'
+				);
+				assert.strictEqual(
+					lateSecretSub?.closed,
+					true,
+					'secret subscription created before handleApplication settled must be closed'
+				);
+
+				lockHeld = Status.primaryStore.tryLock(lockId);
+				assert.strictEqual(lockHeld, true, 'fixture guard: test must acquire the plugin lock first');
+				writeFileSync(
+					join(lockWaitAppDir, 'harperdb-config.yaml'),
+					stringify({ [lockWaitPluginName]: { timeout: -4950 } })
+				);
+				await componentLoader.loadComponent(lockWaitAppDir, { isWorker: true, set() {} }, 'test', {
+					appName: lockWaitAppName,
+					applicationScope: new ApplicationScope(lockWaitAppName, this.resources, this.server),
+				});
+				Status.primaryStore.unlock(lockId);
+				lockHeld = false;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.strictEqual(
+					lockWaitPluginCalls,
+					0,
+					'releasing the lock after a lock-wait timeout must not run handleApplication on the closed scope'
+				);
+
+				componentLoader.loadedPaths.clear();
+				writeFileSync(
+					join(lockWaitAppDir, 'harperdb-config.yaml'),
+					stringify({ [lockWaitPluginName]: { timeout: 30_000 } })
+				);
+				lockHeld = Status.primaryStore.tryLock(lockId);
+				assert.strictEqual(lockHeld, true, 'fixture guard: test must re-acquire the plugin lock');
+				let waitingScope;
+				const originalWaitForDeploy = Scope.prototype.waitForDeployCompletion;
+				Scope.prototype.waitForDeployCompletion = function (...args) {
+					if (this.appName === lockWaitAppName) waitingScope = this;
+					return originalWaitForDeploy.apply(this, args);
+				};
+				try {
+					const pendingLoad = componentLoader.loadComponent(lockWaitAppDir, { isWorker: true, set() {} }, 'test', {
+						appName: lockWaitAppName,
+						applicationScope: new ApplicationScope(lockWaitAppName, this.resources, this.server),
+					});
+					await waitFor(() => Boolean(waitingScope), 2000);
+					await new Promise((resolve) => setImmediate(resolve));
+					await waitingScope.close();
+					Status.primaryStore.unlock(lockId);
+					lockHeld = false;
+					const settled = await Promise.race([
+						pendingLoad.then(() => 'settled'),
+						new Promise((resolve) => setTimeout(() => resolve('timed-out'), 500)),
+					]);
+					assert.strictEqual(
+						settled,
+						'settled',
+						'releasing the lock after a waiting scope is closed must settle loadComponent rather than hanging'
+					);
+					assert.strictEqual(
+						lockWaitPluginCalls,
+						0,
+						'a scope closed while waiting for the lock must not run handleApplication when the lock is released'
+					);
+					assert.notStrictEqual(
+						statusForComponent(`${lockWaitAppName}.${lockWaitPluginName}`)?.status,
+						STATUS.HEALTHY,
+						'a scope closed while waiting for the lock must not be marked healthy'
+					);
+				} finally {
+					Scope.prototype.waitForDeployCompletion = originalWaitForDeploy;
+				}
+			} finally {
+				if (lockHeld) Status.primaryStore.unlock(lockId);
+				await lateSecretSub?.return?.();
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[watchdogPluginName];
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[lockWaitPluginName];
+				componentLoader.loadedPaths.clear();
+				await watchdogScope?.close().catch(() => {});
+				await new Promise((resolve) => setImmediate(resolve));
+				rmSync(watchdogAppDir, { recursive: true, force: true });
+				rmSync(lockWaitAppDir, { recursive: true, force: true });
+			}
+		});
+
+		it('closes scope resources when an initial entry load fails while keeping a one-shot recovery watcher until the file is edited or reloaded', async () => {
+			const componentLoader = require('#src/components/componentLoader');
+			const failedEntryAppDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-entry-recovery-'));
+			const failedEntryAppName = basename(failedEntryAppDir);
+			const failedEntryPluginName = 'failedEntryRecoveryPlugin';
+			const scopes = [];
+			const entryHandlers = [];
+			const subscriptions = [];
+			let optionsClosed = false;
+
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[failedEntryPluginName] = {
+				handleApplication(scope) {
+					scopes.push(scope);
+					scope.options.on('close', () => {
+						optionsClosed = true;
+					});
+					const sub = scope.secrets.subscribe('SCOPED_SECRET');
+					subscriptions.push(sub);
+					const handler = scope.handleEntry(async () => {
+						await sub.next();
+						throw new Error('broken entry file');
+					});
+					entryHandlers.push(handler);
+					return scope.waitForInitialLoads();
+				},
+			};
+
+			try {
+				const watchedFile = join(failedEntryAppDir, 'schema.graphql');
+				writeFileSync(watchedFile, 'type Broken {');
+				writeFileSync(
+					join(failedEntryAppDir, 'harperdb-config.yaml'),
+					stringify({ [failedEntryPluginName]: { files: 'schema.graphql' } })
+				);
+
+				await componentLoader.loadComponent(failedEntryAppDir, { isWorker: true, set() {} }, 'test', {
+					appName: failedEntryAppName,
+					applicationScope: new ApplicationScope(failedEntryAppName, this.resources, this.server),
+				});
+
+				assert.strictEqual(scopes.length, 1);
+				assert.strictEqual(scopes[0].closed, true, 'failed entry scope must be closed');
+				assert.strictEqual(optionsClosed, true, 'OptionsWatcher must be closed when initial entry load fails');
+				assert.strictEqual(
+					subscriptions[0].closed,
+					true,
+					'secret subscription must be closed when initial entry load fails'
+				);
+				assert.strictEqual(
+					entryHandlers[0]._liveWatcherCountForTests,
+					1,
+					'failed entry handler must keep a recovery watcher so editing the broken file triggers a restart'
+				);
+
+				// A nested component sharing the same (appName, pluginName) in a different directory must not
+				// collide with or close the parent component's recovery watcher.
+				const nestedDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.failed-entry-nested-'));
+				try {
+					const nestedConfig = join(nestedDir, 'harperdb-config.yaml');
+					writeFileSync(nestedConfig, stringify({ [failedEntryPluginName]: {} }));
+					const nestedScope = new Scope(
+						failedEntryAppName,
+						failedEntryPluginName,
+						nestedDir,
+						nestedConfig,
+						new ApplicationScope(failedEntryAppName, this.resources, this.server)
+					);
+					await nestedScope.ready;
+					await nestedScope.close();
+					assert.strictEqual(
+						entryHandlers[0]._liveWatcherCountForTests,
+						1,
+						'a nested scope in a different directory must not close the parent recovery watcher'
+					);
+				} finally {
+					rmSync(nestedDir, { recursive: true, force: true });
+				}
+
+				// A deploy starting and ending while the recovery watcher is waiting must pause and resume it.
+				deployLifecycle._handle({ name: failedEntryAppName, phase: 'start' });
+				await waitFor(() => entryHandlers[0]._liveWatcherCountForTests === 0, 2000);
+				assert.strictEqual(
+					entryHandlers[0]._liveWatcherCountForTests,
+					0,
+					'deploy:start must pause a recovery watcher so intermediate deploy file writes do not trigger an early restart'
+				);
+				deployLifecycle._handle({ name: failedEntryAppName, phase: 'end' });
+				await waitFor(() => entryHandlers[0]._liveWatcherCountForTests === 1, 2000);
+
+				// Reloading the failing component before any file change must close the previous recovery watcher
+				// rather than accumulating watchers across repeated reloads/redeploys.
+				componentLoader.loadedPaths.clear();
+				await componentLoader.loadComponent(failedEntryAppDir, { isWorker: true, set() {} }, 'test', {
+					appName: failedEntryAppName,
+					applicationScope: new ApplicationScope(failedEntryAppName, this.resources, this.server),
+				});
+				await waitFor(() => entryHandlers[0]._liveWatcherCountForTests === 0, 2000);
+				assert.strictEqual(
+					entryHandlers[0]._liveWatcherCountForTests,
+					0,
+					'reloading the component must close the prior failed scope recovery watcher'
+				);
+				assert.strictEqual(
+					entryHandlers[1]._liveWatcherCountForTests,
+					1,
+					'latest failed load keeps a single recovery watcher'
+				);
+
+				resetRestartNeeded();
+				deployLifecycle._handle({ name: failedEntryAppName, phase: 'start' });
+				entryHandlers[1].emit('change', {
+					eventType: 'change',
+					entryType: 'file',
+					absolutePath: watchedFile,
+					urlPath: '/schema.graphql',
+				});
+				assert.strictEqual(
+					restartNeeded(),
+					false,
+					'a recovery event arriving while a deploy is in flight must defer requestRestart until deploy:end'
+				);
+				deployLifecycle._handle({ name: failedEntryAppName, phase: 'end' });
+				assert.strictEqual(
+					restartNeeded(),
+					true,
+					'deploy:end must flush a recovery restart that was deferred during deploy'
+				);
+				await waitFor(() => entryHandlers[1]._liveWatcherCountForTests === 0, 2000);
+
+				// Real filesystem edit outside a deploy immediately triggers a restart and closes the recovery watcher.
+				componentLoader.loadedPaths.clear();
+				await componentLoader.loadComponent(failedEntryAppDir, { isWorker: true, set() {} }, 'test', {
+					appName: failedEntryAppName,
+					applicationScope: new ApplicationScope(failedEntryAppName, this.resources, this.server),
+				});
+				assert.strictEqual(entryHandlers[2]._liveWatcherCountForTests, 1);
+				resetRestartNeeded();
+				writeFileSync(watchedFile, 'type Fixed @table { id: ID @primaryKey }\n');
+				await waitFor(() => restartNeeded(), 2000);
+				await waitFor(() => entryHandlers[2]._liveWatcherCountForTests === 0, 2000);
+				assert.strictEqual(
+					entryHandlers[2]._liveWatcherCountForTests,
+					0,
+					'recovery watcher must close itself as soon as the file edit requests a restart'
+				);
+			} finally {
+				resetDeployLifecycle();
+				resetRestartNeeded();
+				for (const sub of subscriptions) await sub?.return?.();
+				for (const s of scopes) await s?.close().catch(() => {});
+				delete componentLoader.TRUSTED_RESOURCE_PLUGINS[failedEntryPluginName];
+				componentLoader.loadedPaths.clear();
+				await new Promise((resolve) => setImmediate(resolve));
+				rmSync(failedEntryAppDir, { recursive: true, force: true });
+			}
+		});
 	});
 });

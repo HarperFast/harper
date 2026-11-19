@@ -1,0 +1,33 @@
+# QA-179 — TTL background expiration/eviction sweep vs secondary-index consistency under
+# long-transaction force-commit.
+#
+# Sibling to QA-176 (which probed the EXPLICIT-WRITE force-commit path). The TTL
+# eviction/expiration DELETE is a SEPARATE code path (resources/Table.ts
+# scheduleCleanup() -> TableResource.evict(), and runRecordExpirationEviction()), but it
+# ALSO must keep the base store and the secondary @indexed index consistent. Each evict()
+# opens its own DatabaseTransaction, removes the secondary-index entry AND the base row,
+# then commits. The eviction sweep on the last worker runs up to MAX_CLEANUP_CONCURRENCY=50
+# in-flight evictions with `await rest()` between records, so with
+# storage.maxTransactionOpenTime:1 + debugLongTransactions:true the over-time monitor can
+# force-commit/abort a tracked eviction txn mid-flight. The fear: index-entry-delete and
+# base-row-delete diverge -> phantom (index hit, base gone) or missing (base survives, no
+# index entry).
+#
+# `bucket` is the secondary @indexed attribute under test. The expiration TTL is applied at
+# the table level (primary-key expiration); rows in this table all expire.
+type Expiring @table(expiration: 4, scanInterval: 2) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}
+
+# Control table: NO expiration. Co-located @indexed bucket. Its rows must survive the
+# eviction sweep entirely and stay perfectly indexed — a negative control proving the sweep
+# touches only the expiring table and that the oracle itself is sound.
+type Permanent @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}

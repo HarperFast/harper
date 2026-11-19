@@ -1,5 +1,5 @@
 import type { UserRoleDatabasePermissions } from '../security/user.ts';
-import type { Conditions, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
+import type { Conditions, Context, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
 import { parseQuery } from './search.ts';
 
 export class RequestTarget extends URLSearchParams {
@@ -36,6 +36,8 @@ export class RequestTarget extends URLSearchParams {
 	declare select?: Select;
 	/**	 Return an explanation of the query order */
 	declare explain?: boolean;
+	/** Request a total count of matching records for pagination (REST `Prefer: count=exact|estimated`). */
+	declare count?: 'exact' | 'estimated';
 	/**	 Force the query to be executed in the order of conditions */
 	declare enforceExecutionOrder?: boolean;
 	declare lazy?: boolean;
@@ -56,6 +58,8 @@ export class RequestTarget extends URLSearchParams {
 	declare previousResidency?: string[];
 
 	// Action tracking
+	/** Cache disposition of this get on a caching table: true if loaded from the source, false if
+	 * served from cache. Set per-get; read it on the RequestTarget you passed to the get. */
 	declare loadedFromSource?: boolean;
 	declare createdNewId?: string;
 
@@ -64,6 +68,32 @@ export class RequestTarget extends URLSearchParams {
 
 	declare allowFullScan?: boolean;
 	declare allowConditionsOnDynamicAttributes?: boolean;
+
+	/**
+	 * Predicate-aware vector search (#1241). A `(record) => boolean` filter evaluated during HNSW
+	 * traversal (and as a post-filter for other paths), so a vector sort keeps exploring until it has
+	 * enough MATCHING nearest neighbors instead of post-filtering an under-filled candidate set. The
+	 * function must be synchronous and side-effect free; the record it receives is frozen. JS-API only —
+	 * never parsed from a REST query string (no eval of user-supplied code over HTTP).
+	 */
+	declare vectorFilter?: (record: any) => boolean;
+
+	/**
+	 * Application-supplied row predicate applied during query execution and against the final
+	 * materialized record. JavaScript API only; never parsed from REST input. The predicate must be
+	 * synchronous and side-effect free. Prefer adding indexed conditions when possible.
+	 */
+	declare rowFilter?: (record: any, context: Context) => boolean;
+
+	/**
+	 * When `false`, the query reads against the latest committed data without holding a consistent
+	 * read snapshot open for the duration of the iteration. This trades read consistency (rows
+	 * written after the scan starts may be observed) for not pinning a snapshot that blocks
+	 * compaction and ties up resources — useful for long-running scans such as analytics queries.
+	 * Defaults to `true` (a stable snapshot is held). Currently only honored by RocksDB-backed
+	 * tables; see `DatabaseTransaction.getReadTxn`.
+	 */
+	declare snapshot?: boolean;
 
 	constructor(target?: string) {
 		let searchIndex: number | undefined;
@@ -90,16 +120,25 @@ export class RequestTarget extends URLSearchParams {
 		if (path) {
 			// parse for properties and set the id
 			if (path.startsWith('/')) path = path.substring(1);
-		} else {
-			return; // leave this.id undefined
+		} else if (target === undefined) {
+			return; // constructed with no target at all (internal use) — leave id/isCollection unset
 		}
 		if (path) {
 			if (path.endsWith('/')) {
 				this.isCollection = true;
 			}
-			this.id = decodeURIComponent(path);
-		} else {
+			this.id = path.includes('%') ? decodeURIComponent(path) : path;
+		} else if (this.pathname === '/') {
+			// a bare trailing slash is the documented way to address a resource's collection
 			this.isCollection = true;
+			this.id = null;
+		} else {
+			// an exact resource-path match with nothing left to parse and no trailing slash
+			// (e.g. `/redirects` instead of the required `/redirects/`, harper#678): this is
+			// neither a valid collection request nor a specific record, so id/isCollection must
+			// still be well-defined (never left `undefined`) for dispatch to reject it cleanly
+			// instead of letting downstream code assume one of them is always set.
+			this.isCollection = false;
 			this.id = null;
 		}
 	}

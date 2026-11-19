@@ -1,11 +1,13 @@
-const validate = require('validate.js');
-const validator = require('./validationWrapper');
+import validate from 'validate.js';
+import * as _validator from './validationWrapper.ts';
+const validator = _validator;
 import * as terms from '../utility/hdbTerms.ts';
 import { validateOperations } from '../utility/operationPermissions.ts';
+import { COMPONENT_GRANT_KEY, componentGrantError } from '../security/componentGrant.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { getDatabases } from '../resources/databases.ts';
 
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
-
 const constraintsTemplate = () => ({
 	role: {
 		presence: true,
@@ -66,6 +68,10 @@ function customValidate(object, constraints) {
 		schema_permissions: {},
 	};
 
+	// getDatabases() is self-initializing; global.hdb_schema is set lazily and is undefined when a
+	// component's roles.yaml is validated during startup.
+	const hdb_schema: any = getDatabases();
+
 	const jsonMsgKeys = Object.keys(object);
 
 	//Check to confirm that keys in JSON body are valid
@@ -86,8 +92,16 @@ function customValidate(object, constraints) {
 		});
 	}
 
-	//need this check to avoid unexpected errors if someone doesn't have permissions key included in request
-	if (object.permission) {
+	// `permission` is only presence-constrained, so any type reaches here. Anything that is not a plain
+	// object carries no role flags and no database entries, so every check below is a no-op on it and the
+	// role would validate clean and be persisted — `hdb_role.permission` has no storage type constraint
+	// to catch it later. Reject the shape itself, and skip the per-key checks that assume an object.
+	const permissionIsObject =
+		typeof object.permission === 'object' && object.permission !== null && !Array.isArray(object.permission);
+	if (object.permission !== undefined && !permissionIsObject) {
+		addPermError(HDB_ERROR_MSGS.PERMISSION_NOT_OBJECT, validationErrors, undefined, undefined);
+	}
+	if (permissionIsObject) {
 		//check if role is SU or CU and has perms included
 		const suPermsError = validateNoSUPerms(object);
 		if (suPermsError) {
@@ -95,13 +109,26 @@ function customValidate(object, constraints) {
 		}
 		//check if cu or su values, if included, are booleans
 		ROLE_TYPES.forEach((role) => {
-			if (object.permission[role as any] && !validate.isBoolean(object.permission[role as any])) {
+			// Gate on key presence, not truthiness: a falsey non-boolean (0, '', null) must still be
+			// rejected as a non-boolean. A truthiness gate would let those skip both this check AND the
+			// database-permission loop below (the key is a role type, so that loop excludes it), so an
+			// add/alter role would silently accept a value that violates the boolean contract.
+			if (Object.hasOwn(object.permission, role) && !validate.isBoolean(object.permission[role as any])) {
 				addPermError(HDB_ERROR_MSGS.SU_CU_ROLE_BOOLEAN_ERROR(role as any), validationErrors, undefined, undefined);
 			}
 		});
 	}
 
 	for (let item in object.permission) {
+		if (item === terms.SYSTEM_SCHEMA_NAME) {
+			addPermError(
+				`Role '${object.role ?? object.id}': ${HDB_ERROR_MSGS.SYSTEM_ROLE_PERMISSIONS_MANAGED}`,
+				validationErrors,
+				undefined,
+				undefined
+			);
+			continue;
+		}
 		if (ROLE_TYPES.indexOf(item as any) < 0) {
 			//validate the user type 'structure_user'.  acceptable data type is boolean or array of strings (this would be array of accepted schemas to interact with)
 			if (item === STRUCTURE_USER_ENUM.STRUCTURE_USER) {
@@ -116,7 +143,7 @@ function customValidate(object, constraints) {
 				if (Array.isArray(structureUserPerm)) {
 					for (let k = 0, length = structureUserPerm.length; k < length; k++) {
 						let schemaPerm = structureUserPerm[k];
-						if (!(global as any).hdb_schema[schemaPerm]) {
+						if (!hdb_schema[schemaPerm]) {
 							addPermError(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schemaPerm), validationErrors, undefined, undefined);
 						}
 					}
@@ -144,9 +171,15 @@ function customValidate(object, constraints) {
 				continue;
 			}
 
+			if (item === COMPONENT_GRANT_KEY) {
+				const grantError = componentGrantError(object.permission[item]);
+				if (grantError) addPermError(grantError, validationErrors, undefined, undefined);
+				continue;
+			}
+
 			let schema = object.permission[item];
 			//validate that schema exists
-			if (!item || !(global as any).hdb_schema[item]) {
+			if (!item || !hdb_schema[item]) {
 				addPermError(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(item), validationErrors, undefined, undefined);
 				continue;
 			}
@@ -154,7 +187,7 @@ function customValidate(object, constraints) {
 				for (let t in schema.tables) {
 					let table = schema.tables[t];
 					//validate that table exists in schema
-					if (!t || !(global as any).hdb_schema[item][t]) {
+					if (!t || !hdb_schema[item][t]) {
 						addPermError(HDB_ERROR_MSGS.TABLE_NOT_FOUND(item, t), validationErrors, undefined, undefined);
 						continue;
 					}
@@ -186,7 +219,7 @@ function customValidate(object, constraints) {
 
 					//need this check here to ensure no unexpected errors if key is missing in table perms obj
 					if (table.attribute_permissions) {
-						let tableAttributeNames = (global as any).hdb_schema[item][t].attributes.map(({ attribute }) => attribute);
+						let tableAttributeNames = hdb_schema[item][t].attributes.map(({ attribute }) => attribute);
 						const attrPermsCheck = {
 							read: false,
 							insert: false,
@@ -263,11 +296,19 @@ function customValidate(object, constraints) {
 function validateNoSUPerms(obj) {
 	const { operation, permission } = obj;
 	if (operation === terms.OPERATIONS_ENUM.ADD_ROLE || operation === terms.OPERATIONS_ENUM.ALTER_ROLE) {
-		//Check if role type is super user
-		const isSuRole = permission.super_user === true;
+		// A malformed `permission` (only presence-constrained) must not throw here either.
+		if (typeof permission !== 'object' || permission === null) return null;
 		const hasPerms = Object.keys(permission).length > 1;
-		if (hasPerms && isSuRole) {
+		if (!hasPerms) return null;
+		// Both role types are exclusive — the error message has always named CU as well. Before
+		// `cluster_user` joined ROLE_TYPES it was rejected incidentally, by the database-permission loop
+		// treating it as a database whose value wasn't an object; now that the loop skips it, the
+		// exclusivity has to be enforced here or `{ cluster_user: true, someDb: {...} }` validates.
+		if (permission.super_user === true) {
 			return HDB_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(terms.ROLE_TYPES_ENUM.SUPER_USER);
+		}
+		if (permission.cluster_user === true) {
+			return HDB_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(terms.ROLE_TYPES_ENUM.CLUSTER_USER);
 		}
 	}
 	return null;

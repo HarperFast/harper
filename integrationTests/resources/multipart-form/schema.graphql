@@ -1,0 +1,5 @@
+type StoredUpload @table @export {
+	id: ID @primaryKey
+	title: String
+	file: Blob
+}

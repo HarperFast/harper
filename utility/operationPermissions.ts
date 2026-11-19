@@ -23,6 +23,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.DESCRIBE_DATABASE,
 		OPERATIONS_ENUM.DESCRIBE_TABLE,
 		OPERATIONS_ENUM.USER_INFO,
+		OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION,
 		OPERATIONS_ENUM.GET_JOB,
 		OPERATIONS_ENUM.GET_ANALYTICS,
 		OPERATIONS_ENUM.LIST_METRICS,
@@ -30,7 +31,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 	],
 	/**
 	 * Elevated read-only access to server configuration, logs, and component views.
-	 * All ops here are SU-only and granted via the operations SU bypass.
+	 * All ops here but get_studio_configuration are SU-only and granted via the operations SU bypass.
 	 * Combine with `read_only` for a full studio/dashboard read role:
 	 * `operations: ['read_only', 'admin_read']`
 	 */
@@ -42,6 +43,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,
 		OPERATIONS_ENUM.GET_COMPONENTS,
 		OPERATIONS_ENUM.GET_COMPONENT_FILE,
+		OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION,
 	],
 	/**
 	 * Everything in `read_only` plus full data manipulation (insert, update, upsert, delete)
@@ -61,6 +63,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.DESCRIBE_DATABASE,
 		OPERATIONS_ENUM.DESCRIBE_TABLE,
 		OPERATIONS_ENUM.USER_INFO,
+		OPERATIONS_ENUM.GET_STUDIO_CONFIGURATION,
 		OPERATIONS_ENUM.GET_JOB,
 		OPERATIONS_ENUM.GET_ANALYTICS,
 		OPERATIONS_ENUM.LIST_METRICS,
@@ -69,6 +72,7 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.INSERT,
 		OPERATIONS_ENUM.UPDATE,
 		OPERATIONS_ENUM.UPSERT,
+		OPERATIONS_ENUM.PUT,
 		OPERATIONS_ENUM.DELETE,
 		// Bulk load
 		OPERATIONS_ENUM.CSV_DATA_LOAD,
@@ -76,10 +80,57 @@ export const OPERATION_PERMISSION_GROUPS = {
 		OPERATIONS_ENUM.CSV_URL_LOAD,
 		OPERATIONS_ENUM.IMPORT_FROM_S3,
 	],
+	/**
+	 * Drive the built-in agent (#626): send prompts, read/list sessions, and approve/cancel
+	 * runs. Grants a scoped, non-super_user "delegation" role access to the agent without full
+	 * super_user (all agent ops are super_user by default). Deliberately EXCLUDES set_agent_config
+	 * — changing the agent's model/approval policy stays an operator (super_user) action.
+	 */
+	agent: [
+		OPERATIONS_ENUM.AGENT_PROMPT,
+		OPERATIONS_ENUM.GET_AGENT_SESSION,
+		OPERATIONS_ENUM.LIST_AGENT_SESSIONS,
+		OPERATIONS_ENUM.CANCEL_AGENT_RUN,
+		OPERATIONS_ENUM.APPROVE_AGENT_ACTION,
+	],
 } as const;
 
 const validOps: Set<string> = new Set(Object.values(OPERATIONS_ENUM));
 const validGroups: Set<string> = new Set(Object.keys(OPERATION_PERMISSION_GROUPS));
+// Operations registered dynamically at runtime (server.registerOperation with a declared
+// permission) whose names may fall outside OPERATIONS_ENUM. Tracked so they're grantable in a
+// role's `operations` allowlist (add_role/alter_role/impersonation validate against this set too).
+const dynamicallyRegisteredOps: Set<string> = new Set();
+// The same, for ops registered on a WORKER and mirrored here by the OPERATION_REGISTERED bridge.
+// Deliberately a separate set: the two threads can register the same name independently (a hot
+// deploy can add a `startOnMainThread` component while the worker offering that name is retiring),
+// so worker-lifecycle cleanup must not be able to revoke a mark this thread made itself.
+const workerRegisteredOps: Set<string> = new Set();
+
+/**
+ * Mark a dynamically-registered operation name as a valid target for role `operations` grants.
+ * Called by registerOperationPermission so a component op declaring a permission can actually be
+ * granted (not just enforced). Enum-backed op names are already valid; this covers custom names.
+ */
+export function registerGrantableOperation(name: string): void {
+	dynamicallyRegisteredOps.add(name);
+}
+
+/**
+ * Remove a dynamically-registered grantable operation name. Mirrors registerGrantableOperation;
+ * primarily for tests that register throwaway ops and must not leak them into the global set.
+ */
+export function unregisterGrantableOperation(name: string): void {
+	dynamicallyRegisteredOps.delete(name);
+}
+
+export function registerWorkerGrantableOperation(name: string): void {
+	workerRegisteredOps.add(name);
+}
+
+export function unregisterWorkerGrantableOperation(name: string): void {
+	workerRegisteredOps.delete(name);
+}
 
 /**
  * Validates that every entry in an operations array is a known operation name or group name.
@@ -87,7 +138,10 @@ const validGroups: Set<string> = new Set(Object.keys(OPERATION_PERMISSION_GROUPS
  */
 export function validateOperations(operations: readonly unknown[]): string | null {
 	for (const op of operations) {
-		if (typeof op !== 'string' || (!validOps.has(op) && !validGroups.has(op))) {
+		if (
+			typeof op !== 'string' ||
+			(!validOps.has(op) && !validGroups.has(op) && !dynamicallyRegisteredOps.has(op) && !workerRegisteredOps.has(op))
+		) {
 			return String(op);
 		}
 	}

@@ -1,11 +1,12 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
-const config_val = rewire('#src/validation/configValidator');
-const { configValidator, routesValidator } = config_val;
+const config_val = rewire('#js/validation/configValidator');
+const { configValidator, routesValidator, REQUIRED_ROOT_CONFIG_KEYS } = config_val;
 const path = require('path');
 const testUtils = require('../testUtils.js');
 const fs = require('fs-extra');
@@ -143,6 +144,15 @@ describe('Test configValidator module', () => {
 	const sandbox = sinon.createSandbox();
 
 	describe('Test config schema in configValidator function', () => {
+		it('REQUIRED_ROOT_CONFIG_KEYS lists exactly the root keys the schema requires', () => {
+			// rootPath is given because the schema's path defaults throw without it
+			const { error } = configValidator({ rootPath: HDB_ROOT }, true);
+			const required = error.details
+				.filter((detail) => detail.type === 'any.required' && detail.path.length === 1)
+				.map((detail) => detail.path[0]);
+			assert.deepStrictEqual([...required, 'rootPath'].sort(), [...REQUIRED_ROOT_CONFIG_KEYS].sort());
+		});
+
 		it('Test itc and localStudio in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.itc.network.port = 'bad_port';
@@ -154,6 +164,75 @@ describe('Test configValidator module', () => {
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
+		it('storage.blobs.compression accepts content-type entries and rejects malformed ones', () => {
+			const good_config_obj = testUtils.deepClone(FAKE_CONFIG);
+			good_config_obj.storage.blobs = {
+				compression: {
+					'default': { codec: 'deflate', threshold: 65536 },
+					'text/*': { codec: 'deflate' },
+					'application/json': { threshold: 8192 },
+					'image/*': false,
+				},
+			};
+			expect(configValidator(good_config_obj).error).to.eql(undefined);
+
+			const bad_codec_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_codec_obj.storage.blobs = { compression: { default: { codec: 'zstd' } } };
+			expect(configValidator(bad_codec_obj).error.message).to.include('codec');
+
+			const bad_threshold_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_threshold_obj.storage.blobs = { compression: { default: { threshold: -1 } } };
+			expect(configValidator(bad_threshold_obj).error.message).to.include('threshold');
+
+			// a key that is not a content type, a type/* wildcard, or 'default' must fail, not
+			// silently never match
+			const bad_key_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_key_obj.storage.blobs = { compression: { 'not a content type!': { codec: 'deflate' } } };
+			expect(bad_key_obj && configValidator(bad_key_obj).error).to.not.eql(undefined);
+
+			// a typo'd field inside an entry must fail rather than silently falling back to defaults —
+			// the top-level validate() runs with allowUnknown:true, so the entry object needs .unknown(false)
+			const bad_field_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_field_obj.storage.blobs = { compression: { default: { treshold: 1000000 } } };
+			expect(configValidator(bad_field_obj).error).to.not.eql(undefined);
+
+			// a misspelled property directly under storage.blobs (e.g. `compresion:`) must also fail, not
+			// validate clean and silently leave compression off
+			const bad_blobs_key_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_blobs_key_obj.storage.blobs = { compresion: { default: { codec: 'deflate' } } };
+			expect(configValidator(bad_blobs_key_obj).error).to.not.eql(undefined);
+		});
+
+		it('storage.maxLockClockSkew accepts finite duration strings and rejects malformed values', () => {
+			for (const value of [5, '5', '500ms', '5s', '5m', '2h', '1d']) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.maxLockClockSkew = value;
+				assert.strictEqual(configValidator(config).error, undefined, `${value} is accepted`);
+			}
+			for (const value of ['5 ms', '-1s', '1e400', 'Infinity', '1M', '1y', `${'9'.repeat(400)}s`, Number.MAX_VALUE]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.maxLockClockSkew = value;
+				assert.ok(configValidator(config).error, `${value} is rejected`);
+			}
+		});
+
+		it('storage.recordCacheSize accepts an integer from 4 to 16777215 and rejects anything else', () => {
+			for (const value of [4, 32768, 65536, 16777215]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.recordCacheSize = value;
+				const { error, value: validated } = configValidator(config);
+				assert.strictEqual(error, undefined, `${value} is accepted`);
+				assert.strictEqual(validated.storage.recordCacheSize, value);
+			}
+			for (const value of [1.5, 65536.5, -1, -32768, 0, 3, 16777216, '65536', 'big', true, null]) {
+				const config = testUtils.deepClone(FAKE_CONFIG);
+				config.storage.recordCacheSize = value;
+				const { error } = configValidator(config);
+				assert.ok(error, `${value} is rejected`);
+				assert.match(error.message, /storage\.recordCacheSize/);
+			}
+		});
+
 		it('Test logging in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.logging.file = 'sassafrass';
@@ -163,13 +242,13 @@ describe('Test configValidator module', () => {
 			bad_config_obj.logging.rotation.compress = 'nah';
 			bad_config_obj.logging.rotation.maxSize = '100z';
 			bad_config_obj.logging.rotation.path = true;
-			bad_config_obj.logging.root = '/???';
+			bad_config_obj.logging.root = '/log\nroot'; // control char (newline) — rejected by the denylist
 			bad_config_obj.logging.stdStreams = ['not_a_boolean'];
 			bad_config_obj.logging.auditLog = ['not_a_boolean'];
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.enabled' must be a boolean. 'logging.rotation.compress' must be a boolean. 'logging.rotation.interval' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.path' must be a string. 'logging.root' with value '/???' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
+				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.enabled' must be a boolean. 'logging.rotation.compress' must be a boolean. 'logging.rotation.interval' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.path' must be a string. 'logging.root' with value '/log\nroot' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
@@ -187,14 +266,439 @@ describe('Test configValidator module', () => {
 			bad_config_obj.operationsApi.network.timeout = false;
 			bad_config_obj.operationsApi.nodeEnv = true;
 			bad_config_obj.http.threads = true;
-			bad_config_obj.rootPath = '/@@@';
+			bad_config_obj.rootPath = '/root\npath'; // control char (newline) — rejected by the denylist
 			bad_config_obj.storage.writeAsync = undefined;
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.timeout' must be a number. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'storage.writeAsync' is required";
+				"'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.timeout' must be a number. 'rootPath' with value '/root\npath' fails to match the directory path pattern. 'storage.writeAsync' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
+		});
+
+		it('bounds operationsApi.encryptedOperation maxAge and maxSize to integers in range', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.operationsApi.encryptedOperation = { maxAge: 1000, maxSize: 1024 };
+			assert.strictEqual(configValidator(config).error, undefined);
+			config.operationsApi.encryptedOperation = { maxAge: 600000, maxSize: 64 * 1024 * 1024 };
+			assert.strictEqual(configValidator(config).error, undefined);
+			for (const [encryptedOperation, field] of [
+				[{ maxAge: 999 }, 'maxAge'],
+				[{ maxAge: 600001 }, 'maxAge'],
+				[{ maxAge: 1500.5 }, 'maxAge'],
+				[{ maxSize: 1023 }, 'maxSize'],
+				[{ maxSize: 64 * 1024 * 1024 + 1 }, 'maxSize'],
+			]) {
+				config.operationsApi.encryptedOperation = encryptedOperation;
+				assert.match(
+					configValidator(config).error?.message,
+					new RegExp(`operationsApi\\.encryptedOperation\\.${field}`),
+					JSON.stringify(encryptedOperation)
+				);
+			}
+		});
+
+		it('enforces the blob-gap reconnect floor', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = { blobGapReconnectMs: 999 };
+			const rejected = configValidator(config);
+			expect(rejected.error.message).to.include(
+				"'replication.blobGapReconnectMs' must be greater than or equal to 1000"
+			);
+
+			config.replication.blobGapReconnectMs = 1000;
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts threads.v8Flags as V8 flags in a string or list, or null, and refuses anything else', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const v8Flags of ['--optimize-for-size', ['--optimize-for-size', ' --max-semi-space-size=1'], '', null]) {
+				config.threads = { count: 1, v8Flags };
+				assert.strictEqual(configValidator(config).error, undefined, JSON.stringify(v8Flags));
+			}
+			for (const v8Flags of [[1], 'optimize-for-size', ['--optimize-for-size', 'max-semi-space-size=1']]) {
+				config.threads = { count: 1, v8Flags };
+				assert.match(configValidator(config).error?.message, /threads\.v8Flags/, JSON.stringify(v8Flags));
+			}
+		});
+
+		it('accepts the blob-gap escalation bounds as non-negative integers, 0 meaning disabled', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = { blobGapEscalationCycles: 0, blobGapEscalationMs: 0 };
+			expect(configValidator(config).error).to.be.undefined;
+			config.replication = { blobGapEscalationCycles: 10, blobGapEscalationMs: 1800000 };
+			expect(configValidator(config).error).to.be.undefined;
+
+			config.replication = { blobGapEscalationCycles: -1 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationCycles' must be greater than or equal to 0"
+			);
+			config.replication = { blobGapEscalationCycles: 2.5 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationCycles' must be an integer"
+			);
+			config.replication = { blobGapEscalationMs: -1 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationMs' must be greater than or equal to 0"
+			);
+			config.replication = { blobGapEscalationMs: 2.5 };
+			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
+		});
+
+		it('accepts the replication confirmation defaults only as non-negative integers', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const name of ['confirmation', 'recordLockConfirmation']) {
+				for (const value of [0, 1, 3, null]) {
+					config.replication = { [name]: value };
+					assert.strictEqual(configValidator(config).error, undefined, `${name}: ${value}`);
+				}
+				for (const [value, message] of [
+					[-1, 'must be greater than or equal to 0'],
+					[1.5, 'must be an integer'],
+					['all', 'must be a number'],
+				]) {
+					config.replication = { [name]: value };
+					assert.match(configValidator(config).error?.message, new RegExp(`replication\\.${name}' ${message}`));
+				}
+			}
+		});
+
+		it('accepts a well-formed sql config section', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { engine: 'new', allowFullScan: true, maxSortRows: 500, maxHashRows: 500 };
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('rejects an unknown sql.engine value rather than silently keeping the default', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { engine: 'gibberish' };
+			expect(configValidator(config).error.message).to.include("'sql.engine' must be one of [legacy, new, auto]");
+		});
+
+		it('rejects a quoted-string sql.allowFullScan value (convert is off for this section)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allowFullScan: 'true' };
+			expect(configValidator(config).error.message).to.include("'sql.allowFullScan' must be a boolean");
+		});
+
+		it('rejects non-positive/non-integer sql.maxSortRows and sql.maxHashRows', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { maxSortRows: 0, maxHashRows: 2.5 };
+			expect(configValidator(config).error.message).to.include("'sql.maxSortRows' must be greater than or equal to 1");
+			expect(configValidator(config).error.message).to.include("'sql.maxHashRows' must be an integer");
+		});
+
+		it('rejects a quoted-number sql.maxSortRows value (convert is off for this section)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { maxSortRows: '500' };
+			expect(configValidator(config).error.message).to.include("'sql.maxSortRows' must be a number");
+		});
+
+		it('rejects an unknown key inside sql (typos fail loudly instead of being silently ignored)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allowFullScan: true, allwoFullScan: true };
+			expect(configValidator(config).error.message).to.include("'sql.allwoFullScan' is not allowed");
+		});
+
+		it('accepts an empty sql section', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = {};
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts a disabled entry, the loader spelling for an application turned off', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = false;
+			expect(configValidator(config).error).to.be.undefined;
+			config.sql = null;
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts an application deployed under the sql name before it was reserved', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { package: '@org/sql-app', urlPath: '/sql', install: { timeout: 1000 } };
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('rejects sql engine settings on an entry that is a deployed application', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { package: '@org/sql-app', engine: 'new' };
+			expect(configValidator(config).error.message).to.include(
+				"'sql.engine' cannot be set while 'sql' names a deployed application"
+			);
+		});
+
+		it("rejects a typo'd sql setting rather than reading it as an application entry", () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allwoFullScan: true };
+			expect(configValidator(config).error.message).to.include("'sql.allwoFullScan' is not allowed");
+		});
+
+		// The predicate configUtils.validateConfig() uses to decide whether to warn that 'sql' holds
+		// an application; the schema branch above is driven by the same key list.
+		it('identifies an application-shaped sql entry positively, by the keys a deploy writes', () => {
+			const { isLegacySqlApplicationEntry } = config_val;
+			expect(isLegacySqlApplicationEntry({ package: '@org/sql-app' })).to.be.true;
+			expect(isLegacySqlApplicationEntry({ host: 'sql.example.com' })).to.be.true;
+			expect(isLegacySqlApplicationEntry({ engine: 'new' })).to.be.false;
+			expect(isLegacySqlApplicationEntry({ allwoFullScan: true })).to.be.false;
+			expect(isLegacySqlApplicationEntry({})).to.be.false;
+			expect(isLegacySqlApplicationEntry(undefined)).to.be.false;
+		});
+
+		it('rejects a URL / port / numeric node.hostname, and accepts a bare host (#2218)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const [bad, reason] of [
+				['http://localhost:9926', 'must not include a URL scheme'],
+				['localhost:9926', 'must not include a port'],
+				[9926, 'must be a string'],
+			]) {
+				config.node = { hostname: bad };
+				expect(configValidator(config).error.message).to.include(`'node.hostname' ${reason}`);
+			}
+			config.node = { hostname: 'node1.example.com' };
+			expect(configValidator(config).error).to.be.undefined;
+			config.node = { hostname: '::1' }; // a bare IPv6 literal is a valid identity
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('rejects an authority-form replication.url that parses to no host (#2218)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			// Written as a real URL ("//" authority) yet parses to no host — the unambiguous mistake.
+			config.replication = { url: 'file:///etc/passwd' };
+			expect(configValidator(config).error.message).to.include("'replication.url' must be a URL with a host");
+
+			config.replication = { url: 'wss://node1.example.com:9933' };
+			expect(configValidator(config).error).to.be.undefined;
+
+			// Deliberately tolerated at the boundary: these carry no host, but urlToNodeName skips them
+			// at runtime (so they can never reach a certificate SAN) and identity falls through to
+			// another source. A scheme-less "host:port" even parses as a *scheme*, so it cannot be told
+			// apart from "mailto:" here — rejecting that shape would turn a harmless config into a boot
+			// failure. node.url is also left alone: this repo never reads it.
+			for (const tolerated of ['mailto:operator@example.com', 'node1.example.com:9933', 'not a url']) {
+				config.replication = { url: tolerated };
+				expect(configValidator(config).error, `expected ${tolerated} to be accepted`).to.be.undefined;
+			}
+			config.replication = undefined;
+			config.node = { hostname: 'prod-node', url: 'mailto:admin@corp.com' };
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts replication.network and wss:// replication.privateUrls, and rejects other private URLs', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = {
+				network: 'vpc-1/us-east1',
+				privateUrls: [
+					{ url: 'wss://10.0.0.5:9933', network: 'vpc-1/us-east1' },
+					{ url: 'wss://[fd00::5]:9933', network: 'vlan-7' },
+					{ url: ' WSS://10.0.0.6:9933 ', network: 'vlan-7' },
+				],
+			};
+			assert.strictEqual(configValidator(config).error, undefined);
+
+			const rejected = [
+				[{ url: 'ws://10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
+				[{ url: 'wss:10.0.0.5:9933', network: 'a' }, 'must be a wss:// URL with a host'],
+				[{ url: 'wss://user:secret@10.0.0.5:9933', network: 'a' }, 'must not include credentials or a query'],
+				[{ url: 'wss://10.0.0.5:9933/?token=secret', network: 'a' }, 'must not include credentials or a query'],
+				[{ url: 'wss://10.0.0.5:9933/#x', network: 'a' }, 'must not include a fragment'],
+				[{ url: 'not a url', network: 'a' }, 'must be a URL'],
+				[{ url: 'wss://10.0.0.5:9933' }, "'replication.privateUrls[0].network' is required"],
+				[{ url: 'wss://10.0.0.5:9933', network: '' }, 'is not allowed to be empty'],
+			];
+			for (const [entry, reason] of rejected) {
+				config.replication = { privateUrls: [entry] };
+				assert.ok(configValidator(config).error?.message.includes(reason), JSON.stringify(entry));
+			}
+		});
+
+		it('rejects a URL-valued replication.hostname (the previously accepted string|number path) (#2218)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = { hostname: 'http://host:9926' };
+			expect(configValidator(config).error.message).to.include("'replication.hostname' must not include a URL scheme");
+
+			config.replication.hostname = 'node-two';
+			expect(configValidator(config).error).to.be.undefined;
+		});
+	});
+
+	describe('getDomainSocketPathLengthWarning', () => {
+		const { getDomainSocketPathLengthWarning, UDS_PATH_MAX_BYTES } = config_val;
+
+		it('warns when a relative domainSocket resolves past the platform Unix socket path limit', () => {
+			// The real-world trigger: domainSocket left at its default relative name, with only
+			// rootPath being long (e.g. a nested `.claude/worktrees/<name>` checkout).
+			const longRoot = path.join(HDB_ROOT, 'a'.repeat(120));
+			const warning = getDomainSocketPathLengthWarning(longRoot, 'operations-server');
+
+			expect(warning).to.include('operationsApi.network.domainSocket');
+			expect(warning).to.include('exceeds the');
+			expect(warning).to.include('Unix domain socket path limit');
+		});
+
+		it('warns when an absolute domainSocket itself exceeds the limit', () => {
+			const longAbsolute = '/' + 'a'.repeat(120);
+			const warning = getDomainSocketPathLengthWarning('/hdb', longAbsolute);
+
+			expect(warning).to.include('Unix domain socket path limit');
+		});
+
+		it('returns null when the resolved path is within the platform limit', () => {
+			expect(getDomainSocketPathLengthWarning('/hdb', 'operations-server')).to.equal(null);
+		});
+
+		it('returns null when domainSocket is disabled (false)', () => {
+			const longRoot = path.join(HDB_ROOT, 'a'.repeat(120));
+			expect(getDomainSocketPathLengthWarning(longRoot, false)).to.equal(null);
+		});
+
+		it('resolves a path right at the limit as OK and one byte over as a warning', () => {
+			// 5-char root + '/' + N-char socket name must equal UDS_PATH_MAX_BYTES exactly at the
+			// boundary; asserting on both sides guards against an off-by-one in the comparison.
+			const root = '/root'; // 5 bytes
+			const atLimit = 'a'.repeat(UDS_PATH_MAX_BYTES - root.length - 1); // -1 for the joining '/'
+			const overLimit = atLimit + 'a';
+
+			expect(getDomainSocketPathLengthWarning(root, atLimit)).to.equal(null);
+			expect(getDomainSocketPathLengthWarning(root, overLimit)).to.include('Unix domain socket path limit');
+		});
+
+		it('applies the 103-byte darwin limit regardless of the host platform running the test', () => {
+			const root = '/root';
+			const overDarwinLimit = 'a'.repeat(103 - root.length - 1 + 1);
+
+			expect(getDomainSocketPathLengthWarning(root, overDarwinLimit, 'darwin')).to.include(
+				'Unix domain socket path limit on darwin'
+			);
+			expect(getDomainSocketPathLengthWarning(root, overDarwinLimit, 'linux')).to.equal(null);
+		});
+
+		it('resolves win32 paths with backslash join semantics regardless of the host platform running the test', () => {
+			const warning = getDomainSocketPathLengthWarning('C:\\hdb', 'a'.repeat(120), 'win32');
+
+			expect(warning).to.include('C:\\hdb\\' + 'a'.repeat(120));
+			expect(warning).to.include('Unix domain socket path limit on win32');
+			expect(getDomainSocketPathLengthWarning('C:\\hdb', 'C:\\short', 'win32')).to.equal(null);
+		});
+
+		it('resolves a relative rootPath against process.cwd() the same way getConfigPath() does, matching runtime EINVAL', () => {
+			// getConfigPath() (configUtils.ts) resolves the config-file value with
+			// `path.resolve(rootPath, value)`; from a deeply nested cwd, a short-looking relative
+			// rootPath can still resolve past the byte limit at runtime, so this must warn too.
+			const relativeRoot = path.join('a'.repeat(120), 'b'.repeat(120));
+			const warning = getDomainSocketPathLengthWarning(relativeRoot, 'operations-server');
+
+			expect(warning).to.include(path.resolve(relativeRoot, 'operations-server'));
+			expect(warning).to.include('Unix domain socket path limit');
+		});
+
+		it('does not warn when a short absolute rootPath resolves within the limit', () => {
+			expect(getDomainSocketPathLengthWarning('/hdb/root', 'operations-server')).to.equal(null);
+		});
+	});
+
+	describe('Directory-path pattern is a linear-time denylist (ReDoS regression, #1779)', () => {
+		const directoryPathPattern = config_val.__get__('DIRECTORY_PATH_PATTERN');
+
+		// Guard against reintroducing catastrophic backtracking: a long valid run
+		// followed by a rejected (control) char is the worst case for a nested
+		// quantifier. Denylist runs in microseconds; a nested-quantifier revert
+		// would spin for minutes. The generous bound distinguishes the two.
+		it('rejects a 50k-char adversarial input effectively instantly', () => {
+			const adversarial = '/' + 'a'.repeat(50000) + '\x01';
+			const start = Date.now();
+			const matched = directoryPathPattern.test(adversarial);
+			const elapsed = Date.now() - start;
+			expect(matched).to.equal(false);
+			expect(elapsed).to.be.lessThan(100);
+		});
+
+		it('accepts every path shape the validator must permit', () => {
+			// Each of these is REJECTED by any anchored ASCII allow-list (spaces,
+			// parens, `~`, apostrophes, Unicode), so this test fails on the earlier
+			// allow-list fix and only passes on the denylist — real regression cover.
+			const good = [
+				'/',
+				'~/hdb', // the documented default rootPath (config-root.schema.json)
+				'~/hdb/components',
+				'/Users/x/harper',
+				'/etc/harper/privateKey.pem',
+				'C:\\Users\\x',
+				'./rel/path',
+				'C:\\Program Files (x86)\\Harper', // Windows default install path (parens)
+				'/Users/some user/harper', // space
+				'/Users/café/harper', // non-ASCII home dir
+				"/Users/O'Brien/hdb", // apostrophe
+				'/opt/harper+ext/root',
+				'.', // resolves honestly to cwd
+				'..', // resolves honestly to parent
+			];
+			for (const value of good) {
+				expect(directoryPathPattern.test(value), value).to.equal(true);
+			}
+		});
+
+		it('rejects control characters (C0/DEL/C1 + Unicode line separators) and empty / whitespace-only', () => {
+			const cp = String.fromCodePoint; // avoid literal separators in this source file
+			const bad = [
+				'', // empty
+				'   ', // whitespace-only (Windows strips to a valid-but-wrong dir)
+				'\t', // tab
+				'/embedded\nnewline', // ASCII newline — would forge log lines
+				'/embedded\x00null',
+				'/embedded\x7fdel',
+				'/nel' + cp(0x85) + 'here', // U+0085 NEL (C1) — a Unicode line break
+				'/c1' + cp(0x9f) + 'here', // U+009F (C1 control)
+				'/ls' + cp(0x2028) + 'here', // U+2028 line separator
+				'/ps' + cp(0x2029) + 'here', // U+2029 paragraph separator
+			];
+			for (const value of bad) {
+				expect(directoryPathPattern.test(value), JSON.stringify([...value].map((c) => c.codePointAt(0)))).to.equal(
+					false
+				);
+			}
+		});
+
+		it('validates the documented `~/hdb`-style config through configValidator without erroring', () => {
+			const config_obj = testUtils.deepClone(FAKE_CONFIG);
+			config_obj.rootPath = '~/hdb';
+			config_obj.componentsRoot = '~/hdb/components';
+			const start = Date.now();
+			// rootPath/componentsRoot are pattern-only (no fs check), so no skipFsValidation needed;
+			// passing it would leak the module-level skipFsVal flag into later tests.
+			const schema = configValidator(config_obj);
+			expect(Date.now() - start).to.be.lessThan(1000);
+			const pathErrors = (schema.error?.details ?? []).filter(
+				(d) => d.path?.[0] === 'rootPath' || d.path?.[0] === 'componentsRoot'
+			);
+			expect(pathErrors, `rootPath/componentsRoot should validate: ${JSON.stringify(pathErrors)}`).to.eql([]);
+		});
+
+		// storage.path is the third pattern site — it runs the denylist inside Joi.custom(validatePath)
+		// via Joi.assert. That throw is caught by Joi.custom and folded into schema.error as an
+		// `any.custom` detail, so a bad path surfaces the same way the other two sites do (not a throw).
+		it('runs the denylist on storage.path: accepts `~/`, rejects a control char', () => {
+			const good = testUtils.deepClone(FAKE_CONFIG);
+			good.storage = { ...good.storage, path: '~/hdb/database' };
+			// The denylist accepts `~/...`; any remaining storage.path error must be the fs-existence
+			// message, never a "directory path pattern" failure.
+			const goodSchema = configValidator(good);
+			const goodPatternError = (goodSchema.error?.details ?? []).find(
+				(d) => d.path?.[0] === 'storage' && /directory path pattern/.test(d.message)
+			);
+			expect(goodPatternError, 'storage.path `~/hdb/database` should pass the denylist').to.equal(undefined);
+			// validatePath returns undefined on success; Joi.custom retains the original value (does not
+			// coerce it to undefined), so the path must survive into the validated config.
+			expect(goodSchema.value.storage.path, 'storage.path must survive validation').to.equal('~/hdb/database');
+
+			const bad = testUtils.deepClone(FAKE_CONFIG);
+			bad.storage = { ...bad.storage, path: '/db\nroot' }; // control char (newline)
+			const badSchema = configValidator(bad);
+			const badPatternError = (badSchema.error?.details ?? []).find(
+				(d) => d.path?.[0] === 'storage' && /directory path pattern/.test(d.message)
+			);
+			expect(badPatternError, 'storage.path with a newline should be rejected').to.not.equal(undefined);
 		});
 	});
 
@@ -241,6 +745,21 @@ describe('Test configValidator module', () => {
 				"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'"
 			);
 		});
+
+		it('rejects sizes that cannot be a byte limit, and keeps the ones that can (#1877)', () => {
+			// parseInt accepted all of these; on the write path a 0, negative or NaN limit is checked
+			// per flush rather than once a minute, so they are now refused where operators see it.
+			for (const value of ['0K', '-1K', '1xK']) {
+				const config_obj = testUtils.deepClone(FAKE_CONFIG);
+				config_obj.logging.rotation.maxSize = value;
+				assert.ok(configValidator(config_obj).error, `${value} must be rejected`);
+			}
+			for (const value of ['64M', '3G', '1e3K', '0.1K']) {
+				const config_obj = testUtils.deepClone(FAKE_CONFIG);
+				config_obj.logging.rotation.maxSize = value;
+				assert.strictEqual(configValidator(config_obj).error, undefined, `${value} must be accepted`);
+			}
+		});
 	});
 
 	describe('Test setDefaultThreads function', () => {
@@ -265,6 +784,8 @@ describe('Test configValidator module', () => {
 			},
 		};
 		const helpers = { state: { path: ['customFunctions', 'processes'] } };
+		const original_platform = process.platform;
+		const set_platform = (value) => Object.defineProperty(process, 'platform', { value, configurable: true });
 		let os_cpus_stub;
 		let logger_info_stub;
 
@@ -276,14 +797,25 @@ describe('Test configValidator module', () => {
 		afterEach(() => {
 			os_cpus_stub.restore();
 			logger_info_stub.restore();
+			set_platform(original_platform);
 		});
 
 		it('Test happy path, correct info message is logged and correct number of processes returned', () => {
+			// CPU-based defaulting only applies where SO_REUSEPORT lets workers share the ports
+			set_platform('linux');
 			os_cpus_stub.returns([1, 2, 3, 4, 5, 6]);
 			const result = set_default_processes(parent, helpers);
 
 			expect(result).to.equal(5);
 			expect(logger_info_stub.firstCall.args[0]).to.include(`defaulting customFunctions.processes to ${result}`);
+		});
+
+		it('Defaults to a single worker on platforms without SO_REUSEPORT (macOS, Windows)', () => {
+			os_cpus_stub.returns([1, 2, 3, 4, 5, 6]);
+			for (const platform of ['darwin', 'win32']) {
+				set_platform(platform);
+				expect(set_default_processes(parent, helpers)).to.equal(1);
+			}
 		});
 	});
 
@@ -366,14 +898,43 @@ describe('Test configValidator module', () => {
 		expect(result.message).to.equal("'routes' does not match any of the allowed types");
 	});
 
+	it('Test routesValidator accepts directional controlled-flow fields', () => {
+		const test_array = [
+			{ hostname: 'node-two', port: 9933, replicates: { sends: false, receives: true } },
+			{
+				hostname: 'node-three',
+				replicates: { sends: true, sendsTo: [{ target: 'node-three', database: 'data', excludeTables: ['secret'] }] },
+			},
+			// top-level form, plus entries that intentionally omit target/source and database
+			// (these mean "any peer" / "any database" and must validate)
+			{ host: 'node-four', receivesFrom: ['node-five', { source: 'node-six' }, { excludeTables: ['t'] }] },
+		];
+		const result = routesValidator(test_array);
+		expect(result).to.equal(undefined); // validateBySchema returns undefined when valid
+	});
+
+	it('Test routesValidator rejects a directional field of the wrong type', () => {
+		const result = routesValidator([{ hostname: 'node-two', replicates: { sends: 'yes' } }]);
+		expect(result.message).to.equal("'routes' does not match any of the allowed types");
+	});
+
 	it('Test validateRotationInterval invalid unit', () => {
 		const validate_interval = config_val.__get__('validateRotationInterval');
 		const message_stub = sinon.stub();
 		const helpers = { message: message_stub };
 		validate_interval('10B', helpers);
 		expect(helpers.message.args[0][0]).to.equal(
-			'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)'
+			'Invalid logging.rotation.interval unit. Available units are D (days), H (hours), M (months) or m (minutes)'
 		);
+	});
+
+	it('Test validateRotationInterval accepts minutes (lowercase m) and days', () => {
+		const validate_interval = config_val.__get__('validateRotationInterval');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		expect(validate_interval('30m', helpers)).to.equal('30m');
+		expect(validate_interval('1D', helpers)).to.equal('1D');
+		expect(message_stub.called).to.be.false;
 	});
 
 	it('Test validateRotationInterval invalid value', () => {
@@ -384,6 +945,42 @@ describe('Test configValidator module', () => {
 		expect(helpers.message.args[0][0]).to.equal(
 			"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'"
 		);
+	});
+
+	it('Test validateRotationRetention invalid unit', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		validate_retention('30B', helpers);
+		expect(helpers.message.args[0][0]).to.equal(
+			'Invalid logging.rotation.retention unit. Available units are D (days), H (hours), M (months) or m (minutes)'
+		);
+	});
+
+	it('Test validateRotationRetention invalid value', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		validate_retention('THIRTYD', helpers);
+		expect(helpers.message.args[0][0]).to.equal(
+			"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'"
+		);
+
+		for (const invalid of ['-5D', '0D', '', null]) {
+			message_stub.resetHistory();
+			validate_retention(invalid, helpers);
+			expect(helpers.message.args[0][0]).to.equal(
+				"Invalid logging.rotation.retention value. Value should be a number followed by unit e.g. '30D'"
+			);
+		}
+	});
+
+	it('Test validateRotationRetention valid value', () => {
+		const validate_retention = config_val.__get__('validateRotationRetention');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		expect(validate_retention('30D', helpers)).to.equal('30D');
+		expect(message_stub.called).to.be.false;
 	});
 
 	describe('mcp config', () => {
@@ -446,12 +1043,93 @@ describe('Test configValidator module', () => {
 			expect(result.error.message).to.include("'mcp.operations.mountPath' must be a string");
 		});
 
+		it('accepts a boolean mcp.<profile>.enabled and rejects a non-boolean', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { operations: { enabled: true }, application: { enabled: false } };
+			expect(configValidator(config, true).error).to.be.undefined;
+			config.mcp = { operations: { enabled: 'nope' } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
+			expect(result.error.message).to.include("'mcp.operations.enabled' must be a boolean");
+			config.mcp = { operations: { enabled: 'false' } };
+			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
+		});
+
 		it('rejects mcp.operations.maxTools below 1', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { operations: { maxTools: 0 } };
 			const result = configValidator(config, true);
 			expect(result.error).to.not.be.undefined;
 			expect(result.error.message).to.include("'mcp.operations.maxTools' must be greater than or equal to 1");
+		});
+
+		it('accepts mcp.application.authentication with a boolean required and an http(s) resourceMetadata (#4344)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = {
+				application: {
+					authentication: {
+						required: true,
+						resourceMetadata: 'https://app.example.com/.well-known/oauth-protected-resource/mcp',
+					},
+				},
+			};
+			expect(configValidator(config, true).error).to.be.undefined;
+
+			config.mcp = { application: { authentication: { required: 'true' } } };
+			expect(configValidator(config, true).error.message).to.include(
+				"'mcp.application.authentication.required' must be a boolean"
+			);
+			for (const resourceMetadata of [
+				'/relative',
+				'ftp://x.example/prm',
+				'http://x.example/prm',
+				'https://x.example/p#f',
+				'https://x.example/"q"',
+			]) {
+				config.mcp = { application: { authentication: { resourceMetadata } } };
+				expect(configValidator(config, true).error, resourceMetadata).to.not.be.undefined;
+			}
+
+			for (const authentication of [{ require: true }, { resource_metadata: 'https://x.example/prm' }]) {
+				config.mcp = { application: { authentication } };
+				expect(configValidator(config, true).error, JSON.stringify(authentication)).to.not.be.undefined;
+			}
+		});
+	});
+
+	describe('http.securityHeaders config', () => {
+		it('validates clean when securityHeaders is absent (opt-in, no behavior change)', () => {
+			const result = configValidator(testUtils.deepClone(FAKE_CONFIG), true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.http.securityHeaders).to.be.undefined;
+		});
+
+		it('accepts an arbitrary map of header name -> string value', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.http.securityHeaders = {
+				'X-Frame-Options': 'SAMEORIGIN',
+				'X-Content-Type-Options': 'nosniff',
+			};
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+			expect(result.value.http.securityHeaders).to.deep.equal({
+				'X-Frame-Options': 'SAMEORIGIN',
+				'X-Content-Type-Options': 'nosniff',
+			});
+		});
+
+		it('accepts number/boolean values (coerced to strings at apply time, not validation time)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.http.securityHeaders = { 'X-Test': 42 };
+			const result = configValidator(config, true);
+			expect(result.error).to.be.undefined;
+		});
+
+		it('rejects a securityHeaders entry with a non-primitive value', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.http.securityHeaders = { 'X-Bad': { nested: true } };
+			const result = configValidator(config, true);
+			expect(result.error).to.not.be.undefined;
 		});
 	});
 
@@ -483,6 +1161,52 @@ describe('Test configValidator module', () => {
 			};
 			const result = configValidator(config, true);
 			expect(result.error).to.be.undefined;
+		});
+
+		describe('pricing', () => {
+			const PRICING = { inputPerMtok: 3, outputPerMtok: 15 };
+			const validate = (models) => {
+				const config = baseConfig();
+				config.models = models;
+				return configValidator(config, true).error;
+			};
+
+			it('accepts pricing on generative entries, built-in or module-backed, including zero rates', () => {
+				for (const backend of ['ollama', 'openai', 'anthropic', 'bedrock', '@acme/harper-llm']) {
+					const entry = { backend, model: 'm', pricing: PRICING };
+					if (backend === 'openai' || backend === 'anthropic') entry.apiKey = 'k';
+					expect(validate({ generative: { default: entry } }), backend).to.be.undefined;
+				}
+				expect(
+					validate({
+						generative: { default: { backend: 'ollama', pricing: { inputPerMtok: 0, outputPerMtok: 0 } } },
+					})
+				).to.be.undefined;
+			});
+
+			it('rejects a partial, negative, non-numeric or extended price', () => {
+				for (const pricing of [
+					{ inputPerMtok: 3 },
+					{ outputPerMtok: 15 },
+					{ inputPerMtok: -1, outputPerMtok: 15 },
+					{ inputPerMtok: 'three', outputPerMtok: 15 },
+					{ ...PRICING, cachedInputPerMtok: 0.3 },
+				]) {
+					expect(validate({ generative: { default: { backend: 'ollama', pricing } } }), JSON.stringify(pricing)).to.not
+						.be.undefined;
+				}
+			});
+
+			it('refuses pricing on embedding and decision entries, which nothing prices', () => {
+				for (const models of [
+					{ embedding: { default: { backend: 'ollama', pricing: PRICING } } },
+					{ embedding: { default: { backend: '@acme/harper-embed', pricing: PRICING } } },
+					{ decision: { default: { backend: 'generative', pricing: PRICING } } },
+					{ decision: { default: { backend: '@acme/harper-decision', pricing: PRICING } } },
+				]) {
+					expect(validate(models), JSON.stringify(models)).to.not.be.undefined;
+				}
+			});
 		});
 
 		it('accepts a generative entry with requestTimeoutMs', () => {
@@ -539,6 +1263,124 @@ describe('Test configValidator module', () => {
 			const result = configValidator(config, true);
 			expect(result.error).to.not.be.undefined;
 			expect(result.error.message).to.include('bakend');
+		});
+
+		// #2779: `models.decision` entries and the built-in generative vote adapter.
+		describe('decision entries', () => {
+			it('accepts a generative adapter entry with its tuning fields', () => {
+				const config = baseConfig();
+				config.models = {
+					decision: {
+						default: {
+							backend: 'generative',
+							generative: 'default',
+							samples: 7,
+							concurrency: 3,
+							temperature: 0.5,
+							requestTimeoutMs: 5000,
+							scoring: 'auto',
+							fallback: ['alt'],
+						},
+					},
+				};
+				expect(configValidator(config, true).error).to.be.undefined;
+			});
+
+			it('accepts each scoring mode (#2838)', () => {
+				for (const scoring of ['auto', 'vote', 'score']) {
+					const config = baseConfig();
+					config.models = { decision: { default: { backend: 'generative', scoring } } };
+					expect(configValidator(config, true).error, scoring).to.be.undefined;
+				}
+			});
+
+			it('rejects samples or concurrency outside 1..25, non-integers, unknown fields, and an unknown scoring mode', () => {
+				for (const entry of [
+					{ backend: 'generative', samples: 0 },
+					{ backend: 'generative', samples: 26 },
+					{ backend: 'generative', samples: 2.5 },
+					{ backend: 'generative', concurrency: 0 },
+					{ backend: 'generative', model: 'gpt-4o' },
+					{ backend: 'generative', scoring: 'always' },
+					{ backend: 'generative', scoring: true },
+				]) {
+					const config = baseConfig();
+					config.models = { decision: { default: entry } };
+					expect(configValidator(config, true).error, JSON.stringify(entry)).to.not.be.undefined;
+				}
+			});
+
+			it('accepts a non-secret revision on every entry kind (#2841)', () => {
+				const config = baseConfig();
+				config.models = {
+					generative: { default: { backend: 'openai', apiKey: 'k', model: 'm', revision: 'sha-1' } },
+					embedding: { default: { backend: 'ollama', model: 'e', revision: '2' } },
+					decision: { default: { backend: 'generative', revision: 'r' } },
+				};
+				assert.strictEqual(configValidator(config, true).error, undefined);
+				config.models.generative.default.revision = 3;
+				assert.notStrictEqual(configValidator(config, true).error, undefined, 'revision is a string');
+			});
+
+			it('accepts the calibration block and rejects an interval under an hour or an unknown setting (#2841)', () => {
+				const config = baseConfig();
+				config.models = {
+					calibration: {
+						interval: 3_600_000,
+						maxDecisions: 2000,
+						maxPopulations: 10,
+						maxExamplesPerKey: 500,
+						maxBytes: 8_000_000,
+						maxLoads: 4,
+						maxRunMs: 5000,
+						minReport: 10,
+						minTrain: 50,
+						minHeldOut: 50,
+						heldOutShare: 0.25,
+						eceMargin: 0.02,
+						maxAgeMs: 86_400_000,
+					},
+				};
+				assert.strictEqual(configValidator(config, true).error, undefined);
+				for (const bad of [
+					{ interval: 60_000 },
+					{ maxReads: 10 },
+					{ heldOutShare: 1 },
+					{ minReport: 0 },
+					{ maxDecisions: 1000 },
+					{ maxDecisions: 1000, maxExamplesPerKey: 500 },
+				]) {
+					const broken = baseConfig();
+					broken.models = { calibration: bad };
+					assert.notStrictEqual(configValidator(broken, true).error, undefined, JSON.stringify(bad));
+				}
+			});
+
+			it('rejects a provider backend under decision, naming the kind', () => {
+				const config = baseConfig();
+				config.models = { decision: { default: { backend: 'openai', apiKey: 'k', model: 'gpt-4o' } } };
+				const result = configValidator(config, true);
+				expect(result.error).to.not.be.undefined;
+				expect(result.error.message).to.include('cannot serve models.decision');
+			});
+
+			it('rejects the generative adapter under embedding or generative', () => {
+				for (const kind of ['embedding', 'generative']) {
+					const config = baseConfig();
+					config.models = { [kind]: { default: { backend: 'generative' } } };
+					const result = configValidator(config, true);
+					expect(result.error, kind).to.not.be.undefined;
+					expect(result.error.message).to.include(`cannot serve models.${kind}`);
+				}
+			});
+
+			it('accepts a module backend under decision with arbitrary fields', () => {
+				const config = baseConfig();
+				config.models = {
+					decision: { default: { backend: '@acme/harper-decision', apiKey: '${JEV_API_KEY}', fallback: ['llm'] } },
+				};
+				expect(configValidator(config, true).error).to.be.undefined;
+			});
 		});
 
 		it('accepts multiple logical names per kind', () => {

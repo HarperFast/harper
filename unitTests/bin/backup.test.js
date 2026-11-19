@@ -1,0 +1,310 @@
+'use strict';
+
+const assert = require('node:assert');
+const fs = require('fs-extra');
+const os = require('node:os');
+const path = require('node:path');
+const { Readable } = require('node:stream');
+const { runBackupCommand } = require('#src/bin/backup');
+const cliOperationsModule = require('#js/bin/cliOperations');
+const commonUtilsModule = require('#src/utility/common_utils');
+const cliCredentialsModule = require('#src/bin/cliCredentials');
+const processMgmtModule = require('#src/utility/processManagement/processManagement');
+const rocksdbBackupModule = require('#src/dataLayer/rocksdbBackup');
+const configUtilsModule = require('#src/config/configUtils');
+
+describe('backup.ts get_backup download (atomic write)', () => {
+	let tmpDir;
+	let originalArgv;
+	let originalResolveRequestOptions;
+	let originalHttpRequest;
+	let originalConsoleLog;
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-test-backup-'));
+		originalArgv = process.argv;
+		originalResolveRequestOptions = cliOperationsModule.resolveRequestOptions;
+		originalHttpRequest = commonUtilsModule.httpRequest;
+		originalConsoleLog = console.log;
+		console.log = () => {};
+
+		cliOperationsModule.resolveRequestOptions = async () => ({ options: {} });
+	});
+
+	afterEach(() => {
+		process.argv = originalArgv;
+		cliOperationsModule.resolveRequestOptions = originalResolveRequestOptions;
+		commonUtilsModule.httpRequest = originalHttpRequest;
+		console.log = originalConsoleLog;
+		if (tmpDir) fs.removeSync(tmpDir);
+	});
+
+	// A fake server response: a Readable body plus the statusCode/headers httpRequest normally attaches.
+	function fakeResponse(streamBody) {
+		const response = streamBody;
+		response.statusCode = 200;
+		response.headers = { 'content-disposition': 'attachment; filename="data.tar.gz"' };
+		return response;
+	}
+
+	function partFiles() {
+		return fs.readdirSync(tmpDir).filter((name) => name.endsWith('.part'));
+	}
+
+	it('writes the full response body to outputPath and leaves no .part temp file behind', async () => {
+		const outputPath = path.join(tmpDir, 'my.tar.gz');
+		process.argv = ['node', 'harper', 'get_backup', `out=${outputPath}`];
+
+		commonUtilsModule.httpRequest = async () =>
+			fakeResponse(Readable.from([Buffer.from('chunk-1-'), Buffer.from('chunk-2')]));
+
+		await runBackupCommand('get_backup');
+
+		assert.strictEqual(fs.readFileSync(outputPath, 'utf8'), 'chunk-1-chunk-2');
+		assert.deepStrictEqual(partFiles(), []);
+	});
+
+	it('on a mid-stream failure, leaves no file at outputPath and removes the .part temp file', async () => {
+		const outputPath = path.join(tmpDir, 'my.tar.gz');
+		process.argv = ['node', 'harper', 'get_backup', `out=${outputPath}`];
+
+		commonUtilsModule.httpRequest = async () =>
+			fakeResponse(
+				new Readable({
+					read() {
+						this.push(Buffer.from('partial-data'));
+						this.destroy(new Error('simulated network failure'));
+					},
+				})
+			);
+
+		await assert.rejects(() => runBackupCommand('get_backup'), /simulated network failure/);
+
+		assert.strictEqual(fs.existsSync(outputPath), false);
+		assert.deepStrictEqual(partFiles(), []);
+	});
+
+	it('on a failure when a good backup already exists at outputPath, leaves the existing file untouched', async () => {
+		const outputPath = path.join(tmpDir, 'my.tar.gz');
+		const existingContent = 'previously-good-backup-contents';
+		fs.writeFileSync(outputPath, existingContent);
+		process.argv = ['node', 'harper', 'get_backup', `out=${outputPath}`];
+
+		commonUtilsModule.httpRequest = async () =>
+			fakeResponse(
+				new Readable({
+					read() {
+						this.push(Buffer.from('partial-data'));
+						this.destroy(new Error('simulated network failure'));
+					},
+				})
+			);
+
+		await assert.rejects(() => runBackupCommand('get_backup'), /simulated network failure/);
+
+		assert.strictEqual(fs.readFileSync(outputPath, 'utf8'), existingContent);
+		assert.deepStrictEqual(partFiles(), []);
+	});
+});
+
+const OFFLINE_FUNCTIONS = [
+	'createBackupOffline',
+	'listBackupsOffline',
+	'verifyBackupOffline',
+	'deleteBackupOffline',
+	'purgeBackupsOffline',
+	'restoreBackupOffline',
+	'cancelRestartRestoreOffline',
+];
+
+describe('backup.ts offline routing (useOperationApi)', () => {
+	let saved;
+
+	beforeEach(() => {
+		saved = {
+			argv: process.argv,
+			loadCredentials: cliCredentialsModule.loadCredentials,
+			getHdbPid: processMgmtModule.getHdbPid,
+			offline: Object.fromEntries(OFFLINE_FUNCTIONS.map((name) => [name, rocksdbBackupModule[name]])),
+			cliOperations: cliOperationsModule.cliOperations,
+			initConfig: configUtilsModule.initConfig,
+			log: console.log,
+			envHarper: process.env.HARPER_CLI_TARGET,
+			envCli: process.env.CLI_TARGET,
+		};
+		console.log = () => {};
+		configUtilsModule.initConfig = () => {};
+		delete process.env.HARPER_CLI_TARGET;
+		delete process.env.CLI_TARGET;
+		process.argv = ['node', 'harper', 'list_backups'];
+	});
+
+	afterEach(() => {
+		if (!saved) return;
+		process.argv = saved.argv;
+		cliCredentialsModule.loadCredentials = saved.loadCredentials;
+		processMgmtModule.getHdbPid = saved.getHdbPid;
+		Object.assign(rocksdbBackupModule, saved.offline);
+		cliOperationsModule.cliOperations = saved.cliOperations;
+		configUtilsModule.initConfig = saved.initConfig;
+		console.log = saved.log;
+		if (saved.envHarper === undefined) delete process.env.HARPER_CLI_TARGET;
+		else process.env.HARPER_CLI_TARGET = saved.envHarper;
+		if (saved.envCli === undefined) delete process.env.CLI_TARGET;
+		else process.env.CLI_TARGET = saved.envCli;
+	});
+
+	function trackRouting() {
+		const calls = { offline: false, api: false };
+		for (const name of OFFLINE_FUNCTIONS) {
+			rocksdbBackupModule[name] = async () => {
+				calls.offline = true;
+				return {};
+			};
+		}
+		cliOperationsModule.cliOperations = async () => {
+			calls.api = true;
+		};
+		return calls;
+	}
+
+	it('uses the offline file path when a saved last_target is local and the server is stopped', async () => {
+		cliCredentialsModule.loadCredentials = () => ({ last_target: 'http://localhost:9925/' });
+		processMgmtModule.getHdbPid = () => null; // stopped
+		const calls = trackRouting();
+		await runBackupCommand('list_backups');
+		assert.ok(calls.offline, 'a local last_target with the server stopped must use the offline path');
+		assert.ok(!calls.api, 'must not forward to the API');
+	});
+
+	it('still forwards to the API for a remote last_target even when the local server is stopped', async () => {
+		cliCredentialsModule.loadCredentials = () => ({ last_target: 'https://remote.example.com:9925/' });
+		processMgmtModule.getHdbPid = () => null;
+		const calls = trackRouting();
+		await runBackupCommand('list_backups');
+		assert.ok(calls.api, 'a remote last_target must forward to the API');
+		assert.ok(!calls.offline);
+	});
+
+	it('uses the API path for a local last_target when the local server IS running', async () => {
+		cliCredentialsModule.loadCredentials = () => ({ last_target: 'http://127.0.0.1:9925/' });
+		processMgmtModule.getHdbPid = () => 12345; // running
+		const calls = trackRouting();
+		await runBackupCommand('list_backups');
+		assert.ok(calls.api, 'a running local server should be reached via the API');
+		assert.ok(!calls.offline);
+	});
+
+	for (const command of ['delete_backup', 'purge_backups', 'restore_backup']) {
+		for (const lastTarget of ['http://localhost:9925/', 'http://127.0.0.2:9925/', 'http://[::1]:9925/']) {
+			it(`refuses ${command} with a saved loopback last_target ${lastTarget} and the server stopped`, async () => {
+				cliCredentialsModule.loadCredentials = () => ({ last_target: lastTarget });
+				processMgmtModule.getHdbPid = () => null;
+				process.argv = ['node', 'harper', command, 'operation=list_backups', 'backup_id=1'];
+				const calls = trackRouting();
+				await assert.rejects(runBackupCommand(command), (error) => {
+					assert.strictEqual(error.statusCode, 400);
+					assert.ok(error.message.includes(`target="${lastTarget}"`), error.message);
+					assert.match(error.message, /harper logout/);
+					return true;
+				});
+				assert.ok(!calls.offline, 'must not touch local files');
+				assert.ok(!calls.api, 'must not forward to the API');
+			});
+		}
+	}
+
+	for (const command of ['create_backup', 'verify_backup']) {
+		it(`still uses the offline path for ${command} with a saved loopback last_target`, async () => {
+			cliCredentialsModule.loadCredentials = () => ({ last_target: 'http://localhost:9925/' });
+			processMgmtModule.getHdbPid = () => null;
+			const calls = trackRouting();
+			await runBackupCommand(command);
+			assert.ok(calls.offline && !calls.api);
+		});
+	}
+
+	it('uses the offline path for a destructive command when no target is saved', async () => {
+		cliCredentialsModule.loadCredentials = () => ({ last_target: null, targets: {} });
+		processMgmtModule.getHdbPid = () => null;
+		const calls = trackRouting();
+		await runBackupCommand('delete_backup');
+		assert.ok(calls.offline && !calls.api);
+	});
+
+	it('forwards a destructive command to a running local server with a saved loopback last_target', async () => {
+		cliCredentialsModule.loadCredentials = () => ({ last_target: 'http://localhost:9925/' });
+		processMgmtModule.getHdbPid = () => 12345;
+		const calls = trackRouting();
+		await runBackupCommand('delete_backup');
+		assert.ok(calls.api && !calls.offline);
+	});
+
+	it('does not echo credentials embedded in a saved last_target', async () => {
+		cliCredentialsModule.loadCredentials = () => ({ last_target: 'http://admin:secret@localhost:9925/' });
+		processMgmtModule.getHdbPid = () => null;
+		trackRouting();
+		await assert.rejects(runBackupCommand('delete_backup'), (error) => {
+			assert.ok(error.message.includes('target="http://localhost:9925/"'), error.message);
+			assert.ok(!error.message.includes('secret'), error.message);
+			return true;
+		});
+	});
+
+	for (const field of ['on_restart=true', 'resume=true', 'retain_previous=true']) {
+		it(`refuses ${field.split('=')[0]} offline instead of restoring immediately`, async () => {
+			cliCredentialsModule.loadCredentials = () => null;
+			processMgmtModule.getHdbPid = () => null;
+			const calls = trackRouting();
+			process.argv = ['node', 'harper', 'restore_backup', 'database=dev', field];
+			await assert.rejects(runBackupCommand('restore_backup'), (error) => {
+				assert.strictEqual(error.statusCode, 400);
+				assert.match(error.message, new RegExp(`${field.split('=')[0]}.*needs the server running`));
+				assert.match(error.message, /backup_id=<id>.*cancel=true/, 'names what works with Harper stopped');
+				return true;
+			});
+			assert.deepStrictEqual(calls, { offline: false, api: false });
+		});
+	}
+
+	it('withdraws a pending restart restore offline with cancel=true, without restoring', async () => {
+		cliCredentialsModule.loadCredentials = () => null;
+		processMgmtModule.getHdbPid = () => null;
+		const calls = trackRouting();
+		let cancelled;
+		rocksdbBackupModule.cancelRestartRestoreOffline = async (request) => {
+			cancelled = request;
+			return {};
+		};
+		process.argv = ['node', 'harper', 'restore_backup', 'database=dev', 'cancel=true'];
+		await runBackupCommand('restore_backup');
+		assert.strictEqual(cancelled?.database, 'dev');
+		assert.deepStrictEqual(calls, { offline: false, api: false });
+	});
+
+	for (const field of ['on_restart=false', 'resume=false', 'cancel=false', 'retain_previous=false']) {
+		it(`restores offline with ${field}, which asks for nothing the server must do`, async () => {
+			cliCredentialsModule.loadCredentials = () => null;
+			processMgmtModule.getHdbPid = () => null;
+			const calls = trackRouting();
+			process.argv = ['node', 'harper', 'restore_backup', 'database=dev', field];
+			await runBackupCommand('restore_backup');
+			assert.deepStrictEqual(calls, { offline: true, api: false });
+		});
+	}
+
+	it('passes immutable_source through to the offline restore', async () => {
+		cliCredentialsModule.loadCredentials = () => null;
+		processMgmtModule.getHdbPid = () => null;
+		trackRouting();
+		let args;
+		rocksdbBackupModule.restoreBackupOffline = async (...received) => {
+			args = received;
+			return {};
+		};
+		process.argv = ['node', 'harper', 'restore_backup', 'database=dev', 'immutable_source=true'];
+		await runBackupCommand('restore_backup');
+		assert.strictEqual(args[0], 'dev');
+		assert.strictEqual(args[5], true);
+	});
+});

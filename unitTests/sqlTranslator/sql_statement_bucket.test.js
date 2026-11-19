@@ -8,8 +8,8 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const alasql = require('alasql');
-const sql_statement_bucket = require('#src/sqlTranslator/sql_statement_bucket').default;
-const sql_statement_rewire = rewire('#src/sqlTranslator/sql_statement_bucket');
+const sql_statement_bucket = require('#js/sqlTranslator/sql_statement_bucket').default;
+const sql_statement_rewire = rewire('#js/sqlTranslator/sql_statement_bucket');
 
 //DELETE
 let TEST_DELETE_JSON = {
@@ -284,27 +284,19 @@ function clone(a) {
 	return JSON.parse(JSON.stringify(a));
 }
 
-let logger_info_spy;
-
 describe('Test sql_statement_bucket Class', () => {
-	before(() => {
-		const logger_rw = sql_statement_rewire.__get__('harperLogger');
-		logger_info_spy = sandbox.spy(logger_rw, 'info');
-	});
-
 	after(() => {
 		sandbox.restore();
-		rewire('#src/sqlTranslator/sql_statement_bucket');
+		rewire('#js/sqlTranslator/sql_statement_bucket');
 	});
 
 	describe(`Test getDeleteAttributes`, function () {
-		it('Nominal, pull attributes in delete statement', function () {
+		it('registers the table but no WHERE columns, which are checked for read instead', function () {
 			let getDeleteAttributes = sql_statement_rewire.__get__('getDeleteAttributes');
-			//let statement = new sql_statement_bucket(TEST_DELETE);
 			let statement = new Map();
 			let table_lookup = new Map();
 			getDeleteAttributes(TEST_DELETE, statement, table_lookup);
-			assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 2);
+			assert.equal(statement.get(SCHEMA_NAME).get(TABLE_NAME).length, 0);
 			assert.equal(Array.from(statement.get(SCHEMA_NAME).keys()).length, 1);
 			assert.equal(Array.from(statement.keys()).length, 1);
 		});
@@ -423,6 +415,64 @@ describe('Test sql_statement_bucket Class', () => {
 			getSelectAttributes(temp_update, statement, table_lookup, schema_lookup);
 			// No table was defined, so the returned value should be empty
 			assert.equal(statement.get(SCHEMA_NAME), undefined);
+		});
+
+		it('Records a GROUP BY column that is absent from the SELECT list', function () {
+			let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
+			let copy = clone(TEST_SELECT_JSON);
+			copy.columns = [{ columnid: 'id' }];
+			copy.group = [{ columnid: 'ssn' }];
+			delete copy.where;
+			let temp_select = new alasql.yy.Select(copy);
+			let affected_attrs = new Map();
+			let table_lookup = new Map();
+			let schema_lookup = new Map();
+			getSelectAttributes(temp_select, affected_attrs, table_lookup, schema_lookup);
+			assert.equal(affected_attrs.get(SCHEMA_NAME).get(TABLE_NAME).includes('ssn'), true);
+		});
+
+		it('Records an ORDER BY column on an unaliased joined table under its own schema, not the FROM schema', function () {
+			let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
+			// Mirrors `SELECT Public.id FROM data.Public JOIN vault.Vault ON Public.id = Vault.id
+			// ORDER BY Vault.ssn` — neither table is aliased, so schemaLookup (aliases only) can't
+			// resolve `Vault`; only tableToSchemaLookup (alias AND base name) can.
+			let ast = new alasql.yy.Select({
+				columns: [{ columnid: 'id', tableid: 'Public' }],
+				from: [{ databaseid: 'data', tableid: 'Public' }],
+				joins: [
+					{
+						joinmode: 'INNER',
+						table: { databaseid: 'vault', tableid: 'Vault' },
+						on: {
+							left: { columnid: 'id', tableid: 'Public' },
+							op: '=',
+							right: { columnid: 'id', tableid: 'Vault' },
+						},
+					},
+				],
+				order: [{ expression: { columnid: 'ssn', tableid: 'Vault' }, direction: 'ASC' }],
+			});
+			let affected_attrs = new Map();
+			let table_lookup = new Map();
+			let schema_lookup = new Map();
+			let table_to_schema_lookup = new Map();
+			getSelectAttributes(ast, affected_attrs, table_lookup, schema_lookup, table_to_schema_lookup);
+			assert.equal(affected_attrs.get('vault').get('Vault').includes('ssn'), true);
+			assert.equal(affected_attrs.get('data').get('Public').includes('ssn'), false);
+		});
+
+		it('Records a HAVING column that is absent from the SELECT list', function () {
+			let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
+			let copy = clone(TEST_SELECT_JSON);
+			copy.columns = [{ columnid: 'id' }];
+			copy.having = { left: { columnid: 'ssn' }, op: '=', right: { value: '111-22-3333' } };
+			delete copy.where;
+			let temp_select = new alasql.yy.Select(copy);
+			let affected_attrs = new Map();
+			let table_lookup = new Map();
+			let schema_lookup = new Map();
+			getSelectAttributes(temp_select, affected_attrs, table_lookup, schema_lookup);
+			assert.equal(affected_attrs.get(SCHEMA_NAME).get(TABLE_NAME).includes('ssn'), true);
 		});
 	});
 
@@ -613,7 +663,7 @@ describe('Test sql_statement_bucket Class', () => {
 			});
 		});
 
-		it('Nominal case, INVALID table in WHERE, reasonably complex AST with attributes. ', function () {
+		it('Reports a WHERE column qualified by an unknown table as unresolved', function () {
 			let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
 			let test_copy = clone(TEST_COMPLEX_AST);
 			const invalid_table = 'steffen';
@@ -623,13 +673,16 @@ describe('Test sql_statement_bucket Class', () => {
 			let table_lookup = new Map();
 			let schema_lookup = new Map();
 			let table_to_schema_lookup = new Map();
-			getRecordAttributesAST(temp_select, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
-			assert.equal(logger_info_spy.calledOnce, true, 'invalid table was not logged');
-			assert.equal(
-				logger_info_spy.args[0],
-				`table specified as ${invalid_table} not found.`,
-				'invalid table was not logged'
+			const unresolved = new Set();
+			getRecordAttributesAST(
+				temp_select,
+				affected_attributes,
+				table_lookup,
+				schema_lookup,
+				table_to_schema_lookup,
+				unresolved
 			);
+			assert.deepEqual([...unresolved], [`${invalid_table}.${test_copy.where.expression.left.left.columnid}`]);
 		});
 	});
 

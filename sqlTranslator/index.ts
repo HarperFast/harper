@@ -1,21 +1,24 @@
 'use strict';
 
 import * as insert from '../dataLayer/insert.ts';
-import * as util from 'util';
+import * as util from 'node:util';
 const cbInsertInsert = util.callbackify(insert.insert);
-import { search } from '../dataLayer/search.ts';
+import { sqlSelect } from '../dataLayer/search.ts';
 import { update } from '../dataLayer/update.ts';
 const cbUpdateUpdate = util.callbackify(update);
 import { convertDelete as deleteTranslator } from './deleteTranslator.ts';
 const cbDeleteTranslator = util.callbackify(deleteTranslator);
-import * as alasql from 'alasql';
+import alasql from 'alasql';
 import * as opAuth from '../utility/operation_authorization.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import alasqlFunctionImporter from './alasqlFunctionImporter.ts';
+import { assertLegacySqlText } from './legacySqlText.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
+import * as sqlEngineRouter from '../sqlEngine/router.ts';
+import { getOperationAuthorizationState } from '../server/serverHelpers/operationAuthorizationState.ts';
 
 //here we call to define and import custom functions to alasql
 alasqlFunctionImporter(alasql);
@@ -71,21 +74,37 @@ export function evaluateSQL(jsonMessage: any, callback: any) {
  * @param parsedSqlObject - The Parsed SQL statement specified in the inbound json message, of type ParsedSQLObject.
  * @returns {Array} - False if permissions check denys the statement.
  */
-export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any) {
+export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any, apiOperation?: string) {
 	let verifyResult = undefined;
 	try {
 		verifyResult = opAuth.verifyPermsAST(
 			parsedSqlObject.ast.statements[0],
 			jsonMessage.hdb_user,
-			parsedSqlObject.variant
+			parsedSqlObject.variant,
+			// The top-level API operation for the token-scope check: `sql` for a direct SQL call, but
+			// `export_local`/`export_to_s3` when the SQL rides inside a job's search_operation.
+			//
+			// From the explicit argument or the dispatched operation — deliberately NEVER a field read
+			// off `jsonMessage`. On the direct-SQL path that object IS the client's request body, and
+			// this check is the ONLY gate there, since the `sql` branch of chooseOperation is mutually
+			// exclusive with its verifyPerms call. Any body field consulted here is therefore a way for
+			// a caller to name whichever operation their token scope happens to allow and run arbitrary
+			// SQL under it.
+			//
+			// A job's re-parse would otherwise land here with the nested search_operation, whose
+			// `operation` is the inner `sql`; the job worker supplies the real one out of async context
+			// instead (operationAuthorizationState), which a request cannot set.
+			apiOperation ?? jsonMessage.operation
 		);
-		parsedSqlObject.permissions_checked = true;
 	} catch (e) {
 		throw e;
 	}
 	if (verifyResult) {
 		return verifyResult;
 	}
+	// Only after a pass: this flag is what processAST trusts to skip the gate, so a denied AST
+	// carrying it would read as already authorized.
+	parsedSqlObject.permissions_checked = true;
 	return null;
 }
 
@@ -128,10 +147,21 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 	try {
 		let sqlFunction = nullFunction;
 
-		if (!jsonMessage.bypass_auth && !parsedSqlObject.permissions_checked) {
-			let permissionsCheck = checkASTPermissions(jsonMessage, parsedSqlObject);
-			if (permissionsCheck && permissionsCheck.length > 0) {
-				return callback(UNAUTHORIZED_RESPONSE, permissionsCheck);
+		// Trusted bypass is dispatch/async-context state (set by chooseOperation's caller via
+		// runWithOperationAuthorizationBypass), never body state — jsonMessage.bypass_auth is
+		// caller-controlled and is stripped before operation code sees it (see
+		// server/serverHelpers/serverHandlers.js and components/mcp/tools/operations.ts).
+		if (!parsedSqlObject.permissions_checked) {
+			const authorizationState = getOperationAuthorizationState();
+			if (authorizationState?.bypassAuth !== true) {
+				let permissionsCheck = checkASTPermissions(jsonMessage, parsedSqlObject, authorizationState?.apiOperation);
+				// A denial is a PermissionResponseObject, which has no `length`.
+				if (permissionsCheck) {
+					// Logged here because this is the last place the reason exists: evaluateSQL drops the
+					// second callback argument, so a job worker records only the bare status.
+					logger.warn('SQL statement refused by AST permission check:', permissionsCheck);
+					return callback(UNAUTHORIZED_RESPONSE, permissionsCheck);
+				}
 			}
 		}
 
@@ -142,8 +172,7 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 
 		switch (parsedSqlObject.variant) {
 			case terms.VALID_SQL_OPS_ENUM.SELECT:
-				sqlFunction = search;
-				statement = parsedSqlObject.ast.statements[0];
+				sqlFunction = sqlSelect;
 				break;
 			case terms.VALID_SQL_OPS_ENUM.INSERT:
 				//TODO add validator for insert, need to make sure columns are specified
@@ -158,13 +187,29 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 			default:
 				throw new Error(`unsupported SQL type ${parsedSqlObject.variant} in SQL: ${jsonMessage}`);
 		}
-		sqlFunction(statement, (err, data) => {
-			if (err) {
-				callback(err);
-				return;
+
+		sqlEngineRouter.route(
+			{
+				variant: parsedSqlObject.variant,
+				jsonMessage,
+				statement,
+				legacy: (legacyStatement, legacyCallback) => {
+					try {
+						assertLegacySqlText(parsedSqlObject.ast.statements[0]);
+					} catch (err) {
+						return legacyCallback(err);
+					}
+					sqlFunction(legacyStatement, legacyCallback);
+				},
+			},
+			(err, data) => {
+				if (err) {
+					callback(err);
+					return;
+				}
+				callback(null, data);
 			}
-			callback(null, data);
-		});
+		);
 	} catch (e) {
 		return callback(e);
 	}

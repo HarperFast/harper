@@ -5,12 +5,12 @@
 
 const assert = require('assert');
 const chai = require('chai');
-const cu = require('#src/utility/common_utils');
+const cu = require('#js/utility/common_utils');
 const testUtils = require('../testUtils.js');
 // try to move to /bin directory so our properties reader doesn't explode.
 testUtils.changeProcessToBinDir();
 const rewire = require('rewire');
-const cu_rewire = rewire('#src/utility/common_utils');
+const cu_rewire = rewire('#js/utility/common_utils');
 const { expect } = chai;
 const ALL_SPACES = '     ';
 const SEP = require('path').sep;
@@ -173,10 +173,6 @@ describe('Test common_utils module', () => {
 
 		it(`Pass in false, expect true`, function () {
 			assert.equal(cu.isBoolean(false), true);
-		});
-
-		it(`Pass in evaluation, expect true`, function () {
-			assert.equal(cu.isBoolean(2 > 1), true);
 		});
 	});
 
@@ -565,5 +561,183 @@ describe('Test common_utils module', () => {
 		expect(b).to.equal('1d 10h 17m 36s');
 		const c = cu_rewire.ms_to_time(1672345634534);
 		expect(c).to.equal('52y 27d 20h 27m 14s');
+	});
+
+	describe('Test convertToMS', () => {
+		it('bare number is treated as seconds', () => {
+			expect(cu.convertToMS(5)).to.equal(5000);
+		});
+		it('duration-string units (note case-sensitive M=month vs m=minute)', () => {
+			expect(cu.convertToMS('5m')).to.equal(300000); // minutes
+			expect(cu.convertToMS('2h')).to.equal(7200000);
+			expect(cu.convertToMS('1d')).to.equal(86400000);
+			expect(cu.convertToMS('1M')).to.equal(86400 * 30 * 1000); // 30-day month
+		});
+		it('year suffix (y/Y) resolves to 365 days', () => {
+			expect(cu.convertToMS('1y')).to.equal(86400 * 365 * 1000);
+			expect(cu.convertToMS('1Y')).to.equal(86400 * 365 * 1000);
+		});
+		it('non-numeric string yields NaN (so callers can reject it)', () => {
+			expect(Number.isNaN(cu.convertToMS('abc'))).to.equal(true);
+		});
+	});
+
+	describe('Test prettyDuration', () => {
+		it('drops only leading zero units', () => {
+			assert.strictEqual(cu.prettyDuration(5000), '5s');
+			assert.strictEqual(cu.prettyDuration(90000), '1m 30s');
+			assert.strictEqual(cu.prettyDuration(97702000), '1d 3h 8m 22s');
+		});
+		it('keeps interior zero units once a larger unit is present', () => {
+			assert.strictEqual(cu.prettyDuration(86405000), '1d 0h 0m 5s');
+		});
+		it('floors sub-second and non-positive values to 0s', () => {
+			assert.strictEqual(cu.prettyDuration(0), '0s');
+			assert.strictEqual(cu.prettyDuration(999), '0s');
+			assert.strictEqual(cu.prettyDuration(-5000), '0s');
+		});
+		it('floors non-finite values to 0s', () => {
+			assert.strictEqual(cu.prettyDuration(NaN), '0s');
+			assert.strictEqual(cu.prettyDuration(Infinity), '0s');
+			assert.strictEqual(cu.prettyDuration(-Infinity), '0s');
+			assert.strictEqual(cu.prettyDuration(cu.convertToMS('abc')), '0s');
+		});
+	});
+
+	describe('Test httpRequest timeout', () => {
+		const http = require('node:http');
+		let server, port;
+
+		before((done) => {
+			// Never responds, so the client-side idle timeout is the only thing that can end the request.
+			server = http.createServer(() => {});
+			server.listen(0, '127.0.0.1', () => {
+				port = server.address().port;
+				done();
+			});
+		});
+
+		after((done) => {
+			server.close(done);
+		});
+
+		it('rejects with a clear ETIMEDOUT error when the server never responds', async () => {
+			await assert.rejects(
+				cu.httpRequest(
+					{
+						protocol: 'http:',
+						hostname: '127.0.0.1',
+						port,
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						timeout: 50,
+					},
+					{}
+				),
+				(err) => {
+					assert.strictEqual(err.code, 'ETIMEDOUT');
+					assert.match(err.message, /timed out/i);
+					return true;
+				}
+			);
+		});
+	});
+
+	describe('Test httpRequest abort signal on a trickling response', () => {
+		const http = require('node:http');
+		let trickleServer, port, trickle;
+
+		before((done) => {
+			// A byte every 20ms keeps the idle timer from ever firing.
+			trickleServer = http.createServer((req, res) => {
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				trickle = setInterval(() => res.write(' '), 20);
+				res.on('close', () => clearInterval(trickle));
+			});
+			trickleServer.listen(0, '127.0.0.1', () => {
+				port = trickleServer.address().port;
+				done();
+			});
+		});
+
+		after((done) => {
+			clearInterval(trickle);
+			if (!trickleServer) return done();
+			trickleServer.closeAllConnections();
+			trickleServer.close(done);
+		});
+
+		it('rejects once the signal aborts, though the body is still arriving', async () => {
+			const started = Date.now();
+			await assert.rejects(
+				cu.httpRequest(
+					{
+						protocol: 'http:',
+						hostname: '127.0.0.1',
+						port,
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						timeout: 1000,
+						signal: AbortSignal.timeout(150),
+					},
+					{}
+				),
+				(err) => err.name === 'AbortError'
+			);
+			assert.ok(Date.now() - started < 1000);
+		});
+	});
+
+	describe('Test httpRequest timeout mid-stream (SSE-style streamResponse)', () => {
+		const http = require('node:http');
+		let server, port;
+
+		before((done) => {
+			// Sends headers plus one event, then goes silent forever — mirrors a wedged
+			// deploy_component whose server stops emitting SSE phase events mid-stream.
+			server = http.createServer((req, res) => {
+				res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+				res.write('event: phase\ndata: {"phase":"prepare"}\n\n');
+			});
+			server.listen(0, '127.0.0.1', () => {
+				port = server.address().port;
+				done();
+			});
+		});
+
+		after((done) => {
+			server.close(done);
+		});
+
+		it('surfaces the same clear "timed out" message on the response stream, not a bare "aborted"', async () => {
+			const response = await cu.httpRequest(
+				{
+					protocol: 'http:',
+					hostname: '127.0.0.1',
+					port,
+					// The CLI always POSTs Op-API requests (see cliOperations.ts); matching that
+					// here matters because a GET request whose body httpRequest still writes
+					// causes an unrelated, immediate ECONNRESET from Node's http server.
+					method: 'POST',
+					headers: { Accept: 'text/event-stream' },
+					timeout: 50,
+					streamResponse: true,
+				},
+				{}
+			);
+
+			const chunks = [];
+			let caught;
+			try {
+				for await (const chunk of response) chunks.push(chunk);
+			} catch (err) {
+				caught = err;
+			}
+
+			assert.ok(caught, 'expected the response stream to error once the idle timeout fires');
+			assert.strictEqual(caught.code, 'ETIMEDOUT');
+			assert.match(caught.message, /timed out after \d+ms/i);
+			assert.doesNotMatch(caught.message, /^aborted$/i);
+		});
 	});
 });

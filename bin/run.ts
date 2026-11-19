@@ -1,44 +1,55 @@
 'use strict';
 
 import * as env from '../utility/environment/environmentManager.ts';
-env.initSync();
-
+try {
+	env.initSync();
+} catch {
+	/* tolerate ESM cycle TDZ; bin entry will re-call later */
+}
 // This unused restart import is here so that main thread loads ITC event listener defined in restart file. Do not remove.
 import './restart.ts';
 import * as terms from '../utility/hdbTerms.ts';
 const { CONFIG_PARAMS } = terms;
 import hdbLogger from '../utility/logging/harper_logger.ts';
-import * as fs from 'fs-extra';
-import * as path from 'path';
-import checkJwtTokens from '../utility/install/checkJWTTokensExist.js';
+import fs from 'fs-extra';
+import * as path from 'node:path';
+import checkJwtTokens from '../utility/install/checkJWTTokensExist.ts';
 import { install } from '../utility/install/installer.ts';
 import chalk from 'chalk';
-import { packageJson } from '../utility/packageUtils.js';
+import { packageJson, PRODUCT_NAME } from '../utility/packageUtils.js';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as installation from '../utility/installation.ts';
-import * as configUtils from '../config/configUtils.js';
+import * as configUtils from '../config/configUtils.ts';
 import assignCMDENVVariables from '../utility/assignCmdEnvVariables.ts';
-import * as upgrade from './upgrade.js';
+import * as upgrade from './upgrade.ts';
 import { compactOnStart, migrateOnStart } from './copyDb.ts';
 import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
+import { configuredHttpThreadCount } from '../server/threads/workerPools.ts';
+import { beginProcessShutdown, forceUwsWorkersToExit } from '../server/threads/manageThreads.ts';
+import { createTerminationHandler, shutdownProcess } from '../server/threads/processShutdown.ts';
+import { getProcessShutdownTimeoutMs } from '../components/shutdownDrain.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
-import { getThisNodeName } from '../server/nodeName.ts';
+import { declareTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
+import { ensureCertificateVerificationTables } from '../security/certificateVerification/verificationTables.ts';
+import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
-import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.js';
+import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { enableCompileCache } from '../server/threads/compileCache.ts';
 
 let pmUtils;
 let cmdArgs;
 let skipExitListeners = false;
 
-const UPGRADE_COMPLETE_MSG = 'Upgrade complete. Starting Harper.';
-const UPGRADE_ERR = 'Got an error while trying to upgrade your Harper instance. Exiting Harper.';
-const HDB_NOT_FOUND_MSG = 'Harper not found, starting install process.';
+const UPGRADE_COMPLETE_MSG = `Upgrade complete. Starting ${PRODUCT_NAME}.`;
+const UPGRADE_ERR = `Got an error while trying to upgrade your ${PRODUCT_NAME} instance. Exiting ${PRODUCT_NAME}.`;
+const HDB_NOT_FOUND_MSG = `${PRODUCT_NAME} not found, starting install process.`;
 const INSTALL_ERR = 'There was an error during install. Exiting.';
-const HDB_STARTED = 'Harper successfully started.';
+const HDB_STARTED = `${PRODUCT_NAME} successfully started.`;
+const SAFE_MODE_MSG = `${PRODUCT_NAME} is running in safe mode (HARPER_SAFE_MODE); user applications and components will not be loaded.`;
 
 function addUnhandleRejectionListener() {
 	process.on('unhandledRejection', (reason, promise) => {
@@ -49,21 +60,27 @@ function addUnhandleRejectionListener() {
 function addExitListeners() {
 	if (!skipExitListeners) {
 		const removeHdbPid = () => {
-			fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
-			process.exit(0);
+			try {
+				fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
+			} catch (error) {
+				hdbLogger.error(`Unable to remove the ${PRODUCT_NAME} pid file during shutdown`, error);
+			}
 		};
+		// Forward defence, not load-bearing today: nothing below can reach a worker start.
 		process.on('exit', () => {
+			beginProcessShutdown();
 			removeHdbPid();
 		});
-		process.on('SIGINT', () => {
-			removeHdbPid();
+		// The pid file stays until 'exit': while draining, the instance is still running and a repeated
+		// `harper stop` is the second signal.
+		const onSignal = createTerminationHandler({
+			getTimeoutMs: getProcessShutdownTimeoutMs,
+			shutdown: shutdownProcess,
+			exit: () => void forceUwsWorkersToExit().then(() => process.exit(0)),
 		});
-		process.on('SIGQUIT', () => {
-			removeHdbPid();
-		});
-		process.on('SIGTERM', () => {
-			removeHdbPid();
-		});
+		process.on('SIGINT', onSignal);
+		process.on('SIGQUIT', onSignal);
+		process.on('SIGTERM', onSignal);
 	}
 }
 
@@ -75,7 +92,7 @@ function addExitListeners() {
  */
 async function initialize(calledByInstall = false, calledByMain = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
-	console.log(chalk.magenta('Starting Harper...'));
+	console.log(chalk.magenta(`Starting ${PRODUCT_NAME}...`));
 
 	// Display read-only mode warning early, before database initialization
 	if (isReadOnlyMode()) {
@@ -89,10 +106,12 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'static/ascii_logo.txt'))));
 	});
 	hdbLogger.debug('Checking to make sure hdb is installed');
+	let installedDuringInit = false;
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
 		try {
 			await install();
+			installedDuringInit = true;
 		} catch (err) {
 			console.error(INSTALL_ERR, err);
 			hdbLogger.error(err);
@@ -101,14 +120,14 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	}
 
 	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
-	// we do not need to update/backup the config file on run.
-	if (!calledByInstall) {
+	// or auto-install just ran above, we do not need to update/backup the config file on run.
+	if (!calledByInstall && !installedDuringInit) {
 		// If run is called with cmd/env vars we create a backup of config and update config file.
 		let parsedArgs = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
 
-		// If HARPER_SET_CONFIG is present, filter out any config keys that are set in it
-		// to prevent individual env vars from overriding explicit runtime configuration
-		const { filterArgsAgainstRuntimeConfig } = require('../config/harperConfigEnvVars');
+		// If HARPER_CONFIG or HARPER_SET_CONFIG is present, filter out any config keys that are set
+		// in them to prevent individual env vars from overriding explicit runtime configuration
+		const { filterArgsAgainstRuntimeConfig } = await import('../config/harperConfigEnvVars.ts');
 		parsedArgs = filterArgsAgainstRuntimeConfig(parsedArgs);
 
 		if (!hdbUtils.isEmpty(parsedArgs) && !hdbUtils.isEmptyOrZeroLength(Object.keys(parsedArgs))) {
@@ -140,8 +159,8 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	// If found confirm it matches a currently running processes
 	let hdbPid = getHdbPid();
 	if (hdbPid) {
-		hdbLogger.debug('Error: Harper is already running');
-		console.error(`Error: Harper is already running (pid: ${hdbPid})`);
+		hdbLogger.debug(`Error: ${PRODUCT_NAME} is already running`);
+		console.error(`Error: ${PRODUCT_NAME} is already running (pid: ${hdbPid})`);
 		process.exit(4);
 	}
 
@@ -151,7 +170,15 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		// Write Harper PID to file for tracking purposes
 		await fs.writeFile(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
 	}
-	hdbLogger.info('Harper PID', process.pid);
+	hdbLogger.info(`${PRODUCT_NAME} PID`, process.pid);
+
+	// Before anything reads `system`: an offline restore (of `system` itself included) that committed and
+	// then stopped short of clearing its marker is finished here, from its receipt file alone.
+	try {
+		await (await import('../dataLayer/restorePublication.ts')).finishCommittedRestoresBeforeStartup();
+	} catch (error) {
+		hdbLogger.error('Could not finish a committed restore before startup', error);
+	}
 
 	// Check to see if an upgrade is needed based on existing hdbInfo data. If so, we need to force the user to upgrade
 	// before the server can be started.
@@ -166,7 +193,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	} catch (err) {
 		if (upgradeVers) {
 			console.error(
-				`Got an error while trying to upgrade your Harper instance to version ${upgradeVers}. Exiting Harper.`,
+				`Got an error while trying to upgrade your ${PRODUCT_NAME} instance to version ${upgradeVers}. Exiting ${PRODUCT_NAME}.`,
 				err
 			);
 			hdbLogger.error(err);
@@ -175,6 +202,32 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 			hdbLogger.error(err);
 		}
 		process.exit(1);
+	}
+
+	// Every boot: data already at a 5.3.0 pre-release never runs the 5.3.0 directive (compareVersions sorts
+	// those versions above 5.3.0). Before worker threads start, so they load the table with its expiration.
+	if (!isReadOnlyMode()) {
+		try {
+			declareTokenUseTable();
+		} catch (error) {
+			hdbLogger.error('Starting without the declared system.hdb_oidc_token_use; the next start retries', error);
+		}
+		// A node that never verifies a client certificate still holds the rows its peers replicate.
+		try {
+			await ensureCertificateVerificationTables();
+		} catch (error) {
+			hdbLogger.error('Starting without the declared certificate verification tables; the next start retries', error);
+		}
+	}
+
+	// A built-in component only activates when its config key is present. Fresh installs get these
+	// keys from defaultConfig.yaml, but an in-place upgrade carries the old config forward without a
+	// key added in a newer release (harper-pro#585). Ensure them on every boot — idempotent and
+	// scoped to genuinely-new built-ins registered in this runtime — so the fix self-heals even when
+	// a version bump ships no upgrade directive or a prior backfill write failed.
+	const backfilledKeys = configUtils.ensureBuiltInComponentConfigKeys();
+	if (backfilledKeys.length > 0) {
+		hdbLogger.info(`Activated built-in component(s) absent from an upgraded config: ${backfilledKeys.join(', ')}`);
 	}
 
 	checkJwtTokens();
@@ -198,16 +251,28 @@ async function main(calledByInstall = false) {
 			configUtils.updateConfigObject('settings_path', harperConfigPath);
 		}
 		await initialize(calledByInstall, true);
+		// after bin/harper.ts's earlier call: covers a fresh install, entries that call main() directly, and a rootPath
+		// that initialize() just moved
+		enableCompileCache(env.get(terms.CONFIG_PARAMS.ROOTPATH));
+
+		if (process.env.HARPER_SAFE_MODE) hdbLogger.notify(SAFE_MODE_MSG);
+
+		// Drain onStartup hooks after install/initialize so server.X singletons
+		// (server.http, server.getUser, etc.) and auth.ts's onStartup table()
+		// call see the populated env / installed hdbBasePath.
+		const lifecycle = await import('../utility/lifecycle.ts');
+		await lifecycle.runStartup();
 
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_MIGRATEONSTART)) await migrateOnStart();
 
 		const isScripted = process.env.IS_SCRIPTED_SERVICE && !cmdArgs.service;
 
-		await startHTTPThreads(
-			process.env.DEV_MODE
-				? 1
-				: (env.get(hdbTerms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdbTerms.CONFIG_PARAMS.THREADS))
+		await startHTTPThreads(configuredHttpThreadCount());
+		// after main settled interrupted deploys and every pool worker reported what it loaded
+		import('../components/operations.ts').then(
+			({ retryPendingBranchRemovals }) => retryPendingBranchRemovals(),
+			(error) => hdbLogger.error(error)
 		);
 
 		if (!isScripted) started();
@@ -220,7 +285,7 @@ async function main(calledByInstall = false) {
 function started() {
 	// Console log Harper dog logo
 	hdbLogger.suppressLogging(() => {
-		console.log(chalk.magenta(`Harper ${packageJson.version} successfully started`));
+		console.log(chalk.magenta(`${PRODUCT_NAME} ${packageJson.version} successfully started`));
 	});
 	hdbLogger.notify(HDB_STARTED);
 }
@@ -233,7 +298,7 @@ function started() {
 async function launch(exit = true) {
 	skipExitListeners = !exit;
 	try {
-		if (pmUtils === undefined) pmUtils = require('../utility/processManagement/processManagement.js');
+		if (pmUtils === undefined) pmUtils = await import('../utility/processManagement/processManagement.ts');
 		hdbLogger.debug('initializing processManagement...');
 		await initialize();
 		hdbLogger.debug('Starting new main process');
@@ -248,6 +313,7 @@ async function launch(exit = true) {
 	}
 }
 
+export { addExitListeners };
 export { launch };
 export { main };
 export { startupLog };
@@ -266,6 +332,8 @@ function startupLog(portResolutions: any) {
 	if (isReadOnlyMode()) {
 		logMsg += `${pad('Mode:')}${chalk.yellow('READ-ONLY')}\n`;
 	}
+
+	logMsg += `${pad('Version:')}${packageJson.version}\n`;
 
 	logMsg += `${pad('Hostname:')}${getThisNodeName()}\n`;
 
@@ -307,17 +375,10 @@ function startupLog(portResolutions: any) {
 	}`;
 	logMsg += `, unix socket: ${configUtils.getConfigPath(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)}\n`;
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)) {
-		logMsg += pad('') + 'http://' + getThisNodeName() + ':' + env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) + '/\n';
+		logMsg += `${pad('')}http://${getThisNodeHostname()}:${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)}/\n`;
 	}
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)) {
-		logMsg +=
-			'\n' +
-			pad('') +
-			'https://' +
-			getThisNodeName() +
-			':' +
-			env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) +
-			'/\n';
+		logMsg += `\n${pad('')}https://${getThisNodeHostname()}:${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)}/\n`;
 	}
 
 	// MQTT Log
@@ -369,7 +430,7 @@ function startupLog(portResolutions: any) {
 			if (!restLog.includes(pair) && name === 'rest') {
 				restLog += pair;
 				if (value.protocol_name === 'HTTP' || value.protocol_name === 'HTTPS') {
-					restHostnames.push(`${value.protocol_name.toLowerCase()}://${getThisNodeName()}:${key}/`);
+					restHostnames.push(`${value.protocol_name.toLowerCase()}://${getThisNodeHostname()}:${key}/`);
 				}
 			}
 

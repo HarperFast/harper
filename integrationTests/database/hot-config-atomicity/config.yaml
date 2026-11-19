@@ -1,0 +1,6 @@
+# QA-334 — hot-config feature-flag service: read atomicity under whole-record PUT storm.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
