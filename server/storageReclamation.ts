@@ -23,7 +23,7 @@ const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAM
 // Written by host-manager every ~90s alongside the instance's hdb root
 const QUOTA_STATUS_FILE = 'quota-status.json';
 // Use statfs fallback if the file is older than this (host-manager outage, container start race, etc.)
-const QUOTA_STATUS_MAX_AGE_MS = 5 * 60 * 1000;
+export const QUOTA_STATUS_MAX_AGE_MS = 5 * 60 * 1000;
 
 export type QuotaStatusData = {
 	usedBytes: number;

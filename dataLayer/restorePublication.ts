@@ -142,9 +142,11 @@ export async function removeReceiptStaging(receipt: RestoreReceipt): Promise<voi
 	];
 	if (stagingDirs.length === 0) return;
 	try {
-		const { removeStagingArea, stagedAreasOfReceipt } = await import('./archiveStaging.ts');
-		for (const stagingDir of stagingDirs)
+		const { keepInstalledCharge, removeStagingArea, stagedAreasOfReceipt } = await import('./archiveStaging.ts');
+		for (const stagingDir of stagingDirs) {
+			await keepInstalledCharge(stagingDir);
 			await removeStagingArea(stagedAreasOfReceipt({ ...receipt, staging_dir: stagingDir }));
+		}
 	} catch (error) {
 		logger.warn(`Could not remove the staged archive of the restore of '${receipt.database}'`, error);
 	}

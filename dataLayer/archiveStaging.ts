@@ -27,7 +27,7 @@ import { get as envGet, getHdbBasePath } from '../utility/environment/environmen
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { processIncarnation } from '../server/threads/processIncarnation.ts';
-import { getQuotaStatus, getStorageSpaceStats } from '../server/storageReclamation.ts';
+import { getQuotaStatus, getStorageSpaceStats, QUOTA_STATUS_MAX_AGE_MS } from '../server/storageReclamation.ts';
 import { databaseRoots } from '../resources/databases.ts';
 import { getBlobPathsForDatabaseName, rimrafSteadily } from '../resources/blob.ts';
 import { nearestExistingAncestor } from './blobBackup.ts';
@@ -44,6 +44,7 @@ export const STAGED_SUFFIX = '.staged';
 const STAGED_RECORD = 'staged.json';
 const STAGED_RECORD_TEMP = 'staged.json.tmp';
 const STAGED_RECORD_VERSION = 1;
+const CHARGE_SUFFIX = '.charge';
 const ENGINE_PART = 'db';
 const BLOB_PART = 'blobs';
 const PREVIOUS = 'previous';
@@ -224,37 +225,83 @@ export function stagedAreas(record: Pick<StagedRecord, 'parts'>): string[] {
 }
 
 /**
- * The payload of every archive staged on disk since the quota report was taken, which the report cannot
- * count; all of them when the report has no time. An area without a readable `staged.json` is still
- * being written or was abandoned mid-extraction, and is skipped: sizing it would mean walking it.
+ * The payload of every archive extracted since the quota report was taken, which the report cannot
+ * count; all of them when the report has no time. One still staged is read from its `staged.json`, and
+ * one installed from the charge `keepInstalledCharge` left. An area without a readable `staged.json` is
+ * still being written or was abandoned mid-extraction, and is skipped: sizing it would mean walking it.
  */
 async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPlan): Promise<number> {
-	const own = resolve(plan.stagingDir);
 	const locations = new Set(
 		[...databaseRoots(), ...configuredBlobPaths()].map((path) => join(resolve(path), RESTORE_META_DIR))
 	);
-	let total = 0;
+	// by staging id: an installed archive has its charge and its area until the area is removed
+	const charges = new Map<string, number>();
+	const count = async (id: string, file: string) => {
+		if (id === plan.stagingId) return;
+		let record: any;
+		try {
+			record = JSON.parse(await readFile(file, 'utf8'));
+		} catch {
+			return;
+		}
+		const bytes = record?.archive?.payload_bytes;
+		if (!Number.isFinite(bytes) || bytes <= 0) return;
+		if (Number.isFinite(reportedAt) && Number.isFinite(record.created_at) && record.created_at < reportedAt!) return;
+		charges.set(id, bytes);
+	};
 	for (const location of locations) {
 		for (const name of await listDirAsync(location)) {
+			if (name.endsWith(CHARGE_SUFFIX)) await count(name.slice(0, -CHARGE_SUFFIX.length), join(location, name));
 			if (!name.endsWith(STAGED_SUFFIX)) continue;
 			for (const id of await listDirAsync(join(location, name))) {
-				const area = join(location, name, id);
-				if (area === own) continue;
-				let record: any;
-				try {
-					record = JSON.parse(await readFile(join(area, STAGED_RECORD), 'utf8'));
-				} catch {
-					continue;
-				}
-				const bytes = record?.archive?.payload_bytes;
-				if (!Number.isFinite(bytes) || bytes <= 0) continue;
-				if (Number.isFinite(reportedAt) && Number.isFinite(record.created_at) && record.created_at < reportedAt!)
-					continue;
-				total += bytes;
+				await count(id, join(location, name, id, STAGED_RECORD));
 			}
 		}
 	}
+	let total = 0;
+	for (const bytes of charges.values()) total += bytes;
 	return total;
+}
+
+/**
+ * Before a receipt's staged archive is removed. Where any part was installed, the payload is now live
+ * data that no `staged.json` counts, so while the quota report on disk predates the archive, what
+ * `stagedSinceReport` reads of the record is kept beside the areas. Any report read later than a
+ * report's lifetime after the archive is newer than it, so charges that old are removed here. Never rejects.
+ */
+export async function keepInstalledCharge(stagingDir: string): Promise<void> {
+	const location = dirname(dirname(stagingDir));
+	const oldest = Date.now() - QUOTA_STATUS_MAX_AGE_MS;
+	try {
+		for (const name of listDir(location)) {
+			if (!name.endsWith(CHARGE_SUFFIX)) continue;
+			let createdAt: unknown;
+			try {
+				createdAt = JSON.parse(readFileSync(join(location, name), 'utf8'))?.created_at;
+			} catch {
+				// unreadable charges nothing
+			}
+			if (!(Number(createdAt) >= oldest)) rmSync(join(location, name), { force: true });
+		}
+		let record: StagedRecord;
+		try {
+			record = readStagedRecord(stagingDir);
+		} catch {
+			return;
+		}
+		if (!record.parts.some((part) => sameInode(part.destination, part))) return;
+		// no report, or one taken since: the next report read counts the archive itself
+		const reportedAt = (await getQuotaStatus())?.updatedAt;
+		if (reportedAt === undefined || reportedAt > record.created_at) return;
+		const name = record.staging_id + CHARGE_SUFFIX;
+		writeFileDurably(
+			join(location, name),
+			JSON.stringify({ archive: { payload_bytes: record.archive.payload_bytes }, created_at: record.created_at }),
+			`${name}.tmp`
+		);
+	} catch (error) {
+		logger.warn(`Could not keep the quota charge of the archive restored from ${stagingDir}`, error);
+	}
 }
 
 /**
