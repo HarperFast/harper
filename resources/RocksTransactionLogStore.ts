@@ -327,7 +327,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log?: string | number;
 		excludeLogs?: string[];
 		onlyKeys?: boolean;
-		/** A start per log name. A log it does not name starts at `start` when one is given, and at 0 otherwise. */
 		startByLog?: Map<string, number>;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
@@ -350,7 +349,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 		/**
 		 * A `peekAhead` range. Each log stops at the entry that range returns next and resumes as it advances, so
 		 * a pull that reports done found every log caught up with it in that same turn. A log that cannot be read up
-		 * to its bound throws `TransactionLogUntilUnreachedError` out of the pull, and every log keeps its place.
+		 * to its bound throws `TransactionLogUntilUnreachedError` out of the pull, and every log keeps its place. A
+		 * single-log range (`log`) is bounded the same way, by that range's read of the log.
 		 */
 		until?: TransactionLogIterable;
 	}): TransactionLogIterable {
@@ -455,7 +455,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 		if (log) {
 			const resumeAfterExactStart =
 				options.resumeAfterExactStart === true && options.exactStart === true && options.start !== undefined;
-			const queryOptions = resumeAfterExactStart ? { ...options, exclusiveStart: false } : options;
+			let queryOptions = resumeAfterExactStart ? { ...options, exclusiveStart: false } : options;
+			if (options.until) queryOptions = { ...queryOptions, until: options.until.sourceOf(log) } as any;
 			const queryIterator = trackCorruptFrames(log, queryOptions);
 			singleLogIterator = queryIterator;
 			let exactStartObserved = !resumeAfterExactStart;
@@ -509,14 +510,13 @@ export class RocksTransactionLogStore extends EventEmitter {
 							let expectedExactStart: number | undefined;
 							if (options.startByLog) {
 								if (options.startByLog.has(log.name)) {
-									const start = options.startByLog.get(log.name)!;
-									if (options.exactStart || options.resumeAfterExactStart) expectedExactStart = start;
+									expectedExactStart = options.startByLog.get(log.name)!;
 									queryOptions = {
 										...options,
-										start,
+										start: expectedExactStart,
 										exclusiveStart: options.resumeAfterExactStart ? false : options.exclusiveStart,
 									};
-								} else if (options.start === undefined) {
+								} else {
 									queryOptions = { ...options, start: 0, exactStart: false, exclusiveStart: false };
 								}
 							} else if (latestUpdates >= 0) {

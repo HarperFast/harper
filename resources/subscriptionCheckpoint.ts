@@ -428,7 +428,8 @@ export function positionBefore(key: number): number {
 	return KEY_SCRATCH[0];
 }
 
-function positionAfter(key: number): number {
+/** The least double above a log key. */
+export function positionAfter(key: number): number {
 	if (key === 0) return Number.MIN_VALUE;
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0] += 1n;
@@ -674,7 +675,9 @@ export function originReplayStarts(
 	scope: string,
 	position: number
 ): Map<string, number> | undefined {
-	if (knownLogNames(auditStore).length === 0) return;
+	// only a log this node holds is read, and reading one by name would create it
+	const logNames = new Set(knownLogNames(auditStore));
+	if (logNames.size === 0) return;
 	let resolved: TokenMembers;
 	try {
 		const token = validateCheckpoint(checkpoint);
@@ -692,7 +695,7 @@ export function originReplayStarts(
 	let starts: Map<string, number> | undefined;
 	for (const [name, boundary] of resolved.membership.members) {
 		const state = resolved.byName.get(name)!;
-		if (state.nodeId === 0 || !(boundary > 0 && boundary <= position)) continue;
+		if (state.nodeId === 0 || !logNames.has(name) || !(boundary > 0 && boundary <= position)) continue;
 		if (boundaryRefusal(state, boundary, resumeFloor)) continue;
 		(starts ??= new Map()).set(name, positionBefore(boundary));
 	}
