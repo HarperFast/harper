@@ -146,7 +146,7 @@ Through a running server this runs as a background [job](../operations-api/opera
 | `cancel`                     | <VersionBadge version="v5.4.0" /> Withdraw a pending or stopped restart restore. Takes only `database`. Works with Harper stopped too.                                                                                                                                                                                                |
 | `file`                       | <VersionBadge version="v5.4.2" /> CLI only. Restore the `get_backup` archive at this path instead of a managed backup. See [restoring a `get_backup` archive](#restoring-a-get_backup-archive).                                                                                                                                       |
 | `payload`                    | <VersionBadge version="v5.4.2" /> The archive as the last part of a `multipart/form-data` request, which is what `file` sends.                                                                                                                                                                                                        |
-| `sha256`                     | <VersionBadge version="v5.4.2" /> With an archive only. The archive's expected sha256, as 64 hexadecimal characters; a different archive is refused before anything is queued.                                                                                                                                                        |
+| `sha256`                     | <VersionBadge version="v5.4.2" /> With an archive only. The archive's expected sha256, as 64 hexadecimal characters; a different archive is refused before anything is queued. A request that sends no archive checks nothing against it, so `sha256` there is refused with status code 400.                                          |
 
 ```json
 { "operation": "restore_backup", "database": "data", "backup_id": 1 }
@@ -297,7 +297,7 @@ harper restore_backup database=data file=./data.tar.gz target=https://node-2.exa
 
 The CLI sends the file as the request's `payload`, the last part of a `multipart/form-data` request. Harper extracts the archive as it arrives, so the request returns once the upload is extracted, with the `job_id` and the archive's `archive_sha256`. The restore then runs as a job, like any other.
 
-`database` is the database the archive replaces. It may be a database that does not exist yet; the archive's own database name is reported but not used. `backup_id`, `target_database`, `immutable_source` and `allow_engine_only` do not apply to an archive and are refused with status code 400. `on_restart`, `retain_previous`, `accept_incompatible_backup`, `accept_unverified_blobs` and `sha256` apply as they do to a managed backup. The `system` database is restored from an archive only with Harper stopped.
+`database` is the database the archive replaces. It may be a database that does not exist yet; the archive's own database name is reported but not used. `backup_id`, `target_database`, `immutable_source` and `allow_engine_only` do not apply to an archive and are refused with status code 400. `on_restart`, `retain_previous`, `accept_incompatible_backup` and `accept_unverified_blobs` apply as they do to a managed backup. The `system` database is restored from an archive only with Harper stopped.
 
 #### Which archives are accepted
 

@@ -259,10 +259,15 @@ describe('restore_backup file= from the CLI', () => {
 				['backup_id=1', /omit 'backup_id' and 'on_restart'/],
 				['on_restart=true', /omit 'backup_id' and 'on_restart'/],
 				['accept_unverified_blobs=true', /takes no 'accept_unverified_blobs'/],
-				[`sha256=${'a'.repeat(64)}`, /takes no 'sha256'/],
+				[`sha256=${'a'.repeat(64)}`, /this request uploads none/],
 			]) {
 				process.argv = ['node', 'harper', 'restore_backup', `database=${name}`, 'resume=true', extra];
 				await assert.rejects(runBackupCommand('restore_backup'), refusal, extra);
+			}
+			// and with no archive at all: a managed restore, and a cancel
+			for (const action of [[], ['cancel=true']]) {
+				process.argv = ['node', 'harper', 'restore_backup', `database=${name}`, `sha256=${'a'.repeat(64)}`, ...action];
+				await assert.rejects(runBackupCommand('restore_backup'), /this request uploads none/, action.join());
 			}
 		} finally {
 			fs.removeSync(receiptPath);

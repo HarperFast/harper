@@ -637,8 +637,10 @@ export async function verifyBackup(request: any) {
 
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
-	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readRestoreRequest(request);
-	// only restoreBackupRequest sets it, after refusing any a client sent; it names staging, not a repository
+	// only restoreBackupRequest sets `staging_id`, after refusing any a client sent; it names staging, not a repository
+	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readRestoreRequest(request, {
+		archive: request.staging_id !== undefined,
+	});
 	if (request.staging_id !== undefined) {
 		const { assertStagedArchiveQueued } = await import('./restoreArchive.ts');
 		assertStagedArchiveQueued(databaseName, restoreTargetDir(databaseName, databaseName), request.staging_id);
@@ -670,6 +672,14 @@ export async function validateRestoreBackup(request: any) {
 	if (targetDatabase === databaseName && loaded != null && Object.keys(loaded).length > 0) {
 		requireRocksRootStore(databaseName, OPERATIONS_ENUM.RESTORE_BACKUP);
 	}
+}
+
+/** A pin that checks nothing would read as a verified restore. */
+export function assertNoArchivePin(request: any): void {
+	if (request.sha256 === undefined) return;
+	throw new ClientError(
+		`'sha256' is checked against the archive a request uploads, and this request uploads none; omit it`
+	);
 }
 
 const RESTART_RESTORE_OPTIONS = ['allow_engine_only', 'accept_incompatible_backup', 'accept_unverified_blobs'];
@@ -707,6 +717,7 @@ export function readRestoreRequest(request: any, { offline = false, archive = fa
 	if (request.retain_previous !== undefined && !onRestart) refuse(`'retain_previous' applies only with 'on_restart'`);
 	if (request.target_database !== undefined && (onRestart || resume || cancel))
 		refuse(`'target_database' is never held by a component, so it restores online; omit 'on_restart'`);
+	if (!archive) assertNoArchivePin(request);
 	if (!offline && (databaseName === 'system' || targetDatabase === 'system')) {
 		throw new ClientError(
 			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system${archive ? ' file=<archive>' : ''}`
@@ -763,7 +774,7 @@ export async function restoreBackup(request: any) {
 		resume,
 		cancel,
 		retainPrevious,
-	} = readRestoreRequest(request);
+	} = readRestoreRequest(request, { archive: request.staging_id !== undefined });
 	const inPlace = targetDatabase === databaseName;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
 	const databaseDir = restoreTargetDir(databaseName, targetDatabase);

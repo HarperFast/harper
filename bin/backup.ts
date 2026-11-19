@@ -22,6 +22,7 @@ import {
 	deleteBackupOffline,
 	listBackupsOffline,
 	purgeBackupsOffline,
+	assertNoArchivePin,
 	readRestoreRequest,
 	requireBooleanOption,
 	restoreBackupOffline,
@@ -116,8 +117,6 @@ export async function runBackupCommand(command: string): Promise<void> {
 			}
 			if (archiveRestore) {
 				readRestoreRequest(request, { offline: true });
-				if (request.sha256 !== undefined)
-					throw new ClientError(`'resume' takes no 'sha256'; it finishes from the archive already extracted`);
 				const { resumeArchiveRestoreOffline } = await import('../dataLayer/restoreArchive.ts');
 				result = await resumeArchiveRestoreOffline(databaseName);
 				break;
@@ -130,6 +129,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 					`restore_backup ${fields} needs the server running; start Harper and rerun. With Harper stopped, restore now by omitting ${fields} (backup_id=<id> picks the backup, the latest by default), or withdraw a pending restart restore with cancel=true`
 				);
 			}
+			assertNoArchivePin(request);
 			result = await restoreBackupOffline(
 				databaseName,
 				request.backup_id,
