@@ -673,6 +673,49 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			}
 		});
 
+		it('charges an archive whose staging is removed while an admission is reading it', async function () {
+			const fixture = await seededDatabase();
+			const stage = () =>
+				stageArchive(Readable.from([fixture.archive]), {
+					databaseName: fixture.name,
+					databaseDir: fixture.dir,
+					blobRoots: getBlobPathsForDatabaseName(fixture.name),
+					acceptIncompatible: false,
+					restoredFrom: 'upload',
+				});
+			const metaDir = join(fixture.dir, '..', RESTORE_META_DIR);
+			const { stagingDir, record } = await stage();
+			const payload = record.archive.payload_bytes;
+			const charge = join(metaDir, `${record.staging_id}.charge`);
+			const quotaReport = join(env.get('rootPath'), 'quota-status.json');
+			const quotaBytes = 64 * 1024 ** 3;
+			const usedBytes = quotaBytes - Math.floor(quotaBytes * 0.05) - Math.floor(payload * 1.5);
+			writeFileSync(quotaReport, JSON.stringify({ usedBytes, quotaBytes, updatedAt: Date.now() - 60000 }));
+			// the handoff a finishing restore makes, placed after the admission has listed the areas and
+			// before it reads this one: the charge is written, then the area is removed
+			const fsPromises = require('node:fs/promises');
+			const { readdir } = fsPromises;
+			let handedOff = false;
+			fsPromises.readdir = async (directory, ...rest) => {
+				const names = await readdir(directory, ...rest);
+				if (!handedOff && directory === join(stagingDir, '..')) {
+					handedOff = true;
+					writeFileSync(charge, JSON.stringify({ archive: { payload_bytes: payload }, created_at: record.created_at }));
+					rmSync(stagingDir, { recursive: true, force: true });
+				}
+				return names;
+			};
+			try {
+				await assert.rejects(stage(), (error) => error.statusCode === 507);
+				assert.ok(handedOff, 'the admission listed the areas');
+			} finally {
+				fsPromises.readdir = readdir;
+				rmSync(quotaReport, { force: true });
+				rmSync(charge, { force: true });
+				for (const area of stagingLeft(fixture.name)) rmSync(area, { recursive: true, force: true });
+			}
+		});
+
 		it('refuses a second upload while one is being extracted, before reading it', async function () {
 			const fixture = await seededDatabase();
 			const release = await acquireExtractionLock(mintStagingId(), []);

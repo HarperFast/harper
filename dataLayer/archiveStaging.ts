@@ -251,11 +251,16 @@ async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPl
 	};
 	for (const location of locations) {
 		for (const name of await listDirAsync(location)) {
-			if (name.endsWith(CHARGE_SUFFIX)) await count(name.slice(0, -CHARGE_SUFFIX.length), join(location, name));
 			if (!name.endsWith(STAGED_SUFFIX)) continue;
 			for (const id of await listDirAsync(join(location, name))) {
 				await count(id, join(location, name, id, STAGED_RECORD));
 			}
+		}
+	}
+	// listed after the areas are read: an area removed under that read had its charge written first
+	for (const location of locations) {
+		for (const name of await listDirAsync(location)) {
+			if (name.endsWith(CHARGE_SUFFIX)) await count(name.slice(0, -CHARGE_SUFFIX.length), join(location, name));
 		}
 	}
 	let total = 0;
