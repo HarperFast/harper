@@ -127,6 +127,7 @@ function flattenLoadFailure(key: string, error: unknown): BootLoadFailure {
 function markLoadedUnlessReported(componentStatusName: string, message: string): void {
 	const current = statusForComponent(componentStatusName).get()?.status;
 	if (current === undefined || current === STATUS.LOADING) componentLifecycle.loaded(componentStatusName, message);
+	else componentLifecycle.completed(componentStatusName);
 }
 
 /**

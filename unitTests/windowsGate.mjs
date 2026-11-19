@@ -77,7 +77,7 @@ const EXCLUDED = [
 	'unitTests/components/EntryHandler.test.js',
 	// Its loadComponent calls install the same chokidar watcher; on Windows the watcher
 	// leaks that EPERM into a later suite's hook (done() called multiple times). The
-	// derivation and loader-failure behaviour are covered on Linux.
+	// derivation itself runs everywhere in server/status/availabilityDrain.test.js.
 	'unitTests/components/componentFailureAvailability.test.js',
 
 	// --- Hangs, never exits (leaked handle) ----------------------------------------

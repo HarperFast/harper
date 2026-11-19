@@ -296,14 +296,12 @@ export class CrossThreadStatusCollector {
 }
 
 /**
- * Components some thread's loader recorded as failed. Judged per thread because the aggregate's
- * `source` is not tied to the thread that owns its status.
+ * Components whose last load failed on some thread.
  */
-export function loaderFailures(threadStatuses: Map<string, ComponentStatusSummary>): string[] {
+export function failedLoads(threadStatuses: Map<string, ComponentStatusSummary>): string[] {
 	const failed = new Set<string>();
 	for (const [statusKey, status] of threadStatuses) {
-		if (status.status === COMPONENT_STATUS_LEVELS.ERROR && status.source === 'loader')
-			failed.add(parseStatusKey(statusKey).componentName);
+		if (status.loadFailed) failed.add(parseStatusKey(statusKey).componentName);
 	}
 	return [...failed];
 }

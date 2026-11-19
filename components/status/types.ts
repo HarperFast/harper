@@ -18,7 +18,7 @@ export const COMPONENT_STATUS_LEVELS = {
 
 export type ComponentStatusLevel = (typeof COMPONENT_STATUS_LEVELS)[keyof typeof COMPONENT_STATUS_LEVELS];
 
-export type ComponentStatusSource = 'log' | 'explicit' | 'health-check' | 'loader';
+export type ComponentStatusSource = 'log' | 'explicit' | 'health-check';
 
 /** Worst-first order; the first level present is the aggregate status. */
 export const STATUS_PRIORITY: readonly ComponentStatusLevel[] = [
@@ -47,6 +47,8 @@ export interface ComponentStatusSummary {
 	loadedAt?: Date;
 	/** How the status was set */
 	source?: ComponentStatusSource;
+	/** The loader's last load of this component failed */
+	loadFailed?: boolean;
 	/** Reports at this thread's current level; resets to 1 when the level changes. */
 	occurrenceCount?: number;
 }

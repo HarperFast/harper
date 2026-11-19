@@ -77,6 +77,7 @@ export class ComponentStatusRegistry {
 		} else {
 			const next = new ComponentStatus(status, sanitizedMessage, sanitizedError, source);
 			if (existing?.loadedAt) next.loadedAt = existing.loadedAt;
+			if (existing?.loadFailed) next.loadFailed = true;
 			this.statusMap.set(componentName, next);
 		}
 	}
@@ -128,34 +129,32 @@ export class ComponentStatusRegistry {
 	 * Initialize component as loading - call this when component loading begins
 	 */
 	public initializeLoading(componentName: string, message?: string): void {
-		this.setStatus(
-			componentName,
-			COMPONENT_STATUS_LEVELS.LOADING,
-			message || 'Component is loading',
-			undefined,
-			'loader'
-		);
+		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.LOADING, message || 'Component is loading');
 	}
 
 	/**
 	 * Mark component as successfully loaded
 	 */
 	public markLoaded(componentName: string, message?: string): void {
-		this.setStatus(
-			componentName,
-			COMPONENT_STATUS_LEVELS.HEALTHY,
-			message || 'Component loaded successfully',
-			undefined,
-			'loader'
-		);
+		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.HEALTHY, message || 'Component loaded successfully');
+		this.markLoadSucceeded(componentName);
 		this.markLoadEnded(componentName);
+	}
+
+	/**
+	 * Record a successful load without replacing a status the component reported while loading
+	 */
+	public markLoadSucceeded(componentName: string): void {
+		const entry = this.statusMap.get(componentName);
+		if (entry?.loadFailed) entry.loadFailed = false;
 	}
 
 	/**
 	 * Mark component as failed to load
 	 */
 	public markFailed(componentName: string, error: Error | string, message?: string): void {
-		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error, 'loader');
+		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error);
+		this.statusMap.get(componentName)!.loadFailed = true;
 		this.markLoadEnded(componentName);
 	}
 

@@ -174,7 +174,6 @@ async function getAllStatus({ components, middleware }: Partial<StatusRequestBod
 	statusLogger.debug?.('getAllStatus');
 	const statusRecords = getStatusTable().search([]);
 
-	// With the drain on, one collection serves both the component list and the availability it implies.
 	const threadStatuses = drainOnLoadFailure()
 		? await statusInternal.crossThreadCollector.collect(statusInternal.componentStatusRegistry)
 		: undefined;
@@ -197,7 +196,10 @@ async function getAllStatus({ components, middleware }: Partial<StatusRequestBod
 
 	const summary: AllStatusSummary = {
 		systemStatus: threadStatuses
-			? await systemStatusWithAvailability(statusRecords, statusInternal.loaderFailures(threadStatuses))
+			? await systemStatusWithAvailability(
+					statusRecords,
+					loadFailureMessage(statusInternal.failedLoads(threadStatuses))
+				)
 			: (statusRecords as Promise<AsyncIterable<StatusRecord>>),
 		componentStatus: componentStatusArray,
 		restartRequired,
@@ -211,65 +213,78 @@ function drainOnLoadFailure(): boolean {
 	return env.get(CONFIG_PARAMS.STATUS_DRAINONLOADFAILURE) === true;
 }
 
-function resolveAvailability(
-	stored: StatusRecord<'availability'> | undefined,
-	failed: string[]
-): StatusRecord<'availability'> | undefined {
-	if (stored?.status === 'Unavailable' || failed.length === 0) return stored;
-	return { id: 'availability', status: 'Unavailable', message: `Failed to load: ${failed.join(', ')}` };
+function loadFailureMessage(failed: string[]): string | undefined {
+	return failed.length === 0 ? undefined : `Failed to load: ${failed.join(', ')}`;
 }
 
-// A plain array, not a lazy search result: the derived record has to replace the stored one in place.
-async function systemStatusWithAvailability(statusRecords: unknown, failed: string[]): Promise<StatusRecord[]> {
+function resolveAvailability(
+	stored: StatusRecord<'availability'> | undefined,
+	failureMessage: string | undefined
+): StatusRecord<'availability'> | undefined {
+	if (stored?.status === 'Unavailable' || !failureMessage) return stored;
+	return { id: 'availability', status: 'Unavailable', message: failureMessage };
+}
+
+async function systemStatusWithAvailability(
+	statusRecords: unknown,
+	failureMessage: string | undefined
+): Promise<StatusRecord[]> {
 	const records: StatusRecord[] = [];
 	let availabilityIndex = -1;
 	for await (const record of statusRecords as AsyncIterable<StatusRecord>) {
 		if (record.id === 'availability') availabilityIndex = records.length;
 		records.push(record);
 	}
-	const availability = resolveAvailability(records[availabilityIndex] as StatusRecord<'availability'>, failed);
+	const availability = resolveAvailability(records[availabilityIndex] as StatusRecord<'availability'>, failureMessage);
 	if (!availability) return records;
 	if (availabilityIndex === -1) records.push(availability);
 	else records[availabilityIndex] = availability;
 	return records;
 }
 
-// Health endpoints poll often; serve the cross-thread result for a short TTL behind one shared refresh.
-const LOADER_FAILURES_TTL_MS = 2000;
-let loaderFailuresCache: { failed: string[]; at: number } | undefined;
-let loaderFailuresRefresh: Promise<string[]> | undefined;
+const LOAD_FAILURES_TTL_MS = 2000;
+let loadFailures: { message: string | undefined; at: number } | undefined;
+let loadFailuresRefresh: Promise<string | undefined> | undefined;
 
-function currentLoaderFailures(): string[] | Promise<string[]> {
-	if (loaderFailuresCache && Date.now() - loaderFailuresCache.at <= LOADER_FAILURES_TTL_MS)
-		return loaderFailuresCache.failed;
-	loaderFailuresRefresh ??= statusInternal.crossThreadCollector
+function refreshLoadFailures(): Promise<string | undefined> {
+	if (loadFailuresRefresh) return loadFailuresRefresh;
+	const refresh: Promise<string | undefined> = statusInternal.crossThreadCollector
 		.collect(statusInternal.componentStatusRegistry)
 		.then((threadStatuses) => {
-			const failed = statusInternal.loaderFailures(threadStatuses);
-			loaderFailuresCache = { failed, at: Date.now() };
-			return failed;
+			const message = loadFailureMessage(statusInternal.failedLoads(threadStatuses));
+			if (loadFailuresRefresh === refresh) loadFailures = { message, at: performance.now() };
+			return message;
 		})
 		.finally(() => {
-			loaderFailuresRefresh = undefined;
+			if (loadFailuresRefresh === refresh) loadFailuresRefresh = undefined;
 		});
-	return loaderFailuresRefresh;
+	loadFailuresRefresh = refresh;
+	return refresh;
 }
 
-export function resetLoaderFailuresCache(): void {
-	loaderFailuresCache = undefined;
-	loaderFailuresRefresh = undefined;
+// After the first collection a stale result is served while the next one runs, so a thread slow to
+// answer cannot stall a health probe.
+function currentLoadFailures(): string | undefined | Promise<string | undefined> {
+	if (!loadFailures) return refreshLoadFailures();
+	if (performance.now() - loadFailures.at > LOAD_FAILURES_TTL_MS)
+		refreshLoadFailures().catch((error) => statusLogger.warn?.('Could not refresh component load failures', error));
+	return loadFailures.message;
+}
+
+export function resetLoadFailuresCache(): void {
+	loadFailures = undefined;
+	loadFailuresRefresh = undefined;
 }
 
 /**
  * Availability with `status.drainOnLoadFailure` on: an operator's Unavailable wins, otherwise
- * Unavailable while any thread's loader has a component recorded as failed to load. Derived at read
- * time, so a successful reload heals it and nothing can overwrite an operator drain. Reads every
- * thread because get_status runs on the main thread, which never runs `handleApplication`.
+ * Unavailable while any thread's last load of some component failed. Reads every thread because
+ * get_status runs on the main thread, which never runs `handleApplication`.
  */
 async function getAvailabilityStatus(): Promise<StatusRecord<'availability'> | undefined> {
 	const stored = (await getStatusTable().get('availability')) as StatusRecord<'availability'> | undefined;
 	if (stored?.status === 'Unavailable') return stored;
-	return resolveAvailability(stored, await currentLoaderFailures());
+	return resolveAvailability(stored, await currentLoadFailures());
 }
 
 function getStatus({

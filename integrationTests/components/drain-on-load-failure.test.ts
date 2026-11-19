@@ -1,8 +1,6 @@
 /**
- * With `status.drainOnLoadFailure` on, a component that fails to load on an HTTP worker takes the
- * node out of the availability GTM routes on (`get_status {id: 'availability'}`), even though
- * get_status runs on the main thread, which never runs the plugin that failed. Once the component
- * loads again the node returns to the operator's record.
+ * The failure happens on an HTTP worker while get_status runs on the main thread, which never runs
+ * the failing plugin.
  *
  * Skipped on Windows: restart_service http_workers crashes Harper on Windows (HarperFast/harper#549).
  */

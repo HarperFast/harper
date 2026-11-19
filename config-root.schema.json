@@ -17,6 +17,11 @@
 			"type": "object",
 			"description": "Runtime status monitoring. Health-check changes take effect on restart.",
 			"properties": {
+				"drainOnLoadFailure": {
+					"type": "boolean",
+					"default": false,
+					"description": "Report the availability status as Unavailable while any thread has a component whose last load failed."
+				},
 				"healthChecks": {
 					"type": "object",
 					"additionalProperties": false,
