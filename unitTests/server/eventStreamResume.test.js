@@ -331,7 +331,8 @@ describe('Table event stream resume (harper#515)', function () {
 			},
 		};
 		for (const [passing, Class] of Object.entries(delegating)) {
-			const stream = await connect(request, `${served(Class)}${passing}`, 'application-cursor-17');
+			const keyed = passing === 'its own Collection class' ? passing : '';
+			const stream = await connect(request, served(Class) + keyed, 'application-cursor-17');
 			assert.strictEqual(stream.status, 200, passing);
 			assert.strictEqual(request.last[EVENT_STREAM_CURSOR], undefined, passing);
 			await T.put(passing, { value: passing });
