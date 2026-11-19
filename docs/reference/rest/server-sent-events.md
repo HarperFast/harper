@@ -48,7 +48,7 @@ Treat the id as opaque: store it and send it back unchanged. There are two kinds
 
 Once a stream has issued a token, its events carry no id of their own, so the client keeps the token.
 
-A resume replays the log from the position, so it does not send the current records again, and it can repeat events the client already has. Ignore an event whose `version` is older than the one held for that record `id`, and apply the rest: two events can carry the same `version` and differ, when a change that committed late was merged into the record. For a record that changed more than once while the client was away, the replay delivers its current state rather than each change.
+A resume replays the log from the position, so it does not send the current records again, and it can repeat events the client already has. Ignore an event whose `version` is older than the one held for that record `id`, and apply the rest: two events can carry the same `version` and differ, when a change that committed late was merged into the record. The rule also covers a write that commits while a collection's current records are being sent: its event can arrive after the record's newer state. For a record that changed more than once while the client was away, the replay delivers its current state rather than each change.
 
 ### When a Position Cannot Be Resumed
 

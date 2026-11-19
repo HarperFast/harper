@@ -11,8 +11,8 @@ export interface EventStreamCursor {
 	/** Once the client holds a checkpoint token, a log key would replace it with a weaker position. */
 	holdsToken: boolean;
 	/**
-	 * What follows a log key in an id: the database generation and table incarnation the key belongs to, empty
-	 * on LMDB, which has neither. Undefined when RocksDB has no generation to name, so no log key is issued.
+	 * What follows a log key in an id: the database generation and the table the key belongs to, empty on LMDB,
+	 * which has no generation. Undefined when RocksDB has no generation to name, so no log key is issued.
 	 */
 	logKeyScope: string | undefined;
 }
@@ -21,7 +21,7 @@ export const EVENT_STREAM_CURSOR = Symbol('event-stream-cursor');
 
 // well under the default 16 KB request header limit, which the id shares with every other header
 const MAX_EVENT_ID_LENGTH = 4096;
-const LOG_KEY_ID = /^(\d+(?:\.\d+)?)((?:@[0-9a-f]{32}(?:\.[0-9a-f]{16})?)?)$/;
+const LOG_KEY_ID = /^(\d+(?:\.\d+)?)((?:@[0-9a-f]{32}\.[0-9a-f]{16})?)$/;
 const TOKEN_ID = /^[A-Za-z0-9_-]+$/;
 
 function unrecognizedEventId(): ClientError {

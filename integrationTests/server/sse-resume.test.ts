@@ -133,7 +133,7 @@ suite(
 			strictEqual(frameOf(first, 'seed')!.id, undefined, 'a snapshot row is state, not a position');
 			// a log position, or a checkpoint token when the server had already certified one
 			const id = await waitFor(() => first.lastEventId(), 'an event id');
-			match(id, isLMDB ? /^\d+(\.\d+)?$/ : /^(\d+(\.\d+)?@[0-9a-f]{32}|[A-Za-z0-9_-]{40,})$/);
+			match(id, isLMDB ? /^\d+(\.\d+)?$/ : /^(\d+(\.\d+)?@[0-9a-f]{32}\.[0-9a-f]{16}|[A-Za-z0-9_-]{40,})$/);
 			first.close();
 			await put('missed-1');
 			await put('missed-2');
