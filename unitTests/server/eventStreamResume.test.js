@@ -307,17 +307,50 @@ describe('Table event stream resume (harper#515)', function () {
 
 	it('leaves a table stream that another resource opens with the request alone', async () => {
 		const T = tableInOwnDatabase();
-		class Delegating extends Resource {
-			connect() {
-				return T.connect(new RequestTarget(), null, this.getContext());
+		const delegating = {
+			'a new target': class extends Resource {
+				connect() {
+					return T.connect(new RequestTarget(), null, this.getContext());
+				}
+			},
+			'the request target': class extends Resource {
+				static loadAsInstance = false;
+				connect(target) {
+					return T.connect(target, null, this.getContext());
+				}
+			},
+		};
+		for (const [passing, Class] of Object.entries(delegating)) {
+			const stream = await connect(request, served(Class), 'application-cursor-17');
+			assert.strictEqual(stream.status, 200, passing);
+			assert.strictEqual(request.last[EVENT_STREAM_CURSOR], undefined, passing);
+			await T.put(passing, { value: passing });
+			await waitFor(() => stream.frameOf(passing));
+			assert.strictEqual(stream.frameOf(passing).id, undefined, passing);
+			stream.close();
+		}
+	});
+
+	it('still resumes the request when its authorization opened other streams first', async () => {
+		const T = tableInOwnDatabase();
+		const Other = tableInOwnDatabase();
+		class Checking extends T {
+			async allowRead(_user, _target, context) {
+				for (const Table of [Other, T]) (await Table.connect(new RequestTarget(), null, context)).end();
+				return true;
 			}
 		}
-		const stream = await connect(request, served(Delegating), 'application-cursor-17');
-		assert.strictEqual(stream.status, 200);
-		assert.strictEqual(request.last[EVENT_STREAM_CURSOR], undefined);
+		const url = served(Checking);
+		const first = await connect(request, url);
 		await T.put('a', { value: 'a' });
-		await waitFor(() => stream.frameOf('a'));
-		assert.strictEqual(stream.frameOf('a').id, undefined);
+		await waitFor(() => first.frameOf('a'));
+		const id = first.lastEventId;
+		assert.match(id, SCALAR_ID);
+		first.close();
+		await T.put('b', { value: 'b' });
+		const resumed = await connect(request, url, id);
+		await waitFor(() => resumed.frameOf('b'));
+		assert.deepStrictEqual(resumed.values(), ['a', 'b']);
 	});
 
 	it('leaves a stream alone when the path chooses another format than the event stream', async () => {

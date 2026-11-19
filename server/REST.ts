@@ -564,7 +564,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					return completeMultipartBody(request.data, undefined);
 				case 'CONNECT':
 					// websockets? and event-stream
-					if (isSse) resumeTableEventStream(resource, request);
+					if (isSse) resumeTableEventStream(resource, target, request);
 					return completeMultipartBody(
 						request.data,
 						resource.connect ? resource.connect(target, null, request) : missingMethod(resource, 'connect')

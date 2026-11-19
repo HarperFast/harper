@@ -53,15 +53,16 @@ function prepareTableSubscription(resource: any, target: any, request: any): voi
 /**
  * Lets the default `connect()` of an event-stream request prepare a table's own subscription for resuming. An
  * overriding `connect` or `subscribe`, however it is declared, would receive checkpoint events it never asked
- * for, and may issue ids of its own that must not be read as positions; so would another resource's stream that
- * an override opens with this request.
+ * for, and may issue ids of its own that must not be read as positions. So would any other stream opened with
+ * this request, which is why the hook waits for the dispatch of the request's own target on its own resource.
  */
-export function resumeTableEventStream(matched: any, request: any): void {
+export function resumeTableEventStream(matched: any, matchedTarget: any, request: any): void {
 	if (matched?.connect !== Resource.connect) return;
 	request[PREPARE_DEFAULT_SUBSCRIPTION] = (resource: any, target: any) => {
+		if (target !== matchedTarget) return;
+		if (resource.constructor !== matched && resource.constructor !== matched.Collection) return;
 		request[PREPARE_DEFAULT_SUBSCRIPTION] = undefined;
 		if (
-			resource.constructor === matched &&
 			resource.connect === Resource.prototype.connect &&
 			isTableSubscribe(resource.subscribe) &&
 			// a path extension can choose another format than the Accept header
