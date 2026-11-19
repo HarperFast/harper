@@ -7,7 +7,8 @@
  * MQTT_RESUME_BENCH_SESSIONS (comma list), _WINDOW (comma list: the other origin's messages each session took
  * and acknowledged above that origin's boundary before it saved its position), _BACKLOG (its messages that arrive
  * below the position after the save), _OTHER (its writes to another table of the database in the same span, which
- * the replay reads and passes over).
+ * the replay reads and passes over), _AFTER (this node's writes to that other table after the save, above the
+ * position, which a resume read before this change too: what a longer absence costs).
  */
 process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS ??= String(24 * 60 * 60 * 1000);
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -29,6 +30,7 @@ const SESSION_COUNTS = list('MQTT_RESUME_BENCH_SESSIONS', '100,1000');
 const WINDOWS = list('MQTT_RESUME_BENCH_WINDOW', '300,2000');
 const BACKLOG = Number(process.env.MQTT_RESUME_BENCH_BACKLOG ?? 50);
 const OTHER = Number(process.env.MQTT_RESUME_BENCH_OTHER ?? 20_000);
+const AFTER = Number(process.env.MQTT_RESUME_BENCH_AFTER ?? 0);
 const SEQ = Symbol.for('seq');
 const user = { username: 'mqtt-resume-bench', role: { permission: { super_user: true } } };
 
@@ -57,6 +59,7 @@ async function connect(clientId, counter) {
 	const session = await getSession({ clientId, user, clean: false });
 	session.setListener((_topic, _message, messageId) => {
 		counter.delivered++;
+		counter.lastAt = performance.now();
 		// answered within the turn, as a prompt client would
 		queueMicrotask(() => session.acknowledge(messageId));
 		return true;
@@ -121,8 +124,10 @@ async function run(sessionCount, window) {
 	for (const session of sessions) session.disconnect(true);
 	await Promise.all(sessions.map((session) => session.writes));
 	for (let index = 0; index < BACKLOG; index++) await applyFromOrigin(T, origin, lateKeys[index], `late-${index}`);
+	for (let index = 0; index < AFTER; index++) await Other.put(`after-${index}`, { value: index });
 
 	counter.delivered = 0;
+	counter.lastAt = 0;
 	const cpuBefore = process.cpuUsage();
 	const startedAt = performance.now();
 	let maxTurn = 0;
@@ -135,19 +140,26 @@ async function run(sessionCount, window) {
 	sessions = await Promise.all(clientIds.map((clientId) => connect(clientId, counter)));
 	await Promise.all(sessions.map((session) => session.resume()));
 	const verified = await Promise.all(sessions.map((session) => session.topics.get(topic).subscription.resumeVerified));
-	// one more turn, so what the replays queued has been sent
-	await sleep(50);
+	const replayed = performance.now() - startedAt;
+	// until what the replays queued has been sent
+	let delivered;
+	do {
+		delivered = counter.delivered;
+		await sleep(250);
+	} while (delivered !== counter.delivered);
 	clearInterval(turns);
-	const elapsed = performance.now() - startedAt - 50;
+	const elapsed = Math.max(replayed, counter.lastAt - startedAt);
 	const cpu = process.cpuUsage(cpuBefore);
 	const result = {
 		'sessions': sessionCount,
 		window,
 		'backlog': BACKLOG,
 		'other': OTHER,
-		'resume ms': Math.round(elapsed),
+		'after': AFTER,
+		'replayed ms': Math.round(replayed),
+		'delivered ms': Math.round(elapsed),
 		'cpu ms': Math.round((cpu.user + cpu.system) / 1000),
-		'ms/session': +(elapsed / sessionCount).toFixed(2),
+		'replay ms/session': +(replayed / sessionCount).toFixed(2),
 		'longest turn ms': Math.round(maxTurn),
 		'delivered/session': +(counter.delivered / sessionCount).toFixed(1),
 		'verified': verified.every(Boolean),
