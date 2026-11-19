@@ -1,0 +1,49 @@
+name: reloadMarker flake debug (temporary)
+
+# Throwaway: repeats the LMDB resources suite to catch harper#4506 with diagnostics. Not for main.
+on:
+  push:
+    branches: [debug/reload-marker-flake]
+
+permissions:
+  contents: read
+
+jobs:
+  lmdb-resources:
+    name: LMDB resources (${{ matrix.slot }}, Node.js v${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3]
+        node-version: [24, 26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+          check-latest: ${{ matrix.node-version == 26 }}
+      - run: npm install --ignore-scripts
+      - run: npm run build
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: '/tmp/hdb'
+          NODE_HOSTNAME: 'localhost'
+          LOGGING_LEVEL: 'info'
+        run: node ./dist/bin/harper.js install
+      - name: Repeat the LMDB resources suite
+        run: |
+          df -h / /tmp || true
+          for i in 1 2 3 4; do
+            HARPER_STORAGE_ENGINE=lmdb npx mocha "unitTests/resources/**/*.js" --exclude "unitTests/resources/**/*.bench.js" > run-$i.log 2>&1
+            echo "run $i exit $? reloadMarker failures: $(grep -cE '^\s+[0-9]+\) table-reload marker' run-$i.log)"
+            grep -E '^\s+[0-9]+ (passing|failing)' run-$i.log || true
+            grep -B2 -A16 '^DIAG' run-$i.log || true
+            grep -A6 -E '^\s+[0-9]+\) table-reload marker' run-$i.log || true
+            rm -rf unitTests/envDir/*
+          done

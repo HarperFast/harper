@@ -13,6 +13,40 @@ require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
+function diag(T, label) {
+	const lines = [`DIAG ${label} now=${Date.now()} tableId=${T.tableId} db=${T.databaseName} path=${T.primaryStore?.rootStore?.path}`];
+	try {
+		T.auditStore.resetReadTxn?.();
+		let n = 0;
+		for (const value of T.auditStore.getRange({ start: Infinity, end: 1, reverse: true, limit: 12 })) {
+			lines.push(`  key=${value?.txnLogKey ?? value?.key} type=${value?.type} tableId=${value?.tableId} recordId=${JSON.stringify(value?.recordId)} version=${value?.version} nodeId=${value?.nodeId}`);
+			if (++n > 12) break;
+		}
+		let reloads = 0, mine = 0;
+		for (const entry of T.auditStore.getRange({ start: 1 })) if (entry.type === 'reload') { reloads++; if (entry.tableId === T.tableId) mine++; }
+		lines.push(`  reload entries: ${reloads}, for this tableId: ${mine}`);
+		const { addSubscription } = require('#src/resources/transactionBroadcast');
+		const probe = addSubscription(T, 'diag-probe', () => {});
+		const env = probe?.subscriptions?.tables?.envs;
+		if (env) {
+			const picked = {};
+			for (const k of ['lastTxnTime','activeCount','notifyScheduled','dispatching','passYielded','recheckPending','progressConsumers','progressStopped','sameThread','generationId']) picked[k] = env[k];
+			picked.auditStoreSame = env.auditStore === T.auditStore;
+			picked.auditStoreStatus = env.auditStore?.rootStore?.status;
+			picked.hasCommitListener = T.auditStore.hasSubscriptionCommitListener;
+			picked.tableKeys = Object.keys(env).filter((k) => /^\d+$/.test(k));
+			lines.push(`  broadcast: ${JSON.stringify(picked)}`);
+			const mine = env[T.tableId];
+			lines.push(`  this table's keys: ${mine ? JSON.stringify([...mine.keys()]) : 'none'} startTimes=${mine ? JSON.stringify([...mine.values()].flatMap((subs) => [...subs].map((sub) => sub.startTime))) : ''}`);
+		}
+		probe?.end?.();
+	} catch (error) {
+		lines.push(`  diag error ${error.stack}`);
+	}
+	console.log(lines.join('\n'));
+}
+
+
 // A table-reload marker is a whole-table signal (harper-pro#489): one LOCAL_ONLY audit entry of type
 // 'reload' with no record, delivered to every subscriber on the table so they re-read it. It exists so
 // copyApply (which back-fills base-copy rows as snapshots with no per-row audit entries) can cover the
@@ -47,7 +81,7 @@ describe('table-reload marker (harper-pro#489)', () => {
 		await waitFor(() => rootEvents.some((e) => e.type === 'reload'), {
 			timeout: 5000,
 			interval: 20,
-			message: 'root subscriber receives reload',
+			message: () => (diag(ReloadTable, 'system'), 'root subscriber receives reload'),
 		});
 		await waitFor(() => keyEvents.some((e) => e.type === 'reload'), {
 			timeout: 5000,
@@ -81,7 +115,7 @@ describe('table-reload marker (harper-pro#489)', () => {
 		await waitFor(() => events.some((e) => e.type === 'put' && e.id === 'r1'), {
 			timeout: 5000,
 			interval: 20,
-			message: 'subscriber receives the existing row as a put via the reload re-snapshot',
+			message: () => (diag(ReloadTable, 'resnapshot'), 'subscriber receives the existing row as a put via the reload re-snapshot'),
 		});
 		assert.ok(
 			!events.some((e) => e.type === 'reload'),
@@ -114,6 +148,7 @@ describe('table-reload marker (harper-pro#489)', () => {
 					break;
 				}
 			}
+			if (!marker) diag(ReloadTable, `persists contention=${forceContention}`);
 			assert.ok(marker, 'a reload audit entry was written');
 			// LOCAL_ONLY makes the replication send path skip it by a bitmask test (no decode of an unknown
 			// type on a peer): the marker is a local signal only.
