@@ -273,27 +273,52 @@ function oldestChargeThatMatters(): number {
 	return Date.now() - QUOTA_STATUS_MAX_AGE_MS;
 }
 
-function removeExpiredCharges(location: string): void {
-	const oldest = oldestChargeThatMatters();
-	for (const name of listDir(location)) {
-		if (!name.endsWith(CHARGE_SUFFIX)) continue;
-		try {
-			let createdAt: unknown;
-			try {
-				createdAt = JSON.parse(readFileSync(join(location, name), 'utf8'))?.created_at;
-			} catch {
-				// unreadable charges nothing
-			}
-			if (!(Number(createdAt) >= oldest)) rmSync(join(location, name), { force: true });
-		} catch (error) {
-			logger.warn(`Could not remove the expired quota charge ${join(location, name)}`, error);
-		}
+/**
+ * Undefined when the file is absent or is not JSON, either of which charges nothing. Throws when it
+ * could not be read, which says nothing about what it holds.
+ */
+function readJsonIfPresent(file: string): any {
+	let text: string;
+	try {
+		text = readFileSync(file, 'utf8');
+	} catch (error: any) {
+		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return undefined;
+		throw error;
+	}
+	try {
+		return JSON.parse(text);
+	} catch {
+		return undefined;
 	}
 }
 
-/** A rename, which needs no space, of the record `stagedSinceReport` reads to where it reads charges. */
-function moveRecordToCharge(stagingDir: string, record: StagedRecord): void {
-	renameDurably(join(stagingDir, STAGED_RECORD), join(dirname(dirname(stagingDir)), record.staging_id + CHARGE_SUFFIX));
+/** Whether a record or charge file is too old to charge anything; by its own time while it cannot be read. */
+function tooOldToCharge(file: string): boolean {
+	let createdAt: unknown;
+	try {
+		const record = readJsonIfPresent(file);
+		if (record === undefined) return true;
+		createdAt = record.created_at;
+	} catch {
+		// the record is written when extraction ends, and a rename keeps that time
+		createdAt = statSync(file).mtimeMs;
+	}
+	return !(Number(createdAt) >= oldestChargeThatMatters());
+}
+
+function chargePath(stagingDir: string): string {
+	return join(dirname(dirname(stagingDir)), basename(stagingDir) + CHARGE_SUFFIX);
+}
+
+function removeExpiredCharges(location: string): void {
+	for (const name of listDir(location)) {
+		if (!name.endsWith(CHARGE_SUFFIX)) continue;
+		try {
+			if (tooOldToCharge(join(location, name))) rmSync(join(location, name), { force: true });
+		} catch (error) {
+			logger.warn(`Could not remove the quota charge ${join(location, name)} or tell its age`, error);
+		}
+	}
 }
 
 function hasInstalledPart(record: StagedRecord): boolean {
@@ -301,44 +326,54 @@ function hasInstalledPart(record: StagedRecord): boolean {
 }
 
 /**
+ * The area's record, to judge its charge by: undefined when it has none that charges anything. Where
+ * the record is gone and its charge is there, the move was made, perhaps by an attempt whose flush of
+ * the parent directories failed, so they are flushed again. Throws when the record cannot be read.
+ */
+function recordToCharge(stagingDir: string): StagedRecord | undefined {
+	const file = join(stagingDir, STAGED_RECORD);
+	const record = readJsonIfPresent(file);
+	if (isStagedRecord(record, stagingDir)) return record;
+	if (!pathPresent(file) && pathPresent(stagingDir) && pathPresent(chargePath(stagingDir)))
+		syncRenameParents(file, chargePath(stagingDir));
+	return undefined;
+}
+
+/**
  * Before a receipt's staged archive is removed. Where any part was installed, the payload is now live
  * data that no `staged.json` in an area counts, so while the quota report on disk predates the archive,
- * the record itself is moved beside the areas as its charge. Rejects when the record cannot be moved,
- * and the caller then leaves the area, whose record still charges.
+ * the record itself is moved beside the areas as its charge: a rename, which needs no space, to where
+ * `stagedSinceReport` reads charges. Rejects when the record cannot be read or moved, and the caller
+ * then leaves the area, whose record still charges.
  */
 export async function keepInstalledCharge(stagingDir: string): Promise<void> {
 	removeExpiredCharges(dirname(dirname(stagingDir)));
-	let record: StagedRecord;
-	try {
-		record = readStagedRecord(stagingDir);
-	} catch {
-		return;
-	}
-	if (!hasInstalledPart(record)) return;
+	const record = recordToCharge(stagingDir);
+	if (!record || !hasInstalledPart(record)) return;
 	// no report, or one taken since: the next report read counts the archive itself
 	const reportedAt = (await getQuotaStatus())?.updatedAt;
 	if (reportedAt === undefined || reportedAt > record.created_at) return;
-	moveRecordToCharge(stagingDir, record);
+	renameDurably(join(stagingDir, STAGED_RECORD), chargePath(stagingDir));
 }
 
 /**
  * Whether the startup sweep may remove an area. One whose charge `keepInstalledCharge` could not keep
  * was left with the record that still charges the quota, so the move is tried again here, without the
- * report (a charge no report predates is ignored and then expires). While it fails the area stays,
- * until the record is too old to charge anything.
+ * report (a charge no report predates is ignored and then expires). While the record cannot be read
+ * or moved the area stays, until the record is too old to charge anything.
  */
 function sweepMayRemove(area: string): boolean {
-	let record: StagedRecord;
 	try {
-		record = readStagedRecord(area);
-	} catch {
-		return true;
-	}
-	if (!(record.created_at >= oldestChargeThatMatters())) return true;
-	try {
-		if (hasInstalledPart(record)) moveRecordToCharge(area, record);
+		const record = recordToCharge(area);
+		if (!record || !(record.created_at >= oldestChargeThatMatters())) return true;
+		if (hasInstalledPart(record)) renameDurably(join(area, STAGED_RECORD), chargePath(area));
 		return true;
 	} catch (error) {
+		try {
+			if (tooOldToCharge(join(area, STAGED_RECORD))) return true;
+		} catch {
+			// its age is unknown too, so it stays
+		}
 		logger.warn(
 			`Could not keep the quota charge of the archive installed from ${area}; the area stays until a later startup`,
 			error
@@ -461,6 +496,17 @@ export function writeStagedRecord(stagingDir: string, record: StagedRecord): voi
 	writeFileDurably(join(stagingDir, STAGED_RECORD), JSON.stringify(record), STAGED_RECORD_TEMP);
 }
 
+function isStagedRecord(record: any, stagingDir: string): record is StagedRecord {
+	return (
+		record != null &&
+		record.version === STAGED_RECORD_VERSION &&
+		(record.state === 'extracted' || record.state === 'proven') &&
+		Array.isArray(record.parts) &&
+		record.parts[0]?.kind === 'engine' &&
+		record.staging_id === basename(stagingDir)
+	);
+}
+
 export function readStagedRecord(stagingDir: string, databaseName?: string): StagedRecord {
 	let record: any;
 	try {
@@ -471,14 +517,7 @@ export function readStagedRecord(stagingDir: string, databaseName?: string): Sta
 			410
 		);
 	}
-	if (
-		!record ||
-		record.version !== STAGED_RECORD_VERSION ||
-		(record.state !== 'extracted' && record.state !== 'proven') ||
-		!Array.isArray(record.parts) ||
-		record.parts[0]?.kind !== 'engine' ||
-		record.staging_id !== basename(stagingDir)
-	) {
+	if (!isStagedRecord(record, stagingDir)) {
 		throw new ClientError('The staged archive record is not valid; upload the archive again', 410);
 	}
 	if (databaseName !== undefined && record.database !== databaseName) {

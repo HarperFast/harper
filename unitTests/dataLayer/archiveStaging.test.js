@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -10,6 +11,7 @@ const {
 	rmSync,
 	statSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } = require('node:fs');
 const { tmpdir } = require('node:os');
@@ -19,6 +21,7 @@ const {
 	applyStagedSwap,
 	assertUploadFits,
 	createStagingAreas,
+	keepInstalledCharge,
 	stagingBudgets,
 	mintStagingId,
 	planStaging,
@@ -457,6 +460,76 @@ describe('archive staging', function () {
 				'the record that still charges stays with its area'
 			);
 			for (const path of [aged.charge, neverInstalled.charge, expired]) assert.strictEqual(existsSync(path), false);
+		});
+
+		it('keeps a record or a charge it cannot read while that could still charge the quota', async function () {
+			const databases = join(root, 'database');
+			const metaDir = join(databases, RESTORE_META_DIR);
+			const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+			// a directory in the record's place: a read of it fails, and not as a missing file
+			const unread = (databaseName) => {
+				const path = area(databases, databaseName, earlierId());
+				mkdirSync(join(path, 'staged.json'));
+				return path;
+			};
+			const young = unread('young');
+			const old = unread('old');
+			utimesSync(join(old, 'staged.json'), tenMinutesAgo, tenMinutesAgo);
+			// nothing there, and not JSON: neither charges anything
+			const absent = area(databases, 'absent', earlierId());
+			const garbled = area(databases, 'garbled', earlierId());
+			writeFileSync(join(garbled, 'staged.json'), '{"version":');
+			const charge = (name, contents) => {
+				const path = join(metaDir, `${name}.charge`);
+				writeFileSync(path, contents);
+				return path;
+			};
+			const current = charge('current', JSON.stringify({ archive: { payload_bytes: 1 }, created_at: Date.now() }));
+			const garbledCharge = charge('garbled', '{"archive":');
+			const canDenyReads = process.platform !== 'win32' && process.getuid() !== 0;
+			const youngUnread = charge('young-unread', '{}');
+			const oldUnread = charge('old-unread', '{}');
+			if (canDenyReads) {
+				for (const path of [youngUnread, oldUnread]) chmodSync(path, 0o000);
+				utimesSync(oldUnread, tenMinutesAgo, tenMinutesAgo);
+			}
+
+			// the restore that removes its staging is told, so it leaves the area
+			await assert.rejects(keepInstalledCharge(young), { code: 'EISDIR' });
+			await keepInstalledCharge(absent);
+
+			const removed = sweepStagingAtStartup([databases], []);
+
+			assert.deepStrictEqual([...removed].sort(), [old, absent, garbled].sort());
+			assert.ok(existsSync(young), 'an unread record of unknown age stays while it is young');
+			assert.ok(existsSync(current));
+			assert.strictEqual(existsSync(garbledCharge), false);
+			if (canDenyReads) {
+				assert.ok(existsSync(youngUnread), 'a charge that cannot be read is judged by its own time');
+				assert.strictEqual(existsSync(oldUnread), false);
+			}
+		});
+
+		it('flushes again a charge move an earlier attempt made but could not flush', function () {
+			const databases = join(root, 'database');
+			const id = earlierId();
+			const path = area(databases, 'moved', id);
+			const charge = join(databases, RESTORE_META_DIR, `${id}.charge`);
+			writeFileSync(charge, JSON.stringify({ archive: { payload_bytes: 1 }, created_at: Date.now() }));
+			const flushed = [];
+			const original = durableFileModule.fsyncDirectory;
+			durableFileModule.fsyncDirectory = (directory) => {
+				flushed.push(directory);
+				return original(directory);
+			};
+			try {
+				assert.deepStrictEqual(sweepStagingAtStartup([databases], []), [path]);
+			} finally {
+				durableFileModule.fsyncDirectory = original;
+			}
+			for (const directory of [dirname(charge), path])
+				assert.ok(flushed.includes(directory), `the sweep flushes ${directory}; it flushed ${flushed.join(', ')}`);
+			assert.ok(existsSync(charge));
 		});
 	});
 
