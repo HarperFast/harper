@@ -76,6 +76,9 @@ async function leaveStaleSocket(socketPath) {
 	assert(fs.existsSync(socketPath), 'the killed holder left its socket file');
 }
 
+// Node on Windows listens on named pipes, not socket files, and a killed process leaves no stale pipe behind.
+const itWithUnixSocket = process.platform === 'win32' ? it.skip : it;
+
 function listen(server, ...args) {
 	return new Promise((resolve) => server.listen(...args, resolve));
 }
@@ -127,7 +130,7 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		fs.writeFileSync(pidFile, String(process.pid));
 	}
 
-	it('asks a running Harper to restart over its domain socket instead of starting another', async () => {
+	itWithUnixSocket('asks a running Harper to restart over its domain socket instead of starting another', async () => {
 		markRunning();
 		const { server, requests } = operationsServer({ statusCode: 200, body: RESTART_REPLY });
 		servers.push(server);
@@ -148,7 +151,7 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		assert.doesNotMatch(output, /already running|Starting Harper/, output);
 	});
 
-	it('exits non-zero, without claiming a restart, when the running Harper refuses it', async () => {
+	itWithUnixSocket('exits non-zero, without claiming a restart, when the running Harper refuses it', async () => {
 		markRunning();
 		const { server, requests } = operationsServer({ statusCode: 500, body: { error: 'refused for the test' } });
 		servers.push(server);
@@ -174,18 +177,21 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		assert.doesNotMatch(output, /not running|Restarting|Starting Harper|already running/, output);
 	});
 
-	it('says Harper is running, without claiming a restart, when nothing listens on its domain socket', async () => {
-		markRunning();
-		await leaveStaleSocket(socketPath);
+	itWithUnixSocket(
+		'says Harper is running, without claiming a restart, when nothing listens on its domain socket',
+		async () => {
+			markRunning();
+			await leaveStaleSocket(socketPath);
 
-		const { code, output } = await runCli(env, temp);
+			const { code, output } = await runCli(env, temp);
 
-		assert.strictEqual(code, 1, output);
-		assert.match(output, unreachable());
-		assert.doesNotMatch(output, /not running|Restarting|Starting Harper|already running/, output);
-	});
+			assert.strictEqual(code, 1, output);
+			assert.match(output, unreachable());
+			assert.doesNotMatch(output, /not running|Restarting|Starting Harper|already running/, output);
+		}
+	);
 
-	it('exits non-zero, without claiming a restart, when the running Harper never answers', async () => {
+	itWithUnixSocket('exits non-zero, without claiming a restart, when the running Harper never answers', async () => {
 		markRunning();
 		const { server, requests } = operationsServer(null);
 		servers.push(server);
@@ -200,7 +206,7 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		assert.doesNotMatch(output, /Restarting|Starting Harper|already running/, output);
 	});
 
-	it('does not read the saved login credentials to restart the local instance', async () => {
+	itWithUnixSocket('does not read the saved login credentials to restart the local instance', async () => {
 		markRunning();
 		const { server, requests } = operationsServer({ statusCode: 200, body: RESTART_REPLY });
 		servers.push(server);
@@ -215,7 +221,7 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		assert.deepStrictEqual(requests, [{ operation: 'restart' }], output);
 	});
 
-	it('refuses a blank target= instead of restarting the local instance', async () => {
+	itWithUnixSocket('refuses a blank target= instead of restarting the local instance', async () => {
 		markRunning();
 		const { server, requests } = operationsServer({ statusCode: 200, body: RESTART_REPLY });
 		servers.push(server);
@@ -228,7 +234,7 @@ describe('harper restart from the CLI (harper#4299)', function () {
 		assert.match(output, /target=/);
 	});
 
-	it('refuses replicated=true, which the restart operation cannot honor', async () => {
+	itWithUnixSocket('refuses replicated=true, which the restart operation cannot honor', async () => {
 		markRunning();
 		const { server, requests } = operationsServer({ statusCode: 200, body: RESTART_REPLY });
 		servers.push(server);
