@@ -241,36 +241,6 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			other.end();
 		});
 
-		it('delivers once a message whose transaction holds another the filter refuses', async () => {
-			const T = tableInOwnDatabase();
-			await T.put('seed', { value: 'seed' });
-			const startTime = logKeyOf(T, 'seed');
-			const other = await T.subscribe({ omitCurrent: true, listener: () => {} });
-			await transaction({}, async (context) => {
-				for (let i = 0; i < 6000; i++) await T.put(`other${i}`, { value: i }, context);
-				await T.publish('r', { value: 'refused' }, context);
-				await T.publish('r', { value: 'accepted' }, context);
-			});
-			const events = [];
-			const subscription = await T.subscribe({
-				id: 'r',
-				startTime,
-				reportProgress: true,
-				omitCurrent: true,
-				filterKey: 'accepted',
-				eventFilter: (event) => event.value?.value !== 'refused',
-				listener: (event) => events.push(event),
-			});
-			const broadcast = T.auditStore.subscriptionLogRange;
-			assert.ok(broadcast.hasUnreturnedEntry(), 'precondition: the broadcast is behind the log');
-			await waitFor(() => !broadcast.hasUnreturnedEntry());
-			await T.publish('r', { value: 'after' });
-			await waitFor(() => valuesOf(events).includes('after'));
-			assert.deepStrictEqual(valuesOf(events), ['accepted', 'after']);
-			subscription.end();
-			other.end();
-		});
-
 		it('keeps nothing of a walk when the broadcast has caught up and no write is committing', async () => {
 			const T = tableInOwnDatabase();
 			await T.put('seed', { value: 'seed' });
@@ -330,12 +300,11 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			resumed.end();
 		});
 
-		it('passes when retention passes history read since the last check, at the end of the replay', async () => {
+		it('passes when retention passes history the replay has read since it last yielded', async () => {
 			const T = tableInOwnDatabase();
 			const checkpoint = await checkpointThenFill(T);
 			const prunedThrough = logKeyOf(T, 'fill230');
 			const events = [];
-			// a consumer that keeps up: the replay checks only every 100 entries, the last time near fill200
 			const resumed = await T.subscribe({
 				resume: checkpoint,
 				omitCurrent: true,

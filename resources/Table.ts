@@ -10555,21 +10555,21 @@ export function makeTable(options): TableResourceClass {
 						}
 						return false;
 					};
-					// As in a scalar replay, each check compares the floor with the key the replay had reached at the
-					// previous one, here per log: a purge takes a prefix of a log's segments, each last written before
-					// its cutoff, and what a log still holds to read was appended after the last record read from it. Its
-					// reader reports no purge that reaches the end of the log, so the floor is the only signal. A log read
-					// from 0 is whole from its beginning (retainsZeroStarts), and its keys can lie below the floor.
-					const reachedByLog = new Map<string, number>();
-					for (const [name, start] of plan.startByLog) if (start > 0) reachedByLog.set(name, start);
-					let inHand: any;
-					const reached = (auditRecord: any) => {
-						if (reachedByLog.has(auditRecord.logName)) reachedByLog.set(auditRecord.logName, auditRecord.txnLogKey);
-					};
+					// A purge takes a prefix of a log's segments, each last written before its cutoff, and a reader reports
+					// none that reaches the end of its log, so the floor is the only signal. This node mints its own log's
+					// keys no later than it appends them, so what that log still holds to read was appended after the
+					// highest key read from it, and a floor at or below that key removed none of it. A peer's keys are on
+					// its clock, so its log is held to its start. A log read from 0 is whole from its beginning
+					// (retainsZeroStarts), and its keys can lie below the floor.
+					const ownStart = plan.startByLog.get('local');
+					let ownReached = ownStart > 0 ? ownStart : Infinity;
+					let peerStart = Infinity;
+					for (const [name, start] of plan.startByLog) {
+						if (name !== 'local' && start > 0 && start < peerStart) peerStart = start;
+					}
 					const retained = (): boolean => {
 						const floor = getAuditResumeFloor(auditStore);
-						for (const key of reachedByLog.values()) if (floor > key) return false;
-						return plan!.retainsZeroStarts();
+						return !(floor > ownReached) && !(floor > peerStart) && plan!.retainsZeroStarts();
 					};
 					// admission facts are mutable: a revocation, hole or generation change bumps the epoch
 					const recheck = (range: any): boolean => {
@@ -10602,13 +10602,14 @@ export function makeTable(options): TableResourceClass {
 					});
 					try {
 						for (const auditRecord of replayRange) {
-							inHand = auditRecord;
+							if (auditRecord.txnLogKey > ownReached && auditRecord.logName === 'local') {
+								ownReached = auditRecord.txnLogKey;
+							}
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
 								await rest();
 								if (!isActive()) return;
 								if (!recheck(replayRange)) return;
-								reached(auditRecord);
 							}
 							if (auditRecord.type === undefined) {
 								refuse(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
@@ -10642,11 +10643,9 @@ export function makeTable(options): TableResourceClass {
 							if (!send(event)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								if (!recheck(replayRange)) return;
-								reached(auditRecord);
 								if ((await subscription.waitForDrain()) === false || !isActive()) return;
 							}
 						}
-						if (inHand) reached(inHand);
 						if (!recheck(replayRange)) return;
 					} finally {
 						state.dropDuringReplay = false;
