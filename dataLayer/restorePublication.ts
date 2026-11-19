@@ -149,7 +149,7 @@ export async function removeReceiptStaging(receipt: RestoreReceipt): Promise<voi
 			try {
 				await keepInstalledCharge(stagingDir);
 			} catch (error) {
-				// the record still in the area charges the quota, until the startup sweep removes the area
+				// the record still in the area charges the quota; the startup sweep tries the move again before removing it
 				logger.warn(
 					`Could not keep the quota charge of the archive restored into '${receipt.database}'; its staging ${stagingDir} is left in place`,
 					error

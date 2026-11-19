@@ -268,17 +268,13 @@ async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPl
 	return total;
 }
 
-/**
- * Before a receipt's staged archive is removed. Where any part was installed, the payload is now live
- * data that no `staged.json` in an area counts, so while the quota report on disk predates the archive,
- * the record itself is moved beside the areas as its charge: a rename, which needs no space. Rejects
- * when the record cannot be moved, and the caller then leaves the area, whose record still charges.
- * Any report read later than a report's lifetime after an archive is newer than it, so charges that
- * old are removed here.
- */
-export async function keepInstalledCharge(stagingDir: string): Promise<void> {
-	const location = dirname(dirname(stagingDir));
-	const oldest = Date.now() - QUOTA_STATUS_MAX_AGE_MS;
+/** Any report read later than a report's lifetime after an archive is newer than it, so a charge that old charges nothing. */
+function oldestChargeThatMatters(): number {
+	return Date.now() - QUOTA_STATUS_MAX_AGE_MS;
+}
+
+function removeExpiredCharges(location: string): void {
+	const oldest = oldestChargeThatMatters();
 	for (const name of listDir(location)) {
 		if (!name.endsWith(CHARGE_SUFFIX)) continue;
 		try {
@@ -293,17 +289,62 @@ export async function keepInstalledCharge(stagingDir: string): Promise<void> {
 			logger.warn(`Could not remove the expired quota charge ${join(location, name)}`, error);
 		}
 	}
+}
+
+/** A rename, which needs no space, of the record `stagedSinceReport` reads to where it reads charges. */
+function moveRecordToCharge(stagingDir: string, record: StagedRecord): void {
+	renameDurably(join(stagingDir, STAGED_RECORD), join(dirname(dirname(stagingDir)), record.staging_id + CHARGE_SUFFIX));
+}
+
+function hasInstalledPart(record: StagedRecord): boolean {
+	return record.parts.some((part) => sameInode(part.destination, part));
+}
+
+/**
+ * Before a receipt's staged archive is removed. Where any part was installed, the payload is now live
+ * data that no `staged.json` in an area counts, so while the quota report on disk predates the archive,
+ * the record itself is moved beside the areas as its charge. Rejects when the record cannot be moved,
+ * and the caller then leaves the area, whose record still charges.
+ */
+export async function keepInstalledCharge(stagingDir: string): Promise<void> {
+	removeExpiredCharges(dirname(dirname(stagingDir)));
 	let record: StagedRecord;
 	try {
 		record = readStagedRecord(stagingDir);
 	} catch {
 		return;
 	}
-	if (!record.parts.some((part) => sameInode(part.destination, part))) return;
+	if (!hasInstalledPart(record)) return;
 	// no report, or one taken since: the next report read counts the archive itself
 	const reportedAt = (await getQuotaStatus())?.updatedAt;
 	if (reportedAt === undefined || reportedAt > record.created_at) return;
-	renameDurably(join(stagingDir, STAGED_RECORD), join(location, record.staging_id + CHARGE_SUFFIX));
+	moveRecordToCharge(stagingDir, record);
+}
+
+/**
+ * Whether the startup sweep may remove an area. One whose charge `keepInstalledCharge` could not keep
+ * was left with the record that still charges the quota, so the move is tried again here, without the
+ * report (a charge no report predates is ignored and then expires). While it fails the area stays,
+ * until the record is too old to charge anything.
+ */
+function sweepMayRemove(area: string): boolean {
+	let record: StagedRecord;
+	try {
+		record = readStagedRecord(area);
+	} catch {
+		return true;
+	}
+	if (!(record.created_at >= oldestChargeThatMatters())) return true;
+	try {
+		if (hasInstalledPart(record)) moveRecordToCharge(area, record);
+		return true;
+	} catch (error) {
+		logger.warn(
+			`Could not keep the quota charge of the archive installed from ${area}; the area stays until a later startup`,
+			error
+		);
+		return false;
+	}
 }
 
 /**
@@ -555,7 +596,8 @@ function listDir(directory: string): string[] {
 /**
  * After startup recovery: every area an earlier process created that no receipt names, as its own or as
  * one it took over. A key whose receipt cannot be read, or that has a marker and no readable receipt,
- * keeps every area, since recovery leaves that database blocked rather than guess what it needs.
+ * keeps every area, since recovery leaves that database blocked rather than guess what it needs. So
+ * does an area whose record still charges the quota and cannot be moved (`sweepMayRemove`).
  * Returns what was removed.
  */
 export function sweepStagingAtStartup(roots: string[] = databaseRoots(), blobPaths = configuredBlobPaths()): string[] {
@@ -583,6 +625,7 @@ export function sweepStagingAtStartup(roots: string[] = databaseRoots(), blobPat
 	const removed: string[] = [];
 	const locations = new Set([...roots, ...blobPaths].map((path) => join(resolve(path), RESTORE_META_DIR)));
 	for (const location of locations) {
+		removeExpiredCharges(location);
 		for (const name of listDir(location)) {
 			if (!name.endsWith(STAGED_SUFFIX)) continue;
 			if (held.has(name.slice(0, -STAGED_SUFFIX.length))) continue;
@@ -591,7 +634,7 @@ export function sweepStagingAtStartup(roots: string[] = databaseRoots(), blobPat
 				if ((owner && owner.incarnation === processIncarnation) || owned.has(id)) continue;
 				const area = join(location, name, id);
 				try {
-					if (!lstatSync(area).isDirectory()) continue;
+					if (!lstatSync(area).isDirectory() || !sweepMayRemove(area)) continue;
 					rmSync(area, { recursive: true, force: true });
 					removed.push(area);
 				} catch (error) {

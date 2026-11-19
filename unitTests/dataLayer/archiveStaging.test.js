@@ -405,6 +405,59 @@ describe('archive staging', function () {
 				assert.ok(existsSync(path), `${path} is kept`);
 			for (const path of [...orphaned, ...superseded]) assert.strictEqual(existsSync(path), false);
 		});
+
+		it('moves an installed archive’s record to its charge before removing the area, and keeps the area while it cannot', function () {
+			const databases = join(root, 'database');
+			const metaDir = join(databases, RESTORE_META_DIR);
+			const left = (databaseName, { createdAt = Date.now(), installed = true } = {}) => {
+				const id = earlierId();
+				const path = area(databases, databaseName, id);
+				const destination = join(databases, databaseName);
+				mkdirSync(destination, { recursive: true });
+				const stats = statSync(installed ? destination : join(path, 'db'), { bigint: true });
+				writeStagedRecord(path, {
+					version: 1,
+					staging_id: id,
+					database: databaseName,
+					state: 'proven',
+					restored_from: 'upload',
+					archive: { sha256: '', bytes: 1, inflated_bytes: 1, entries: 1, files: 1, payload_bytes: 1000 },
+					manifest: null,
+					waived: [],
+					parts: [
+						{
+							kind: 'engine',
+							staged: join(path, 'db'),
+							destination,
+							previous: join(path, 'previous', 'db'),
+							dev: String(stats.dev),
+							ino: String(stats.ino),
+						},
+					],
+					created_at: createdAt,
+				});
+				return { path, charge: join(metaDir, `${id}.charge`) };
+			};
+			const moved = left('moved');
+			const blocked = left('blocked');
+			// a directory where the charge goes, so the record cannot be moved there
+			mkdirSync(join(blocked.charge, 'held'), { recursive: true });
+			const aged = left('aged', { createdAt: Date.now() - 10 * 60 * 1000 });
+			const neverInstalled = left('never-installed', { installed: false });
+			const expired = join(metaDir, 'expired.charge');
+			writeFileSync(expired, JSON.stringify({ archive: { payload_bytes: 1000 }, created_at: 1 }));
+
+			const removed = sweepStagingAtStartup([databases], []);
+
+			assert.deepStrictEqual([...removed].sort(), [moved.path, aged.path, neverInstalled.path].sort());
+			assert.strictEqual(JSON.parse(readFileSync(moved.charge, 'utf8')).archive.payload_bytes, 1000);
+			assert.strictEqual(
+				JSON.parse(readFileSync(join(blocked.path, 'staged.json'), 'utf8')).archive.payload_bytes,
+				1000,
+				'the record that still charges stays with its area'
+			);
+			for (const path of [aged.charge, neverInstalled.charge, expired]) assert.strictEqual(existsSync(path), false);
+		});
 	});
 
 	describe('the extraction lock', function () {
