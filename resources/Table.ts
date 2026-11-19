@@ -10492,16 +10492,9 @@ export function makeTable(options): TableResourceClass {
 			// Each check compares the floor with the position the replay had reached at the previous check: a
 			// prune raises the floor before it deletes anything below it, so a pass means nothing unread was deleted.
 			let resumeCheckedThrough = request.startTime;
-			// Set once a replay has read up to live delivery and passed its check. What it reads after that was
-			// appended since, which no prune takes, so only the generation can still refuse it.
-			let replayReachedLive = false;
 			const checkResume = resuming
 				? (refusal?: Error): boolean => {
-						refusal ??= !replayReachedLive
-							? resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough)
-							: getDatabaseGeneration(auditStore)?.id === resumeGeneration
-								? undefined
-								: new DatabaseGenerationChangedError();
+						refusal ??= resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough);
 						return refusal ? refuseReplay(subscription, tableName, refusal) : true;
 					}
 				: undefined;
@@ -10666,13 +10659,23 @@ export function makeTable(options): TableResourceClass {
 						const originBoundaries = (request as any)[ORIGIN_BOUNDARIES];
 						let originWindows:
 							{ log: string; range: any; iterator?: Iterator<any>; unreachedSince?: number }[] | undefined;
-						let originEpoch = 0;
-						const admitOriginWindows = () => {
-							// read before the admission, so a change that lands during it is seen at the next drain
-							originEpoch = readOriginStateEpoch(auditStore.rootStore);
-							return originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime);
-						};
+						let drainOriginWindows:
+							((windows: NonNullable<typeof originWindows>) => true | Promise<boolean>) | undefined;
+						let positionChecked = false;
 						if (resuming && isRocksDB && originBoundaries !== undefined) {
+							let originEpoch = 0;
+							const admitOriginWindows = () => {
+								// read before the admission, so a change that lands during it is seen at the next pull
+								originEpoch = readOriginStateEpoch(auditStore.rootStore);
+								try {
+									return originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime);
+								} catch (error) {
+									logger.warn?.(
+										`Subscription replay on ${tableName} could not read the origin boundaries of its position`,
+										error
+									);
+								}
+							};
 							for (const [log, start] of admitOriginWindows() ?? []) {
 								try {
 									// `end` is exclusive, and the key at the position is another origin's to commit too
@@ -10688,71 +10691,81 @@ export function makeTable(options): TableResourceClass {
 									logger.debug?.(`Subscription replay on ${tableName} could not read ${log} below its position`, error);
 								}
 							}
+							// True once every window is caught up with live delivery without the turn having been yielded, else
+							// the wait, resolving whether the subscription is still active.
+							drainOriginWindows = (windows) => {
+								let shortOfBound = false;
+								for (let index = 0; index < windows.length;) {
+									if (readOriginStateEpoch(auditStore.rootStore) !== originEpoch) {
+										const admitted = admitOriginWindows();
+										for (let other = windows.length; other-- > 0;) {
+											if (!admitted?.has(windows[other].log)) {
+												windows.splice(other, 1);
+												if (other < index) index--;
+											}
+										}
+										continue;
+									}
+									const window = windows[index];
+									let next: IteratorResult<any>;
+									try {
+										next = (window.iterator ??= window.range[Symbol.iterator]()).next();
+									} catch (error) {
+										window.iterator = undefined;
+										if (
+											error instanceof TransactionLogUntilUnreachedError &&
+											performance.now() - (window.unreachedSince ??= performance.now()) <= UNREACHED_LOG_LIMIT_MS
+										) {
+											// the other windows are read meanwhile, so their limits run together
+											shortOfBound = true;
+											index++;
+											continue;
+										}
+										logger.debug?.(
+											`Subscription replay on ${tableName} stopped reading ${window.log} below its position`,
+											error
+										);
+										windows.splice(index, 1);
+										continue;
+									}
+									window.unreachedSince = undefined;
+									if (next.done) {
+										window.iterator = undefined;
+										if (window.range.failedLogs?.size || window.range.corruptFrameStop?.breaks)
+											windows.splice(index, 1);
+										else index++;
+										continue;
+									}
+									const auditRecord = next.value;
+									const id = auditRecord.recordId;
+									const type = auditRecord.type;
+									const event =
+										auditRecord.tableId === tableId &&
+										id !== undefined &&
+										type !== undefined &&
+										type !== 'evict' &&
+										type !== 'reload' &&
+										!isLockControlType(type) &&
+										inScope!(id)
+											? eventFromAudit(state, id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader)
+											: undefined;
+									if (event) {
+										if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+										if (!send(event) || !isActive()) return Promise.resolve(false);
+										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+											return subscription.waitForDrain().then((drained: boolean) => drained !== false && isActive());
+										}
+									}
+									if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
+										recordsSinceYield = 0;
+										return rest().then(isActive);
+									}
+								}
+								return shortOfBound ? sleep(UNREACHED_LOG_POLL_MS).then(isActive) : true;
+							};
 						}
 						const inScope =
 							request.onlyChildren || originWindows ? replayScope(thisId, true, request.onlyChildren) : undefined;
-						// True once every window is caught up with live delivery without the turn having been yielded, else
-						// the wait, resolving whether the subscription is still active.
-						const drainOriginWindows = (windows: NonNullable<typeof originWindows>): true | Promise<boolean> => {
-							if (readOriginStateEpoch(auditStore.rootStore) !== originEpoch) {
-								const admitted = admitOriginWindows();
-								for (let index = windows.length; index-- > 0;)
-									if (!admitted?.has(windows[index].log)) windows.splice(index, 1);
-							}
-							for (let index = 0; index < windows.length;) {
-								const window = windows[index];
-								let next: IteratorResult<any>;
-								try {
-									next = (window.iterator ??= window.range[Symbol.iterator]()).next();
-								} catch (error) {
-									window.iterator = undefined;
-									if (
-										error instanceof TransactionLogUntilUnreachedError &&
-										performance.now() - (window.unreachedSince ??= performance.now()) <= UNREACHED_LOG_LIMIT_MS
-									) {
-										return sleep(UNREACHED_LOG_POLL_MS).then(isActive);
-									}
-									logger.debug?.(
-										`Subscription replay on ${tableName} stopped reading ${window.log} below its position`,
-										error
-									);
-									windows.splice(index, 1);
-									continue;
-								}
-								window.unreachedSince = undefined;
-								if (next.done) {
-									window.iterator = undefined;
-									if (window.range.failedLogs?.size || window.range.corruptFrameStop?.breaks) windows.splice(index, 1);
-									else index++;
-									continue;
-								}
-								const auditRecord = next.value;
-								const id = auditRecord.recordId;
-								const type = auditRecord.type;
-								const event =
-									auditRecord.tableId === tableId &&
-									id !== undefined &&
-									type !== undefined &&
-									type !== 'evict' &&
-									type !== 'reload' &&
-									!isLockControlType(type) &&
-									inScope!(id)
-										? eventFromAudit(state, id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader)
-										: undefined;
-								if (event) {
-									if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
-									if (!send(event) || !isActive()) return Promise.resolve(false);
-									if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-										return subscription.waitForDrain().then((drained: boolean) => drained !== false && isActive());
-									}
-								}
-								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
-									recordsSinceYield = 0;
-									return rest().then(isActive);
-								}
-							}
-							return true;
-						};
 						try {
 							for (;;) {
 								let next: IteratorResult<any>;
@@ -10779,13 +10792,16 @@ export function makeTable(options): TableResourceClass {
 								}
 								if (next.done) {
 									if (originWindows?.length) {
-										// the windows can wait while retention moves on, so what the position needs is checked now
-										if (!replayReachedLive) {
+										// The windows can wait while retention moves on, so what the position needs is checked now, and
+										// the check moves to the registration sample: every key the logs held below it has been read.
+										if (!positionChecked) {
 											if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
-											replayReachedLive = true;
+											positionChecked = true;
+											if (subscription.localResumeStart > resumeCheckedThrough)
+												resumeCheckedThrough = subscription.localResumeStart;
 										}
 										// they hand off with the replay: both are caught up in the turn that ends it
-										const drained = drainOriginWindows(originWindows);
+										const drained = drainOriginWindows!(originWindows);
 										if (drained !== true) {
 											if (!(await drained) || !isActive()) return;
 											replayIterator = replayRange[Symbol.iterator]();

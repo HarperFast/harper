@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { TransactionLogUntilUnreachedError } = require('@harperfast/rocksdb-js');
+const { TransactionLogUntilUnreachedError } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { createAuditEntry, ENTRY_DATAVIEW } = require('#src/resources/auditStore');
 
