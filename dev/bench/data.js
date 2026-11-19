@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795079280216,
+  "lastUpdate": 1795079284972,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -36394,6 +36394,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 580.8,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "694cca02a0accbf39b86f574646bcb77e67f1d69",
+          "message": "Fix copied-delete tests after late publishes preserve the record version (#4473)\n\n* Keep copied-delete tests independent of late publish ordering\n\nSeed a stored head below its copied-delete boundary to exercise the\nboundary checks. Assert that a real late publish preserves the version of\nboth a copied tombstone and a recreated row.\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Keep winning origin tie coverage after late publishes\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Keep older copied-delete stamp coverage after a late publish\n\nDispatch-Task: main-red-kriszyp_harper_8d245cf95_4d7eefda\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-11-19T05:31:17Z",
+          "url": "https://github.com/HarperFast/harper/commit/694cca02a0accbf39b86f574646bcb77e67f1d69"
+        },
+        "date": 1795079283845,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 30090.9,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 30090.9,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 169,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 406,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 483.2,
             "unit": "ms"
           }
         ]
