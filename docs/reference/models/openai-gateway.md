@@ -19,7 +19,7 @@ Harper can expose an OpenAI-compatible REST gateway on the application HTTP serv
 
 ## Enabling it
 
-The gateway is off by default. Enable it with `modelsGateway.enabled: true` in `harper-config.yaml`, alongside at least one configured model. The endpoints are REST resources, so REST must also be active: add `rest: true`, or deploy an application that enables REST. An application with a [`urlPath` or `host` mount](../http/overview#middleware-routing) serves REST only under that mount, so `/v1/*` is reachable only there. Without REST, every `/v1/*` path returns `404`, and Harper logs a warning at startup when the root configuration has no `rest` section.
+The gateway is off by default. Enable it with `modelsGateway.enabled: true` in `harper-config.yaml`, alongside at least one configured model. The endpoints are REST resources, so REST must also be active: add `rest: true`, or deploy an application that enables REST. If that application has a [`urlPath` or `host` mount](../http/overview#middleware-routing), its REST serves the gateway under the mount, such as `/app/v1/models` for `urlPath: /app`. Without a root `rest` section, clients must go through that mount. Without REST, every `/v1/*` path returns `404`, and Harper logs a warning at startup when the root configuration has no `rest` section.
 
 Each endpoint looks up the `model` name in its own kind, so `/v1/embeddings` needs a model under `embedding` and `/v1/chat/completions` needs one under `generative`:
 
