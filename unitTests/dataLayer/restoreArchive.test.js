@@ -719,6 +719,16 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 				);
 				rmSync(blocked, { recursive: true, force: true });
 				await assert.rejects(stage(), (error) => error.statusCode === 507);
+				// nor is a directory of records that cannot be listed an empty one
+				if (process.platform !== 'win32' && process.getuid() !== 0) {
+					const areas = join(left, '..');
+					require('node:fs').chmodSync(areas, 0o000);
+					try {
+						await assert.rejects(stage(), (error) => error.statusCode === 503);
+					} finally {
+						require('node:fs').chmodSync(areas, 0o700);
+					}
+				}
 			} finally {
 				rmSync(quotaReport, { force: true });
 				if (blocked) rmSync(blocked, { recursive: true, force: true });
