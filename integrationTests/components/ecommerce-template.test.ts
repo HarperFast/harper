@@ -1,8 +1,9 @@
 /**
  * ecommerce-template component integration test.
  *
- * Deploys harper-ecommerce-template and verifies page rendering,
- * REST API CRUD, edge cases, and GraphQL.
+ * Deploys harper-ecommerce-template at a pinned commit and verifies its REST API CRUD.
+ * The Next.js page and GraphQL checks stay skipped until HarperFast/nextjs#37 and
+ * HarperFast/nextjs#36 are fixed. https://github.com/HarperFast/harper/issues/366
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
@@ -14,29 +15,32 @@ const pagesSkip =
 
 suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx, {
-			config: { applications: { allowedSpawnCommands: ['npm', 'node', 'npx'] } },
-		});
+		await startHarper(ctx);
 
 		const body = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'harper-ecommerce-template',
-			package: 'https://github.com/HarperFast/harper-ecommerce-template',
+			package: 'https://github.com/HarperFast/harper-ecommerce-template#86e57a26a49c3ba1ef71521ae44d69760e2e8a41',
 			restart: true,
 		});
 		strictEqual(body.message, 'Successfully deployed: harper-ecommerce-template, restarting Harper');
 
 		const deadline = Date.now() + 60_000;
-		while (true) {
+		let lastResult = 'no response';
+		while (Date.now() < deadline) {
 			try {
-				const check = await fetch(`${ctx.harper.httpURL}/Product/`);
-				if (check.status === 200) break;
-			} catch {
-				// server not yet accepting connections
+				const check = await fetch(`${ctx.harper.httpURL}/Product/11`, {
+					signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+				});
+				await check.body?.cancel();
+				if (check.status === 200) return;
+				lastResult = `status ${check.status}`;
+			} catch (error) {
+				lastResult = String((error as Error).cause ?? error);
 			}
-			if (Date.now() > deadline) throw new Error('Timed out waiting for ecommerce-template to be ready after deploy');
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
+		throw new Error(`Timed out waiting for ecommerce-template to be ready after deploy (last: ${lastResult})`);
 	});
 
 	after(async () => {
@@ -151,8 +155,7 @@ suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 		strictEqual(res.status, 404);
 	});
 
-	// TODO: unskip once HarperFast/nextjs#36 is fixed (Next.js intercepts /graphql)
-	test('GraphQL query returns products', { skip: true }, async () => {
+	test('GraphQL query returns products', { skip: 'Next.js intercepts /graphql (HarperFast/nextjs#36)' }, async () => {
 		const res = await fetch(`${ctx.harper.httpURL}/graphql`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
