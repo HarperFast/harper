@@ -459,7 +459,7 @@ function startServers() {
  * bind it somewhere clients cannot reach using the configured path.
  *
  * A per-thread mirror binds at a temp name and is renamed over its published path: libuv unlinks a
- * pipe server's bound path on close whoever owns it by then (server/DESIGN.md).
+ * pipe server's bound path on close whoever owns it by then (server/threads/DESIGN.md).
  */
 function listenOnDomainSocket(port?: any, server?: any) {
 	const bindPath = server.isPerThreadSocket && !isWindows ? mirrorBindPath(port) : port;

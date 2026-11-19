@@ -152,19 +152,21 @@ Directory maps (`npm run check:design-docs` requires every `MAP.md` to be linked
 
 For megafiles and complex subsystems, the design notes to read first:
 
-| If you are touching…                                   | Read first                                                 |
-| ------------------------------------------------------ | ---------------------------------------------------------- |
-| Anything in `resources/` (especially `Table.ts`)       | [resources/MAP.md](resources/MAP.md)                       |
-| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)                       |
-| Record-store internals (commit timing, blobs, encoder) | [resources/DESIGN.md](resources/DESIGN.md)                 |
-| `table.lock()`, record-lock ownership                  | [resources/record-locks.md](resources/record-locks.md)     |
-| Derived indexes, HNSW                                  | [resources/indexes/DESIGN.md](resources/indexes/DESIGN.md) |
-| Deploys, component load lifecycle                      | [components/DESIGN.md](components/DESIGN.md)               |
-| Config composition, env layers, hot reload             | [config/DESIGN.md](config/DESIGN.md)                       |
-| Backup/restore, system tables, version gate            | [dataLayer/DESIGN.md](dataLayer/DESIGN.md)                 |
-| Tokens, OIDC, TLS                                      | [security/DESIGN.md](security/DESIGN.md)                   |
-| Any other directory                                    | its `DESIGN.md`, via the index in [DESIGN.md](DESIGN.md)   |
-| Adding a dependency                                    | [dependencies.md](dependencies.md)                         |
+| If you are touching…                                   | Read first                                                       |
+| ------------------------------------------------------ | ---------------------------------------------------------------- |
+| Anything in `resources/` (especially `Table.ts`)       | [resources/MAP.md](resources/MAP.md)                             |
+| HTTP/WS/MQTT, middleware ordering, content types       | [server/DESIGN.md](server/DESIGN.md)                             |
+| Worker threads, pools, ITC, native-addon guard         | [server/threads/DESIGN.md](server/threads/DESIGN.md)             |
+| Operation dispatch state, response/stream helpers      | [server/serverHelpers/DESIGN.md](server/serverHelpers/DESIGN.md) |
+| Record-store internals (commit timing, blobs, encoder) | [resources/DESIGN.md](resources/DESIGN.md)                       |
+| `table.lock()`, record-lock ownership                  | [resources/record-locks.md](resources/record-locks.md)           |
+| Derived indexes, HNSW                                  | [resources/indexes/DESIGN.md](resources/indexes/DESIGN.md)       |
+| Deploys, component load lifecycle                      | [components/DESIGN.md](components/DESIGN.md)                     |
+| Config composition, env layers, hot reload             | [config/DESIGN.md](config/DESIGN.md)                             |
+| Backup/restore, system tables, version gate            | [dataLayer/DESIGN.md](dataLayer/DESIGN.md)                       |
+| Tokens, OIDC, TLS                                      | [security/DESIGN.md](security/DESIGN.md)                         |
+| Any other directory                                    | its `DESIGN.md`, via the index in [DESIGN.md](DESIGN.md)         |
+| Adding a dependency                                    | [dependencies.md](dependencies.md)                               |
 
 ---
 

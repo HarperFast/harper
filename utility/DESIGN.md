@@ -14,6 +14,8 @@ Core-owned files resolve from their runtime module tree, including lazy plugin U
 
 `loadNativePackage(name)` retains ordinary `require(name)` resolution, including its missing-module error. A trusted entry filename as its second argument loads that file beside the installed package's exported manifest. HTTP uses this boundary lazily on Bun to bypass the builtin `ws` substitution; a missing installed package fails startup instead of falling back to that substitution.
 
+Log rotation's deferred reconfiguration callback loads its runtime module synchronously through `loadRuntimeModule`, so teardown and installation cannot interleave across a cold import. Disabling rotation cannot be undone by an older callback resuming later.
+
 ## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
 
 libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with

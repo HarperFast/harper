@@ -49,6 +49,7 @@ export type {
 export type { User } from './security/user.ts';
 export type {
 	BearerValidator,
+	BearerValidatorChallenge,
 	BearerValidatorIdentity,
 	BearerValidatorOptions,
 	BearerValidatorResult,

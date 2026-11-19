@@ -1909,3 +1909,144 @@ describe('mcp/tools/application — structuredContent honors the ADVERTISED outp
 		assertHonorsContract(tool, res);
 	});
 });
+
+describe('mcp/tools/application — allow, deny and generatedTools (#4345)', () => {
+	const env = require('#js/utility/environment/environmentManager');
+	const originalEnvGet = env.get;
+	let envOverrides;
+
+	function buildCatalog() {
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'name', type: 'String' },
+			],
+		});
+		class Fabric {
+			async listClusters() {
+				return { clusters: [] };
+			}
+			async getCluster() {
+				return { id: 'c1' };
+			}
+		}
+		Fabric.mcpTools = [
+			{ name: 'list_clusters', method: 'listClusters', description: 'List clusters', inputSchema: { type: 'object' } },
+			{ name: 'get_cluster', method: 'getCluster', description: 'Get a cluster', inputSchema: { type: 'object' } },
+		];
+		_setResourcesForTest(
+			makeRegistry([
+				['Product', { Resource: Product }],
+				['Fabric', { Resource: Fabric }],
+			])
+		);
+	}
+
+	function listedNames(sessionId) {
+		return listTools({ user: SUPER, profile: 'application', sessionId, limit: 200 })
+			.tools.map((tool) => tool.name)
+			.sort();
+	}
+
+	beforeEach(() => {
+		_resetRegistryForTest();
+		_setRequestTargetForTest(FakeRequestTarget);
+		envOverrides = {};
+		env.get = (key) => (key in envOverrides ? envOverrides[key] : originalEnvGet.call(env, key));
+	});
+	afterEach(() => {
+		env.get = originalEnvGet;
+		_resetRegistryForTest();
+		_setResourcesForTest(undefined);
+		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+	});
+
+	it('exposes every generated and custom tool when allow is unset', () => {
+		buildCatalog();
+		registerApplicationTools();
+		assert.deepEqual(listedNames('unset'), [
+			'create_Product',
+			'delete_Product',
+			'get_Product',
+			'get_cluster',
+			'list_clusters',
+			'search_Product',
+			'update_Product',
+		]);
+	});
+
+	it('treats an empty allow list as unset', () => {
+		envOverrides.mcp_application_allow = [];
+		buildCatalog();
+		registerApplicationTools();
+		assert.equal(listedNames('empty').length, 7);
+	});
+
+	it('limits generated and custom tools to allow matches, literal and glob', () => {
+		envOverrides.mcp_application_allow = ['get_*', 'list_clusters'];
+		buildCatalog();
+		registerApplicationTools();
+		assert.deepEqual(listedNames('allow'), ['get_Product', 'get_cluster', 'list_clusters']);
+	});
+
+	it('makes a filtered tool uncallable, not just unlisted', () => {
+		envOverrides.mcp_application_allow = ['list_clusters'];
+		buildCatalog();
+		registerApplicationTools();
+		assert.ok(getTool('list_clusters', 'application'));
+		assert.equal(getTool('delete_Product', 'application'), undefined);
+		assert.equal(getTool('get_cluster', 'application'), undefined);
+	});
+
+	it('applies deny after allow, and on its own when allow is unset', () => {
+		envOverrides.mcp_application_allow = ['*_Product', 'get_cluster'];
+		envOverrides.mcp_application_deny = ['delete_*', 'update_Product'];
+		buildCatalog();
+		registerApplicationTools();
+		assert.deepEqual(listedNames('allow-deny'), ['create_Product', 'get_Product', 'get_cluster', 'search_Product']);
+
+		delete envOverrides.mcp_application_allow;
+		refreshApplicationTools();
+		assert.deepEqual(listedNames('deny-only'), [
+			'create_Product',
+			'get_Product',
+			'get_cluster',
+			'list_clusters',
+			'search_Product',
+		]);
+	});
+
+	it('generatedTools: false keeps only custom mcpTools', () => {
+		envOverrides.mcp_application_generatedTools = false;
+		buildCatalog();
+		registerApplicationTools();
+		assert.deepEqual(listedNames('custom-only'), ['get_cluster', 'list_clusters']);
+	});
+
+	it('generatedTools: false still applies allow and deny to custom tools', () => {
+		envOverrides.mcp_application_generatedTools = false;
+		envOverrides.mcp_application_deny = ['get_cluster'];
+		buildCatalog();
+		registerApplicationTools();
+		assert.deepEqual(listedNames('custom-deny'), ['list_clusters']);
+	});
+
+	it('ignores non-string allow entries instead of failing the rebuild', () => {
+		envOverrides.mcp_application_allow = [42, null, 'list_clusters'];
+		buildCatalog();
+		registerApplicationTools();
+		assert.deepEqual(listedNames('non-string'), ['list_clusters']);
+	});
+
+	it('re-reads the lists on each rebuild', () => {
+		buildCatalog();
+		registerApplicationTools();
+		assert.equal(listedNames('before').length, 7);
+		envOverrides.mcp_application_allow = ['list_clusters'];
+		refreshApplicationTools();
+		assert.deepEqual(listedNames('after'), ['list_clusters']);
+	});
+});

@@ -9,6 +9,8 @@ import {
 	startSecretCustodyOnMainThread,
 } from '../components/componentLoader.ts';
 import { resetResources } from '../resources/Resources.ts';
+import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
+import { materializeGlobalSecrets } from '../components/componentSecrets.ts';
 import * as configUtils from '../config/configUtils.ts';
 import { dirname } from 'node:path';
 import { loadCertificates } from '../security/keys.ts';
@@ -137,6 +139,8 @@ async function loadRootComponents(isWorkerThread: any = false) {
 	}
 
 	await loadCertificates();
+	// Before the root config's `${NAME}` placeholders are resolved (a model's apiKey).
+	if (isMainThread && !process.env.HARPER_SAFE_MODE && getSecretDecryptor()) await materializeGlobalSecrets();
 	// the Harper root component
 	await loadComponent(dirname(configUtils.getConfigFilePath()), resources, 'hdb', {
 		isRoot: true,

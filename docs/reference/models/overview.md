@@ -175,6 +175,8 @@ The price is read by [`maxCostUsd`](./tool-calling#options) on `toolMode: 'auto'
 
 String values in model entries support environment-variable indirection with `${VAR_NAME}` syntax, resolved at startup. Use this for API keys rather than placing the literal key in the configuration file — Harper logs a warning at startup when a credential field contains a literal value. If the referenced environment variable is unset, the placeholder is left as-is; for credential fields the backend rejects the unresolved placeholder at startup, while fields without such validation (such as `host` or `model`) carry the literal placeholder into requests — surfacing as per-request failures rather than a startup error. The OpenAI embedding [`inputPrefixes`](./backends#embedding-task-prefixes) fields also reject unresolved placeholders at registration; on reload, the previous entry keeps serving. Indirection applies to string-typed fields only; numeric fields such as `requestTimeoutMs` must be literal values.
 
+The variable can also come from the [secrets store](../security/secrets.md): a global secret (`set_secret` with `processEnv: true`) named `VAR_NAME` supplies the value, so the key does not have to be in the deployment's environment. A real environment variable of the same name takes precedence. Harper reads stored secrets at startup, so a secret that is set or changed while Harper runs reaches the model on the next restart.
+
 ### Startup behavior
 
 Model entries are registered when Harper boots, before components load, so `models` is usable from component initialization onward.
