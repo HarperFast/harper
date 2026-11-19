@@ -327,6 +327,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		log?: string | number;
 		excludeLogs?: string[];
 		onlyKeys?: boolean;
+		/** A start per log name. A log it does not name starts at `start` when one is given, and at 0 otherwise. */
 		startByLog?: Map<string, number>;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
@@ -514,7 +515,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 										start: expectedExactStart,
 										exclusiveStart: options.resumeAfterExactStart ? false : options.exclusiveStart,
 									};
-								} else {
+								} else if (options.start === undefined) {
 									queryOptions = { ...options, start: 0, exactStart: false, exclusiveStart: false };
 								}
 							} else if (latestUpdates >= 0) {

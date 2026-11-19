@@ -53,6 +53,8 @@ Each element gets its own target (`elementTargetFactory`) without `checkPermissi
 
 **No readable copy keeps its source's generation; a collection position resumes only in the current generation, with a finite cursor >= the resume floor** (`isResumablePosition`, RocksDB); below the floor a single-record resume needs a complete history walk. Rechecked at each replay yield (pruning raises the floor before deleting); checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, commits below a recorded position (#2928; `databaseGeneration.test.js`).
 
+- **A position is this node's own watermark, which another origin can still commit below.** A collection resume that also carries the checkpoint its scope issued here (`ORIGIN_BOUNDARIES`, set by the durable MQTT session) reads each other origin's log from its boundary when at or below the position, each origin decided alone (`originReplayStarts`): one pruned, revoked, no longer certified or absent from the checkpoint keeps the position. That history is optional: it moves no cursor (`replayedThrough`, `resumeCheckedThrough`) and refuses no resume, and a lowered log that turns unreadable before the replay passes the position restarts the range from the position alone (`subscribeCheckpoint.test.js`). A record resume walks its own history and takes no boundary.
+
 ## Origin-closed timestamp floor
 
 **Nothing appends to `local` below the certified floor `F`** (`originClosedFloor.ts`, harper-pro#922).

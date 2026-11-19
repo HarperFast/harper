@@ -187,6 +187,22 @@ describe('RocksTransactionLogStore range metadata', () => {
 		});
 	}
 
+	it('starts a log that startByLog does not name at the start the range was given', () => {
+		const queried = {};
+		const logs = ['local', 'lowered-peer', 'other-peer'].map((name) =>
+			makeLog(name, [], (options) => (queried[name] = options))
+		);
+		[...makeStore(logs).getRange({ start: 50, startByLog: new Map([['lowered-peer', 20]]), exclusiveStart: true })];
+		assert.deepStrictEqual(
+			Object.entries(queried).map(([name, { start, exclusiveStart }]) => [name, start, exclusiveStart]),
+			[
+				['local', 50, true],
+				['lowered-peer', 20, true],
+				['other-peer', 50, true],
+			]
+		);
+	});
+
 	it('starts a newly discovered log from its beginning without an exact anchor', () => {
 		let cursorOptions;
 		let newLogOptions;

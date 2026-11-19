@@ -11,8 +11,10 @@ const { setOriginCaptureIntervalForTests } = require('#src/resources/transaction
 const {
 	COPY_BOUND_KEY,
 	MAX_OVERLAP_MS,
+	ORIGIN_BOUNDARIES,
 	encodeCheckpoint,
 	membersDigest,
+	originReplayStarts,
 	positionBefore,
 	readCopyBounds,
 	readOriginStateEpoch,
@@ -482,6 +484,144 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				certifiedFrom: floor - 1000,
 			});
 			await assert.rejects(T.subscribe({ resume: checkpoint, omitCurrent: true }), (error) => error.statusCode === 410);
+		});
+
+		describe('a position resumed with the checkpoint issued beside it (harper#3790)', () => {
+			const certifiedRoute = (name, closedFloor, certifiedFrom = 0) => ({
+				closedFloor,
+				originGeneration: `${name}-generation`,
+				fullCoverage: true,
+				certifiedFrom,
+			});
+
+			/** Applies a publish as replication does: logged under the origin's key, whenever it arrives here. */
+			function applyFromOrigin(T, nodeId, logKey, id) {
+				const context = { source: {}, sourceApply: true, timestamp: logKey };
+				return transaction(context, async () => {
+					const resource = await T.getResource(id, context);
+					resource._writePublish(id, { value: id }, { isNotification: true, nodeId, version: logKey });
+				});
+			}
+
+			/**
+			 * A position above `lateKey`, with a checkpoint that holds the peer at its floor below it. After it was
+			 * taken the peer commits `late` at `lateKey` and this node commits `missed` above the position.
+			 */
+			async function positionAboveAPeerFloor() {
+				const T = tableInOwnDatabase();
+				const peerName = `peer-${sequence}`;
+				const first = collector();
+				const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: first });
+				await sleep(5);
+				const peerFloor = Date.now();
+				const peer = writeSeqRow(T, peerName, certifiedRoute(peerName, peerFloor));
+				await sleep(5);
+				await T.put('local', { value: 'local' });
+				await waitFor(() => first.values().includes('local'));
+				const checkpoint = await certifiedCheckpoint(T, subscription);
+				const lateKey = peerFloor + 2;
+				let position;
+				await waitFor(() => (position = subscription.progress()) > lateKey);
+				subscription.end();
+				await applyFromOrigin(T, peer, lateKey, 'late');
+				await T.put('missed', { value: 'missed' });
+				const resume = (options) =>
+					T.subscribe({
+						startTime: position,
+						databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+						reportProgress: true,
+						omitCurrent: true,
+						...options,
+					});
+				return { T, peer, peerName, peerFloor, lateKey, checkpoint, position, resume };
+			}
+
+			async function replayed(resume, options) {
+				const listener = collector();
+				const subscription = await resume({ listener, ...options });
+				assert.strictEqual(await subscription.resumeVerified, true);
+				await waitFor(() => listener.values().includes('missed'));
+				subscription.end();
+				return { values: listener.values(), subscription };
+			}
+
+			it('also replays another origin from its boundary, and nothing of this node below the position', async () => {
+				const { checkpoint, position, resume } = await positionAboveAPeerFloor();
+				assert.deepStrictEqual((await replayed(resume)).values, ['missed'], 'a position alone skips it');
+				const listener = collector();
+				const subscription = await resume({ listener, [ORIGIN_BOUNDARIES]: checkpoint });
+				assert.ok(subscription.progress() >= position, 'progress is not lowered while it replays');
+				assert.strictEqual(await subscription.resumeVerified, true);
+				await waitFor(() => listener.values().includes('missed'));
+				assert.deepStrictEqual(listener.values(), ['late', 'missed']);
+				assert.ok(subscription.progress() >= position, 'nor once it is live');
+				subscription.end();
+			});
+
+			it('lowers a log to just below a boundary at or below the position, and no other', async () => {
+				const { T, peerName, peerFloor, checkpoint, position } = await positionAboveAPeerFloor();
+				const starts = (at, token = checkpoint, scope = checkpoint.scope) =>
+					originReplayStarts(T.auditStore, T.dbisDB, token, scope, at);
+				assert.deepStrictEqual([...starts(position)], [[peerName, positionBefore(peerFloor)]]);
+				assert.deepStrictEqual(
+					[...starts(peerFloor)],
+					[[peerName, positionBefore(peerFloor)]],
+					'the boundary key itself'
+				);
+				assert.strictEqual(starts(positionBefore(peerFloor)), undefined, 'a boundary above the position adds nothing');
+				assert.strictEqual(starts(position, checkpoint, 'another scope'), undefined);
+				assert.strictEqual(starts(position, { v: 1 }), undefined, 'a malformed checkpoint is not an error');
+				const own = tableInOwnDatabase();
+				assert.strictEqual(
+					originReplayStarts(own.auditStore, own.dbisDB, checkpoint, checkpoint.scope, position),
+					undefined,
+					'a database with no other origin reads no origin state'
+				);
+			});
+
+			it('resumes from the position alone when the checkpoint cannot be used here, refusing nothing', async () => {
+				const { checkpoint, resume } = await positionAboveAPeerFloor();
+				for (const unusable of [
+					{ ...checkpoint, scope: 'another' },
+					{ ...checkpoint, members: membersDigest([['someone-else', 'g']]) },
+					{ v: 1 },
+				]) {
+					assert.deepStrictEqual((await replayed(resume, { [ORIGIN_BOUNDARIES]: unusable })).values, ['missed']);
+				}
+			});
+
+			it('keeps an origin the checkpoint never saw at the position', async () => {
+				const { T, lateKey, checkpoint, resume } = await positionAboveAPeerFloor();
+				const joinedName = `joined-${sequence}`;
+				const joined = writeSeqRow(T, joinedName, certifiedRoute(joinedName, lateKey));
+				await applyFromOrigin(T, joined, lateKey + 1, 'before-it-was-known');
+				assert.deepStrictEqual((await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint })).values, [
+					'late',
+					'missed',
+				]);
+			});
+
+			it('starts over from the position alone when a lowered log cannot be read, instead of refusing', async () => {
+				const { T, peerName, checkpoint, resume } = await positionAboveAPeerFloor();
+				const auditStore = T.auditStore;
+				const getRange = auditStore.getRange;
+				const lowered = [];
+				auditStore.getRange = function (options) {
+					const range = getRange.call(this, options);
+					if (options && 'startByLog' in options && options.exclusiveStart) {
+						lowered.push(options.startByLog && [...options.startByLog.keys()]);
+						// as the log store records a log whose iteration it had to end
+						if (options.startByLog) range.failedLogs.add(peerName);
+					}
+					return range;
+				};
+				try {
+					assert.deepStrictEqual((await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint })).values, ['missed']);
+				} finally {
+					auditStore.getRange = getRange;
+				}
+				assert.deepStrictEqual(lowered, [[peerName], undefined]);
+			});
 		});
 
 		it('issues nothing on an engine that cannot sync the floor record before publishing it', async () => {

@@ -25,6 +25,12 @@ export interface SubscriptionCheckpoint {
 
 /** The event-origin tag a progress-reporting subscription carries on each event: the origin's local node id. */
 export const ORIGIN_ID = Symbol.for('subscription-origin');
+/**
+ * On a subscribe request that resumes from `startTime` in its `databaseGeneration`: the checkpoint the same scope
+ * last issued there. `startTime` is a local watermark, which another origin can still commit below, so the replay
+ * also reads each other origin's log from its boundary (`originReplayStarts`). Internal to the durable session.
+ */
+export const ORIGIN_BOUNDARIES = Symbol('origin-boundaries');
 const SEQ_KEY = Symbol.for('seq');
 export const COPY_BOUND_KEY = Symbol.for('copyBound');
 const EPOCH_BUFFER = 'origin-state-epoch';
@@ -576,34 +582,8 @@ export function admitCheckpoint(
 	token: SubscriptionCheckpoint,
 	{ checkRetention = true } = {}
 ): ResumePlan {
-	const states = readOriginStates(auditStore, dbisDb);
-	if (typeof states.get(0)?.generation !== 'string') {
-		throw new ClientError('This database has no readable generation; resubscribe to resynchronize', 409);
-	}
-	// an origin with no generation is no membership candidate, so a token issued before it was known would match
-	// without accounting for it, and a copy can have written its rows with no log here to catch that
-	for (const state of states.values()) {
-		if (typeof state.generation !== 'string') {
-			throw new ResumeHistoryUnavailableError(
-				`Origin ${state.name} has no single certified generation here, so no checkpoint accounts for its history; resubscribe to resynchronize`
-			);
-		}
-	}
-	const candidates = new Map<string, string>();
-	const byName = new Map<string, OriginState>();
-	const excludable: string[] = [];
-	for (const state of states.values()) {
-		byName.set(state.name, state);
-		if (typeof state.generation === 'string') candidates.set(state.name, state.generation);
-		if (retainsBeginning(auditStore, state)) excludable.push(state.name);
-	}
-	const membership = resolveMembership(token, candidates, excludable);
-	if (!membership) {
-		throw new ResumeHistoryUnavailableError(
-			'The checkpoint certifies an origin set this node cannot serve (an origin it lacks, a changed origin generation, or a route that does not certify); resubscribe to resynchronize'
-		);
-	}
-	const resumeFloor = getAuditResumeFloor(auditStore);
+	const { membership, byName } = resolveTokenMembers(auditStore, dbisDb, token);
+	const resumeFloor = checkRetention ? getAuditResumeFloor(auditStore) : undefined;
 	const startByLog = new Map<string, number>();
 	const boundaries = new Map<string, MemberBoundary>();
 	const logName = (state: OriginState) => (state.nodeId === 0 ? 'local' : state.name);
@@ -620,26 +600,8 @@ export function admitCheckpoint(
 			boundaries.set(name, { boundary: 0, generation: state.generation! });
 			continue;
 		}
-		if (checkRetention && !(boundary >= resumeFloor)) {
-			throw new ResumeHistoryUnavailableError(
-				`The history after the checkpoint boundary of ${name} is no longer retained; resubscribe to resynchronize`
-			);
-		}
-		if (state.floorRevoked && boundary > 0) {
-			throw new ResumeHistoryUnavailableError(
-				`Origin ${name} may have written below its certified floor; resubscribe to resynchronize`
-			);
-		}
-		if (state.nodeId === 0 && !(state.certifiedFrom! <= boundary)) {
-			throw new ResumeHistoryUnavailableError(
-				`A copy restored rows of this node's own origin above the checkpoint boundary; resubscribe to resynchronize`
-			);
-		}
-		if (state.nodeId !== 0 && !(qualifies(state) && state.certifiedFrom <= boundary)) {
-			throw new ResumeHistoryUnavailableError(
-				`This node holds no complete route for origin ${name} from the checkpoint boundary; resubscribe to resynchronize`
-			);
-		}
+		const refusal = boundaryRefusal(state, boundary, resumeFloor);
+		if (refusal) throw new ResumeHistoryUnavailableError(refusal);
 		startByLog.set(logName(state), boundary);
 		boundaries.set(name, { boundary, generation: state.generation! });
 	}
@@ -669,6 +631,98 @@ export function admitCheckpoint(
 			}
 		});
 	return { startByLog, boundaries, retainsZeroStarts };
+}
+
+/**
+ * For a resume from `position` in this generation that also holds the checkpoint its scope last issued here: the
+ * exclusive start of each other origin's log whose boundary is at or below the position, by log name. Each origin
+ * is decided on its own, so one whose boundary is pruned, revoked or no longer certified keeps the position while
+ * the others are lowered; an origin the checkpoint never saw keeps it too, since nothing bounds what of its log
+ * preceded the subscription. Undefined when no log starts lower, and never a refusal: the position alone still
+ * resumes.
+ */
+export function originReplayStarts(
+	auditStore: any,
+	dbisDb: any,
+	checkpoint: unknown,
+	scope: string,
+	position: number
+): Map<string, number> | undefined {
+	// with no other origin's log there is nothing to lower, and no origin state to read
+	if (knownLogNames(auditStore).length === 0) return;
+	let resolved: TokenMembers;
+	try {
+		const token = validateCheckpoint(checkpoint);
+		if (token.scope !== scope) return;
+		resolved = resolveTokenMembers(auditStore, dbisDb, token);
+	} catch (error) {
+		// a checkpoint this node cannot use is not a failure of the resume
+		if (typeof error?.statusCode === 'number') return;
+		throw error;
+	}
+	const resumeFloor = getAuditResumeFloor(auditStore);
+	let starts: Map<string, number> | undefined;
+	for (const [name, boundary] of resolved.membership.members) {
+		const state = resolved.byName.get(name)!;
+		if (state.nodeId === 0 || !(boundary > 0 && boundary <= position)) continue;
+		if (boundaryRefusal(state, boundary, resumeFloor)) continue;
+		(starts ??= new Map()).set(name, positionBefore(boundary));
+	}
+	return starts;
+}
+
+interface TokenMembers {
+	membership: Membership;
+	byName: Map<string, OriginState>;
+}
+
+/** The origins the token certifies, resolved against this node's current origin state; throws when it cannot be. */
+function resolveTokenMembers(auditStore: any, dbisDb: any, token: SubscriptionCheckpoint): TokenMembers {
+	const states = readOriginStates(auditStore, dbisDb);
+	if (typeof states.get(0)?.generation !== 'string') {
+		throw new ClientError('This database has no readable generation; resubscribe to resynchronize', 409);
+	}
+	// an origin with no generation is no membership candidate, so a token issued before it was known would match
+	// without accounting for it, and a copy can have written its rows with no log here to catch that
+	for (const state of states.values()) {
+		if (typeof state.generation !== 'string') {
+			throw new ResumeHistoryUnavailableError(
+				`Origin ${state.name} has no single certified generation here, so no checkpoint accounts for its history; resubscribe to resynchronize`
+			);
+		}
+	}
+	const candidates = new Map<string, string>();
+	const byName = new Map<string, OriginState>();
+	const excludable: string[] = [];
+	for (const state of states.values()) {
+		byName.set(state.name, state);
+		if (typeof state.generation === 'string') candidates.set(state.name, state.generation);
+		if (retainsBeginning(auditStore, state)) excludable.push(state.name);
+	}
+	const membership = resolveMembership(token, candidates, excludable);
+	if (!membership) {
+		throw new ResumeHistoryUnavailableError(
+			'The checkpoint certifies an origin set this node cannot serve (an origin it lacks, a changed origin generation, or a route that does not certify); resubscribe to resynchronize'
+		);
+	}
+	return { membership, byName };
+}
+
+/** Why this node cannot replay a member origin completely from its nonzero boundary; `resumeFloor` undefined skips retention. */
+function boundaryRefusal(state: OriginState, boundary: number, resumeFloor: number | undefined): string | undefined {
+	const name = state.name;
+	if (resumeFloor !== undefined && !(boundary >= resumeFloor)) {
+		return `The history after the checkpoint boundary of ${name} is no longer retained; resubscribe to resynchronize`;
+	}
+	if (state.floorRevoked) {
+		return `Origin ${name} may have written below its certified floor; resubscribe to resynchronize`;
+	}
+	if (state.nodeId === 0 && !(state.certifiedFrom! <= boundary)) {
+		return `A copy restored rows of this node's own origin above the checkpoint boundary; resubscribe to resynchronize`;
+	}
+	if (state.nodeId !== 0 && !(qualifies(state) && state.certifiedFrom! <= boundary)) {
+		return `This node holds no complete route for origin ${name} from the checkpoint boundary; resubscribe to resynchronize`;
+	}
 }
 
 /** Canonical scope identity: what a checkpoint's evaluation guarantee is bound to. */

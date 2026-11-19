@@ -87,6 +87,16 @@ A position saved before the database was restored or copied, or saved on another
 
 Harper keeps a quiet topic's position current while the client is connected, and again when it disconnects, so a subscription that receives nothing is not reset merely because other tables' retention advanced. A position only moves past a message once that message, and every other message from the same transaction, has been acknowledged; an out-of-order acknowledgement can mean some messages are delivered again after a reconnect. A client that sends SUBSCRIBE again for a topic its session already holds, as many clients do on every connect, continues from the saved position, so resubscribing loses nothing. A new connection with the same client ID on the same Harper thread takes the session over, and the older connection is closed (MQTT v5 reason code `0x8E`); a clean-start connect closes it the same way. These checks apply to RocksDB databases; LMDB sessions catch up as before.
 
+<VersionBadge type="changed" version="v5.5.0" />
+
+**Messages from other cluster nodes** — A saved position tracks what this node has delivered of its own writes. A message published on another node keeps that node's timestamp, so it can replicate in after the position was saved and still sort below it. When a client reconnects to the node that saved its session, Harper also replays each other node's history from the last point that node could still publish at, so a wildcard subscription with QoS 1 or 2 receives those messages. Earlier versions skipped them.
+
+- Messages the client already acknowledged are not sent again, for up to 1,000 remembered acknowledgements per session (500 of them for QoS 1). Past that limit, or after Harper stops without saving the session, some acknowledged QoS 1 messages from other nodes can be delivered again.
+- When audit retention has removed that history, or Harper can no longer vouch for a node's history, the subscription resumes from its saved position alone. The session is not reset.
+- A subscription to a single record does not replay these messages yet.
+
+This applies to RocksDB databases.
+
 <VersionBadge type="changed" version="v5.3.0" />
 
 Durable subscriptions with QoS 1 or 2 explicitly include superseded record versions during both live delivery and reconnect catch-up. This preserves delivery of intermediate retained publications (`retain: true`), even though ordinary table subscriptions now default to current-state delivery. Non-retained publications remain independent messages. Catch-up is limited by audit-log retention. See [Superseded record updates](../resources/resource-api.md#superseded-record-updates).
