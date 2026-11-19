@@ -1248,7 +1248,8 @@ interface TableResourceClass {
 		  }
 		| undefined;
 	replicate: any;
-	sealed: any;
+	get sealed(): boolean | undefined;
+	set sealed(value: boolean | undefined);
 	splitSegments: any;
 	createdTimeProperty: Attribute;
 	updatedTimeProperty: Attribute;
@@ -2143,7 +2144,6 @@ export function makeTable(options): TableResourceClass {
 		auditStore,
 		schemaDefined,
 		dbisDB: dbisDb,
-		sealed,
 		splitSegments,
 		replicate,
 		description,
@@ -2160,7 +2160,7 @@ export function makeTable(options): TableResourceClass {
 	const tableRootStore = primaryStore.rootStore;
 	const tableRootPath = tableRootStore.path;
 	registerResidencyRoot(databaseName, tableRootStore, !!options.residency);
-	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
+	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes, sealed } = options;
 	const isRocksDB = primaryStore instanceof RocksDatabase;
 	let residencyPolicy: Readonly<ResidencyPolicy> | undefined =
 		options.residency && normalizeResidencyPolicy(options.residency);
@@ -3032,7 +3032,14 @@ export function makeTable(options): TableResourceClass {
 		static outputSchemas: { [verb: string]: JsonSchemaFragment } | undefined;
 		static mcp: { annotations?: { [verb: string]: any } } | undefined;
 		static replicate = replicate;
-		static sealed = sealed;
+		static get sealed(): boolean | undefined {
+			return sealed;
+		}
+		static set sealed(value: boolean | undefined) {
+			if (value === sealed) return;
+			sealed = value;
+			primaryKeyGranted = new WeakMap();
+		}
 		static splitSegments = splitSegments ?? true;
 		static createdTimeProperty = createdTimeProperty;
 		static updatedTimeProperty = updatedTimeProperty;

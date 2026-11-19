@@ -2268,6 +2268,7 @@ function initStores(
 			// Absent means unchanged, not `replicates`: NON_REPLICATING_SYSTEM_TABLES sets `replicate = false`
 			// on the live class and stores nothing, so an unconditional refresh would clear that override.
 			if (typeof primaryAttribute.replicate === 'boolean') table.replicate = primaryAttribute.replicate;
+			if (typeof primaryAttribute.sealed === 'boolean') table.sealed = primaryAttribute.sealed;
 			table.fullTextIndexes = fullTextIndexes;
 			table.fullTextFields = fullTextFields;
 			table.fullTextIndexGenerations = fullTextIndexGenerations;
@@ -5910,6 +5911,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if (!target.branch) requestComputedIndexRepair(Table);
 
 	if (typeof replicate === 'boolean' && origin !== 'cluster') Table.replicate = replicate;
+	if (typeof sealed === 'boolean' && origin !== 'cluster') Table.sealed = sealed;
 	Table.origin = origin;
 	// scope-private: replication and other global subscribers must not learn of a branch class
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
@@ -5983,6 +5985,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (namesOneTtlField) inheritedTtl = savedTtlOf(currentPrimaryAttribute);
 			const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 			if (typeof audit === 'boolean') {
+				// false waits for the next load: an open subscription reads its events from the audit log
 				if (audit) Table.enableAuditing();
 				updatedPrimaryAttribute.audit = audit;
 			}
