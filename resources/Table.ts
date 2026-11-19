@@ -10492,9 +10492,16 @@ export function makeTable(options): TableResourceClass {
 			// Each check compares the floor with the position the replay had reached at the previous check: a
 			// prune raises the floor before it deletes anything below it, so a pass means nothing unread was deleted.
 			let resumeCheckedThrough = request.startTime;
+			// Set once a replay has read up to live delivery and passed its check. What it reads after that was
+			// appended since, which no prune takes, so only the generation can still refuse it.
+			let replayReachedLive = false;
 			const checkResume = resuming
 				? (refusal?: Error): boolean => {
-						refusal ??= resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough);
+						refusal ??= !replayReachedLive
+							? resumeRefusal(auditStore, resumeGeneration, resumeCheckedThrough)
+							: getDatabaseGeneration(auditStore)?.id === resumeGeneration
+								? undefined
+								: new DatabaseGenerationChangedError();
 						return refusal ? refuseReplay(subscription, tableName, refusal) : true;
 					}
 				: undefined;
@@ -10657,31 +10664,43 @@ export function makeTable(options): TableResourceClass {
 						// origin's log is read from its boundary up to the position by a reader of its own, apart from the
 						// replay above: what it reads moves no cursor and passes no check, and a failure ends it alone.
 						const originBoundaries = (request as any)[ORIGIN_BOUNDARIES];
-						const originWindows: { range: any; iterator?: Iterator<any>; unreachedSince?: number }[] = [];
+						let originWindows:
+							{ log: string; range: any; iterator?: Iterator<any>; unreachedSince?: number }[] | undefined;
+						let originEpoch = 0;
+						const admitOriginWindows = () => {
+							// read before the admission, so a change that lands during it is seen at the next drain
+							originEpoch = readOriginStateEpoch(auditStore.rootStore);
+							return originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime);
+						};
 						if (resuming && isRocksDB && originBoundaries !== undefined) {
-							const starts = originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime);
-							for (const [log, start] of starts ?? []) {
-								originWindows.push({
+							for (const [log, start] of admitOriginWindows() ?? []) {
+								try {
 									// `end` is exclusive, and the key at the position is another origin's to commit too
-									range: auditStore.getRange({
+									const range = auditStore.getRange({
 										log,
 										start,
 										exclusiveStart: true,
 										end: positionAfter(startTime),
 										until: liveRange,
-									}),
-								});
+									});
+									(originWindows ??= []).push({ log, range });
+								} catch (error) {
+									logger.debug?.(`Subscription replay on ${tableName} could not read ${log} below its position`, error);
+								}
 							}
 						}
 						const inScope =
-							request.onlyChildren || originWindows.length > 0
-								? replayScope(thisId, true, request.onlyChildren)
-								: undefined;
-						// True once every window has caught up with live delivery without the turn being yielded; otherwise
-						// whether the replay goes on after the wait.
-						const drainOriginWindows = (): true | Promise<boolean> => {
-							for (let index = 0; index < originWindows.length;) {
-								const window = originWindows[index];
+							request.onlyChildren || originWindows ? replayScope(thisId, true, request.onlyChildren) : undefined;
+						// True once every window is caught up with live delivery without the turn having been yielded, else
+						// the wait, resolving whether the subscription is still active.
+						const drainOriginWindows = (windows: NonNullable<typeof originWindows>): true | Promise<boolean> => {
+							if (readOriginStateEpoch(auditStore.rootStore) !== originEpoch) {
+								const admitted = admitOriginWindows();
+								for (let index = windows.length; index-- > 0;)
+									if (!admitted?.has(windows[index].log)) windows.splice(index, 1);
+							}
+							for (let index = 0; index < windows.length;) {
+								const window = windows[index];
 								let next: IteratorResult<any>;
 								try {
 									next = (window.iterator ??= window.range[Symbol.iterator]()).next();
@@ -10694,16 +10713,16 @@ export function makeTable(options): TableResourceClass {
 										return sleep(UNREACHED_LOG_POLL_MS).then(isActive);
 									}
 									logger.debug?.(
-										`Subscription replay on ${tableName} stopped reading an origin below its position`,
+										`Subscription replay on ${tableName} stopped reading ${window.log} below its position`,
 										error
 									);
-									originWindows.splice(index, 1);
+									windows.splice(index, 1);
 									continue;
 								}
 								window.unreachedSince = undefined;
 								if (next.done) {
 									window.iterator = undefined;
-									if (window.range.corruptFrameStop?.breaks) originWindows.splice(index, 1);
+									if (window.range.failedLogs?.size || window.range.corruptFrameStop?.breaks) windows.splice(index, 1);
 									else index++;
 									continue;
 								}
@@ -10759,12 +10778,19 @@ export function makeTable(options): TableResourceClass {
 									continue;
 								}
 								if (next.done) {
-									// the windows hand off with the replay: both are caught up in the turn that ends it
-									const drained = originWindows.length === 0 || drainOriginWindows();
-									if (drained !== true) {
-										if (!(await drained)) return;
-										replayIterator = replayRange[Symbol.iterator]();
-										continue;
+									if (originWindows?.length) {
+										// the windows can wait while retention moves on, so what the position needs is checked now
+										if (!replayReachedLive) {
+											if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
+											replayReachedLive = true;
+										}
+										// they hand off with the replay: both are caught up in the turn that ends it
+										const drained = drainOriginWindows(originWindows);
+										if (drained !== true) {
+											if (!(await drained) || !isActive()) return;
+											replayIterator = replayRange[Symbol.iterator]();
+											continue;
+										}
 									}
 									replayEnded = true;
 									break;

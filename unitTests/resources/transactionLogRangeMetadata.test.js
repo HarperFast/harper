@@ -1,4 +1,5 @@
 const assert = require('node:assert');
+const { TransactionLogUntilUnreachedError } = require('@harperfast/rocksdb-js');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { createAuditEntry, ENTRY_DATAVIEW } = require('#src/resources/auditStore');
 
@@ -196,6 +197,34 @@ describe('RocksTransactionLogStore range metadata', () => {
 		assert.deepStrictEqual([...makeStore([local, peer]).getRange({ log: 'peer-a', start: 20, end: 50, until })], []);
 		assert.strictEqual(queried.until, source);
 		assert.deepStrictEqual([queried.start, queried.end], [20, 50]);
+	});
+
+	it('throws a bounded single-log read that stops short of its bound, and reads on from the same place', () => {
+		let pulls = 0;
+		const peer = {
+			name: 'peer-a',
+			query: () => ({
+				next() {
+					if (++pulls === 2) throw new TransactionLogUntilUnreachedError(1, 0);
+					return pulls < 4
+						? { value: entry(pulls * 10, `record-${pulls}`), done: false }
+						: { value: undefined, done: true };
+				},
+				// a caller's cleanup after the throw must not end the log
+				return() {
+					pulls = Infinity;
+					return { value: undefined, done: true };
+				},
+			}),
+		};
+		const range = makeStore([makeLog('local', []), peer]).getRange({ log: 'peer-a', until: { sourceOf: () => ({}) } });
+		const read = [];
+		assert.throws(() => {
+			for (const { recordId } of range) read.push(recordId);
+		}, TransactionLogUntilUnreachedError);
+		for (const { recordId } of range) read.push(recordId);
+		assert.deepStrictEqual(read, ['record-1', 'record-3']);
+		assert.strictEqual(range.failedLogs.size, 0);
 	});
 
 	it('starts a newly discovered log from its beginning without an exact anchor', () => {

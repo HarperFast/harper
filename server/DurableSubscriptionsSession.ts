@@ -605,11 +605,13 @@ class SubscriptionsSession {
 			databaseGeneration: subscriptionRequest.databaseGeneration,
 			reportProgress: subscriptionRequest.reportProgress,
 			resume: subscriptionRequest.resume,
-			[ORIGIN_BOUNDARIES]: subscriptionRequest[ORIGIN_BOUNDARIES],
 			filterKey: subscriptionRequest.filterKey,
 			includeSuperseded: this instanceof DurableSubscriptionsSession && subscriptionRequest.qos > 0 ? true : undefined,
 			checkPermission: this.user?.role?.permission ?? {},
 		});
+		if (subscriptionRequest[ORIGIN_BOUNDARIES] !== undefined) {
+			request[ORIGIN_BOUNDARIES] = subscriptionRequest[ORIGIN_BOUNDARIES];
+		}
 		const resourcePath = entry.path;
 		const resource = entry.Resource;
 		const context = this.createContext();
@@ -1518,7 +1520,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 								databaseGeneration,
 								reportProgress: true,
 								filterKey: topic,
-								// a checkpoint refused above is gone from the entry
 								[ORIGIN_BOUNDARIES]: state.entry.checkpoint,
 							}
 						: { topic, qos, rh: 2 },

@@ -656,7 +656,6 @@ export function originReplayStarts(
 	try {
 		const token = validateCheckpoint(checkpoint);
 		if (token.scope !== scope) return;
-		// before any origin state is read
 		let lowest = token.time - token.overlap;
 		for (const name in token.exceptions) if (token.exceptions[name] < lowest) lowest = token.exceptions[name];
 		if (lowest > position) return;

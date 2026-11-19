@@ -7,8 +7,9 @@
  * MQTT_RESUME_BENCH_SESSIONS (comma list), _WINDOW (comma list: the other origin's messages each session took
  * and acknowledged above that origin's boundary before it saved its position), _BACKLOG (its messages that arrive
  * below the position after the save), _OTHER (its writes to another table of the database in the same span, which
- * the replay reads and passes over), _AFTER (this node's writes to that other table after the save, above the
- * position, which a resume read before this change too: what a longer absence costs).
+ * the replay reads and passes over), _AFTER (writes to that other table after the save, above the position, which
+ * a resume read before this change too: what a longer absence costs; this node's, or with _AFTER_PEER=1 the other
+ * origin's, whose log is then read twice).
  */
 process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS ??= String(24 * 60 * 60 * 1000);
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -31,6 +32,7 @@ const WINDOWS = list('MQTT_RESUME_BENCH_WINDOW', '300,2000');
 const BACKLOG = Number(process.env.MQTT_RESUME_BENCH_BACKLOG ?? 50);
 const OTHER = Number(process.env.MQTT_RESUME_BENCH_OTHER ?? 20_000);
 const AFTER = Number(process.env.MQTT_RESUME_BENCH_AFTER ?? 0);
+const AFTER_PEER = process.env.MQTT_RESUME_BENCH_AFTER_PEER === '1';
 const SEQ = Symbol.for('seq');
 const user = { username: 'mqtt-resume-bench', role: { permission: { super_user: true } } };
 
@@ -124,7 +126,10 @@ async function run(sessionCount, window) {
 	for (const session of sessions) session.disconnect(true);
 	await Promise.all(sessions.map((session) => session.writes));
 	for (let index = 0; index < BACKLOG; index++) await applyFromOrigin(T, origin, lateKeys[index], `late-${index}`);
-	for (let index = 0; index < AFTER; index++) await Other.put(`after-${index}`, { value: index });
+	for (let index = 0; index < AFTER; index++) {
+		if (AFTER_PEER) await applyFromOrigin(Other, origin, Date.now() + index * 0.001, `after-${index}`);
+		else await Other.put(`after-${index}`, { value: index });
+	}
 
 	counter.delivered = 0;
 	counter.lastAt = 0;
@@ -155,7 +160,7 @@ async function run(sessionCount, window) {
 		window,
 		'backlog': BACKLOG,
 		'other': OTHER,
-		'after': AFTER,
+		'after': AFTER_PEER ? `${AFTER} (peer)` : AFTER,
 		'replayed ms': Math.round(replayed),
 		'delivered ms': Math.round(elapsed),
 		'cpu ms': Math.round((cpu.user + cpu.system) / 1000),
