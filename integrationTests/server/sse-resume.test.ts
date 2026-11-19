@@ -72,7 +72,7 @@ suite(
 						response.setEncoding('utf8');
 						response.on('data', (chunk: string) => (raw += chunk));
 						response.on('error', () => {});
-						const frames = () => parseSseBlocks(raw.slice(0, raw.lastIndexOf('\n\n') + 2));
+						const frames = () => parseSseBlocks(raw.slice(0, Math.max(0, raw.lastIndexOf('\n\n'))));
 						const stream: Stream = {
 							status: response.statusCode ?? 0,
 							frames,
