@@ -492,6 +492,11 @@ export async function purgeBackups(request: any) {
 	return purgeBackupsOffline(databaseName, request.keep_count);
 }
 
+// The binding's default flush follows the handle backup() is called on. The root store has a WAL and
+// the table stores do not, so the default skips the flush and a write that is in no transaction log
+// (an eviction) is missing from the backup.
+const ENGINE_BACKUP_OPTIONS = { transactionLogs: true, flushBeforeBackup: true };
+
 // --- job operations: create_backup / verify_backup / restore_backup ---
 // Each has a synchronous-validation function (run by jobs.addJob before the job record is
 // created) and the job function itself (run in the job worker thread).
@@ -517,7 +522,7 @@ export async function createBackup(request: any) {
 		async () => {
 			let id;
 			try {
-				id = await rootStore.backup(backupDir, { transactionLogs: true });
+				id = await rootStore.backup(backupDir, ENGINE_BACKUP_OPTIONS);
 			} catch (error) {
 				throw mapLockedError(error, databaseName);
 			}
@@ -1048,7 +1053,7 @@ async function streamBackupArchive(
 	const consumed = gzip ? pipeline(plain, createGzip(), out) : pipeline(plain, out);
 	// Started before anything is awaited, so the snapshot is taken on the caller's tick: a caller that
 	// hands us a database and then closes it must not race the manifest lookup.
-	const nativeDone = rootStore.backup(Writable.toWeb(nativeTar) as any, { gzip: false, transactionLogs: true });
+	const nativeDone = rootStore.backup(Writable.toWeb(nativeTar) as any, { ...ENGINE_BACKUP_OPTIONS, gzip: false });
 	// `consumed` can reject while this function is awaiting something that never touches `plain`, so
 	// the teardown has to hang off the rejection rather than the catch below: nothing else would drain
 	// `nativeTar`, and the binding would hold the snapshot open forever waiting on it.
@@ -1370,7 +1375,7 @@ async function backupDatabaseDirectory(
 			async () => {
 				let id;
 				try {
-					id = await database.backup(backupDir, { transactionLogs: true });
+					id = await database.backup(backupDir, ENGINE_BACKUP_OPTIONS);
 				} catch (error) {
 					throw mapLockedError(error, databaseName);
 				}
