@@ -227,7 +227,7 @@ export function stagedAreas(record: Pick<StagedRecord, 'parts'>): string[] {
 /**
  * The payload of every archive extracted since the quota report was taken, which the report cannot
  * count; all of them when the report has no time. One still staged is read from its `staged.json`, and
- * one installed from the charge `keepInstalledCharge` left. An area without a readable `staged.json` is
+ * one installed from the same record where `keepInstalledCharge` moved it. An area without a readable `staged.json` is
  * still being written or was abandoned mid-extraction, and is skipped: sizing it would mean walking it.
  */
 async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPlan): Promise<number> {
@@ -257,7 +257,7 @@ async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPl
 			}
 		}
 	}
-	// listed after the areas are read: an area removed under that read had its charge written first
+	// listed after the areas are read: a record gone from its area under that read was moved here first
 	for (const location of locations) {
 		for (const name of await listDirAsync(location)) {
 			if (name.endsWith(CHARGE_SUFFIX)) await count(name.slice(0, -CHARGE_SUFFIX.length), join(location, name));
@@ -270,16 +270,18 @@ async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPl
 
 /**
  * Before a receipt's staged archive is removed. Where any part was installed, the payload is now live
- * data that no `staged.json` counts, so while the quota report on disk predates the archive, what
- * `stagedSinceReport` reads of the record is kept beside the areas. Any report read later than a
- * report's lifetime after the archive is newer than it, so charges that old are removed here. Never rejects.
+ * data that no `staged.json` in an area counts, so while the quota report on disk predates the archive,
+ * the record itself is moved beside the areas as its charge: a rename, which needs no space. Rejects
+ * when the record cannot be moved, and the caller then leaves the area, whose record still charges.
+ * Any report read later than a report's lifetime after an archive is newer than it, so charges that
+ * old are removed here.
  */
 export async function keepInstalledCharge(stagingDir: string): Promise<void> {
 	const location = dirname(dirname(stagingDir));
 	const oldest = Date.now() - QUOTA_STATUS_MAX_AGE_MS;
-	try {
-		for (const name of listDir(location)) {
-			if (!name.endsWith(CHARGE_SUFFIX)) continue;
+	for (const name of listDir(location)) {
+		if (!name.endsWith(CHARGE_SUFFIX)) continue;
+		try {
 			let createdAt: unknown;
 			try {
 				createdAt = JSON.parse(readFileSync(join(location, name), 'utf8'))?.created_at;
@@ -287,26 +289,21 @@ export async function keepInstalledCharge(stagingDir: string): Promise<void> {
 				// unreadable charges nothing
 			}
 			if (!(Number(createdAt) >= oldest)) rmSync(join(location, name), { force: true });
+		} catch (error) {
+			logger.warn(`Could not remove the expired quota charge ${join(location, name)}`, error);
 		}
-		let record: StagedRecord;
-		try {
-			record = readStagedRecord(stagingDir);
-		} catch {
-			return;
-		}
-		if (!record.parts.some((part) => sameInode(part.destination, part))) return;
-		// no report, or one taken since: the next report read counts the archive itself
-		const reportedAt = (await getQuotaStatus())?.updatedAt;
-		if (reportedAt === undefined || reportedAt > record.created_at) return;
-		const name = record.staging_id + CHARGE_SUFFIX;
-		writeFileDurably(
-			join(location, name),
-			JSON.stringify({ archive: { payload_bytes: record.archive.payload_bytes }, created_at: record.created_at }),
-			`${name}.tmp`
-		);
-	} catch (error) {
-		logger.warn(`Could not keep the quota charge of the archive restored from ${stagingDir}`, error);
 	}
+	let record: StagedRecord;
+	try {
+		record = readStagedRecord(stagingDir);
+	} catch {
+		return;
+	}
+	if (!record.parts.some((part) => sameInode(part.destination, part))) return;
+	// no report, or one taken since: the next report read counts the archive itself
+	const reportedAt = (await getQuotaStatus())?.updatedAt;
+	if (reportedAt === undefined || reportedAt > record.created_at) return;
+	renameDurably(join(stagingDir, STAGED_RECORD), join(location, record.staging_id + CHARGE_SUFFIX));
 }
 
 /**

@@ -144,8 +144,19 @@ export async function removeReceiptStaging(receipt: RestoreReceipt): Promise<voi
 	try {
 		const { keepInstalledCharge, removeStagingArea, stagedAreasOfReceipt } = await import('./archiveStaging.ts');
 		for (const stagingDir of stagingDirs) {
-			await keepInstalledCharge(stagingDir);
-			await removeStagingArea(stagedAreasOfReceipt({ ...receipt, staging_dir: stagingDir }));
+			// before the charge takes the record the areas are read from
+			const areas = stagedAreasOfReceipt({ ...receipt, staging_dir: stagingDir });
+			try {
+				await keepInstalledCharge(stagingDir);
+			} catch (error) {
+				// the record still in the area charges the quota, until the startup sweep removes the area
+				logger.warn(
+					`Could not keep the quota charge of the archive restored into '${receipt.database}'; its staging ${stagingDir} is left in place`,
+					error
+				);
+				continue;
+			}
+			await removeStagingArea(areas);
 		}
 	} catch (error) {
 		logger.warn(`Could not remove the staged archive of the restore of '${receipt.database}'`, error);
