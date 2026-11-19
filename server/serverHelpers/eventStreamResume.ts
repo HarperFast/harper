@@ -60,7 +60,9 @@ export function resumeTableEventStream(matched: any, matchedTarget: any, request
 	if (matched?.connect !== Resource.connect) return;
 	request[PREPARE_DEFAULT_SUBSCRIPTION] = (resource: any, target: any) => {
 		if (target !== matchedTarget) return;
-		if (resource.constructor !== matched && resource.constructor !== matched.Collection) return;
+		// the receiver the dispatch itself resolves: the resource, or its Collection class for a collection
+		const receiver = (resource.isCollection && matched.Collection) || matched;
+		if (resource.constructor !== receiver) return;
 		request[PREPARE_DEFAULT_SUBSCRIPTION] = undefined;
 		if (
 			resource.connect === Resource.prototype.connect &&

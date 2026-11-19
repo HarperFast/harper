@@ -319,9 +319,19 @@ describe('Table event stream resume (harper#515)', function () {
 					return T.connect(target, null, this.getContext());
 				}
 			},
+			// its Collection class is the receiver of a collection request only, and this one is keyed
+			'its own Collection class': class extends T {
+				static loadAsInstance = false;
+				static Collection = class extends T {
+					static loadAsInstance = false;
+				};
+				connect(target) {
+					return this.constructor.Collection.connect(target, null, this.getContext());
+				}
+			},
 		};
 		for (const [passing, Class] of Object.entries(delegating)) {
-			const stream = await connect(request, served(Class), 'application-cursor-17');
+			const stream = await connect(request, `${served(Class)}${passing}`, 'application-cursor-17');
 			assert.strictEqual(stream.status, 200, passing);
 			assert.strictEqual(request.last[EVENT_STREAM_CURSOR], undefined, passing);
 			await T.put(passing, { value: passing });
