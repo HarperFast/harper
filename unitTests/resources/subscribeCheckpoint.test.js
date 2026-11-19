@@ -702,9 +702,10 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 
 			/**
 			 * A position above `lateKey`, with a checkpoint that holds the peer at its floor below it. After it was
-			 * taken the peer commits `late` at `lateKey` and this node commits `missed` above the position.
+			 * taken the peer commits `late` at `lateKey` and this node commits `missed` above the position. Each of
+			 * `otherPeers` is held at the same floor and commits `late-<name>` at `lateKey` too.
 			 */
-			async function positionAboveAPeerFloor() {
+			async function positionAboveAPeerFloor(otherPeers = []) {
 				const T = tableInOwnDatabase();
 				const peerName = `peer-${sequence}`;
 				const first = collector();
@@ -712,6 +713,7 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				await sleep(5);
 				const peerFloor = Date.now();
 				const peer = writeSeqRow(T, peerName, certifiedRoute(peerName, peerFloor));
+				const others = otherPeers.map((name) => [name, writeSeqRow(T, name, certifiedRoute(name, peerFloor))]);
 				await sleep(5);
 				await T.put('local', { value: 'local' });
 				await waitFor(() => first.values().includes('local'));
@@ -721,6 +723,7 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				await waitFor(() => (position = subscription.progress()) > lateKey);
 				subscription.end();
 				await applyFromOrigin(T, peer, lateKey, 'late');
+				for (const [name, id] of others) await applyFromOrigin(T, id, lateKey, `late-${name}`);
 				await T.put('missed', { value: 'missed' });
 				const resume = (options) =>
 					T.subscribe({
@@ -798,27 +801,86 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 				]);
 			});
 
-			it('starts over from the position alone when a lowered log cannot be read, instead of refusing', async () => {
-				const { T, peerName, checkpoint, resume } = await positionAboveAPeerFloor();
-				const auditStore = T.auditStore;
-				const getRange = auditStore.getRange;
-				const lowered = [];
-				auditStore.getRange = function (options) {
-					const range = getRange.call(this, options);
-					if (options && 'startByLog' in options && options.exclusiveStart) {
-						lowered.push(options.startByLog && [...options.startByLog.keys()]);
-						// as the log store records a log whose iteration it had to end
-						if (options.startByLog) range.failedLogs.add(peerName);
-					}
-					return range;
-				};
-				try {
-					assert.deepStrictEqual((await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint })).values, ['missed']);
-				} finally {
-					auditStore.getRange = getRange;
-				}
-				assert.deepStrictEqual(lowered, [[peerName], undefined]);
+			it('still lowers a certified origin beside ones a checkpoint replay could not account for', async () => {
+				const { T, lateKey, checkpoint, resume } = await positionAboveAPeerFloor();
+				// a route that began mid-history, and an origin with no certified generation: neither can be replayed whole
+				const partialName = `partial-${sequence}`;
+				writeSeqRow(T, partialName, certifiedRoute(partialName, lateKey, lateKey - 1000));
+				writeSeqRow(T, `uncertified-${sequence}`, { closedFloor: lateKey, relayable: true });
+				await assert.rejects(
+					T.subscribe({ resume: checkpoint, omitCurrent: true }),
+					(error) => error.statusCode === 410
+				);
+				assert.deepStrictEqual((await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint })).values, [
+					'late',
+					'missed',
+				]);
 			});
+
+			it('reads a lowered log that cannot be read from the position instead, and keeps the others lowered', async () => {
+				const failing = `failing-${sequence + 1}`;
+				const { T, position, checkpoint, resume } = await positionAboveAPeerFloor([failing]);
+				await applyFromOrigin(T, getIdOfRemoteNode(failing, T.auditStore), Date.now() + 60_000, 'above-the-position');
+				// the log store's own entry for the log, replaced by one whose read from the lowered start fails as it
+				// does when retention removes the segment at its boundary
+				const store = T.auditStore;
+				const log = store.logByName.get(failing);
+				const index = store.nodeLogs.indexOf(log);
+				let failed = 0;
+				const unreadableBelowPosition = {
+					name: log.name,
+					getStats: () => log.getStats(),
+					query(options) {
+						if (!(options.start < position)) return log.query(options);
+						const fail = () => {
+							failed++;
+							throw new Error('The log segment is no longer available');
+						};
+						return { next: fail, peek: fail, close() {} };
+					},
+				};
+				store.logByName.set(failing, unreadableBelowPosition);
+				store.nodeLogs[index] = unreadableBelowPosition;
+				let values;
+				try {
+					({ values } = await replayed(resume, { [ORIGIN_BOUNDARIES]: checkpoint }));
+				} finally {
+					store.logByName.set(failing, log);
+					store.nodeLogs[index] = log;
+				}
+				assert.ok(failed > 0, 'the lowered read failed');
+				assert.deepStrictEqual(values.sort(), ['above-the-position', 'late', 'missed']);
+			});
+		});
+
+		it('replays only direct children to a subscription for direct children, as it delivers them live', async () => {
+			const T = tableInOwnDatabase();
+			await T.put('seed', { value: 0 });
+			const start = [...T.auditStore.getRange({ start: 1 })].at(-1).txnLogKey;
+			const live = collector();
+			const subscription = await T.subscribe({
+				isCollection: true,
+				onlyChildren: true,
+				omitCurrent: true,
+				listener: live,
+			});
+			await T.put('child', { value: 'child' });
+			await T.put(['child', 'grandchild'], { value: 'grandchild' });
+			await T.put('last', { value: 'last' });
+			await waitFor(() => live.values().includes('last'));
+			assert.deepStrictEqual(live.values(), ['child', 'last']);
+			subscription.end();
+			const replay = collector();
+			const replayed = await T.subscribe({
+				isCollection: true,
+				onlyChildren: true,
+				omitCurrent: true,
+				startTime: start,
+				listener: replay,
+			});
+			await waitFor(() => replay.values().includes('last'));
+			assert.deepStrictEqual(replay.values(), ['child', 'last']);
+			replayed.end();
 		});
 
 		it('issues nothing on an engine that cannot sync the floor record before publishing it', async () => {

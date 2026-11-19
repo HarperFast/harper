@@ -1389,9 +1389,9 @@ function resumesFromCheckpoint(entry: DurableEntry): boolean {
 }
 
 /**
- * Makes `request` continue the topic from its scalar. A scalar of this generation is this node's own watermark,
- * which another origin can still commit below, so the entry's checkpoint goes with it: the replay then reads each
- * other origin's log from its boundary there, and the receipts kept for that checkpoint skip what was taken.
+ * A scalar of this generation is this node's own watermark, which another origin can still commit below, so the
+ * entry's checkpoint goes with it: the replay also reads each other origin's log from its boundary there, and the
+ * receipts kept for that checkpoint skip what was taken.
  */
 function fromScalar(request: any, entry: DurableEntry): any {
 	request.startTime = entry.startTime;
@@ -1518,7 +1518,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 								databaseGeneration,
 								reportProgress: true,
 								filterKey: topic,
-								// read here: a refused checkpoint was dropped above
+								// a checkpoint refused above is gone from the entry
 								[ORIGIN_BOUNDARIES]: state.entry.checkpoint,
 							}
 						: { topic, qos, rh: 2 },

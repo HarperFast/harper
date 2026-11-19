@@ -509,10 +509,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 							let expectedExactStart: number | undefined;
 							if (options.startByLog) {
 								if (options.startByLog.has(log.name)) {
-									expectedExactStart = options.startByLog.get(log.name)!;
+									const start = options.startByLog.get(log.name)!;
+									if (options.exactStart || options.resumeAfterExactStart) expectedExactStart = start;
 									queryOptions = {
 										...options,
-										start: expectedExactStart,
+										start,
 										exclusiveStart: options.resumeAfterExactStart ? false : options.exclusiveStart,
 									};
 								} else if (options.start === undefined) {
