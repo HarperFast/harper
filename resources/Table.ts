@@ -12936,6 +12936,7 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
+	tableSubscribeMethods.add(TableResource.prototype.subscribe);
 	return TableResource;
 	/**
 	 * Every subscription's live listener, one function for the table: the commit broadcast calls it with
@@ -13027,8 +13028,7 @@ export function makeTable(options): TableResourceClass {
 					if (!checkpoint) return;
 					const encoded = JSON.stringify(checkpoint);
 					if (encoded === lastEmitted) return;
-					lastEmitted = encoded;
-					subscription.send({ type: 'checkpoint', checkpoint });
+					if (subscription.send({ type: 'checkpoint', checkpoint })) lastEmitted = encoded;
 				} catch (error) {
 					failSubscription(subscription, error);
 				}
@@ -16760,6 +16760,11 @@ function returnTrue() {
 
 // Compiled from a schema @computed(from:) expression, so every thread, pool workers included, has it.
 const schemaExpressionResolvers = new WeakSet<Function>();
+const tableSubscribeMethods = new WeakSet<Function>();
+/** Whether this is a table's own `subscribe`, rather than an application's override of it. */
+export function isTableSubscribe(method: unknown): boolean {
+	return typeof method === 'function' && tableSubscribeMethods.has(method);
+}
 /**
  * Recreate a computed "from" function from a stored expression string. This is used when a table
  * is loaded from metadata on a thread that hasn't loaded the GraphQL schema, so the computed

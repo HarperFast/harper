@@ -57,7 +57,8 @@ const EXTENSION_TYPES = {
 
 /**
  * A transport sets this on the request context to shape the subscription the default `connect()` makes. It is
- * called with the resolved resource, so it can tell which `connect` and `subscribe` are about to run.
+ * called with the resolved resource and the subscription request, so it can tell which `connect` and
+ * `subscribe` are about to run.
  */
 export const PREPARE_DEFAULT_SUBSCRIPTION = Symbol('prepareDefaultSubscription');
 
@@ -568,8 +569,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		const query = (this.constructor as any).loadAsInstance === false ? target : incomingMessages;
 		if ((query as any)?.subscribe !== false) {
 			// subscribing is the default action, but can be turned off
-			const context = this.getContext() as any;
-			context?.[PREPARE_DEFAULT_SUBSCRIPTION]?.(this, query, context);
+			(this.getContext() as any)?.[PREPARE_DEFAULT_SUBSCRIPTION]?.(this, query);
 			return this.subscribe?.(query as any) as any;
 		}
 		return new IterableEventQueue();

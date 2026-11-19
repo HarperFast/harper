@@ -68,6 +68,7 @@ suite(
 						rejectUnauthorized: false,
 					} as any,
 					(response) => {
+						request.setTimeout(0);
 						response.setEncoding('utf8');
 						response.on('data', (chunk: string) => (raw += chunk));
 						response.on('error', () => {});

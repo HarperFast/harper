@@ -44,7 +44,7 @@ Last-Event-ID: eyJ2IjoxLCJzY29wZSI6...
 Treat the id as opaque: store it and send it back unchanged. There are two kinds.
 
 - **A checkpoint token** arrives as an event with an `id` and no `data`. An `EventSource` records it and fires no `message` event for it. The token marks a position in each node's transaction log, so it also resumes on another node of the cluster, and it accounts for transactions that were still open when it was issued. Tokens are issued on RocksDB, by a database whose log positions are certified; the first arrives within about five seconds of connecting, and later ones as those positions advance.
-- **A log position** arrives on each event until the stream has issued a token, and for the whole stream when it cannot issue one: on LMDB, and while a cluster node's history is not certified. It names a position in this node's log only. A transaction that commits after the event the id came from, but took its place in the log before it, is not delivered on resume. On RocksDB the id also names the database, so another node or a restored database refuses it; on LMDB nothing checks it.
+- **A log position** arrives on each event until the stream has issued a token, and for the whole stream when it cannot issue one: on LMDB, and while a cluster node's history is not certified. It names a position in this node's log only. A transaction that commits after the event the id came from, but took its place in the log before it, is not delivered on resume. On RocksDB the id also names the database and the table, so another node, a restored database or a table that was dropped and created again refuses it; on LMDB nothing checks it.
 
 Once a stream has issued a token, its events carry no id of their own, so the client keeps the token.
 
@@ -65,8 +65,10 @@ In both cases the events in between are lost to this client, so it must load the
 function subscribe() {
 	const eventSource = new EventSource('https://server/my-resource/');
 	eventSource.onmessage = (event) => apply(JSON.parse(event.data));
-	// the stream is about to restart from the current state
-	eventSource.addEventListener('harper-error', () => clearLocalState());
+	// an empty id means the position is gone and the stream restarts from the current state
+	eventSource.addEventListener('harper-error', (event) => {
+		if (event.lastEventId === '') clearLocalState();
+	});
 	eventSource.onerror = () => {
 		if (eventSource.readyState !== EventSource.CLOSED) return; // reconnecting by itself
 		clearLocalState();

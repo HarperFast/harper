@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
 import { PREPARE_DEFAULT_SUBSCRIPTION, Resource } from '../../resources/Resource.ts';
+import { isTableSubscribe } from '../../resources/Table.ts';
+import { getDatabaseGeneration } from '../../resources/auditStore.ts';
 import { ORIGIN_FLOOR_TICK_MS } from '../../resources/originClosedFloor.ts';
 import { positionBefore } from '../../resources/subscriptionCheckpoint.ts';
 import { DatabaseGenerationChangedError } from '../../utility/errors/hdbError.ts';
@@ -6,24 +9,21 @@ import { EVENT_STREAM_CURSOR, parseEventId, type EventStreamCursor } from './eve
 
 // floors are captured once per tick, so a shorter interval finds nothing new
 let checkpointInterval = ORIGIN_FLOOR_TICK_MS;
-/** Test-only: how often a built-in Table event stream looks for a new checkpoint to issue as its id. */
 export function setEventStreamCheckpointIntervalForTests(milliseconds: number = ORIGIN_FLOOR_TICK_MS) {
 	checkpointInterval = milliseconds;
 }
 
 /**
- * The table class whose own subscription this resource's event stream is, unseen by application code. An
- * overriding `connect` or `subscribe`, on the class or the instance, would receive checkpoint events it never
- * asked for, and may issue ids of its own that must not be read as positions.
+ * What a log key of this table is only a position in: this database generation and this incarnation of the
+ * table. A restored database, another node or a table dropped and created again has another.
  */
-function ownTableSubscription(resource: any): any {
-	if (resource.connect !== Resource.prototype.connect) return;
-	let tableClass = resource.constructor;
-	// the class makeTable() built owns its store
-	while (tableClass?.prototype && !Object.hasOwn(tableClass, 'primaryStore')) {
-		tableClass = Object.getPrototypeOf(tableClass);
-	}
-	if (tableClass?.prototype && resource.subscribe === tableClass.prototype.subscribe) return tableClass;
+function logKeyScope(tableClass: any): string | undefined {
+	if (tableClass.storageEngine !== 'rocksdb') return '';
+	const generation = getDatabaseGeneration(tableClass.auditStore)?.id;
+	if (!generation) return;
+	const incarnation = tableClass.storageGeneration;
+	if (incarnation == null) return `@${generation}`;
+	return `@${generation}.${createHash('sha256').update(String(incarnation)).digest('hex').slice(0, 16)}`;
 }
 
 /**
@@ -31,9 +31,7 @@ function ownTableSubscription(resource: any): any {
  * `Last-Event-ID` as the position it resumes from. The subscription itself refuses a position it cannot serve.
  */
 function prepareTableSubscription(resource: any, target: any, request: any): void {
-	const tableClass = ownTableSubscription(resource);
-	if (!tableClass) return;
-	const cursor: EventStreamCursor = { holdsToken: false, bareLogKeys: tableClass.storageEngine !== 'rocksdb' };
+	const cursor: EventStreamCursor = { holdsToken: false, logKeyScope: logKeyScope(resource.constructor) };
 	target.reportProgress = true;
 	target.checkpointInterval = checkpointInterval;
 	if (request.lastEventId) {
@@ -42,17 +40,33 @@ function prepareTableSubscription(resource: any, target: any, request: any): voi
 			target.resume = id.checkpoint;
 			cursor.holdsToken = true;
 		} else {
-			// RocksDB issues no log key without its generation, and could not check one that came without
-			if (!id.generation && !cursor.bareLogKeys) throw new DatabaseGenerationChangedError();
+			if (id.scope !== cursor.logKeyScope) throw new DatabaseGenerationChangedError();
 			// every record of a transaction can share the key, and the replay starts after its position
 			target.startTime = positionBefore(id.key);
-			if (id.generation) target.databaseGeneration = id.generation;
+			if (id.scope) target.databaseGeneration = id.scope.slice(1, 33);
 		}
 	}
 	request[EVENT_STREAM_CURSOR] = cursor;
 }
 
-/** Lets the default `connect()` of an event-stream request prepare a table's own subscription for resuming. */
-export function resumeTableEventStream(resource: any, request: any): void {
-	if (resource?.connect === Resource.connect) request[PREPARE_DEFAULT_SUBSCRIPTION] = prepareTableSubscription;
+/**
+ * Lets the default `connect()` of an event-stream request prepare a table's own subscription for resuming. An
+ * overriding `connect` or `subscribe`, however it is declared, would receive checkpoint events it never asked
+ * for, and may issue ids of its own that must not be read as positions; so would another resource's stream that
+ * an override opens with this request.
+ */
+export function resumeTableEventStream(matched: any, request: any): void {
+	if (matched?.connect !== Resource.connect) return;
+	request[PREPARE_DEFAULT_SUBSCRIPTION] = (resource: any, target: any) => {
+		request[PREPARE_DEFAULT_SUBSCRIPTION] = undefined;
+		if (
+			resource.constructor === matched &&
+			resource.connect === Resource.prototype.connect &&
+			isTableSubscribe(resource.subscribe) &&
+			// a path extension can choose another format than the Accept header
+			(request.requestedContentType ?? 'text/event-stream') === 'text/event-stream'
+		) {
+			prepareTableSubscription(resource, target, request);
+		}
+	};
 }
