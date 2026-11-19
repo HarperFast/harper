@@ -460,42 +460,44 @@ export class RocksTransactionLogStore extends EventEmitter {
 			const queryIterator = trackCorruptFrames(log, queryOptions);
 			singleLogIterator = queryIterator;
 			let exactStartObserved = !resumeAfterExactStart;
-			iterable.iterate = bounded
-				? () => ({
-						// As the aggregate reads a bounded log: a failed read ends it quietly (`failedLogs`), and a read
-						// short of the bound throws with the log keeping its place. So there is no `return` here, with
-						// which a caller's cleanup after that throw would end the log.
-						next: () => {
-							const result = safeNext(queryIterator, log);
-							if (result.unreached) throw result.unreached;
-							if (!result.done && options.includeLogName) (result.value as NamedTransactionEntry).logName = log.name;
-							return result;
-						},
-						[Symbol.iterator]() {
-							return this;
-						},
-					})
-				: options.includeLogName || resumeAfterExactStart
+			iterable.iterate =
+				bounded && !resumeAfterExactStart
 					? () => ({
+							// As the aggregate reads a bounded log: a failed read ends it quietly (`failedLogs`), and a read
+							// short of the bound throws with the log keeping its place. So there is no `return` here, with
+							// which a caller's cleanup after that throw would end the log.
 							next: () => {
-								let result = safeNext(queryIterator, log);
-								if (!exactStartObserved) {
-									exactStartObserved = true;
-									if (resumeAfterExactStart) result = resumePastExactStart(result, queryIterator, log, options.start);
-								}
+								const result = safeNext(queryIterator, log);
+								if (result.unreached) throw result.unreached;
 								if (!result.done && options.includeLogName) (result.value as NamedTransactionEntry).logName = log.name;
 								return result;
 							},
 							[Symbol.iterator]() {
 								return this;
 							},
-							return: (value?: any) => queryIterator.return?.(value) ?? { value, done: true },
-							throw: (error?: any) => {
-								if (queryIterator.throw) return queryIterator.throw(error);
-								throw error;
-							},
 						})
-					: () => queryIterator;
+					: options.includeLogName || resumeAfterExactStart
+						? () => ({
+								next: () => {
+									let result = safeNext(queryIterator, log);
+									if (!exactStartObserved) {
+										exactStartObserved = true;
+										if (resumeAfterExactStart) result = resumePastExactStart(result, queryIterator, log, options.start);
+									}
+									if (!result.done && options.includeLogName)
+										(result.value as NamedTransactionEntry).logName = log.name;
+									return result;
+								},
+								[Symbol.iterator]() {
+									return this;
+								},
+								return: (value?: any) => queryIterator.return?.(value) ?? { value, done: true },
+								throw: (error?: any) => {
+									if (queryIterator.throw) return queryIterator.throw(error);
+									throw error;
+								},
+							})
+						: () => queryIterator;
 		} else if (typeof options.log === 'number') {
 			// A node id is a key into the id→log map, never a log name (useLog would create one): a named
 			// node with no log yet has no entries here.
