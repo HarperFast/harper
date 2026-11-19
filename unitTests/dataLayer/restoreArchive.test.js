@@ -712,6 +712,12 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 				assert.deepStrictEqual(await snapshot(loadedItems(name)), fixture.archived);
 				const [left] = stagingLeft(name);
 				assert.strictEqual(readStagedRecord(left).staging_id, queued.staging_id);
+				// what stood in the charge's place cannot be read, so an admission is refused rather than guessed
+				await assert.rejects(
+					stage(),
+					(error) => error.statusCode === 503 && /retry the upload shortly/.test(error.message)
+				);
+				rmSync(blocked, { recursive: true, force: true });
 				await assert.rejects(stage(), (error) => error.statusCode === 507);
 			} finally {
 				rmSync(quotaReport, { force: true });

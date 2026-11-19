@@ -251,7 +251,7 @@ database directory and next to each blob root), and installed by rename (harper#
   then live data. The move is a rename, so it needs no space; if it fails the area stays, still
   charging, and the startup sweep tries the move again before it removes the area (`sweepMayRemove`).
   A record or charge that cannot be read is not one that charges nothing: it stays until its own
-  time says it is too old to matter. A charge is the full payload, with nothing taken off for the generation it replaced. A file linked into place whole, not
+  time says it is too old to matter, and until then an admission that meets it is refused with 503. A charge is the full payload, with nothing taken off for the generation it replaced. A file linked into place whole, not
   an flock: a deploy's worker restarts would strand an flock taken on an HTTP worker. A stale lock is
   taken over only under a
   reclaim marker named for its owner. Whoever finds a lock abandoned removes all its parts or none, by

@@ -17,10 +17,10 @@ import {
 	rmSync,
 	statSync,
 } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { threadId } from 'node:worker_threads';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { fsyncDirectory, pathPresent, writeFileDurably } from '../utility/durableFile.ts';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
@@ -227,8 +227,10 @@ export function stagedAreas(record: Pick<StagedRecord, 'parts'>): string[] {
 /**
  * The payload of every archive extracted since the quota report was taken, which the report cannot
  * count; all of them when the report has no time. One still staged is read from its `staged.json`, and
- * one installed from the same record where `keepInstalledCharge` moved it. An area without a readable `staged.json` is
- * still being written or was abandoned mid-extraction, and is skipped: sizing it would mean walking it.
+ * one installed from the same record where `keepInstalledCharge` moved it. An area with no
+ * `staged.json` is still being written or was abandoned mid-extraction, and is skipped: sizing it would
+ * mean walking it. A record that is there and cannot be read refuses the admission while it is young
+ * enough to charge anything.
  */
 async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPlan): Promise<number> {
 	const locations = new Set(
@@ -238,9 +240,27 @@ async function stagedSinceReport(reportedAt: number | undefined, plan: StagingPl
 	const charges = new Map<string, number>();
 	const count = async (id: string, file: string) => {
 		if (id === plan.stagingId) return;
+		let text: string;
+		try {
+			text = await readFile(file, 'utf8');
+		} catch (error: any) {
+			if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return;
+			let old = false;
+			try {
+				old = (await stat(file)).mtimeMs < oldestChargeThatMatters();
+			} catch {
+				// its age is unknown too
+			}
+			if (old) return;
+			// unread, it may be space the report has not counted, and admitting against a guess could pass the quota
+			throw new ServerError(
+				`Cannot read ${file}, which records space an archive restore has taken since the last quota report (${error?.code ?? error?.message}); retry the upload shortly`,
+				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
+			);
+		}
 		let record: any;
 		try {
-			record = JSON.parse(await readFile(file, 'utf8'));
+			record = JSON.parse(text);
 		} catch {
 			return;
 		}
@@ -369,8 +389,10 @@ function sweepMayRemove(area: string): boolean {
 		if (hasInstalledPart(record)) renameDurably(join(area, STAGED_RECORD), chargePath(area));
 		return true;
 	} catch (error) {
+		const file = join(area, STAGED_RECORD);
 		try {
-			if (tooOldToCharge(join(area, STAGED_RECORD))) return true;
+			// with the record gone the move was made and its flush failed: the area stays so a later sweep flushes it
+			if (pathPresent(file) && tooOldToCharge(file)) return true;
 		} catch {
 			// its age is unknown too, so it stays
 		}

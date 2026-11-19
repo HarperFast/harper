@@ -531,6 +531,25 @@ describe('archive staging', function () {
 				assert.ok(flushed.includes(directory), `the sweep flushes ${directory}; it flushed ${flushed.join(', ')}`);
 			assert.ok(existsSync(charge));
 		});
+
+		it('keeps the area of a charge move whose flush fails, so a later sweep flushes it', function () {
+			const databases = join(root, 'database');
+			const id = earlierId();
+			const path = area(databases, 'unflushed', id);
+			const charge = join(databases, RESTORE_META_DIR, `${id}.charge`);
+			writeFileSync(charge, JSON.stringify({ archive: { payload_bytes: 1 }, created_at: Date.now() }));
+			const original = durableFileModule.fsyncDirectory;
+			durableFileModule.fsyncDirectory = () => {
+				throw Object.assign(new Error('I/O error'), { code: 'EIO' });
+			};
+			try {
+				assert.deepStrictEqual(sweepStagingAtStartup([databases], []), []);
+			} finally {
+				durableFileModule.fsyncDirectory = original;
+			}
+			assert.ok(existsSync(path));
+			assert.deepStrictEqual(sweepStagingAtStartup([databases], []), [path]);
+		});
 	});
 
 	describe('the extraction lock', function () {
