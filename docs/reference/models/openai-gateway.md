@@ -63,7 +63,7 @@ const completion = await client.chat.completions.create({
 console.log(completion.choices[0].message.content);
 ```
 
-Obtain the token with [`create_authentication_tokens`](../security/jwt-authentication#create-authentication-tokens). The token grants `super_user` access, so a client on another host should connect over HTTPS, on the port set by [`http.securePort`](../http/configuration#httpsecureport). For clients that let you set the `Authorization` header yourself, [Basic Authentication](../security/basic-authentication) with a Harper username and password also works.
+Obtain the token with [`create_authentication_tokens`](../security/jwt-authentication#create-authentication-tokens). The token must belong to a user with `super_user`, and anyone holding it has that access. A client on another host should therefore connect over HTTPS, on the port set by [`http.securePort`](../http/configuration#httpsecureport). For clients that let you set the `Authorization` header yourself, [Basic Authentication](../security/basic-authentication) with a Harper username and password also works.
 
 ## Model selection
 
@@ -87,7 +87,7 @@ The list includes generative and embedding names. A name configured under both a
 { "model": "default", "input": "What is Harper?" }
 ```
 
-`input` is a string or an array of up to 2048 strings, embedded in one call. Other request fields, including `encoding_format`, are ignored, so each `embedding` is always an array of numbers. The response follows the OpenAI list shape, with vectors in input order and token counts as reported by the backend:
+`input` is a string or an array of up to 2048 strings, embedded in one call. Other request fields, including `encoding_format`, are ignored, so each `embedding` is always an array of numbers. Some OpenAI Node SDK versions request `base64` when `encoding_format` is omitted and decode the number arrays as base64, which corrupts the vectors. Pass `encoding_format: 'float'` to `embeddings.create()` to avoid this. The response follows the OpenAI list shape, with vectors in input order and token counts as reported by the backend:
 
 ```json
 {
@@ -171,7 +171,7 @@ Errors from the gateway use the OpenAI error envelope instead of Harper's standa
 | ------ | ----------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------- |
 | `400`  | `invalid_request_error` | `null`                   | Malformed request body or unsupported field value                                                     |
 | `400`  | `invalid_request_error` | `capability_unsupported` | The selected backend lacks a capability the request needs, such as tools or streaming                 |
-| `401`  | `authentication_error`  | `null`                   | No credentials                                                                                        |
+| `401`  | `authentication_error`  | `null`                   | No credentials, unless `authorizeLocal` trusts the request                                            |
 | `403`  | `permission_error`      | `null`                   | Authenticated user without `super_user`                                                               |
 | `404`  | `invalid_request_error` | `model_not_found`        | Unknown `model`                                                                                       |
 | `5xx`  | `server_error`          | `null`                   | Backend or unexpected failure. The message is always `Internal server error`; Harper logs the details |
