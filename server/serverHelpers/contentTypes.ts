@@ -294,8 +294,8 @@ mediaTypes.set('text/event-stream', {
 					id: cursor && voidsEventId(error) ? '' : undefined,
 				}),
 			request?.method === 'GET',
-			// a subscription that closes with an error delivers it as its last event
-			cursor && ((value) => value instanceof Error)
+			// a subscription delivers what it closes with as its last event
+			cursor && ((value) => value instanceof Error || (value !== undefined && value === iterable.closedWith))
 		);
 	},
 	serialize: function (message) {
@@ -1068,6 +1068,7 @@ export function waitForStreamStartup(stream) {
 function transformIterable(iterable, transform, serializeError, eager, isFailure?: (value: any) => boolean) {
 	let iterator;
 	let terminal = false;
+	let cancelled = false;
 	let first = true;
 	let started = false;
 	let firstStep;
@@ -1111,7 +1112,7 @@ function transformIterable(iterable, transform, serializeError, eager, isFailure
 	};
 	// without `isFailure` both are the plain steps, with no added promise
 	const failOnFailure = isFailure
-		? (step) => (!step.done && isFailure(step.value) ? handleError(step.value) : step)
+		? (step) => (!terminal && !step.done && isFailure(step.value) ? handleError(step.value) : step)
 		: undefined;
 	const transformRaw = failOnFailure
 		? (step) => {
@@ -1166,7 +1167,8 @@ function transformIterable(iterable, transform, serializeError, eager, isFailure
 		[Symbol.asyncIterator]() {
 			return {
 				next() {
-					if (terminal) return { done: true };
+					if (cancelled) return { done: true };
+					// an eager first step can fail before it is read, and its error frame is still owed
 					if (first) {
 						first = false;
 						start();
@@ -1175,9 +1177,11 @@ function transformIterable(iterable, transform, serializeError, eager, isFailure
 						if (step.then) return step.then(transformStep);
 						return transformStep(step);
 					}
+					if (terminal) return { done: true };
 					return getNext();
 				},
 				return(value) {
+					cancelled = true;
 					terminal = true;
 					started = true;
 					if (!iterator)

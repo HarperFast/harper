@@ -83,6 +83,8 @@ export interface Session {
 export interface Context {
 	/**	 The user making the request */
 	user?: User;
+	/** The `Last-Event-ID` header an event-stream client sends when it reconnects (HTTP requests only). */
+	lastEventId?: string;
 	/** Check the username and password against the core user table to verify user identity */
 	login?: (username: string, password: string) => Promise<string>;
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */

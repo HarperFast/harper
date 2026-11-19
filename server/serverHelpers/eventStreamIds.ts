@@ -8,21 +8,21 @@ import type { SubscriptionCheckpoint } from '../../resources/subscriptionCheckpo
 
 /** What the event-stream serializer keeps about the ids of one built-in Table stream. */
 export interface EventStreamCursor {
-	/** Once the client holds a checkpoint token, a scalar id would replace it with a weaker position. */
+	/** Once the client holds a checkpoint token, a log key would replace it with a weaker position. */
 	holdsToken: boolean;
-	/** LMDB has no database generation to bind a log key to; elsewhere a key without one is never issued. */
-	bareLogKeys: boolean;
+	/**
+	 * What follows a log key in an id: the database generation and table incarnation the key belongs to, empty
+	 * on LMDB, which has neither. Undefined when RocksDB has no generation to name, so no log key is issued.
+	 */
+	logKeyScope: string | undefined;
 }
 
 export const EVENT_STREAM_CURSOR = Symbol('event-stream-cursor');
 
 // well under the default 16 KB request header limit, which the id shares with every other header
 const MAX_EVENT_ID_LENGTH = 4096;
-const SCALAR_ID = /^(\d+(?:\.\d+)?)(?:@([0-9a-f]{32}))?$/;
+const LOG_KEY_ID = /^(\d+(?:\.\d+)?)((?:@[0-9a-f]{32}(?:\.[0-9a-f]{16})?)?)$/;
 const TOKEN_ID = /^[A-Za-z0-9_-]+$/;
-
-/** A log key, with the database generation it was issued in when the engine has one, or a checkpoint to validate. */
-type EventId = { key: number; generation?: string } | { checkpoint: unknown };
 
 function unrecognizedEventId(): ClientError {
 	return new ClientError(
@@ -30,14 +30,13 @@ function unrecognizedEventId(): ClientError {
 	);
 }
 
-/** Reads an id a built-in Table event stream issued; anything else is a 400. */
-export function parseEventId(id: unknown): EventId {
+export function parseEventId(id: unknown): { key: number; scope: string } | { checkpoint: unknown } {
 	if (typeof id !== 'string' || id.length > MAX_EVENT_ID_LENGTH) throw unrecognizedEventId();
-	const scalar = SCALAR_ID.exec(id);
-	if (scalar) {
-		const key = Number(scalar[1]);
+	const logKey = LOG_KEY_ID.exec(id);
+	if (logKey) {
+		const key = Number(logKey[1]);
 		if (!(key > 0 && Number.isFinite(key))) throw unrecognizedEventId();
-		return { key, generation: scalar[2] };
+		return { key, scope: logKey[2] };
 	}
 	if (!TOKEN_ID.test(id)) throw unrecognizedEventId();
 	try {
@@ -65,20 +64,19 @@ export function tableEventSerializer(
 	// a position delivered before a checked resume is verified could hide history pruned below it
 	let verified = subscription.resumeVerified === undefined;
 	subscription.resumeVerified?.then((resumeVerified: boolean) => (verified = resumeVerified));
-	const generation: string | undefined = subscription.databaseGeneration;
 	return (message) => {
 		if (message?.type === 'checkpoint' && message.checkpoint) {
 			const id = encodeCheckpointId(message.checkpoint);
-			// an SSE comment: the client keeps the id it has
+			// too long to come back in a request header, so the client keeps the id it has
 			if (!id) return ':\n\n';
 			cursor.holdsToken = true;
 			return `id: ${id}\n\n`;
 		}
 		const key = message?.localTime;
 		if (typeof key !== 'number' || message.fromScan || cursor.holdsToken || !verified) return serialize(message);
-		if (!generation && !cursor.bareLogKeys) return serialize(message);
+		if (cursor.logKeyScope === undefined) return serialize(message);
 		// the event may be shared with other subscribers, so the id goes on an envelope
-		return serialize({ data: message, id: generation ? `${key}@${generation}` : String(key) });
+		return serialize({ data: message, id: key + cursor.logKeyScope });
 	};
 }
 

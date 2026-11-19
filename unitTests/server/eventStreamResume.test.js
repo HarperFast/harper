@@ -5,6 +5,7 @@ const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { Resources } = require('#src/resources/Resources');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { transaction } = require('#src/resources/transaction');
 const { persistOriginClosedFloor } = require('#src/resources/auditStore');
 const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
@@ -42,11 +43,12 @@ function rest(resources) {
 		routeFor: () => ({ urlPath: `/event-stream-resume-${sequence++}` }),
 		server: { http: (listener) => (handler = listener) },
 	});
-	return (url, headers = {}) => {
-		const request = { method: 'GET', url, user: admin, headers: new Headers(headers) };
+	const send = (url, headers = {}) => {
+		const request = (send.last = { method: 'GET', url, user: admin, headers: new Headers(headers) });
 		request.headers.asObject = headers;
 		return handler(request, () => ({ status: 404 }));
 	};
+	return send;
 }
 
 function parseFrame(text) {
@@ -62,7 +64,6 @@ function parseFrame(text) {
 }
 
 const open = [];
-/** `lastEventId` is what an EventSource would send on its next reconnect. */
 async function connect(request, url, lastEventId) {
 	const headers = { accept: 'text/event-stream' };
 	if (lastEventId !== undefined) headers['last-event-id'] = lastEventId;
@@ -113,7 +114,6 @@ function certify(T) {
 	return getOriginClosedFloor(rootStore)?.floor ?? 0;
 }
 
-/** Waits for the stream to issue a token that reflects the floor certified now. */
 async function certifiedToken(T, stream) {
 	await sleep(2);
 	const floor = certify(T);
@@ -201,7 +201,15 @@ describe('Table event stream resume (harper#515)', function () {
 
 	it('refuses an id it did not issue with 400, before any event', async () => {
 		const url = served(tableInOwnDatabase());
-		for (const id of ['not an id', 'abc', encodeToken({ v: 2 }), '0', '12@short', 'A'.repeat(5000)]) {
+		for (const id of [
+			'not an id',
+			'abc',
+			encodeToken({ v: 2 }),
+			encodeToken(null),
+			'0',
+			'12@short',
+			'A'.repeat(5000),
+		]) {
 			const stream = await connect(request, url, id);
 			assert.strictEqual(stream.status, 400, id.slice(0, 20));
 		}
@@ -297,12 +305,39 @@ describe('Table event stream resume (harper#515)', function () {
 		assert.strictEqual(inherited.status, 400);
 	});
 
+	it('leaves a table stream that another resource opens with the request alone', async () => {
+		const T = tableInOwnDatabase();
+		class Delegating extends Resource {
+			connect() {
+				return T.connect(new RequestTarget(), null, this.getContext());
+			}
+		}
+		const stream = await connect(request, served(Delegating), 'application-cursor-17');
+		assert.strictEqual(stream.status, 200);
+		assert.strictEqual(request.last[EVENT_STREAM_CURSOR], undefined);
+		await T.put('a', { value: 'a' });
+		await waitFor(() => stream.frameOf('a'));
+		assert.strictEqual(stream.frameOf('a').id, undefined);
+	});
+
+	it('leaves a stream alone when the path chooses another format than the event stream', async () => {
+		const T = tableInOwnDatabase();
+		const url = served(T);
+		await T.put('a', { value: 'a' });
+		const response = await request(`${url}a.json`, { accept: 'text/event-stream' });
+		assert.strictEqual(response.headers.get('Content-Type'), 'application/json');
+		assert.strictEqual(request.last[EVENT_STREAM_CURSOR], undefined);
+		response.body.destroy?.();
+		await connect(request, url);
+		assert.ok(request.last[EVENT_STREAM_CURSOR]);
+	});
+
 	describe('the per-event serializer', () => {
 		const serialize = (message) => JSON.stringify(message);
 		it('withholds scalar ids until a checked resume is verified, and never writes to the event', async () => {
 			let verify;
 			const subscription = { resumeVerified: new Promise((resolve) => (verify = resolve)), databaseGeneration: 'g' };
-			const serializeEvent = tableEventSerializer(subscription, { holdsToken: false, bareLogKeys: false }, serialize);
+			const serializeEvent = tableEventSerializer(subscription, { holdsToken: false, logKeyScope: '@g' }, serialize);
 			const event = Object.freeze({ id: 'a', localTime: 5.5, value: {} });
 			assert.strictEqual(serializeEvent(event), serialize(event));
 			verify(true);
@@ -310,7 +345,7 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual(serializeEvent(event), serialize({ data: event, id: '5.5@g' }));
 		});
 		it('withholds a token too long for a request header, and issues no scalar id after a token', () => {
-			const cursor = { holdsToken: false, bareLogKeys: true };
+			const cursor = { holdsToken: false, logKeyScope: '' };
 			const serializeEvent = tableEventSerializer({}, cursor, serialize);
 			const exceptions = {};
 			for (let i = 0; i < 200; i++) exceptions[`origin-${i}-${'x'.repeat(20)}`] = i;
@@ -322,8 +357,8 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual(cursor.holdsToken, true);
 			assert.strictEqual(serializeEvent(event), serialize(event));
 		});
-		it('issues no log key without its generation where the engine has generations', () => {
-			const serializeEvent = tableEventSerializer({}, { holdsToken: false, bareLogKeys: false }, serialize);
+		it('issues no log key where the engine has generations and this database has none to name', () => {
+			const serializeEvent = tableEventSerializer({}, { holdsToken: false, logKeyScope: undefined }, serialize);
 			const event = { id: 'a', localTime: 7, value: {} };
 			assert.strictEqual(serializeEvent(event), serialize(event));
 		});
@@ -331,20 +366,25 @@ describe('Table event stream resume (harper#515)', function () {
 
 	describe('a stream that fails', () => {
 		const { serialize } = require('#src/server/serverHelpers/contentTypes');
-		async function framesOf(source) {
-			const context = { method: 'POST', headers: new Headers({}) };
+		function serialized(source, method = 'POST') {
+			const context = { method, headers: new Headers({}) };
 			context.headers.asObject = { accept: 'text/event-stream' };
-			context[EVENT_STREAM_CURSOR] = { holdsToken: false, bareLogKeys: true };
+			context[EVENT_STREAM_CURSOR] = { holdsToken: false, logKeyScope: '' };
+			return serialize(source, context, { headers: new Headers() });
+		}
+		async function framesOf(body) {
 			let text = '';
-			for await (const chunk of serialize(source, context, { headers: new Headers() })) text += chunk;
+			for await (const chunk of body) text += chunk;
 			return text.trim().split('\n\n').map(parseFrame);
 		}
 		it('keeps the id when the source throws', async () => {
 			const frames = await framesOf(
-				(async function* () {
-					yield { id: 'a', localTime: 7, value: { value: 'a' } };
-					throw new Error('transient');
-				})()
+				serialized(
+					(async function* () {
+						yield { id: 'a', localTime: 7, value: { value: 'a' } };
+						throw new Error('transient');
+					})()
+				)
 			);
 			assert.strictEqual(frames[0].id, '7');
 			assert.strictEqual(frames[1].event, 'harper-error');
@@ -353,10 +393,10 @@ describe('Table event stream resume (harper#515)', function () {
 		it('ends with harper-error, id kept, when the subscription closes with an error that voids no position', async () => {
 			const queue = new IterableEventQueue();
 			queue.send({ id: 'a', localTime: 7, value: { value: 'a' } });
-			const frames = framesOf(queue);
+			const frames = framesOf(serialized(queue));
 			await sleep(10);
-			const unavailable = new Error('The transaction log could not be read');
-			unavailable.statusCode = 503;
+			// what a subscription closes with need not be an Error
+			const unavailable = { message: 'The transaction log could not be read', statusCode: 503 };
 			queue.close(unavailable);
 			assert.deepStrictEqual(
 				(await frames).map((frame) => [frame.event, frame.id, frame.data.status]),
@@ -364,6 +404,20 @@ describe('Table event stream resume (harper#515)', function () {
 					[undefined, '7', undefined],
 					['harper-error', undefined, 503],
 				]
+			);
+		});
+		it('still sends the error frame of a first step that failed after the status went out, before the first read', async () => {
+			const { waitForStreamStartup } = require('#src/server/serverHelpers/contentTypes');
+			const { ResumeHistoryUnavailableError } = require('#src/utility/errors/hdbError');
+			const queue = new IterableEventQueue();
+			const body = serialized(queue, 'GET');
+			await waitForStreamStartup(body);
+			queue.close(new ResumeHistoryUnavailableError());
+			await sleep(10);
+			const frames = await framesOf(body);
+			assert.deepStrictEqual(
+				frames.map((frame) => [frame.event, frame.id, frame.data.status]),
+				[['harper-error', '', 410]]
 			);
 		});
 	});
@@ -447,8 +501,9 @@ describe('Table event stream resume (harper#515)', function () {
 			const stream = await connect(request, url);
 			await T.put('a', { value: 'a' });
 			await waitFor(() => stream.frameOf('a'));
-			const [key] = stream.lastEventId.split('@');
-			for (const id of [`${key}@${'f'.repeat(32)}`, key]) {
+			const [key, scope] = stream.lastEventId.split('@');
+			// another database generation, no generation, another incarnation of the table
+			for (const id of [`${key}@${'f'.repeat(32)}`, key, `${key}@${scope}.0123456789abcdef`]) {
 				const refused = await connect(request, url, id);
 				assert.strictEqual(refused.status, 409, id);
 				assert.strictEqual(refused.frames[0].data.code, 'DATABASE_GENERATION_CHANGED');
@@ -511,6 +566,8 @@ describe('Table event stream resume (harper#515)', function () {
 				members: 'a'.repeat(64),
 			});
 			assert.strictEqual((await connect(request, url, token)).status, 409);
+			// a RocksDB log key names a database generation, which this engine has none of
+			assert.strictEqual((await connect(request, url, `1@${'a'.repeat(32)}`)).status, 409);
 		});
 	});
 });
