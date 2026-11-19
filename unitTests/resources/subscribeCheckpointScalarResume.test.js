@@ -31,7 +31,7 @@ function tableInOwnDatabase() {
 		table: name,
 		database: `scalar_resume_${name}`,
 		audit: true,
-		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }, { name: 'pad' }],
 	});
 }
 
@@ -139,7 +139,14 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 				const events = [];
 				let committing;
 				let walked = 0;
-				let walkedAtCommit;
+				let walkedAtDispatch;
+				// the broadcast hands an entry to every subscription in one pass, so this one sees when it reached the other
+				const witness = await T.subscribe({
+					omitCurrent: true,
+					listener: (event) => {
+						if (event.value?.value === 'late') walkedAtDispatch = walked;
+					},
+				});
 				const subscription = await T.subscribe({
 					id: 'r',
 					...position,
@@ -149,7 +156,7 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 					// the walk calls this for each entry it reads, so the commit starts once the walk has taken the head
 					eventFilter: (event) => {
 						if (event.value?.value !== 'late' && event.value?.value !== 'after') walked++;
-						committing ??= commitLate().then(() => (walkedAtCommit = walked));
+						committing ??= commitLate();
 						return true;
 					},
 					listener: (event) => events.push(event),
@@ -158,16 +165,13 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 				await committing;
 				await T.publish('r', { value: 'after' });
 				await waitFor(() => valuesOf(events).includes('after'));
-				// the walk yields every 100 entries, so the broadcast dispatched the commit while the walk was running
-				assert.ok(
-					walkedAtCommit <= walked - 200,
-					`precondition: the commit landed mid-walk (${walkedAtCommit}/${walked})`
-				);
+				assert.ok(walkedAtDispatch < walked, `precondition: dispatched mid-walk (${walkedAtDispatch}/${walked})`);
 				const values = valuesOf(events);
 				assert.ok(values.includes('m2999'), 'precondition: the walk replayed the history');
 				assert.strictEqual(values.filter((value) => value === 'late').length, 1, 'the late message is delivered once');
 				assert.strictEqual(values.filter((value) => value === 'm2999').length, 1);
 				subscription.end();
+				witness.end();
 			});
 		}
 
@@ -256,7 +260,7 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 	});
 
 	describe('the retention recheck of a checkpoint replay', () => {
-		async function checkpointThenFill(T) {
+		async function checkpointThenFill(T, pad) {
 			const first = [];
 			const subscription = await T.subscribe({
 				omitCurrent: true,
@@ -267,7 +271,7 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			await waitFor(() => valuesOf(first).includes('a'));
 			const checkpoint = await certifiedCheckpoint(T, subscription);
 			subscription.end();
-			for (let i = 0; i < 250; i++) await T.put(`fill${i}`, { value: `fill${i}` });
+			for (let i = 0; i < 250; i++) await T.put(`fill${i}`, { value: `fill${i}`, pad });
 			return checkpoint;
 		}
 		// no consumer, so the replay stops at the queue's high-water mark, about 100 entries in
@@ -320,6 +324,25 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			assert.strictEqual(await resumed.resumeVerified, false);
 			assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
 			assert.ok(!valuesOf(events).includes('fill249'), 'the replay stopped');
+		});
+
+		it('refuses when a purge removes every log segment it has not read, which its reader does not report', async () => {
+			const T = tableInOwnDatabase();
+			// about 80 entries to a 16 MB segment, so the replay stops in the second of four
+			const checkpoint = await checkpointThenFill(T, 'x'.repeat(200_000));
+			const log = T.auditStore.logByName.get('local');
+			assert.ok(log.getStats().fileCount >= 3, 'precondition: the history spans several segments');
+			const resumed = await replayHeldAtHighWater(T, checkpoint);
+			const rootStore = T.primaryStore.rootStore;
+			rootStore.flushSync();
+			const before = Date.now() + 1000;
+			raiseAuditFloor(T.auditStore, before);
+			assert.ok(rootStore.purgeLogs({ before }).length >= 3, 'precondition: the purge removed unread segments');
+			const events = [];
+			resumed.on('data', (event) => events.push(event));
+			assert.strictEqual(await resumed.resumeVerified, false);
+			assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
+			assert.ok(!valuesOf(events).includes('fill249'));
 		});
 	});
 
