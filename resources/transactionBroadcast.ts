@@ -419,14 +419,6 @@ export function isDispatching(subscription: any): boolean {
 }
 
 /**
- * How many passes have read the subscription's registry to the end of its log. Once it has risen, every entry
- * that was in the log before has been dispatched.
- */
-export function passesDrained(subscription: any): number {
-	return subscription.subscriptions?.tables?.envs?.passesDrained ?? 0;
-}
-
-/**
  * This is the class that is returned from subscribe calls and provide the interface to set a callback, end the
  * subscription and get the initial state.
  */
@@ -720,7 +712,6 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 		}
 		subscriptions.pendingTxnSubscribers = null;
-		if (!iteratorFailed) subscriptions.passesDrained = (subscriptions.passesDrained ?? 0) + 1;
 		if (trackProgress && progressKey !== undefined && !iteratorFailed) {
 			trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
 		}

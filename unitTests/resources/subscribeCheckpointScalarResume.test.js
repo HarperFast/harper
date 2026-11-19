@@ -1,5 +1,6 @@
-// Deferred review findings of harper#3356: a subscription that starts from a scalar position and then issues
-// checkpoints, the retention recheck of a checkpoint replay, the store's own floor tick, and two origins.
+// A reportProgress subscription that starts from a scalar position certifies every entry appended after it
+// registered, so its replay may drop only what it delivers itself. Also here: the retention recheck of a checkpoint
+// replay, the floor a store certifies on its own tick, and a checkpoint over two origins.
 const assert = require('node:assert');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
@@ -137,16 +138,18 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 				for (let i = 0; i < 3000; i++) await T.publish('r', { value: `m${i}` });
 				const events = [];
 				let committing;
+				let walked = 0;
+				let walkedAtCommit;
 				const subscription = await T.subscribe({
 					id: 'r',
 					...position,
 					reportProgress: true,
 					omitCurrent: true,
 					filterKey: 'all',
-					// The walk calls this for each entry it reads, so the commit starts once the walk has taken the head
-					// and lands during one of its yields. Were it to land after the walk, live delivery would take it.
-					eventFilter: () => {
-						committing ??= commitLate();
+					// the walk calls this for each entry it reads, so the commit starts once the walk has taken the head
+					eventFilter: (event) => {
+						if (event.value?.value !== 'late' && event.value?.value !== 'after') walked++;
+						committing ??= commitLate().then(() => (walkedAtCommit = walked));
 						return true;
 					},
 					listener: (event) => events.push(event),
@@ -155,6 +158,11 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 				await committing;
 				await T.publish('r', { value: 'after' });
 				await waitFor(() => valuesOf(events).includes('after'));
+				// the walk yields every 100 entries, so the broadcast dispatched the commit while the walk was running
+				assert.ok(
+					walkedAtCommit <= walked - 200,
+					`precondition: the commit landed mid-walk (${walkedAtCommit}/${walked})`
+				);
 				const values = valuesOf(events);
 				assert.ok(values.includes('m2999'), 'precondition: the walk replayed the history');
 				assert.strictEqual(values.filter((value) => value === 'late').length, 1, 'the late message is delivered once');
@@ -193,10 +201,62 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			subscription.end();
 			other.end();
 		});
+
+		it('delivers once a message whose transaction holds another the filter refuses', async () => {
+			const T = tableInOwnDatabase();
+			await T.put('seed', { value: 'seed' });
+			const startTime = logKeyOf(T, 'seed');
+			const other = await T.subscribe({ omitCurrent: true, listener: () => {} });
+			await transaction({}, async (context) => {
+				for (let i = 0; i < 6000; i++) await T.put(`other${i}`, { value: i }, context);
+				await T.publish('r', { value: 'refused' }, context);
+				await T.publish('r', { value: 'accepted' }, context);
+			});
+			const events = [];
+			const subscription = await T.subscribe({
+				id: 'r',
+				startTime,
+				reportProgress: true,
+				omitCurrent: true,
+				filterKey: 'accepted',
+				eventFilter: (event) => event.value?.value !== 'refused',
+				listener: (event) => events.push(event),
+			});
+			const broadcast = T.auditStore.subscriptionLogRange;
+			assert.ok(broadcast.hasUnreturnedEntry(), 'precondition: the broadcast is behind the log');
+			await waitFor(() => !broadcast.hasUnreturnedEntry());
+			await T.publish('r', { value: 'after' });
+			await waitFor(() => valuesOf(events).includes('after'));
+			assert.deepStrictEqual(valuesOf(events), ['accepted', 'after']);
+			subscription.end();
+			other.end();
+		});
+
+		it('keeps nothing of a walk when the broadcast has caught up and no write is committing', async () => {
+			const T = tableInOwnDatabase();
+			await T.put('seed', { value: 'seed' });
+			const startTime = logKeyOf(T, 'seed');
+			const other = await T.subscribe({ omitCurrent: true, listener: () => {} });
+			await T.put('r', { value: 'r1' });
+			await waitFor(() => !T.auditStore.subscriptionLogRange.hasUnreturnedEntry());
+			const events = [];
+			const subscription = await T.subscribe({
+				id: 'r',
+				startTime,
+				reportProgress: true,
+				omitCurrent: true,
+				listener: (event) => events.push(event),
+			});
+			assert.deepStrictEqual(valuesOf(events), ['r1']);
+			assert.strictEqual(subscription.state.replayed, undefined);
+			assert.strictEqual(subscription.state.dropDuringReplay, false);
+			subscription.end();
+			other.end();
+		});
 	});
 
 	describe('the retention recheck of a checkpoint replay', () => {
-		async function replayHeldAtHighWater(T) {
+		async function checkpointThenFill(T) {
 			const first = [];
 			const subscription = await T.subscribe({
 				omitCurrent: true,
@@ -208,14 +268,19 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			const checkpoint = await certifiedCheckpoint(T, subscription);
 			subscription.end();
 			for (let i = 0; i < 250; i++) await T.put(`fill${i}`, { value: `fill${i}` });
+			return checkpoint;
+		}
+		// no consumer, so the replay stops at the queue's high-water mark, about 100 entries in
+		async function replayHeldAtHighWater(T, checkpoint) {
 			const resumed = await T.subscribe({ resume: checkpoint, omitCurrent: true });
 			await waitFor(() => resumed.queue?.length > 100);
-			return { checkpoint, resumed };
+			return resumed;
 		}
 
 		it('passes when retention passes the start but only history the replay has read', async () => {
 			const T = tableInOwnDatabase();
-			const { checkpoint, resumed } = await replayHeldAtHighWater(T);
+			const checkpoint = await checkpointThenFill(T);
+			const resumed = await replayHeldAtHighWater(T, checkpoint);
 			// nothing is removed: the floor reports what a prune may remove
 			raiseAuditFloor(T.auditStore, logKeyOf(T, 'fill10'));
 			assert.ok(getAuditResumeFloor(T.auditStore) > checkpoint.time - checkpoint.overlap, 'precondition');
@@ -226,9 +291,29 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			resumed.end();
 		});
 
+		it('passes when retention passes history read since the last check, at the end of the replay', async () => {
+			const T = tableInOwnDatabase();
+			const checkpoint = await checkpointThenFill(T);
+			const prunedThrough = logKeyOf(T, 'fill230');
+			const events = [];
+			// a consumer that keeps up: the replay checks only every 100 entries, the last time near fill200
+			const resumed = await T.subscribe({
+				resume: checkpoint,
+				omitCurrent: true,
+				listener: (event) => {
+					events.push(event);
+					if (event.value?.value === 'fill245') raiseAuditFloor(T.auditStore, prunedThrough);
+				},
+			});
+			assert.strictEqual(await resumed.resumeVerified, true);
+			assert.strictEqual(getAuditResumeFloor(T.auditStore), prunedThrough, 'precondition: the floor rose mid-replay');
+			assert.ok(valuesOf(events).includes('fill249'));
+			resumed.end();
+		});
+
 		it('refuses when retention passes history the replay has not read', async () => {
 			const T = tableInOwnDatabase();
-			const { resumed } = await replayHeldAtHighWater(T);
+			const resumed = await replayHeldAtHighWater(T, await checkpointThenFill(T));
 			raiseAuditFloor(T.auditStore, logKeyOf(T, 'fill240'));
 			const events = [];
 			resumed.on('data', (event) => events.push(event));
