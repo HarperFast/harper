@@ -24,6 +24,7 @@ const DROP_ITERATIONS = 10;
 
 type WhoAmI = { threadId: number; username: string | null; superUser: boolean };
 type Credential = Record<string, string>;
+type PinnedConnection = { threadId: number; connection: Client; connects: number };
 
 suite(
 	'user and role changes hold on every worker at acknowledgement',
@@ -87,52 +88,56 @@ suite(
 			ok(cookie, 'expected a session cookie');
 			const credential = { Cookie: cookie, Origin: origin };
 			// login acknowledges before its session write commits
-			await waitFor(async () => (await whoAmI(credential)).status === 200, {
+			await waitFor(async () => (await whoAmI(credential)).body?.username === username, {
 				timeout: 10_000,
 				message: `the session for ${username} never authenticated`,
 			});
 			return credential;
 		}
 
+		async function ask(connection: Client, credential: Credential): Promise<{ status: number; body?: WhoAmI }> {
+			const response = await connection.request({ path: '/WhoAmI/', method: 'GET', headers: credential });
+			const text = await response.body.text();
+			return { status: response.statusCode, body: response.statusCode === 200 ? JSON.parse(text) : undefined };
+		}
+
 		/**
-		 * A rejection names no worker, so pin each probe to one connection (one worker under
-		 * SO_REUSEPORT) and let the kept user's answers on it name the worker that issued the rejections.
+		 * A rejection names no worker. SO_REUSEPORT picks the worker per connection, so the kept user's
+		 * answer on a keep-alive connection names the worker for everything sent on it afterwards.
+		 * Connections are appended to `pinned` as they open, so the caller can close them all.
 		 */
-		async function rejectedOnEveryPinnedWorker(
-			kept: Credential,
-			dropped: readonly (readonly [label: string, credential: Credential])[]
-		): Promise<void> {
+		async function pinEveryWorker(kept: Credential, pinned: PinnedConnection[]): Promise<void> {
 			const reached = new Set<number>();
 			for (let attempt = 0; attempt < WORKER_COUNT * 32 && reached.size < WORKER_COUNT; attempt++) {
 				const connection = new Client(origin, { pipelining: 1 });
-				let connects = 0;
-				connection.on('connect', () => connects++);
-				try {
-					const ask = async (credential: Credential): Promise<{ status: number; body?: WhoAmI }> => {
-						const response = await connection.request({ path: '/WhoAmI/', method: 'GET', headers: credential });
-						const text = await response.body.text();
-						return { status: response.statusCode, body: response.statusCode === 200 ? JSON.parse(text) : undefined };
-					};
-					const first = await ask(kept);
-					strictEqual(first.status, 200, 'the kept user must name the worker');
-					const { threadId } = first.body!;
-					for (const [label, credential] of dropped) {
-						strictEqual((await ask(credential)).status, 401, `worker ${threadId} still accepted ${label}`);
-					}
-					const last = await ask(kept);
-					strictEqual(last.status, 200);
-					strictEqual(last.body!.threadId, threadId, 'the probe changed workers');
-					strictEqual(connects, 1, 'the probe must stay on one connection');
-					reached.add(threadId);
-				} finally {
-					await connection.close();
-				}
+				const entry: PinnedConnection = { threadId: -1, connection, connects: 0 };
+				connection.on('connect', () => entry.connects++);
+				pinned.push(entry);
+				const { status, body } = await ask(connection, kept);
+				strictEqual(status, 200, 'the kept user must name the worker');
+				entry.threadId = body!.threadId;
+				reached.add(entry.threadId);
 			}
-			strictEqual(reached.size, WORKER_COUNT, `pinned probes reached only workers [${[...reached].join(',')}]`);
+			strictEqual(reached.size, WORKER_COUNT, `pinned connections reached only workers [${[...reached]}]`);
+		}
+
+		async function rejectedOnPinnedConnection(
+			pinned: PinnedConnection,
+			kept: Credential,
+			dropped: readonly (readonly [label: string, credential: Credential])[]
+		): Promise<void> {
+			const { threadId, connection } = pinned;
+			for (const [label, credential] of dropped) {
+				strictEqual((await ask(connection, credential)).status, 401, `worker ${threadId} still accepted ${label}`);
+			}
+			const { status, body } = await ask(connection, kept);
+			strictEqual(status, 200, `worker ${threadId} refused the kept user`);
+			strictEqual(body!.threadId, threadId, 'the pinned connection changed workers');
+			strictEqual(pinned.connects, 1, 'the pinned connection was reopened');
 		}
 
 		before(async () => {
-			// Local trust would authenticate a loopback request whose own credential was refused.
+			// Local trust would answer a cookie with no recognized session as the loopback super user.
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 				config: { threads: { count: WORKER_COUNT }, authentication: { authorizeLocal: false } },
 				env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
@@ -212,10 +217,17 @@ suite(
 				for (const [, credential] of dropped) await onEveryWorker(credential, droppedUser);
 				for (const credential of kept) await onEveryWorker(credential, keptUser);
 
-				await client.req().send({ operation: 'drop_user', username: droppedUser }).expect(200);
-
-				for (const [label, credential] of dropped) await rejectedEverywhere(credential, label);
-				await rejectedOnEveryPinnedWorker(kept[0], dropped);
+				const pinned: PinnedConnection[] = [];
+				try {
+					await pinEveryWorker(kept[0], pinned);
+					await client.req().send({ operation: 'drop_user', username: droppedUser }).expect(200);
+					await Promise.all([
+						...pinned.map((entry) => rejectedOnPinnedConnection(entry, kept[0], dropped)),
+						...dropped.map(([label, credential]) => rejectedEverywhere(credential, label)),
+					]);
+				} finally {
+					await Promise.all(pinned.map(({ connection }) => connection.close()));
+				}
 				for (const credential of kept) await onEveryWorker(credential, keptUser);
 			}
 		});
