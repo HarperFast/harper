@@ -210,6 +210,8 @@ type Dog @table(audit: true) {
 
 This overrides the [`logging.auditLog`](../logging/configuration.md) global configuration for that specific table. New schema tables with `@fullText` must explicitly declare `@table(audit: true)`, even when global audit logging is enabled. Existing audited tables can add an index without restating `audit`. Keep auditing enabled while any full-text index is declared. Setting `@table(audit: false)` while a full-text index is declared is rejected during schema registration; this is a per-table prerequisite, independent of the global default.
 
+On an existing table, `audit: true` takes effect as soon as the schema loads. `audit: false` takes effect the next time the table is loaded from disk, which after a deploy is the following restart: until then writes are still logged, because an open subscription reads its events from the transaction log.
+
 ## Related Documentation
 
 - [Logging](../logging/overview.md) — Application and system logging (separate from the transaction log)

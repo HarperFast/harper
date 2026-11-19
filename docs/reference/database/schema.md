@@ -283,6 +283,8 @@ type StrictRecord @table @sealed {
 }
 ```
 
+<VersionBadge type="changed" version="v5.5.0" /> Sealing or unsealing an existing table takes effect as soon as the schema that declares it loads. Before v5.5.0 it took effect the next time the table was loaded from disk. Removing `@sealed` leaves a table sealed; declare `@table(sealed: false)` to unseal it.
+
 ### `@hidden` (Type Directive)
 
 Suppresses the type from introspectable surfaces — MCP tool descriptors and the OpenAPI document. The table still exists; data is still queryable through Harper's other interfaces subject to RBAC. `@hidden` is a **metadata-visibility** directive, not an access-control mechanism: use table-level role permissions to control access to the table and `attribute_permissions` to control access to individual fields.

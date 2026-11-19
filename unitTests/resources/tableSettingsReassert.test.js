@@ -187,9 +187,9 @@ describe('@table settings re-assert on existing tables', () => {
 		assert.strictEqual(await acceptsUndeclaredProperty(Tbl, 2), true);
 	});
 
-	it('keeps sealed when a re-declaration omits it', async function () {
+	it('keeps sealed when a re-declaration drops @sealed', async function () {
 		await loadGQLSchema(`
-		type NoPkSealKept @table(sealed: true) {
+		type NoPkSealKept @table @sealed {
 			value: String
 		}`);
 		const Tbl = tables.NoPkSealKept;
