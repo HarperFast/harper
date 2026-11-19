@@ -266,7 +266,7 @@ function refreshLoadFailures(): Promise<string | undefined> {
 // answer cannot stall a health probe.
 function currentLoadFailures(): string | undefined | Promise<string | undefined> {
 	if (!loadFailures) return refreshLoadFailures();
-	if (performance.now() - loadFailures.at > LOAD_FAILURES_TTL_MS)
+	if (!loadFailuresRefresh && performance.now() - loadFailures.at > LOAD_FAILURES_TTL_MS)
 		refreshLoadFailures().catch((error) => statusLogger.warn?.('Could not refresh component load failures', error));
 	return loadFailures.message;
 }

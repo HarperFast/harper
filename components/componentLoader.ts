@@ -127,7 +127,13 @@ function flattenLoadFailure(key: string, error: unknown): BootLoadFailure {
 function markLoadedUnlessReported(componentStatusName: string, message: string): void {
 	const current = statusForComponent(componentStatusName).get()?.status;
 	if (current === undefined || current === STATUS.LOADING) componentLifecycle.loaded(componentStatusName, message);
-	else componentLifecycle.completed(componentStatusName);
+}
+
+// Only a plugin's own load succeeding ends a load failure; an application-only entry shares its key with a
+// nested package load whose failure must stand.
+function markPluginLoaded(componentStatusName: string, message: string): void {
+	markLoadedUnlessReported(componentStatusName, message);
+	componentLifecycle.completed(componentStatusName);
 }
 
 /**
@@ -1232,7 +1238,7 @@ export async function loadComponent(
 					}
 
 					// Mark component as loaded after successful handleApplication call
-					markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+					markPluginLoaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 					noteBootExecuted(entryApplication);
 
 					continue;
@@ -1328,7 +1334,7 @@ export async function loadComponent(
 				}
 
 				// Mark component as healthy after successful loading
-				markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+				markPluginLoaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 				noteBootExecuted(entryApplication);
 			} catch (thrown) {
 				const error = loadFailure(

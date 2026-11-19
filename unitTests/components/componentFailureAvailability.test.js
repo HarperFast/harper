@@ -9,6 +9,7 @@ testUtils.preTestPrep();
 
 const { loadComponent, loadedPaths, TRUSTED_RESOURCE_PLUGINS } = require('#src/components/componentLoader');
 const { resetResources } = require('#src/resources/Resources');
+const configUtils = require('#src/config/configUtils');
 const { internal: statusInternal, statusForComponent } = require('#src/components/status/index');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -108,5 +109,23 @@ describe('availability with drainOnLoadFailure, through the real loader', () => 
 		behaviors.delete(HANGING_APP);
 		await load(HANGING_APP, 30000);
 		assert.strictEqual((await availability())?.status, 'Available');
+	});
+
+	it('stays out when a root-config package application fails as a whole', async () => {
+		const root = path.join(tempRoot, 'root');
+		const packageDir = path.join(root, 'components', 'broken-package-app');
+		mkdirSync(path.join(packageDir, 'config.yaml'), { recursive: true });
+		writeFileSync(path.join(root, 'harper-config.yaml'), '');
+		const originalGetConfigObj = configUtils.getConfigObj;
+		configUtils.getConfigObj = () => ({ 'broken-package-app': { package: 'broken-package-app' } });
+		try {
+			await loadComponent(root, resources, 'test-origin', { isRoot: true });
+		} finally {
+			configUtils.getConfigObj = originalGetConfigObj;
+		}
+		assert.strictEqual(componentStatusRegistry.getStatus('broken-package-app')?.loadFailed, true);
+		const result = await availability();
+		assert.strictEqual(result?.status, 'Unavailable');
+		assert.match(result.message, /broken-package-app/);
 	});
 });
