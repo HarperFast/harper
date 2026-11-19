@@ -33,7 +33,6 @@ const SEALED_SCHEMA =
 	'\tcount: Int\n' +
 	'}\n';
 
-// Deployed open first, then redeployed @sealed: the restart that loads the redeploy must enforce it.
 const SEALED_LATER_SCHEMA = (directives) =>
 	`type SealedLater @table ${directives}@export {\n\tid: ID @primaryKey\n\tname: String\n}\n`;
 

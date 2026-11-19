@@ -4,7 +4,9 @@ const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { databases, getDatabases, resetDatabases, table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+
+const KEYED_ATTRIBUTES = [{ name: 'id', isPrimaryKey: true }, { name: 'title' }];
 
 function primaryDescriptor(Table) {
 	return Table.dbisDB.getSync(Table.tableName + '/');
@@ -38,6 +40,31 @@ async function acceptsUndeclaredProperty(Table, id) {
 	}
 }
 
+// a role that may read only an attribute the table does not declare, which grants the primary key only while unsealed
+function undeclaredReader(tableName) {
+	const user = {
+		role: {
+			permission: {
+				settings_reassert: {
+					tables: {
+						[tableName]: {
+							read: true,
+							insert: false,
+							update: false,
+							delete: false,
+							attribute_permissions: [{ attribute_name: 'undeclared', read: true, insert: false, update: false }],
+						},
+					},
+				},
+			},
+		},
+	};
+	return (Table, id) => {
+		const request = { user, authorize: true, id };
+		return Table.get(request, request).then((record) => JSON.parse(JSON.stringify(record)));
+	};
+}
+
 describe('@table settings re-assert on existing tables', () => {
 	before(function () {
 		setupTestDBPath();
@@ -46,10 +73,10 @@ describe('@table settings re-assert on existing tables', () => {
 
 	it('applies an audit change to a table with no declared primary key', async function () {
 		await loadGQLSchema(`
-		type NoPkAudit @table(audit: false) {
+		type NoPkAudit @table(database: "settings_reassert", audit: false) {
 			value: String
 		}`);
-		const Tbl = tables.NoPkAudit;
+		const Tbl = databases.settings_reassert.NoPkAudit;
 		assert.strictEqual(Tbl.audit, false);
 		assert.strictEqual(primaryDescriptor(Tbl).audit, false);
 		await Tbl.put(1, { value: 'one' });
@@ -57,70 +84,70 @@ describe('@table settings re-assert on existing tables', () => {
 		assert.strictEqual(auditEntriesFor(Tbl).length, 0);
 
 		await loadGQLSchema(`
-		type NoPkAudit @table(audit: true) {
+		type NoPkAudit @table(database: "settings_reassert", audit: true) {
 			value: String
 		}`);
 		await Tbl.dbisDB.committed;
 		assert.strictEqual(primaryDescriptor(Tbl).audit, true);
-		assert.strictEqual(tables.NoPkAudit.audit, true);
-		await tables.NoPkAudit.put(3, { value: 'three' });
-		assert.strictEqual(auditEntriesFor(tables.NoPkAudit).length, 1);
+		assert.strictEqual(databases.settings_reassert.NoPkAudit.audit, true);
+		await databases.settings_reassert.NoPkAudit.put(3, { value: 'three' });
+		assert.strictEqual(auditEntriesFor(databases.settings_reassert.NoPkAudit).length, 1);
 	});
 
 	it('applies expiration and eviction changes to a table with no declared primary key', async function () {
 		await loadGQLSchema(`
-		type NoPkTTL @table {
+		type NoPkTTL @table(database: "settings_reassert") {
 			value: String
 		}`);
-		const Tbl = tables.NoPkTTL;
+		const Tbl = databases.settings_reassert.NoPkTTL;
 		assert.strictEqual(primaryDescriptor(Tbl).expiration, undefined);
 		assert.strictEqual(primaryDescriptor(Tbl).eviction, undefined);
 
 		await loadGQLSchema(`
-		type NoPkTTL @table(expiration: 3600, eviction: 7200) {
+		type NoPkTTL @table(database: "settings_reassert", expiration: 3600, eviction: 7200) {
 			value: String
 		}`);
 		await Tbl.dbisDB.committed;
 		assert.strictEqual(primaryDescriptor(Tbl).expiration, 3600);
 		assert.strictEqual(primaryDescriptor(Tbl).eviction, 7200);
-		assert.strictEqual(tables.NoPkTTL.expirationMS, 3600000);
+		assert.strictEqual(databases.settings_reassert.NoPkTTL.expirationMS, 3600000);
 	});
 
 	it('still applies settings changes to a table with a declared primary key', async function () {
 		await loadGQLSchema(`
-		type PkAudit @table(audit: false) {
+		type PkAudit @table(database: "settings_reassert", audit: false) {
 			id: Int @primaryKey
 			value: String
 		}`);
-		const Tbl = tables.PkAudit;
+		const Tbl = databases.settings_reassert.PkAudit;
 		assert.strictEqual(Tbl.audit, false);
 		await Tbl.put(1, { value: 'one' });
 		assert.strictEqual(auditEntriesFor(Tbl).length, 0);
 
 		await loadGQLSchema(`
-		type PkAudit @table(audit: true) {
+		type PkAudit @table(database: "settings_reassert", audit: true) {
 			id: Int @primaryKey
 			value: String
 		}`);
 		await Tbl.dbisDB.committed;
 		assert.strictEqual(primaryDescriptor(Tbl).audit, true);
-		assert.strictEqual(tables.PkAudit.audit, true);
-		await tables.PkAudit.put(2, { value: 'two' });
-		assert.strictEqual(auditEntriesFor(tables.PkAudit).length, 1);
+		assert.strictEqual(databases.settings_reassert.PkAudit.audit, true);
+		await databases.settings_reassert.PkAudit.put(2, { value: 'two' });
+		assert.strictEqual(auditEntriesFor(databases.settings_reassert.PkAudit).length, 1);
 	});
 
 	it('does not rewrite the catalog row when the directive is unchanged', async function () {
 		await loadGQLSchema(`
-		type NoPkStable @table(audit: false, expiration: 3600) {
+		type NoPkStable @table(database: "settings_reassert", audit: false, expiration: 3600) {
 			value: String
 		}`);
-		const Tbl = tables.NoPkStable;
+		const Tbl = databases.settings_reassert.NoPkStable;
 		await Tbl.dbisDB.committed;
 		const before = { ...primaryDescriptor(Tbl) };
 		const schemaVersionBefore = Tbl.schemaVersion;
 
 		await loadGQLSchema(`
-		type NoPkStable @table(audit: false, expiration: 3600) {
+		type NoPkStable @table(database: "settings_reassert", audit: false, expiration: 3600) {
 			value: String
 		}`);
 		await Tbl.dbisDB.committed;
@@ -130,15 +157,15 @@ describe('@table settings re-assert on existing tables', () => {
 
 	it('clears TTL and replication on a table with no declared primary key', async function () {
 		await loadGQLSchema(`
-		type NoPkReverse @table(replicate: true, expiration: 3600, eviction: 7200) {
+		type NoPkReverse @table(database: "settings_reassert", replicate: true, expiration: 3600, eviction: 7200) {
 			value: String
 		}`);
-		const Tbl = tables.NoPkReverse;
+		const Tbl = databases.settings_reassert.NoPkReverse;
 		assert.strictEqual(Tbl.replicate, true);
 		assert.strictEqual(Tbl.expirationMS, 3600000);
 
 		await loadGQLSchema(`
-		type NoPkReverse @table(replicate: false, expiration: 0) {
+		type NoPkReverse @table(database: "settings_reassert", replicate: false, expiration: 0) {
 			value: String
 		}`);
 		await commitCatalog(Tbl);
@@ -153,32 +180,37 @@ describe('@table settings re-assert on existing tables', () => {
 
 	it('enforces sealed on the declaring thread as soon as a re-declaration turns it on', async function () {
 		await loadGQLSchema(`
-		type NoPkSealOn @table {
+		type NoPkSealOn @table(database: "settings_reassert") {
 			value: String
 		}`);
-		const Tbl = tables.NoPkSealOn;
+		const Tbl = databases.settings_reassert.NoPkSealOn;
 		assert.strictEqual(await acceptsUndeclaredProperty(Tbl, 1), true);
+		const schemaVersionBefore = Tbl.schemaVersion;
 
 		await loadGQLSchema(`
-		type NoPkSealOn @table(sealed: true) {
+		type NoPkSealOn @table(database: "settings_reassert", sealed: true) {
 			value: String
 		}`);
 		await commitCatalog(Tbl);
 		assert.strictEqual(primaryDescriptor(Tbl).sealed, true);
+		assert(
+			Tbl.schemaVersion > schemaVersionBefore,
+			'a sealed-only change must announce a schema change to other threads'
+		);
 		assert.strictEqual(Tbl.sealed, true);
 		assert.strictEqual(await acceptsUndeclaredProperty(Tbl, 2), false);
 	});
 
 	it('stops enforcing sealed as soon as a re-declaration turns it off', async function () {
 		await loadGQLSchema(`
-		type NoPkSealOff @table(sealed: true) {
+		type NoPkSealOff @table(database: "settings_reassert", sealed: true) {
 			value: String
 		}`);
-		const Tbl = tables.NoPkSealOff;
+		const Tbl = databases.settings_reassert.NoPkSealOff;
 		assert.strictEqual(await acceptsUndeclaredProperty(Tbl, 1), false);
 
 		await loadGQLSchema(`
-		type NoPkSealOff @table(sealed: false) {
+		type NoPkSealOff @table(database: "settings_reassert", sealed: false) {
 			value: String
 		}`);
 		await commitCatalog(Tbl);
@@ -189,12 +221,12 @@ describe('@table settings re-assert on existing tables', () => {
 
 	it('keeps sealed when a re-declaration drops @sealed', async function () {
 		await loadGQLSchema(`
-		type NoPkSealKept @table @sealed {
+		type NoPkSealKept @table(database: "settings_reassert") @sealed {
 			value: String
 		}`);
-		const Tbl = tables.NoPkSealKept;
+		const Tbl = databases.settings_reassert.NoPkSealKept;
 		await loadGQLSchema(`
-		type NoPkSealKept @table {
+		type NoPkSealKept @table(database: "settings_reassert") {
 			value: String
 		}`);
 		await commitCatalog(Tbl);
@@ -204,13 +236,17 @@ describe('@table settings re-assert on existing tables', () => {
 
 	it("applies another thread's sealed change when the loaded class reloads", async function () {
 		await loadGQLSchema(`
-		type NoPkSealReload @table {
+		type NoPkSealReload @table(database: "settings_reassert") {
 			value: String
 		}`);
-		const Loaded = tables.NoPkSealReload;
+		const Loaded = databases.settings_reassert.NoPkSealReload;
 		await writeCatalogSettings(Loaded, { sealed: true });
 		resetDatabases();
-		assert.strictEqual(getDatabases().data.NoPkSealReload, Loaded, 'the reload must keep the loaded class');
+		assert.strictEqual(
+			getDatabases().settings_reassert.NoPkSealReload,
+			Loaded,
+			'the reload must keep the loaded class'
+		);
 		assert.strictEqual(await acceptsUndeclaredProperty(Loaded, 1), false);
 
 		await writeCatalogSettings(Loaded, { sealed: false });
@@ -220,13 +256,13 @@ describe('@table settings re-assert on existing tables', () => {
 
 	it("leaves a loaded table's sealed alone when a peer definition differs", async function () {
 		await loadGQLSchema(`
-		type NoPkSealPeer @table {
+		type NoPkSealPeer @table(database: "settings_reassert") {
 			value: String
 		}`);
-		const Loaded = tables.NoPkSealPeer;
+		const Loaded = databases.settings_reassert.NoPkSealPeer;
 		table({
 			table: 'NoPkSealPeer',
-			database: 'data',
+			database: 'settings_reassert',
 			attributes: [{ name: 'value', type: 'String' }],
 			sealed: true,
 			origin: 'cluster',
@@ -237,50 +273,55 @@ describe('@table settings re-assert on existing tables', () => {
 	});
 
 	it('withdraws the primary key a cached permission granted from an undeclared attribute once sealed', async function () {
-		const Tbl = table({
-			table: 'SealedKeyGrant',
-			database: 'settings_reassert',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
-		});
+		const declaration = { table: 'SealedKeyGrant', database: 'settings_reassert', attributes: KEYED_ATTRIBUTES };
+		const Tbl = table(declaration);
 		await Tbl.put('k-1', { id: 'k-1', title: 'hidden' });
-		const user = {
-			role: {
-				permission: {
-					settings_reassert: {
-						tables: {
-							SealedKeyGrant: {
-								read: true,
-								insert: false,
-								update: false,
-								delete: false,
-								attribute_permissions: [{ attribute_name: 'undeclared', read: true, insert: false, update: false }],
-							},
-						},
-					},
-				},
-			},
-		};
-		const read = () => {
-			const request = { user, authorize: true, id: 'k-1' };
-			return Tbl.get(request, request).then((record) => JSON.parse(JSON.stringify(record)));
-		};
-		assert.deepStrictEqual(await read(), { id: 'k-1' });
+		const read = undeclaredReader('SealedKeyGrant');
+		assert.deepStrictEqual(await read(Tbl, 'k-1'), { id: 'k-1' });
 
-		table({
-			table: 'SealedKeyGrant',
+		table({ ...declaration, sealed: true });
+		assert.deepStrictEqual(await read(Tbl, 'k-1'), {});
+	});
+
+	it("re-derives a cached primary key grant when another thread's sealed change reloads the class", async function () {
+		// only the key: a reload of a table with any other attribute re-derives every grant through updatedAttributes()
+		const Loaded = table({
+			table: 'SealedKeyGrantReload',
 			database: 'settings_reassert',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
-			sealed: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
-		assert.deepStrictEqual(await read(), {});
+		await Loaded.put('k-1', { id: 'k-1', title: 'hidden' });
+		const read = undeclaredReader('SealedKeyGrantReload');
+		assert.deepStrictEqual(await read(Loaded, 'k-1'), { id: 'k-1' });
+
+		await writeCatalogSettings(Loaded, { sealed: true });
+		resetDatabases();
+		assert.deepStrictEqual(await read(Loaded, 'k-1'), {});
+
+		await writeCatalogSettings(Loaded, { sealed: false });
+		resetDatabases();
+		assert.deepStrictEqual(await read(Loaded, 'k-1'), { id: 'k-1' });
+	});
+
+	it('keeps the sealed a subclass assigns off the table it extends', async function () {
+		await loadGQLSchema(`
+		type NoPkSealSubclass @table(database: "settings_reassert") {
+			value: String
+		}`);
+		const Tbl = databases.settings_reassert.NoPkSealSubclass;
+		class Strict extends Tbl {}
+		Strict.sealed = true;
+		assert.strictEqual(Strict.sealed, true);
+		assert.strictEqual(Tbl.sealed, undefined);
+		assert.strictEqual(await acceptsUndeclaredProperty(Tbl, 1), true);
 	});
 
 	it('keeps an open subscription delivering after a re-declaration turns audit off, and stops auditing on the next load', async function () {
 		await loadGQLSchema(`
-		type NoPkAuditOff @table(audit: true) {
+		type NoPkAuditOff @table(database: "settings_reassert", audit: true) {
 			value: String
 		}`);
-		const Tbl = tables.NoPkAuditOff;
+		const Tbl = databases.settings_reassert.NoPkAuditOff;
 		const received = [];
 		const subscription = await Tbl.subscribe({});
 		subscription.on('data', (event) => received.push(event.id));
@@ -289,7 +330,7 @@ describe('@table settings re-assert on existing tables', () => {
 			await waitFor(() => received.includes(1), { message: 'the subscription never received the first write' });
 
 			await loadGQLSchema(`
-			type NoPkAuditOff @table(audit: false) {
+			type NoPkAuditOff @table(database: "settings_reassert", audit: false) {
 				value: String
 			}`);
 			await commitCatalog(Tbl);
@@ -302,9 +343,10 @@ describe('@table settings re-assert on existing tables', () => {
 			subscription.close();
 		}
 
-		delete databases.data.NoPkAuditOff;
+		Tbl.cleanup();
+		delete databases.settings_reassert.NoPkAuditOff;
 		resetDatabases();
-		const Reloaded = getDatabases().data.NoPkAuditOff;
+		const Reloaded = getDatabases().settings_reassert.NoPkAuditOff;
 		assert.notStrictEqual(Reloaded, Tbl);
 		assert.strictEqual(Reloaded.audit, false);
 		const auditedBefore = auditEntriesFor(Reloaded).length;

@@ -3036,6 +3036,10 @@ export function makeTable(options): TableResourceClass {
 			return sealed;
 		}
 		static set sealed(value: boolean | undefined) {
+			if (this !== TableResource) {
+				Object.defineProperty(this, 'sealed', { value, writable: true, enumerable: true, configurable: true });
+				return;
+			}
 			if (value === sealed) return;
 			sealed = value;
 			primaryKeyGranted = new WeakMap();
