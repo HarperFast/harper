@@ -9,16 +9,21 @@ import { strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { Client } from 'undici';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 import { WORKER_COUNT, NO_FULL_WORKER_COVERAGE, assertEveryWorkerStarted } from '../database/recordCachingWorkers.ts';
 import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
+import { waitFor } from '../../unitTests/waitFor.js';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures', 'user-change-across-workers');
 const ROLE = 'ucaw_role';
 const USERNAME = 'ucaw_user';
+const DROP_ROLE = 'ucaw_drop_role';
+const DROP_ITERATIONS = 10;
 
 type WhoAmI = { threadId: number; username: string | null; superUser: boolean };
+type Credential = Record<string, string>;
 
 suite(
 	'user and role changes hold on every worker at acknowledgement',
@@ -26,12 +31,15 @@ suite(
 	(ctx: ContextWithHarper) => {
 		let client: any;
 		let httpURL: string;
+		let origin: string;
 		let password = 'ucaw-password-1';
 
-		const basic = (secret: string) => 'Basic ' + Buffer.from(`${USERNAME}:${secret}`).toString('base64');
+		const basic = (secret: string, username = USERNAME): Credential => ({
+			Authorization: 'Basic ' + Buffer.from(`${username}:${secret}`).toString('base64'),
+		});
 
-		async function whoAmI(secret: string): Promise<{ status: number; body?: WhoAmI }> {
-			const response = await fetchOnNewConnection(`${httpURL}/WhoAmI/`, { headers: { Authorization: basic(secret) } });
+		async function whoAmI(credential: Credential): Promise<{ status: number; body?: WhoAmI }> {
+			const response = await fetchOnNewConnection(`${httpURL}/WhoAmI/`, { headers: credential });
 			if (response.status !== 200) {
 				await response.text().catch(() => undefined);
 				return { status: response.status };
@@ -39,11 +47,12 @@ suite(
 			return { status: 200, body: (await response.json()) as WhoAmI };
 		}
 
-		function onEveryWorker(secret: string): Promise<WhoAmI[]> {
+		function onEveryWorker(credential: Credential, username = USERNAME): Promise<WhoAmI[]> {
 			return observeEveryWorker(
 				async () => {
-					const { status, body } = await whoAmI(secret);
-					strictEqual(status, 200, `expected ${USERNAME} to authenticate`);
+					const { status, body } = await whoAmI(credential);
+					strictEqual(status, 200, `expected ${username} to authenticate`);
+					strictEqual(body!.username, username);
 					return body!;
 				},
 				(body) => body.threadId,
@@ -51,17 +60,86 @@ suite(
 			);
 		}
 
-		async function rejectedEverywhere(secret: string): Promise<void> {
-			const responses = await Promise.all(Array.from({ length: WORKER_COUNT * 8 }, () => whoAmI(secret)));
+		async function rejectedEverywhere(credential: Credential, label = 'the credential'): Promise<void> {
+			const responses = await Promise.all(Array.from({ length: WORKER_COUNT * 8 }, () => whoAmI(credential)));
 			for (const { status, body } of responses) {
-				strictEqual(status, 401, `worker ${body?.threadId} still accepted the credential`);
+				strictEqual(status, 401, `worker ${body?.threadId} still accepted ${label}`);
 			}
 		}
 
+		async function operationToken(username: string, secret: string): Promise<Credential> {
+			const { body } = await client
+				.req()
+				.send({ operation: 'create_authentication_tokens', username, password: secret, expires_in: '10m' })
+				.expect(200);
+			ok(body.operation_token, 'expected an operation token');
+			return { Authorization: `Bearer ${body.operation_token}` };
+		}
+
+		async function sessionCookie(username: string, secret: string): Promise<Credential> {
+			const response = await client
+				.reqAs({ 'Content-Type': 'application/json', 'Origin': origin })
+				.send({ operation: 'login', username, password: secret })
+				.expect(200);
+			const cookie = (response.headers['set-cookie'] as string[] | undefined)
+				?.map((value) => value.split(';')[0])
+				.find((value) => value.includes('-hdb-session='));
+			ok(cookie, 'expected a session cookie');
+			const credential = { Cookie: cookie, Origin: origin };
+			// login acknowledges before its session write commits
+			await waitFor(async () => (await whoAmI(credential)).status === 200, {
+				timeout: 10_000,
+				message: `the session for ${username} never authenticated`,
+			});
+			return credential;
+		}
+
+		/**
+		 * A rejection names no worker, so pin each probe to one connection (one worker under
+		 * SO_REUSEPORT) and let the kept user's answers on it name the worker that issued the rejections.
+		 */
+		async function rejectedOnEveryPinnedWorker(
+			kept: Credential,
+			dropped: readonly (readonly [label: string, credential: Credential])[]
+		): Promise<void> {
+			const reached = new Set<number>();
+			for (let attempt = 0; attempt < WORKER_COUNT * 32 && reached.size < WORKER_COUNT; attempt++) {
+				const connection = new Client(origin, { pipelining: 1 });
+				let connects = 0;
+				connection.on('connect', () => connects++);
+				try {
+					const ask = async (credential: Credential): Promise<{ status: number; body?: WhoAmI }> => {
+						const response = await connection.request({ path: '/WhoAmI/', method: 'GET', headers: credential });
+						const text = await response.body.text();
+						return { status: response.statusCode, body: response.statusCode === 200 ? JSON.parse(text) : undefined };
+					};
+					const first = await ask(kept);
+					strictEqual(first.status, 200, 'the kept user must name the worker');
+					const { threadId } = first.body!;
+					for (const [label, credential] of dropped) {
+						strictEqual((await ask(credential)).status, 401, `worker ${threadId} still accepted ${label}`);
+					}
+					const last = await ask(kept);
+					strictEqual(last.status, 200);
+					strictEqual(last.body!.threadId, threadId, 'the probe changed workers');
+					strictEqual(connects, 1, 'the probe must stay on one connection');
+					reached.add(threadId);
+				} finally {
+					await connection.close();
+				}
+			}
+			strictEqual(reached.size, WORKER_COUNT, `pinned probes reached only workers [${[...reached].join(',')}]`);
+		}
+
 		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: { threads: { count: WORKER_COUNT } } });
+			// Local trust would authenticate a loopback request whose own credential was refused.
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+				config: { threads: { count: WORKER_COUNT }, authentication: { authorizeLocal: false } },
+				env: { AUTHENTICATION_AUTHORIZELOCAL: 'false' },
+			});
 			client = createApiClient(ctx.harper);
 			httpURL = ctx.harper.httpURL;
+			origin = new URL(httpURL).origin;
 			await assertEveryWorkerStarted(ctx);
 			await client
 				.req()
@@ -72,7 +150,7 @@ suite(
 				.send({ operation: 'add_user', role: ROLE, username: USERNAME, password, active: true })
 				.expect(200);
 			const deadline = Date.now() + 60_000;
-			while ((await whoAmI(password)).status !== 200) {
+			while ((await whoAmI(basic(password))).status !== 200) {
 				ok(Date.now() < deadline, 'the WhoAmI resource never became reachable');
 				await sleep(250);
 			}
@@ -83,31 +161,63 @@ suite(
 		});
 
 		test('a role permission change', async () => {
-			for (const body of await onEveryWorker(password)) strictEqual(body.superUser, true);
+			for (const body of await onEveryWorker(basic(password))) strictEqual(body.superUser, true);
 			const roles = await client.req().send({ operation: 'list_roles' }).expect(200);
 			const role = roles.body.find((candidate: any) => candidate.role === ROLE);
 			await client
 				.req()
 				.send({ operation: 'alter_role', id: role.id, role: ROLE, permission: { super_user: false } })
 				.expect(200);
-			for (const body of await onEveryWorker(password)) {
+			for (const body of await onEveryWorker(basic(password))) {
 				strictEqual(body.superUser, false, `worker ${body.threadId} served the role as it was before alter_role`);
 			}
 		});
 
 		test('a password change', async () => {
-			await onEveryWorker(password);
+			await onEveryWorker(basic(password));
 			const previous = password;
 			password = 'ucaw-password-2';
 			await client.req().send({ operation: 'alter_user', username: USERNAME, password }).expect(200);
-			await rejectedEverywhere(previous);
-			await onEveryWorker(password);
+			await rejectedEverywhere(basic(previous));
+			await onEveryWorker(basic(password));
 		});
 
 		test('a deactivation', async () => {
-			await onEveryWorker(password);
+			await onEveryWorker(basic(password));
 			await client.req().send({ operation: 'alter_user', username: USERNAME, active: false }).expect(200);
-			await rejectedEverywhere(password);
+			await rejectedEverywhere(basic(password));
+		});
+
+		// https://github.com/HarperFast/harper/issues/4124
+		test('a drop: operation token and session cookie', async () => {
+			const secret = 'ucaw-drop-password';
+			await client
+				.req()
+				.send({ operation: 'add_role', role: DROP_ROLE, permission: { super_user: false } })
+				.expect(200);
+			for (let iteration = 1; iteration <= DROP_ITERATIONS; iteration++) {
+				const droppedUser = `ucaw_dropped_${iteration}`;
+				const keptUser = `ucaw_kept_${iteration}`;
+				for (const username of [droppedUser, keptUser]) {
+					await client
+						.req()
+						.send({ operation: 'add_user', role: DROP_ROLE, username, password: secret, active: true })
+						.expect(200);
+				}
+				const dropped = [
+					[`${droppedUser}'s operation token`, await operationToken(droppedUser, secret)],
+					[`${droppedUser}'s session cookie`, await sessionCookie(droppedUser, secret)],
+				] as const;
+				const kept = [await operationToken(keptUser, secret), await sessionCookie(keptUser, secret)];
+				for (const [, credential] of dropped) await onEveryWorker(credential, droppedUser);
+				for (const credential of kept) await onEveryWorker(credential, keptUser);
+
+				await client.req().send({ operation: 'drop_user', username: droppedUser }).expect(200);
+
+				for (const [label, credential] of dropped) await rejectedEverywhere(credential, label);
+				await rejectedOnEveryPinnedWorker(kept[0], dropped);
+				for (const credential of kept) await onEveryWorker(credential, keptUser);
+			}
 		});
 	}
 );
