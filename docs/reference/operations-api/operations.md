@@ -2225,6 +2225,8 @@ These are a coordination primitive for your own automation: Harper core stores a
 
 On Harper Fabric, the `status-check` component answers the load balancer from the `availability` record, so that record decides whether a node receives traffic. See [Load Balancing and Node Availability](/fabric/load-balancing).
 
+With [`status.drainOnLoadFailure`](../configuration/options.md#statusdrainonloadfailure) <VersionBadge version="v5.5.0" /> on, `get_status` reports `availability` as `Unavailable`, with a `message` naming the failed components, while a component has failed to load on any thread, in both the `id` form and the `systemStatus` of the summary. An operator's `Unavailable` always wins, and the stored record is served again once the component loads.
+
 ```json
 { "operation": "set_status", "id": "primary", "status": "active" }
 ```
