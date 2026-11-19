@@ -16271,7 +16271,6 @@ export function makeTable(options): TableResourceClass {
 	) {
 		return !boundary || precedesExistingVersion(version, boundary, nodeId) > 0;
 	}
-	// A write this precedes must store no record, whatever the head's order: an older publish can leave the head below it.
 	function precedesDeleteBoundary(version: number, entry: Entry | undefined, nodeId: number | undefined) {
 		const boundary = entry?.copiedDeleteBoundary;
 		return boundary !== undefined && precedesExistingVersion(version, boundary, nodeId) < 0;
