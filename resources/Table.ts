@@ -128,11 +128,13 @@ import {
 } from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
+	ORIGIN_BOUNDARIES,
 	ORIGIN_ID,
 	admitCheckpoint,
 	bumpOriginStateEpoch,
 	checkpointScope,
 	encodeCheckpoint,
+	originReplayStarts,
 	positionBefore,
 	readOriginStateEpoch,
 	resumeBoundary,
@@ -10820,16 +10822,29 @@ export function makeTable(options): TableResourceClass {
 							await rest();
 							if (!isActive()) return;
 						}
-						const replayRange = auditStore.getRange({
-							start: startTime,
-							exclusiveStart: true,
-							snapshot: false, // no need for a snapshot, audits don't change
-							until: liveRange,
-						});
+						// The position is this node's own watermark, which another origin can still commit below, so that
+						// origin's log is read from its boundary in the checkpoint issued beside the position. What that
+						// adds is below the position and optional: it moves no cursor and refuses no resume.
+						const originBoundaries = (request as any)[ORIGIN_BOUNDARIES];
+						let loweredStarts =
+							resuming && isRocksDB && originBoundaries !== undefined
+								? originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime)
+								: undefined;
+						let replayedAboveStart = false;
+						const openReplayRange = () =>
+							auditStore.getRange({
+								start: startTime,
+								startByLog: loweredStarts,
+								exclusiveStart: true,
+								snapshot: false, // no need for a snapshot, audits don't change
+								until: liveRange,
+							});
+						let replayRange = openReplayRange();
 						const recordCursor = (key: number) => {
+							if (key < startTime) key = startTime;
 							// live delivery finishes a transaction the bound split, so a resume must start below it
 							const open = replayRange.openTransactionFloor?.();
-							subscription.replayedThrough = open <= key ? positionBefore(open) : key;
+							subscription.replayedThrough = open <= key ? (open <= startTime ? startTime : positionBefore(open)) : key;
 							// LMDB and same-thread replays hand off by key
 							if (!liveRange) subscription.startTime = key;
 						};
@@ -10860,11 +10875,23 @@ export function makeTable(options): TableResourceClass {
 									replayIterator = replayRange[Symbol.iterator]();
 									continue;
 								}
+								// A lowered log that stops being readable (a prune can pass its boundary mid-read) is given up
+								// while nothing above the position has been replayed: the range starts over from the position
+								// alone, where a failure in history the position needs shows again.
+								if (loweredStarts && !replayedAboveStart && unreadableLogRefusal(replayRange)) {
+									loweredStarts = undefined;
+									replayIterator.return?.();
+									replayRange = openReplayRange();
+									replayIterator = replayRange[Symbol.iterator]();
+									continue;
+								}
 								if (next.done) {
 									replayEnded = true;
 									break;
 								}
 								const auditRecord = next.value;
+								const aboveStart = !(auditRecord.txnLogKey <= startTime);
+								if (aboveStart) replayedAboveStart = true;
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
@@ -10872,17 +10899,19 @@ export function makeTable(options): TableResourceClass {
 									if (checkResume) {
 										if (!checkResume(unreadableLogRefusal(replayRange))) return;
 										// every key below the record in hand has been read
-										resumeCheckedThrough = auditRecord.txnLogKey;
+										if (aboveStart) resumeCheckedThrough = auditRecord.txnLogKey;
 									}
 								}
 								// an entry that failed to decode names no table, so a checked replay cannot rule it out
-								if (checkResume && auditRecord.type === undefined) {
+								if (checkResume && aboveStart && auditRecord.type === undefined) {
 									checkResume(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
 									return;
 								}
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
 								const isReload = auditRecord.type === 'reload';
+								// below the position, a marker or an entry naming no record is passed over, as a replay from the position does
+								if (!aboveStart && (isReload || auditRecord.recordId === undefined)) continue;
 								// the rows a reload back-filled have no history, so no replay can deliver them
 								if (isReload && replayRefusesReload)
 									return void refuseReplay(subscription, tableName, new ResumeHistoryUnavailableError(RELOAD_REFUSAL));
@@ -10924,7 +10953,7 @@ export function makeTable(options): TableResourceClass {
 											// a prune while the consumer drains may reach what was read before the wait
 											if (checkResume) {
 												if (!checkResume(unreadableLogRefusal(replayRange))) return;
-												resumeCheckedThrough = auditRecord.txnLogKey;
+												if (aboveStart) resumeCheckedThrough = auditRecord.txnLogKey;
 											}
 											if ((await subscription.waitForDrain()) === false) return;
 										}

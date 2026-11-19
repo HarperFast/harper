@@ -17,6 +17,7 @@ import { getThisNodeName } from './nodeName.ts';
 import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { isLocalPrincipal, localPrincipal, type UserProvenance } from '../security/user.ts';
 import {
+	ORIGIN_BOUNDARIES,
 	ORIGIN_ID,
 	admitCheckpoint,
 	positionBefore,
@@ -604,6 +605,7 @@ class SubscriptionsSession {
 			databaseGeneration: subscriptionRequest.databaseGeneration,
 			reportProgress: subscriptionRequest.reportProgress,
 			resume: subscriptionRequest.resume,
+			[ORIGIN_BOUNDARIES]: subscriptionRequest[ORIGIN_BOUNDARIES],
 			filterKey: subscriptionRequest.filterKey,
 			includeSuperseded: this instanceof DurableSubscriptionsSession && subscriptionRequest.qos > 0 ? true : undefined,
 			checkPermission: this.user?.role?.permission ?? {},
@@ -1093,7 +1095,8 @@ type DurableEntry = {
 	/**
 	 * The per-origin checkpoint: what a resume from another database generation (another node's, or a restored
 	 * copy's) replays from, since the scalar names keys only within its own. It stops advancing while floors are
-	 * unavailable, and a resume it can no longer satisfy resets the session (410).
+	 * unavailable, and a resume it can no longer satisfy resets the session (410). A resume in the scalar's own
+	 * generation starts at the scalar and takes from it only where each other origin's log starts (`fromScalar`).
 	 */
 	checkpoint?: SubscriptionCheckpoint;
 	/**
@@ -1385,6 +1388,18 @@ function resumesFromCheckpoint(entry: DurableEntry): boolean {
 	return (entry.foreignGeneration ?? entry.databaseGeneration) !== undefined;
 }
 
+/**
+ * Makes `request` continue the topic from its scalar. A scalar of this generation is this node's own watermark,
+ * which another origin can still commit below, so the entry's checkpoint goes with it: the replay then reads each
+ * other origin's log from its boundary there, and the receipts kept for that checkpoint skip what was taken.
+ */
+function fromScalar(request: any, entry: DurableEntry): any {
+	request.startTime = entry.startTime;
+	if (boundToCurrentGeneration(entry)) request.databaseGeneration = entry.databaseGeneration;
+	request[ORIGIN_BOUNDARIES] = entry.checkpoint;
+	return request;
+}
+
 export class DurableSubscriptionsSession extends SubscriptionsSession {
 	committed: Promise<void> | void;
 	/** Only a session that found no record may create one; any other updates only a record it owns. */
@@ -1495,7 +1510,17 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 				await this.resumeSubscription(
 					durable
-						? { topic, qos, rh: 2, startTime, databaseGeneration, reportProgress: true, filterKey: topic }
+						? {
+								topic,
+								qos,
+								rh: 2,
+								startTime,
+								databaseGeneration,
+								reportProgress: true,
+								filterKey: topic,
+								// read here: a refused checkpoint was dropped above
+								[ORIGIN_BOUNDARIES]: state.entry.checkpoint,
+							}
 						: { topic, qos, rh: 2 },
 					durable
 				);
@@ -1763,8 +1788,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return this.qos1ReceiptsUnsaved && this.receivedCount > 0;
 	}
 	/**
-	 * At the QoS 1 share, receipts at or below a scalar this node saved, which only a checkpoint replay on another
-	 * node reads, give way to ones a replay here reads; once per position pass, which is what can free more.
+	 * At the QoS 1 share, receipts at or below a scalar this node saved give way to the ones above it: those are read
+	 * by a checkpoint replay on another node and, for another origin's deliveries, by a resume here, which then sends
+	 * them again; a resume here reads the ones above for every origin. Once per position pass, which is what can
+	 * free more.
 	 */
 	reclaimQoS1Receipts() {
 		this.receiptsReclaimedAt = this.advanceCount;
@@ -1904,10 +1931,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				// replacing a subscription must lose nothing, so the new one continues the topic's position
 				this.advancePositions();
 				if (resumesFromCheckpoint(existing.entry)) request.resume = existing.entry.checkpoint;
-				else {
-					request.startTime = existing.entry.startTime;
-					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
-				}
+				else fromScalar(request, existing.entry);
 			}
 		}
 		let started;
@@ -1925,9 +1949,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					this.dropForeignReceipts(existing);
 					if (this.hasEnded()) throw this.endedError();
 					delete request.resume;
-					request.startTime = existing.entry.startTime;
-					if (boundToCurrentGeneration(existing.entry)) request.databaseGeneration = existing.entry.databaseGeneration;
-					started = await this.resumeSubscription(request, needsAck);
+					started = await this.resumeSubscription(fromScalar(request, existing.entry), needsAck);
 				}
 			} else started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
@@ -2064,8 +2086,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					if (!(checkpointFloor(checkpoint) > state.prunedThrough)) continue;
 				}
 				state.entry.checkpoint = checkpoint;
-				// a checkpoint replay starts at its floor, but a resume here starts at the scalar, which an
-				// unacknowledged delivery can hold below a late one acknowledged under the floor
+				// a checkpoint replay starts at its floor, and a resume here at the scalar or, for another origin, its
+				// boundary if lower; an unacknowledged delivery can hold the scalar below a late one acknowledged
+				// under the floor
 				let through = positionBefore(checkpointFloor(checkpoint));
 				if (state.entry.startTime < through) through = state.entry.startTime;
 				this.pruneReceipts(state, through);
@@ -2186,8 +2209,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (startTime !== undefined) saved.startTime = startTime;
 			if ((databaseGeneration ?? foreignGeneration) !== undefined)
 				saved.databaseGeneration = databaseGeneration ?? foreignGeneration;
-			// QoS 1 receipts at or below a scalar of this generation are read only by a checkpoint replay on another node,
-			// so only the final save writes them
+			// QoS 1 receipts at or below a scalar of this generation are read by a checkpoint replay on another node and,
+			// for another origin's deliveries, by a resume here; only the final save writes them, so after a crash those
+			// are sent again
 			const kept = qos === 1 && !this.terminated && foreignGeneration === undefined ? startTime : undefined;
 			for (const identity of state.received?.values() ?? []) {
 				if (!(identity[0] <= kept)) (saved.received ??= []).push(identity);
