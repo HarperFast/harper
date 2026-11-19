@@ -12,11 +12,11 @@ jobs:
   lmdb-resources:
     name: LMDB resources (${{ matrix.slot }}, Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
-        slot: [1, 2, 3]
+        slot: [1, 2, 3, 4]
         node-version: [24, 26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,13 +37,23 @@ jobs:
           LOGGING_LEVEL: 'info'
         run: node ./dist/bin/harper.js install
       - name: Repeat the LMDB resources suite
+        shell: bash {0}
         run: |
-          df -h / /tmp || true
+          mkdir -p logs
           for i in 1 2 3 4; do
-            HARPER_STORAGE_ENGINE=lmdb npx mocha "unitTests/resources/**/*.js" --exclude "unitTests/resources/**/*.bench.js" > run-$i.log 2>&1
-            echo "run $i exit $? reloadMarker failures: $(grep -cE '^\s+[0-9]+\) table-reload marker' run-$i.log)"
-            grep -E '^\s+[0-9]+ (passing|failing)' run-$i.log || true
-            grep -B2 -A16 '^DIAG' run-$i.log || true
-            grep -A6 -E '^\s+[0-9]+\) table-reload marker' run-$i.log || true
+            HARPER_STORAGE_ENGINE=lmdb npx mocha "unitTests/resources/**/*.js" --exclude "unitTests/resources/**/*.bench.js" > logs/run-$i.log 2>&1
+            code=$?
+            echo "run $i exit $code reloadMarker failures: $(grep -cE '^\s+[0-9]+\) table-reload marker' logs/run-$i.log)"
+            grep -E '^\s+[0-9]+ (passing|failing)' logs/run-$i.log
+            grep -E '^\s+[0-9]+\) ' logs/run-$i.log | head -20
+            grep -B2 -A16 '^DIAG' logs/run-$i.log
+            cp -r unitTests/envDir logs/envDir-$i 2>/dev/null
             rm -rf unitTests/envDir/*
           done
+          exit 0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: logs-${{ matrix.slot }}-${{ matrix.node-version }}
+          path: logs
+          retention-days: 7
