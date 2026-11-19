@@ -295,7 +295,7 @@ mediaTypes.set('text/event-stream', {
 				}),
 			request?.method === 'GET',
 			// a subscription delivers what it closes with as its last event
-			cursor && ((value) => value instanceof Error || (value !== undefined && value === iterable.closedWith))
+			cursor && ((value) => value instanceof Error || (value !== undefined && Object.is(value, iterable.closedWith)))
 		);
 	},
 	serialize: function (message) {
