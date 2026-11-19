@@ -192,7 +192,13 @@ describe('RocksTransactionLogStore range metadata', () => {
 		const logs = ['local', 'lowered-peer', 'other-peer'].map((name) =>
 			makeLog(name, [], (options) => (queried[name] = options))
 		);
-		[...makeStore(logs).getRange({ start: 50, startByLog: new Map([['lowered-peer', 20]]), exclusiveStart: true })];
+		const iterable = makeStore(logs).getRange({
+			start: 50,
+			startByLog: new Map([['lowered-peer', 20]]),
+			exclusiveStart: true,
+		});
+		assert.deepStrictEqual([...iterable], []);
+		assert.strictEqual(iterable.exactStartFailures.size, 0, 'a start that is not exact has no anchor to miss');
 		assert.deepStrictEqual(
 			Object.entries(queried).map(([name, { start, exclusiveStart }]) => [name, start, exclusiveStart]),
 			[

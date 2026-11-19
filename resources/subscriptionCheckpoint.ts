@@ -648,15 +648,17 @@ export function originReplayStarts(
 	scope: string,
 	position: number
 ): Map<string, number> | undefined {
-	// with no other origin's log there is nothing to lower, and no origin state to read
 	if (knownLogNames(auditStore).length === 0) return;
 	let resolved: TokenMembers;
 	try {
 		const token = validateCheckpoint(checkpoint);
 		if (token.scope !== scope) return;
-		resolved = resolveTokenMembers(auditStore, dbisDb, token);
+		// before any origin state is read
+		let lowest = token.time - token.overlap;
+		for (const name in token.exceptions) if (token.exceptions[name] < lowest) lowest = token.exceptions[name];
+		if (lowest > position) return;
+		resolved = resolveTokenMembers(auditStore, dbisDb, token, false);
 	} catch (error) {
-		// a checkpoint this node cannot use is not a failure of the resume
 		if (typeof error?.statusCode === 'number') return;
 		throw error;
 	}
@@ -676,19 +678,30 @@ interface TokenMembers {
 	byName: Map<string, OriginState>;
 }
 
-/** The origins the token certifies, resolved against this node's current origin state; throws when it cannot be. */
-function resolveTokenMembers(auditStore: any, dbisDb: any, token: SubscriptionCheckpoint): TokenMembers {
+/**
+ * The origins the token certifies, resolved against this node's current origin state; throws when it cannot be.
+ * `accountsForAll`: every origin this node knows is a member or is replayed whole, as a checkpoint replay needs. Without
+ * it only the members matter, so any other origin may be left out.
+ */
+function resolveTokenMembers(
+	auditStore: any,
+	dbisDb: any,
+	token: SubscriptionCheckpoint,
+	accountsForAll = true
+): TokenMembers {
 	const states = readOriginStates(auditStore, dbisDb);
 	if (typeof states.get(0)?.generation !== 'string') {
 		throw new ClientError('This database has no readable generation; resubscribe to resynchronize', 409);
 	}
 	// an origin with no generation is no membership candidate, so a token issued before it was known would match
 	// without accounting for it, and a copy can have written its rows with no log here to catch that
-	for (const state of states.values()) {
-		if (typeof state.generation !== 'string') {
-			throw new ResumeHistoryUnavailableError(
-				`Origin ${state.name} has no single certified generation here, so no checkpoint accounts for its history; resubscribe to resynchronize`
-			);
+	if (accountsForAll) {
+		for (const state of states.values()) {
+			if (typeof state.generation !== 'string') {
+				throw new ResumeHistoryUnavailableError(
+					`Origin ${state.name} has no single certified generation here, so no checkpoint accounts for its history; resubscribe to resynchronize`
+				);
+			}
 		}
 	}
 	const candidates = new Map<string, string>();
@@ -697,7 +710,7 @@ function resolveTokenMembers(auditStore: any, dbisDb: any, token: SubscriptionCh
 	for (const state of states.values()) {
 		byName.set(state.name, state);
 		if (typeof state.generation === 'string') candidates.set(state.name, state.generation);
-		if (retainsBeginning(auditStore, state)) excludable.push(state.name);
+		if (!accountsForAll || retainsBeginning(auditStore, state)) excludable.push(state.name);
 	}
 	const membership = resolveMembership(token, candidates, excludable);
 	if (!membership) {

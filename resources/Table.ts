@@ -10523,21 +10523,21 @@ export function makeTable(options): TableResourceClass {
 				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 				let startTime = request.startTime;
 				let recordsSinceYield = 0;
+				const targetKey = isCollection ? undefined : keyArrayToString(thisId);
+				const prefix = thisId == null ? '' : String(keyArrayToString(thisId)).replace(/\/$/, '') + '/';
+				const inScope = (id: Id): boolean => {
+					if (!isCollection) return keyArrayToString(id) === targetKey;
+					if (thisId != null && !isDescendantId(thisId, id)) return false;
+					if (!request.onlyChildren) return true;
+					// a direct child, as live routing's ancestor depth decides it
+					const path = String(keyArrayToString(id));
+					const rest = (path.startsWith(prefix) ? path.slice(prefix.length) : path).replace(/\/$/, '');
+					return !rest.includes('/');
+				};
 
 				if (plan) {
 					state.pendingRealTimeQueue = null;
 					state.dropDuringReplay = true;
-					const targetKey = isCollection ? undefined : keyArrayToString(thisId);
-					const prefix = thisId == null ? '' : String(keyArrayToString(thisId)).replace(/\/$/, '') + '/';
-					const inScope = (id: Id): boolean => {
-						if (!isCollection) return keyArrayToString(id) === targetKey;
-						if (thisId != null && !isDescendantId(thisId, id)) return false;
-						if (!request.onlyChildren) return true;
-						// a direct child, as live routing's ancestor depth decides it
-						const path = String(keyArrayToString(id));
-						const rest = (path.startsWith(prefix) ? path.slice(prefix.length) : path).replace(/\/$/, '');
-						return !rest.includes('/');
-					};
 					const refuse = (refusal: Error): false => {
 						logger.debug?.(`Refused resuming a subscription to ${tableName} from a checkpoint: ${refusal.message}`);
 						try {
@@ -10647,23 +10647,44 @@ export function makeTable(options): TableResourceClass {
 							if (!isActive()) return;
 						}
 						// The position is this node's own watermark, which another origin can still commit below, so that
-						// origin's log is read from its boundary in the checkpoint issued beside the position. What that
-						// adds is below the position and optional: it moves no cursor and refuses no resume.
+						// origin's log is read from its boundary in the checkpoint issued beside the position. A log stays in
+						// this map until it yields an entry above the position; what it yields before is optional history,
+						// which moves no cursor and refuses no resume.
 						const originBoundaries = (request as any)[ORIGIN_BOUNDARIES];
-						let loweredStarts =
+						const loweredStarts =
 							resuming && isRocksDB && originBoundaries !== undefined
 								? originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime)
 								: undefined;
-						let replayedAboveStart = false;
-						const openReplayRange = () =>
-							auditStore.getRange({
-								start: startTime,
-								startByLog: loweredStarts,
-								exclusiveStart: true,
-								snapshot: false, // no need for a snapshot, audits don't change
-								until: liveRange,
-							});
-						let replayRange = openReplayRange();
+						const replayRange = auditStore.getRange(
+							loweredStarts
+								? {
+										start: startTime,
+										startByLog: loweredStarts,
+										excludeLogs: [],
+										includeLogName: true,
+										exclusiveStart: true,
+										snapshot: false,
+										until: liveRange,
+									}
+								: {
+										start: startTime,
+										exclusiveStart: true,
+										snapshot: false, // no need for a snapshot, audits don't change
+										until: liveRange,
+									}
+						);
+						// A prune can pass a lowered log's boundary while it is read. The log is then read from the position
+						// instead; once it has passed the position, the failure is one the position's own replay shares.
+						const readFailedLogsFromPosition = (): boolean => {
+							for (const name of replayRange.failedLogs) if (!loweredStarts!.has(name)) return false;
+							for (const name of [...replayRange.failedLogs]) {
+								loweredStarts!.delete(name);
+								replayRange.removeLog(name);
+								replayRange.failedLogs.delete(name);
+								replayRange.addLog(name);
+							}
+							return true;
+						};
 						const recordCursor = (key: number) => {
 							if (key < startTime) key = startTime;
 							// live delivery finishes a transaction the bound split, so a resume must start below it
@@ -10699,23 +10720,18 @@ export function makeTable(options): TableResourceClass {
 									replayIterator = replayRange[Symbol.iterator]();
 									continue;
 								}
-								// A lowered log that stops being readable (a prune can pass its boundary mid-read) is given up
-								// while nothing above the position has been replayed: the range starts over from the position
-								// alone, where a failure in history the position needs shows again.
-								if (loweredStarts && !replayedAboveStart && unreadableLogRefusal(replayRange)) {
-									loweredStarts = undefined;
-									replayIterator.return?.();
-									replayRange = openReplayRange();
-									replayIterator = replayRange[Symbol.iterator]();
+								if (loweredStarts?.size && replayRange.failedLogs.size > 0 && readFailedLogsFromPosition() && next.done)
 									continue;
-								}
 								if (next.done) {
 									replayEnded = true;
 									break;
 								}
 								const auditRecord = next.value;
-								const aboveStart = !(auditRecord.txnLogKey <= startTime);
-								if (aboveStart) replayedAboveStart = true;
+								let aboveStart = true;
+								if (loweredStarts) {
+									aboveStart = auditRecord.txnLogKey > startTime;
+									if (aboveStart) loweredStarts.delete(auditRecord.logName);
+								}
 								if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 									recordsSinceYield = 0;
 									await rest();
@@ -10734,7 +10750,6 @@ export function makeTable(options): TableResourceClass {
 								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								if (isLockControlType(auditRecord.type)) continue;
 								const isReload = auditRecord.type === 'reload';
-								// below the position, a marker or an entry naming no record is passed over, as a replay from the position does
 								if (!aboveStart && (isReload || auditRecord.recordId === undefined)) continue;
 								// the rows a reload back-filled have no history, so no replay can deliver them
 								if (isReload && replayRefusesReload)
@@ -10759,7 +10774,7 @@ export function makeTable(options): TableResourceClass {
 								}
 								// a marker is table-wide, as the live broadcast delivers it
 								if (resnapshots) state.reloadPending = true;
-								else if (thisId == null || isReload || isDescendantId(thisId, id)) {
+								else if (isReload || inScope(id)) {
 									// as live delivery converts it: a live entry dropped during the replay is delivered only here
 									const event = eventFromAudit(
 										state,
@@ -10779,7 +10794,7 @@ export function makeTable(options): TableResourceClass {
 												if (!checkResume(unreadableLogRefusal(replayRange))) return;
 												if (aboveStart) resumeCheckedThrough = auditRecord.txnLogKey;
 											}
-											if ((await subscription.waitForDrain()) === false) return;
+											if ((await subscription.waitForDrain()) === false || !isActive()) return;
 										}
 									}
 								}
