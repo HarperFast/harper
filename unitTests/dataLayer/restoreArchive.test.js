@@ -673,6 +673,54 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			}
 		});
 
+		it('leaves the staging, whose record still charges, when the charge cannot be kept', async function () {
+			const fixture = await seededDatabase();
+			const stage = () =>
+				stageArchive(Readable.from([fixture.archive]), {
+					databaseName: fixture.name,
+					databaseDir: fixture.dir,
+					blobRoots: getBlobPathsForDatabaseName(fixture.name),
+					acceptIncompatible: false,
+					restoredFrom: 'upload',
+				});
+			const metaDir = join(fixture.dir, '..', RESTORE_META_DIR);
+			const { record } = await stage();
+			const payload = record.archive.payload_bytes;
+			for (const area of stagingLeft(fixture.name)) rmSync(area, { recursive: true, force: true });
+			const quotaReport = join(env.get('rootPath'), 'quota-status.json');
+			const quotaBytes = 64 * 1024 ** 3;
+			const usedBytes = quotaBytes - Math.floor(quotaBytes * 0.05) - Math.floor(payload * 1.5);
+			writeFileSync(quotaReport, JSON.stringify({ usedBytes, quotaBytes, updatedAt: Date.now() - 1000 }));
+			const name = `${fixture.name}_new`;
+			databases.push(name);
+			let blocked;
+			try {
+				const jobId = await seedJob();
+				let queued;
+				await restoreBackupFromUpload(
+					{ ...SU, operation: 'restore_backup', database: name, payload: Readable.from([fixture.archive]) },
+					async (json) => {
+						queued = json;
+						return { message: `Starting job with id ${jobId}`, job_id: jobId };
+					}
+				);
+				// a directory where the charge goes, so the record cannot be moved there
+				blocked = join(metaDir, `${queued.staging_id}.charge`);
+				require('node:fs').mkdirSync(join(blocked, 'held'), { recursive: true });
+				const result = await asJob(jobId, () => restoreBackup(queued));
+				assert.strictEqual(result.restored_from, 'upload', 'the restore itself is unaffected');
+				assert.deepStrictEqual(await snapshot(loadedItems(name)), fixture.archived);
+				const [left] = stagingLeft(name);
+				assert.strictEqual(readStagedRecord(left).staging_id, queued.staging_id);
+				await assert.rejects(stage(), (error) => error.statusCode === 507);
+			} finally {
+				rmSync(quotaReport, { force: true });
+				if (blocked) rmSync(blocked, { recursive: true, force: true });
+				for (const area of [...stagingLeft(name), ...stagingLeft(fixture.name)])
+					rmSync(area, { recursive: true, force: true });
+			}
+		});
+
 		it('charges an archive whose staging is removed while an admission is reading it', async function () {
 			const fixture = await seededDatabase();
 			const stage = () =>
