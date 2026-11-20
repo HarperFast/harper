@@ -1,5 +1,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -95,6 +97,31 @@ suite(
 			strictEqual(backup.status, 'COMPLETE', `create_backup failed: ${JSON.stringify(backup)}`);
 			const backupId = backup.result?.backup_id ?? backup.message?.backup_id;
 			ok(Number.isInteger(backupId), `no backup_id in ${JSON.stringify(backup)}`);
+			const storage = readdirSync(ctx.harper.dataRootDir).find((entry) =>
+				existsSync(join(ctx.harper.dataRootDir, entry, DATABASE, 'CURRENT'))
+			);
+			ok(storage, 'source RocksDB directory exists');
+			const target = 'restore_lmdb_target';
+			const targetDir = join(ctx.harper.dataRootDir, storage, target);
+			const { open } = await import('lmdb');
+			const lmdb = open({ path: `${targetDir}.mdb`, noSubdir: true });
+			await lmdb.close();
+			try {
+				const before = readFileSync(`${targetDir}.mdb`);
+				const refused = await op({
+					operation: 'restore_backup',
+					database: DATABASE,
+					backup_id: backupId,
+					target_database: target,
+				});
+				strictEqual(refused.status, 409, refused.text);
+				ok(/Cannot claim.*LMDB/.test(refused.text), refused.text);
+				strictEqual(existsSync(targetDir), false);
+				ok(readFileSync(`${targetDir}.mdb`).equals(before), 'LMDB file is unchanged');
+			} finally {
+				rmSync(`${targetDir}.mdb`, { force: true });
+				rmSync(`${targetDir}.mdb-lock`, { force: true });
+			}
 			await insert(TABLE, [{ id: 'c', extra: 'after the backup' }]);
 
 			const restore = await runJob({ operation: 'restore_backup', database: DATABASE, backup_id: backupId });

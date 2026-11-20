@@ -104,7 +104,8 @@ lock blocks a claim until it has.
 - **A pin lives exactly as long as its restore's lock, marker or receipt (`pinIsLive`)**, so it needs
   no owner, expiry or sweep. A marked `target_database` is proved this source's debris by the marker's
   `source` line (`assertTargetClaimable`), never by a pin, except a marker that predates the line
-  (harper#3106); an in-place restore is always admitted. The existence check and the
+  (harper#3106). `assertRestoreTargetNotLmdb` checks for a sibling `.mdb` at admission on each restore route,
+  before any in-place or recovery exemption; an in-place RocksDB restore is admitted. The existence check and the
   pin are one step under the management lock. A rerun over an interrupted attempt retires the
   inherited pins (`superseded_pin_ids`) only once its own source has proved: until then the earlier
   backup may be the blocked database's only recovery source.
@@ -179,8 +180,8 @@ restore and the next startup applies it, before anything can open the target.
 - **Drain.** `bin/restart.ts` with `drain` runs `shutdownProcess(deadline)`, the path a SIGTERM takes,
   so main-thread components flush too (`threads.count=0`); the exit watchdog adds
   `threads.shutdownTimeout`.
-- **Attempt.** Counted before any native work. Peers are re-checked under the fence (`terminal` if
-  any). A `pending` receipt with `retain_previous` takes the pre-restore backup in the restore child
+- **Attempt.** Counted before any native work. LMDB siblings and peers are re-checked under the fence
+  (`terminal` if either exists). A `pending` receipt with `retain_previous` takes the pre-restore backup in the restore child
   (`createPreRestoreBackup`, the one backup allowed past the reservation; `pre_restore_for` lets a
   retry, or this attempt once its child fails after the manifest, adopt it) and pins it. Only the copy's
   own failure, a conflict aside, is terminal (`preRestoreBackupFailed`); a pin failure uses the budget. Then `applyProveAndCommit`, the step online and offline restores share,

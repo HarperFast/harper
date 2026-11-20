@@ -92,15 +92,20 @@ suite('Local application deployment', (ctx: ContextWithHarper) => {
 
 		// Pre-populate records so GETs have data to hit
 		const SEED_COUNT = 200;
-		await Promise.all(
-			Array.from({ length: SEED_COUNT }, (_, i) =>
-				fetch(`${base}/${i}`, {
-					method: 'PUT',
-					headers: jsonHeaders,
-					body: JSON.stringify({ name: `seed-${i}` }),
-				}).then((r) => r.body?.cancel())
-			)
-		);
+		for (let start = 0; start < SEED_COUNT; start += CONCURRENCY) {
+			await Promise.all(
+				Array.from({ length: Math.min(CONCURRENCY, SEED_COUNT - start) }, async (_, offset) => {
+					const id = start + offset;
+					const response = await fetch(`${base}/${id}`, {
+						method: 'PUT',
+						headers: jsonHeaders,
+						body: JSON.stringify({ name: `seed-${id}` }),
+					});
+					const text = await response.text();
+					ok(response.ok, `Seed ${id} failed: ${response.status} ${text}`);
+				})
+			);
+		}
 
 		const latencies: number[] = [];
 		let errors = 0;
