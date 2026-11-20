@@ -979,7 +979,7 @@ Returns the expiration time, if one is set.
 
 For caching tables: return `true` to serve the stale entry while revalidation happens concurrently; `false` to wait for the fresh value.
 
-The hook is synchronous: return a boolean, not a promise.
+The hook is synchronous: return a boolean, not a promise. <VersionBadge type="changed" version="v5.4.2" /> A returned promise does not allow serving the stale record, and Harper logs a warning the first time a table's hook returns one; before v5.4.2 any returned promise allowed it.
 
 <VersionBadge type="changed" version="v5.4.2" /> Define the hook on the caching table's class or on the source passed to [`sourcedFrom`](#sourcedfromresource-options). A hook on the table's class takes precedence over one on the source. On the source, it can be a method of a plain source object, a static method of a source class, or an instance method of a source class; a static method is used before an instance method. An instance method is called on a new instance of the source for that id, which has no record loaded, so read the stale record from `entry.value`. Before v5.4.2 a hook on the source was ignored, and a query on a subclass of the table ignored that subclass's hook and refreshed its rows from the base table's source.
 
