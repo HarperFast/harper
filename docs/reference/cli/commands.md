@@ -431,6 +431,24 @@ Restart a running Harper instance regardless if its a foreground (`harper`, `har
 harper restart
 ```
 
+<VersionBadge type="changed" version="v5.4.0" />
+
+`harper restart` sends the running instance the [`restart`](../operations-api/operations.md#restart) operation over its local domain socket, and prints the reply once the instance accepts it. It returns `0` when the restart has been accepted, before the replacement process is ready. A foreground instance's process exits and Harper continues in the background. When no Harper is running for the root path, `harper restart` starts one, as [`harper start`](#harper-start) does.
+
+If the running instance cannot be reached, has no domain socket, or refuses the restart, `harper restart` prints the error and returns `1`. Before v5.4.0, `harper restart` never reached a running instance: it printed that a restart was under way, then exited `4` with `Harper is already running`.
+
+Without `target=`, `harper restart` always acts on the local instance. It ignores `HARPER_CLI_TARGET`, `CLI_TARGET` and the target saved by `harper login`, which other CLI operations use. To restart a remote instance, name it:
+
+```bash
+harper restart target=https://server.com:9925
+```
+
+That restarts the one instance, and `harper restart replicated=true` returns `1` without restarting anything. To restart every node in a cluster one at a time, use [`restart_service`](../operations-api/operations.md#restart_service-replicated) with `replicated=true`:
+
+```bash
+harper restart_service service=http_workers replicated=true target=https://server.com:9925
+```
+
 ### `harper start`
 
 Available since: v4.1.0
