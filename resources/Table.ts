@@ -1279,6 +1279,7 @@ interface TableResourceClass {
 	getResidencyById: (id: Id) => number | void;
 	readonly residency: Readonly<ResidencyPolicy> | undefined;
 	_setResidencyPolicy(policy: ResidencyPolicy): void;
+	_setSealed(value: boolean | undefined): void;
 	_adoptCatalogExpiration(expiration?: number, eviction?: number, expiryScan?: boolean): void;
 	_armCleanupScan(): void;
 	getResidencySlot(id: Id, record?: object): number;
@@ -2150,7 +2151,6 @@ export function makeTable(options): TableResourceClass {
 		auditStore,
 		schemaDefined,
 		dbisDB: dbisDb,
-		sealed,
 		splitSegments,
 		replicate,
 		description,
@@ -2167,7 +2167,7 @@ export function makeTable(options): TableResourceClass {
 	const tableRootStore = primaryStore.rootStore;
 	const tableRootPath = tableRootStore.path;
 	registerResidencyRoot(databaseName, tableRootStore, !!options.residency);
-	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
+	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes, sealed } = options;
 	const isRocksDB = primaryStore instanceof RocksDatabase;
 	let residencyPolicy: Readonly<ResidencyPolicy> | undefined =
 		options.residency && normalizeResidencyPolicy(options.residency);
@@ -3058,6 +3058,11 @@ export function makeTable(options): TableResourceClass {
 		static getResidencyById: (id: Id) => number | void;
 		static get residency() {
 			return residencyPolicy;
+		}
+		static _setSealed(value: boolean | undefined) {
+			if (value === sealed) return;
+			sealed = TableResource.sealed = value;
+			primaryKeyGranted = new WeakMap();
 		}
 		static _setResidencyPolicy(policy: ResidencyPolicy) {
 			const normalized = normalizeResidencyPolicy(policy);

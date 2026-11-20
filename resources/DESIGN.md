@@ -221,6 +221,10 @@ A self-committing `ImmediateTransaction` reports `OPEN` with no commit owner. **
 
 An `origin: 'cluster'` definition is a peer snapshot, so `table()` only adds from it; drops never converge via gossip. `@table` omitting a TTL clears it; `table()` omitting one keeps it (`clusterSchemaMerge.test.js`).
 
+## A re-declared `audit: false` applies at the next load
+
+`subscribe()` turns audit on for an unaudited table and an open subscription reads its events from the audit log, so a declaration never turns audit off on a loaded class; `sealed` and `replicate` apply at once on the declaring thread and at every other thread's reload (`initStores`; `tableSettingsReassert.test.js`).
+
 ## `drop_attribute` never removes the primary key, and a strip keeps each row's version
 
 `removeAttributes` refuses the primary key (400) before any change (#3574). `stripAttributeValues` keeps each row's version and metadata; a raw `put` drops the metadata prefix (#1762; `stripAttributeValues.test.js`).
