@@ -157,10 +157,11 @@ export const RECEIVED_IDENTITY_REF = 0x80000000;
 // copy it into an audit entry's previous refs, where it later reads as missing history. Each degrades that row to
 // the behavior before boundaries existed, and only rows that held a delete under a record-less or later write carry one.
 const COPIED_DELETE_REF = 0x40000000;
-// A resequenced write keeps the (newer) version it merged onto, so one version identifies two
-// different stored values and version equality proves nothing. The metadata word this is set in is
-// the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
-// byte its predicate requires — so the bit is what stops the native layer vouching for the version.
+// A resequenced write keeps the (newer) version it merged onto (RocksDB) or a version no newer than it
+// (LMDB), so one version can identify two different stored values and version equality proves nothing.
+// The metadata word this is set in is the same header word the RocksDB VerificationTable reads at value
+// offset 8 — ACTION_32_BIT is the tag byte its predicate requires — so the bit is what stops the native
+// layer vouching for the version.
 export const VERSION_REUSED = constants.VERSION_NOT_UNIQUE_FLAG;
 // The bit is persisted in every resequenced record, so a rocksdb-js that moved it down onto one of
 // the flags above (or up into the tag byte) would silently change what records already on disk
@@ -183,6 +184,12 @@ export const HAS_REPLICA_DEADLINE = 0x200000;
 if (VERSION_REUSED === HAS_REPLICA_DEADLINE) throw new Error('VERSION_REUSED collides with HAS_REPLICA_DEADLINE');
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
+// LMDB only: the stored version once stepped back, so it no longer marks the highest version the row held and a
+// later write can step forward onto one an earlier state held. Always set with VERSION_REUSED, and carried by every
+// later write, since nothing records how far back it stepped. Record-only, like FULL_WRITE_HEAD.
+export const VERSION_REGRESSED = 0x80000;
+if (VERSION_REUSED === VERSION_REGRESSED)
+	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with VERSION_REGRESSED`);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
@@ -1110,15 +1117,17 @@ export function recordUpdater(
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
-		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
-		if (
-			isRocksDB &&
-			record !== undefined &&
-			(options?.unchangedValue
-				? existingEntry?.metadataFlags & VERSION_REUSED
-				: versionIsReused(newVersion, existingEntry))
-		)
-			metadataInNextEncoding |= VERSION_REUSED;
+		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value. The
+		// VERSION_REGRESSED carry is tested before versionIsReused, so a tie at the stepped-back version keeps it.
+		if (record !== undefined) {
+			if (options?.unchangedValue)
+				metadataInNextEncoding |= existingEntry?.metadataFlags & (VERSION_REUSED | VERSION_REGRESSED);
+			else if (!isRocksDB && existingEntry?.metadataFlags & VERSION_REGRESSED)
+				metadataInNextEncoding |= VERSION_REUSED | VERSION_REGRESSED;
+			else if (versionIsReused(newVersion, existingEntry))
+				metadataInNextEncoding |=
+					!isRocksDB && newVersion < existingEntry.version ? VERSION_REUSED | VERSION_REGRESSED : VERSION_REUSED;
+		}
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
