@@ -61,7 +61,11 @@ describe('a server.getUser override that returns a stored name with another role
 	beforeEach(() => {
 		warnings = [];
 		originalWarn = harperLogger.warn;
-		harperLogger.warn = (...args) => warnings.push(args.join(' '));
+		// only this check's lines: anything else on the thread may warn meanwhile
+		harperLogger.warn = (...args) => {
+			const line = args.join(' ');
+			if (line.startsWith('server.getUser returned user')) warnings.push(line);
+		};
 		originalGetUser = server.getUser;
 	});
 
