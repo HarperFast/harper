@@ -218,7 +218,9 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		logger.error(err);
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
-	if (!user) throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+	if (!user?.active) {
+		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+	}
 
 	let superUser: boolean = false;
 	if (user.role?.permission) {
@@ -466,6 +468,9 @@ async function validateToken(token: string, tokenType: string, deferInvalidToken
 		}
 
 		const user: any = await findAndValidateUser(tokenVerified.username, undefined, false);
+		if (!user.active) {
+			throw credentialRejectionError('Token user has no stored record', HTTP_STATUS_CODES.UNAUTHORIZED);
+		}
 		if (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token)) {
 			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}

@@ -229,4 +229,5 @@ For simple or server-to-server scenarios, see [Basic Authentication](./basic-aut
 
 - Always use HTTPS in production to protect tokens in transit. See [HTTP / TLS](../http/tls.md).
 - Store tokens securely; treat them like passwords.
-- If a token is compromised, it will remain valid until it expires. Consider setting shorter `operationTokenTimeout` values in high-security environments.
+- A user-bound operation token requires an active user record for its username.
+- Use shorter `operationTokenTimeout` values to limit how long an exposed operation token can be used.

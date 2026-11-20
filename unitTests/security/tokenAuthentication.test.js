@@ -349,7 +349,7 @@ describe('test createTokens', () => {
 	let update_stub;
 	beforeEach(() => {
 		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => {
-			return { username: u, role: { permission: { super_user: true } } };
+			return { username: u, active: true, role: { permission: { super_user: true } } };
 		});
 		update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
@@ -414,7 +414,7 @@ describe('test createTokens', () => {
 		assert.deepStrictEqual(error.message, 'invalid credentials');
 
 		//test good credentials, no RSA keys
-		validate_user_stub.callsFake(async (u, _pw) => ({ username: u }));
+		validate_user_stub.callsFake(async (u, _pw) => ({ username: u, active: true }));
 		try {
 			result = await token_auth.createTokens({ username: 'HDB_USER', password: 'pass' });
 		} catch (e) {
@@ -528,7 +528,9 @@ describe('test validateOperationToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
+		validate_user_stub = sandbox
+			.stub(user, 'findAndValidateUser')
+			.callsFake(async (u, _pw) => ({ username: u, active: true }));
 
 		await testUtils.seedUsers(
 			new Map([
@@ -605,23 +607,14 @@ describe('test validateOperationToken function', () => {
 		assert.deepStrictEqual(validate_error.message, 'Cannot complete request: User is inactive');
 	});
 
-	it('test non-existent user', async () => {
-		let user;
-		try {
-			user = await token_auth.validateOperationToken(non_user_tokens.operation_token);
-		} catch {}
-
-		assert.deepStrictEqual(recordFields(user), { username: 'non_user' });
+	it('rejects a signed operation token for a non-existent user', async () => {
+		await assert.rejects(token_auth.validateOperationToken(non_user_tokens.operation_token), {
+			message: 'invalid token',
+			statusCode: 401,
+		});
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_stub.callCount === 1);
-		let validate_error;
-		try {
-			await validate_user_stub.firstCall.returnValue;
-		} catch (e) {
-			validate_error = e;
-		}
-		assert(validate_error === undefined);
 	});
 
 	it('test bad token', async () => {
@@ -971,7 +964,9 @@ describe('test validateLoginToken function', () => {
 		let update_stub = sandbox.stub(insert, 'update').callsFake(async (_update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
+		validate_user_stub = sandbox
+			.stub(user, 'findAndValidateUser')
+			.callsFake(async (u, _pw) => ({ username: u, active: true }));
 
 		await testUtils.seedUsers(
 			new Map([
@@ -1030,9 +1025,11 @@ describe('test validateLoginToken function', () => {
 		assert.deepStrictEqual(error.message, 'invalid token');
 	});
 
-	it('test non-existent user login token', async () => {
-		const result_user = await token_auth.validateLoginToken(non_user_login_token);
-		assert.deepStrictEqual(recordFields(result_user), { username: 'non_user' });
+	it('rejects a signed login token for a non-existent user', async () => {
+		await assert.rejects(token_auth.validateLoginToken(non_user_login_token), {
+			message: 'invalid token',
+			statusCode: 401,
+		});
 	});
 
 	it('test bad login token', async () => {
@@ -1099,7 +1096,9 @@ describe('test validateRefreshToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		const validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
+		const validate_user_stub = sandbox
+			.stub(user, 'findAndValidateUser')
+			.callsFake(async (u, _pw) => ({ username: u, active: true }));
 
 		token_timeout = setTokenTimeout(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT, '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
@@ -1253,7 +1252,9 @@ describe('test refreshOperationToken function', () => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, _pw) => ({ username: u }));
+		let validate_user_stub = sandbox
+			.stub(user, 'findAndValidateUser')
+			.callsFake(async (u, _pw) => ({ username: u, active: true }));
 
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
 		old_user_tokens = await token_auth.createTokens({ username: 'old_user', password: 'notcool' });

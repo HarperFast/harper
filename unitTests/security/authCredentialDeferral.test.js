@@ -707,7 +707,7 @@ describe('#2703 principal resolution failures become decisions, not thrown error
 
 			assert.strictEqual(response.status, 401);
 			assert.strictEqual(body.error, 'SSO session expired');
-			assert.deepStrictEqual(trace, [], 'Harper owns every operations route, so it never defers');
+			assert.deepStrictEqual(trace, [], 'the Operations API settles an override session rejection in place');
 		});
 
 		it('still authenticates a session the override accepts', async () => {

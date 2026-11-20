@@ -118,7 +118,7 @@ suite('the operations domain socket runs as the local principal', { skip: skipSu
 		equal(asBearer.body.username, ctx.harper.admin.username);
 	});
 
-	test('with no stored users the socket still administers, minting fails clearly, and the token no longer authorizes', async () => {
+	test('with no stored users the socket can administer, minting fails, and the existing token gets 401', async () => {
 		const users = await overSocket(socketPath, { operation: 'list_users' });
 		equal(users.status, 200, JSON.stringify(users.body));
 		// a raw system-table delete: drop_user refuses to remove the last super user
@@ -140,9 +140,8 @@ suite('the operations domain socket runs as the local principal', { skip: skipSu
 		equal(minted.status, 409, JSON.stringify(minted.body));
 		equal(minted.body.error, 'no user to mint a token for; create a user first');
 
-		// a token naming a deleted user resolves to a principal with no role
 		const asBearer = await overTcp(ctx, { operation: 'user_info' }, `Bearer ${operationToken}`);
-		equal(asBearer.status, 403, JSON.stringify(asBearer.body));
+		equal(asBearer.status, 401, JSON.stringify(asBearer.body));
 	});
 });
 
