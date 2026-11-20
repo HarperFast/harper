@@ -584,7 +584,6 @@ export function configValidator(configJson, skipFsValidation = false) {
 					perSecond: number.min(0).optional(),
 					burst: number.min(1).optional(),
 				})
-					// a misspelled key would otherwise leave the limit silently off
 					.unknown(false)
 					.optional(),
 			}).required(),

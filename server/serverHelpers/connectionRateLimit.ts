@@ -8,10 +8,10 @@ export interface ConnectionRateLimit {
 	burst?: number;
 }
 
-export type ConnectionAdmission = (address: string | undefined) => boolean;
+type ConnectionAdmission = (address: string | undefined) => boolean;
 
 const PRUNE_INTERVAL_MS = 10_000;
-// Each accept advances the prune this many entries, so no single accept pays for the whole map
+// no single accept pays for sweeping the whole map
 const PRUNE_STEP = 64;
 // Past this many tracked addresses a new one is admitted untracked: memory stays bounded, no tracked bucket is
 // evicted (eviction would refund it), and a flood of distinct sources cannot starve the legitimate new ones the
@@ -34,26 +34,37 @@ export function createConnectionRateLimiter(
 	if (!(perSecond > 0)) return undefined;
 	const burst = Math.max(1, Number(limit?.burst) > 0 ? Number(limit?.burst) : perSecond);
 	const buckets = new Map<string, TokenBucket>();
-	let pruning: Iterator<[string, TokenBucket]> | undefined;
+	let pruning: Iterator<string> | undefined;
 	let lastPruneAt = clock();
 	let dropped = 0;
 	let untracked = 0;
 	let lastReportAt = -Infinity;
+	let pendingReport: ReturnType<typeof setTimeout> | undefined;
 
-	function pruneStep(entries: Iterator<[string, TokenBucket]>) {
+	function pruneStep(keys: Iterator<string>, now: number) {
 		for (let i = 0; i < PRUNE_STEP; i++) {
-			const next = entries.next();
+			const next = keys.next();
 			if (next.done) {
 				pruning = undefined;
 				return;
 			}
 			// only a full bucket is indistinguishable from a new one
-			if (next.value[1].isFull()) buckets.delete(next.value[0]);
+			if (buckets.get(next.value).isFull(now)) buckets.delete(next.value);
 		}
 	}
 
 	function report(now: number) {
-		if (now - lastReportAt < REPORT_INTERVAL_MS) return;
+		if (now - lastReportAt < REPORT_INTERVAL_MS) {
+			// a flood that ends inside the interval still gets its count logged
+			pendingReport ??= setTimeout(
+				() => {
+					pendingReport = undefined;
+					report(clock());
+				},
+				REPORT_INTERVAL_MS - (now - lastReportAt)
+			).unref();
+			return;
+		}
 		lastReportAt = now;
 		if (dropped > 0) {
 			harperLogger.warn?.(
@@ -74,9 +85,9 @@ export function createConnectionRateLimiter(
 		const now = clock();
 		if (!pruning && now - lastPruneAt >= PRUNE_INTERVAL_MS) {
 			lastPruneAt = now;
-			pruning = buckets.entries();
+			pruning = buckets.keys();
 		}
-		if (pruning) pruneStep(pruning);
+		if (pruning) pruneStep(pruning, now);
 		const key = sourceAddressKey(address);
 		let bucket = buckets.get(key);
 		if (!bucket) {
@@ -85,10 +96,10 @@ export function createConnectionRateLimiter(
 				report(now);
 				return true;
 			}
-			bucket = new TokenBucket(perSecond, burst, clock);
+			bucket = new TokenBucket(perSecond, burst, clock, now);
 			buckets.set(key, bucket);
 		}
-		if (bucket.tryConsume()) return true;
+		if (bucket.tryConsume(now)) return true;
 		dropped++;
 		report(now);
 		return false;
@@ -111,25 +122,29 @@ export function gateConnectionEvents(server: any, admit: ConnectionAdmission): v
 	};
 }
 
-export function gateListener(listener: (socket: any) => void, admit: ConnectionAdmission): (socket: any) => void {
+/** `tcp`: the listener's sockets sit directly on a TCP handle, so a refused one can be reset with an RST */
+export function gateListener(
+	listener: (socket: any) => void,
+	admit: ConnectionAdmission,
+	tcp: boolean
+): (socket: any) => void {
 	return (socket) => {
 		if (admit(socket.remoteAddress)) listener(socket);
-		else resetConnection(socket);
+		else if (tcp) resetConnection(socket);
+		else {
+			socket.on('error', ignoreError);
+			socket.destroy();
+		}
 	};
 }
 
-// An RST leaves no TIME_WAIT socket behind on this side, which matters at flood rates. resetAndDestroy throws
-// for a non-TCP handle (a Unix socket) and emits an error on a socket with no handle, so both fall back to
-// destroy; no listener has attached an error handler to a refused socket.
+// An RST leaves no TIME_WAIT socket behind on this side, which matters at flood rates. resetAndDestroy emits an
+// error on a socket with no handle, so that falls back to destroy; no listener has attached an error handler to a
+// refused socket.
 function resetConnection(socket: any): void {
 	socket.on('error', ignoreError);
-	if (socket._handle && typeof socket.resetAndDestroy === 'function') {
-		try {
-			socket.resetAndDestroy();
-			return;
-		} catch {}
-	}
-	socket.destroy();
+	if (socket._handle && typeof socket.resetAndDestroy === 'function') socket.resetAndDestroy();
+	else socket.destroy();
 }
 
 function ignoreError() {}

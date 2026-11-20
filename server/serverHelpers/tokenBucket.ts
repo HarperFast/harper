@@ -1,7 +1,7 @@
 /**
  * Token bucket: starts full at `burst`, refills at `rate` tokens per
- * second up to `burst`, drained by `tryConsume(1)`. `tokens` and
- * `lastRefill` advance on every call that refills.
+ * second up to `burst`, drained one token per `tryConsume()`. A caller that
+ * already read the clock passes `now` instead of reading it again.
  */
 export class TokenBucket {
 	private rate: number;
@@ -9,15 +9,15 @@ export class TokenBucket {
 	private tokens: number;
 	private lastRefill: number;
 	private clock: () => number;
-	constructor(rate: number, burst: number, clock: () => number = Date.now) {
+	constructor(rate: number, burst: number, clock: () => number = Date.now, now: number = clock()) {
 		this.rate = rate;
 		this.burst = burst;
 		this.tokens = burst;
 		this.clock = clock;
-		this.lastRefill = clock();
+		this.lastRefill = now;
 	}
-	tryConsume(): boolean {
-		this.refill();
+	tryConsume(now: number = this.clock()): boolean {
+		this.refill(now);
 		if (this.tokens >= 1) {
 			this.tokens -= 1;
 			return true;
@@ -27,13 +27,13 @@ export class TokenBucket {
 	/** Apply a changed rate/burst without refunding tokens already spent. */
 	reconfigure(rate: number, burst: number): void {
 		if (rate === this.rate && burst === this.burst) return;
-		this.refill();
+		this.refill(this.clock());
 		this.rate = rate;
 		this.burst = burst;
 		this.tokens = Math.min(this.tokens, burst);
 	}
-	isFull(): boolean {
-		this.refill();
+	isFull(now: number = this.clock()): boolean {
+		this.refill(now);
 		return this.tokens >= this.burst;
 	}
 	/**
@@ -41,11 +41,10 @@ export class TokenBucket {
 	 * buckets so a denial doesn't burn a token in *another* bucket.
 	 */
 	hasToken(): boolean {
-		this.refill();
+		this.refill(this.clock());
 		return this.tokens >= 1;
 	}
-	private refill(): void {
-		const t = this.clock();
+	private refill(t: number): void {
 		const elapsedSec = (t - this.lastRefill) / 1000;
 		this.lastRefill = t;
 		if (elapsedSec <= 0) return;

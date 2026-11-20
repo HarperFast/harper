@@ -1,5 +1,4 @@
 const assert = require('node:assert');
-const sinon = require('sinon');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { createServer, connect } = require('node:net');
 const tls = require('node:tls');
@@ -16,6 +15,18 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 
 describe('connectionRateLimit', () => {
+	/** Runs `body` with harperLogger.warn recording into the array it is given. */
+	function withWarnings(body) {
+		const originalWarn = harperLogger.warn;
+		const warnings = [];
+		harperLogger.warn = (message) => warnings.push(message);
+		try {
+			body(warnings);
+		} finally {
+			harperLogger.warn = originalWarn;
+		}
+	}
+
 	let clock;
 	const now = () => clock;
 	beforeEach(() => {
@@ -79,56 +90,47 @@ describe('connectionRateLimit', () => {
 		});
 
 		it('admits a new address untracked once the tracked-address cap is reached, and says so', () => {
-			const warn = sinon.stub(harperLogger, 'warn');
-			try {
+			withWarnings((warnings) => {
 				const admit = createConnectionRateLimiter({ perSecond: 1, burst: 1 }, 'test', now);
 				for (let i = 0; i < 100_000; i++) admit(`10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`);
 				assert.equal(admit('192.0.2.1'), true);
 				assert.equal(admit('192.0.2.1'), true);
-				assert.equal(warn.callCount, 1);
-				assert.match(warn.firstCall.args[0], /admitted 1 connection\(s\) from new addresses without a rate limit/);
+				assert.equal(warnings.length, 1);
+				assert.match(warnings[0], /admitted 1 connection\(s\) from new addresses without a rate limit/);
 				assert.equal(admit('10.0.0.0'), false);
-			} finally {
-				warn.restore();
-			}
+			});
 		});
 
 		it('reports drops as one count per minute, never one line per drop', () => {
-			const warn = sinon.stub(harperLogger, 'warn');
-			try {
+			withWarnings((warnings) => {
 				const admit = createConnectionRateLimiter({ perSecond: 0.001, burst: 1 }, 'mqtt on port 1883', now);
 				admit('10.0.0.1');
 				for (let i = 0; i < 100; i++) admit('10.0.0.1');
-				assert.equal(warn.callCount, 1);
-				assert.match(warn.firstCall.args[0], /^mqtt on port 1883: dropped 1 connection/);
+				assert.equal(warnings.length, 1);
+				assert.match(warnings[0], /^mqtt on port 1883: dropped 1 connection/);
 				clock = 59_999;
 				admit('10.0.0.1');
-				assert.equal(warn.callCount, 1);
+				assert.equal(warnings.length, 1);
 				clock = 60_000;
 				admit('10.0.0.1');
-				assert.equal(warn.callCount, 2);
-				assert.match(warn.secondCall.args[0], /dropped 101 connection/);
-			} finally {
-				warn.restore();
-			}
+				assert.equal(warnings.length, 2);
+				assert.match(warnings[1], /dropped 101 connection/);
+			});
 		});
 
 		it('prunes refilled addresses a step per accept, so new addresses are limited again after the cap', () => {
-			const warn = sinon.stub(harperLogger, 'warn');
-			try {
+			withWarnings(() => {
 				const admit = createConnectionRateLimiter({ perSecond: 1, burst: 1 }, 'test', now);
 				for (let i = 0; i < 100_000; i++) admit(`10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`);
 				clock = 10_000;
 				admit('192.0.2.1');
-				// one step of the prune frees room, but nowhere near the whole map at once
+				// the first step of the prune frees room for a new address
 				assert.equal(admit('192.0.2.2'), true);
 				assert.equal(admit('192.0.2.2'), false);
 				for (let i = 0; i < 2_000; i++) admit('192.0.2.3');
 				for (let i = 0; i < 2_000; i++) assert.equal(admit(`192.0.${3 + (i >> 8)}.${i & 255}`), true);
 				assert.equal(admit('192.0.3.0'), false);
-			} finally {
-				warn.restore();
-			}
+			});
 		});
 
 		it('keeps an address still in debt across a prune', () => {
@@ -211,7 +213,8 @@ describe('connectionRateLimit', () => {
 			const destroyed = [];
 			const listener = gateListener(
 				(socket) => called.push(socket.remoteAddress),
-				(address) => address === 'ok'
+				(address) => address === 'ok',
+				false
 			);
 			listener({ remoteAddress: 'ok', on() {}, destroy: () => destroyed.push('ok') });
 			listener({ remoteAddress: 'no', on() {}, destroy: () => destroyed.push('no') });
@@ -224,7 +227,7 @@ describe('connectionRateLimit', () => {
 			const admit = createConnectionRateLimiter({ perSecond: 1, burst: 1 }, 'test', now);
 			const admitted = [];
 			const server = createServer(
-				withProxyProtocol(gateListener((socket) => admitted.push(socket.remoteAddress), admit))
+				withProxyProtocol(gateListener((socket) => admitted.push(socket.remoteAddress), admit, false))
 			);
 			const directory = mkdtempSync(join(tmpdir(), 'conn-rate-'));
 			const path = join(directory, 's.sock');

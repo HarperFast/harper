@@ -941,7 +941,7 @@ function onSocket(listener?: any, options?: any) {
 			},
 			// Bun's TLS server is not known to deliver 'connection' through emit before its handshake, so
 			// there the gate falls back to the post-handshake listener rather than possibly not running
-			admitConnection && isBun ? gateListener(listener, admitConnection) : listener
+			admitConnection && isBun ? gateListener(listener, admitConnection, false) : listener
 		);
 		socketServer = secureSocketServer;
 		if (admitConnection && !isBun) gateConnectionEvents(secureSocketServer, admitConnection);
@@ -983,7 +983,7 @@ function onSocket(listener?: any, options?: any) {
 			// forwarded mTLS identity too late.
 			const udsServer: any = createSocketServer(
 				{ ...socketOptionDefaults },
-				withProxyProtocol(admitConnection ? gateListener(listener, admitConnection) : listener)
+				withProxyProtocol(admitConnection ? gateListener(listener, admitConnection, false) : listener)
 			);
 
 			udsServer.isPerThreadSocket = true;
@@ -1002,7 +1002,7 @@ function onSocket(listener?: any, options?: any) {
 		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });
 		socketServer = createSocketServer(
 			{ ...socketOptionDefaults },
-			admitConnection ? gateListener(listener, admitConnection) : listener
+			admitConnection ? gateListener(listener, admitConnection, true) : listener
 		);
 		// See the securePort path above: opt out of reusePort only on macOS so every worker can
 		// accept connections for this listener elsewhere, and mark it worker-owned.
