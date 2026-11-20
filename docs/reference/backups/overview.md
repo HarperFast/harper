@@ -26,6 +26,8 @@ Every managed backup includes the database's transaction log — so a restored d
 
 Blobs are copied after the data files, so a record evicted after that capture can still be in the backup without its blob. [`restore_backup`](./operations.md#restore_backup) detects this after it has replaced the database and before it publishes the restored one. In rare timing the same can happen to a record evicted shortly before the backup ([harper#4507](https://github.com/HarperFast/harper/issues/4507)).
 
+It also happens to a record evicted from a database that Harper recovered by replaying its transaction log when it opened, for example at startup after a crash or after a restore, and that has had no write since. The backup's data files are current, but it records a replay position from before that recovery, so a restore replays the evicted record's write. [`verify_backup`](./operations.md#verify_backup) does not detect this. Write any record to a table in that database before taking the backup.
+
 Each backup copies the transaction-log snapshot. Blob snapshots use hard links when supported on the same filesystem, and copy the files otherwise. Measure physical repository growth over successive backups, including the log copies and blob snapshots. Exports that do not preserve file sharing require space for the full materialized copies.
 
 The long-running operations (`create_backup`, `verify_backup`, `restore_backup`) run as background [jobs](../operations-api/operations.md#jobs) when invoked through a running server: the operation returns a `job_id` immediately, and [`get_job`](../operations-api/operations.md#get_job) reports the outcome.

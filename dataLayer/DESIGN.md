@@ -232,11 +232,18 @@ engine's backup misses them; every backup operation handles them alongside (`exc
 stores do not (`openRocksDatabase`), so the default skips the flush and the backup's table files lack
 every unflushed write. Replay restores the logged ones. It cannot rebuild an eviction, so the backup
 keeps the evicted record, the blob snapshot no longer has its blob, and restore refuses the backup.
-Two gaps remain. A write that commits while the backup runs is subject to the skew below. And the
+Three gaps remain. A write that commits while the backup runs is subject to the skew below. The
 binding copies the replay position (`txn.state`) after the table files, from a flush listener that
 can still be running when the flush returns: a backup that copies it too early replays the evicted
-record's put on restore ([harper#4507](https://github.com/HarperFast/harper/issues/4507)). Enforced
-by `integrationTests/database/backup-flushes-table-stores.test.ts`.
+record's put on restore ([harper#4507](https://github.com/HarperFast/harper/issues/4507)). And a
+flush moves `txn.state` only to a position one of the binding's logged commits recorded since the
+database was opened. Replayed writes are not re-logged (`replayLogs`) and an eviction is not logged,
+so a database recovered by boot or restore replay, with no logged write since, flushes without
+moving `txn.state`: its backup's table files are current, but restore replays from where that
+recovery started and brings back a record evicted since
+([harper#4510](https://github.com/HarperFast/harper/pull/4510)). One logged write to any table of
+that database before the backup moves the position past the replayed entries. Enforced by
+`integrationTests/database/backup-flushes-table-stores.test.ts`.
 
 **Completion manifest (`dataLayer/backupManifest.ts`).** The engine backup is visible before the blob
 snapshot is copied, so `<backupDir>/manifests/<backupId>.json`, recording the blob policy, is written
