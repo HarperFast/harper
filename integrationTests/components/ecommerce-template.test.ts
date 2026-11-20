@@ -1,14 +1,9 @@
 /**
  * ecommerce-template component integration test.
  *
- * Deploys a pinned commit of harper-ecommerce-template (Next.js via @harperfast/nextjs) and verifies
- * the Next.js pages Harper serves, the REST API CRUD on the template's tables, and 404 edge cases.
- * Automates the manual plan in harper-qe-logbook releases/v5/harper-ecommerce-template.mdx.
- *
- * The template ships `prebuilt: true` and does not commit `.next`, so a straight GitHub deploy has
- * nothing to serve. The test downloads the pinned commit, flips it to `prebuilt: false` so the plugin
- * runs `next build` inside the running instance (the HARPER_READONLY build path, Harper v5.1+), and
- * deploys it as a local archive.
+ * Automates the manual plan in harper-qe-logbook releases/v5/harper-ecommerce-template.mdx. The
+ * template ships `prebuilt: true` without a committed `.next`, so the test builds it inside the
+ * running instance instead (the HARPER_READONLY build path, Harper v5.1+).
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
@@ -84,21 +79,28 @@ suite('Component: ecommerce-template', { skip: skipSuite }, (ctx: ContextWithHar
 		// REST comes up as soon as the schema loads; the homepage only once `next build` finishes and
 		// the plugin starts serving, so poll the page rather than a table.
 		const deadline = Date.now() + READY_TIMEOUT_MS;
+		let lastOutcome = 'no response';
 		while (true) {
 			try {
 				const check = await fetch(ctx.harper.httpURL, { signal: AbortSignal.timeout(10_000) });
 				if (check.status === 200) break;
-			} catch {
-				// server not yet accepting connections
+				lastOutcome = `HTTP ${check.status}: ${(await check.text()).slice(0, 200)}`;
+			} catch (error) {
+				lastOutcome = String(error);
 			}
-			if (Date.now() > deadline) throw new Error(`Timed out waiting for ${PROJECT} to serve its homepage after deploy`);
+			if (Date.now() > deadline) {
+				throw new Error(`Timed out waiting for ${PROJECT} to serve its homepage after deploy (last: ${lastOutcome})`);
+			}
 			await new Promise((resolve) => setTimeout(resolve, 1_000));
 		}
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
-		if (workDir) await rm(workDir, { recursive: true, force: true });
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (workDir) await rm(workDir, { recursive: true, force: true });
+		}
 	});
 
 	test('homepage returns 200', async () => {
@@ -162,6 +164,7 @@ suite('Component: ecommerce-template', { skip: skipSuite }, (ctx: ContextWithHar
 		ok(res.status < 300, `expected 2xx, got ${res.status}`);
 
 		const getRes = await fetch(`${ctx.harper.httpURL}/Product/99`);
+		strictEqual(getRes.status, 200);
 		const body = await getRes.json();
 		strictEqual(body.name, 'Test Product');
 		strictEqual(body.category, 'Testing');
@@ -177,6 +180,7 @@ suite('Component: ecommerce-template', { skip: skipSuite }, (ctx: ContextWithHar
 		ok(res.status < 300, `expected 2xx, got ${res.status}`);
 
 		const getRes = await fetch(`${ctx.harper.httpURL}/Product/99`);
+		strictEqual(getRes.status, 200);
 		const body = await getRes.json();
 		strictEqual(body.name, 'Updated Product');
 		strictEqual(body.price, 19.99);
