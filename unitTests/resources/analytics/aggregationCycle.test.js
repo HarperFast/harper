@@ -152,6 +152,7 @@ describe('analytics aggregation cycle', () => {
 	// identity because `onAnalyticsAggregate` has no unregister — a listener registered twice in one
 	// process reports the same rollup twice, a real second cycle reports a second object.
 	const concurrentRollups = new Set();
+	let bootstrapKey;
 
 	before(async function () {
 		this.timeout(30000);
@@ -169,14 +170,29 @@ describe('analytics aggregation cycle', () => {
 		analytics.recordAction(1, 'db-write', 'Bootstrap');
 		// The table object appears when the recording path creates it, which is before its own
 		// unawaited `put` is readable; these tests seed relative to that record's key.
-		await waitFor(() => (databases.system?.hdb_raw_analytics ? lastRawKey() : undefined), {
-			timeout: 10000,
-			message: 'the bootstrap raw report is readable',
-		});
+		bootstrapKey = await waitFor(
+			() => {
+				const raw = databases.system?.hdb_raw_analytics;
+				if (!raw) return;
+				for (const { key, value } of raw.primaryStore.getRange({ start: false, end: Infinity })) {
+					if (value?.metrics?.some((metric) => metric.path === 'Bootstrap')) return key;
+				}
+			},
+			{
+				timeout: 10000,
+				message: 'the bootstrap raw report is readable',
+			}
+		);
 	});
 
 	after(() => {
 		analytics.setAnalyticsEnabled(false);
+	});
+
+	it('stores the production timer report with table-write version metadata', () => {
+		const entry = databases.system.hdb_raw_analytics.primaryStore.getEntry(bootstrapKey, { uncachedRead: true });
+		assert.ok(entry?.version > 0, 'raw analytics reports must go through the table write path');
+		assert.ok(entry.value.metrics.some((metric) => metric.path === 'Bootstrap'));
 	});
 
 	it('keeps the latest exact cumulative sample per worker and logical index without averaging counters', async function () {
@@ -235,14 +251,14 @@ describe('analytics aggregation cycle', () => {
 
 	it('keeps its place when a cycle finds nothing to aggregate', async function () {
 		this.timeout(30000);
-		const bootstrapKey = lastRawKey();
+		const lastReportKey = lastRawKey();
 		await runCycle();
 		await nextPeriod();
 		// Nothing is left, so this cycle reads no record at all — and a raw report can be invisible to
 		// it for reasons other than being late, since `recordAnalytics` does not await its `put`.
 		await runCycle();
 
-		await seedRawReports([rawReport(bootstrapKey + 1, 'AggWindowLate')]);
+		await seedRawReports([rawReport(lastReportKey + 1, 'AggWindowLate')]);
 		await nextPeriod();
 		await runCycle();
 

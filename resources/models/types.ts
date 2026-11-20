@@ -312,7 +312,7 @@ export type RecordedOutcome = RecordedLeafOutcome | { fields: Record<string, Rec
  */
 export interface DecisionRecord<T = unknown> {
 	id: string;
-	/** The `hdb_model_calls` row of the call that produced it; correlation only. */
+	/** Best-effort correlation ID; the `hdb_model_calls` row may be absent or expired. */
 	callId: number;
 	at: number;
 	/** When the record and its facts expire; a fact never extends it. */

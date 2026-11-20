@@ -19,7 +19,7 @@ it stops at `firstForPeriod + toPeriod` so one cycle's main-thread msgpackr deco
   a backlog longer than one window and every report written while the cycle ran, because nothing
   reads below the cursor again.
 - **A cycle that reads nothing leaves it where it is.** An empty scan is not proof that nothing is
-  there: worker report delivery does not await its `primaryStore.put`, so a report can be uncommitted and
+  there: worker report delivery does not await its table `put`, so a report can be uncommitted and
   invisible to the scan while carrying a key older than anything the cycle could compare against. No
   wall-clock reading is safe to put in the cursor for the same reason.
 
@@ -87,4 +87,4 @@ always a caller's measure.
 
 `watchFullTextTelemetryConfiguration` initializes and reloads through the shared watcher's nested root, environment overlay and transactional `refreshConfigSubtree`; it never reads the missing camel-case flat aggregate. Invalid edits retain valid policy. Missing files retain valid policy and overrides, matching the root watcher; valid edits retire only changed overrides. `fullTextTelemetryConfiguration.test.js` pins initialization, override retirement and deletion/recreation. Native runtime/query policy remains frozen separately. Binding telemetry types are structural: `buildDist.test.mjs` checks compilation and emitted declarations without the optional package.
 
-Final main-thread analytics flush awaits its own raw write and the raw store’s existing commit barrier for worker reports. This is commit completion, not a new disk-sync guarantee; the process shutdown deadline still bounds it. `describe_metric` omits null-valued attributes from inferred metadata rather than describing unavailable scalar observations as objects; stored rows and `get_analytics` retain their null values.
+Final main-thread analytics flush joins pending table writes, including received worker reports still loading their records, before sampling the raw-store commit barrier. This is commit completion, not a new disk-sync guarantee; the process shutdown deadline still bounds it. `describe_metric` omits null-valued attributes from inferred metadata rather than describing unavailable scalar observations as objects; stored rows and `get_analytics` retain their null values.
