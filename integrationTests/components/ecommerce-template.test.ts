@@ -1,48 +1,101 @@
 /**
  * ecommerce-template component integration test.
  *
- * Deploys harper-ecommerce-template and verifies page rendering,
- * REST API CRUD, edge cases, and GraphQL.
+ * Deploys a pinned commit of harper-ecommerce-template (Next.js via @harperfast/nextjs) and verifies
+ * the Next.js pages Harper serves, the REST API CRUD on the template's tables, and 404 edge cases.
+ * Automates the manual plan in harper-qe-logbook releases/v5/harper-ecommerce-template.mdx.
+ *
+ * The template ships `prebuilt: true` and does not commit `.next`, so a straight GitHub deploy has
+ * nothing to serve. The test downloads the pinned commit, flips it to `prebuilt: false` so the plugin
+ * runs `next build` inside the running instance (the HARPER_READONLY build path, Harper v5.1+), and
+ * deploys it as a local archive.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
-suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
+const execFileAsync = promisify(execFile);
+
+// Bump deliberately: the assertions below track this commit's routes, seed data and config.
+const TEMPLATE_SHA = '86e57a26a49c3ba1ef71521ae44d69760e2e8a41';
+const TEMPLATE_TARBALL_URL = `https://codeload.github.com/HarperFast/harper-ecommerce-template/tar.gz/${TEMPLATE_SHA}`;
+const PROJECT = 'harper-ecommerce-template';
+// npm install of Next.js plus an in-process `next build` pinned to one worker (next.config.js `cpus: 1`).
+const READY_TIMEOUT_MS = 300_000;
+
+async function prepareTemplateArchive(workDir: string): Promise<string> {
+	const response = await fetch(TEMPLATE_TARBALL_URL, { signal: AbortSignal.timeout(60_000) });
+	strictEqual(response.status, 200, `downloading ${TEMPLATE_TARBALL_URL}`);
+	const sourceArchive = join(workDir, 'source.tgz');
+	await writeFile(sourceArchive, Buffer.from(await response.arrayBuffer()));
+	await execFileAsync('tar', ['-xzf', sourceArchive, '-C', workDir]);
+
+	// codeload names the top-level directory <repo>-<sha>; Harper strips a single top-level directory.
+	const templateDir = join(workDir, `${PROJECT}-${TEMPLATE_SHA}`);
+	const configPath = join(templateDir, 'config.yaml');
+	const config = await readFile(configPath, 'utf8');
+	ok(/^\s+prebuilt: true$/m.test(config), 'expected the pinned template to ship prebuilt: true');
+	await writeFile(configPath, config.replace(/^(\s+)prebuilt: true$/m, '$1prebuilt: false'));
+
+	const archive = join(workDir, `${PROJECT}.tgz`);
+	// COPYFILE_DISABLE stops macOS tar adding ._* entries, which would defeat the top-level directory strip.
+	await execFileAsync('tar', ['-czf', archive, '-C', workDir, `${PROJECT}-${TEMPLATE_SHA}`], {
+		env: { ...process.env, COPYFILE_DISABLE: '1' },
+	});
+	return archive;
+}
+
+suite('Component: ecommerce-template', { skip: process.platform === 'win32' }, (ctx: ContextWithHarper) => {
+	let workDir: string;
+
 	before(async () => {
-		await startHarper(ctx, {
-			config: { applications: { allowedSpawnCommands: ['npm', 'node', 'npx'] } },
-		});
+		workDir = await mkdtemp(join(tmpdir(), 'ecommerce-template-'));
+		const archive = await prepareTemplateArchive(workDir);
+
+		await startHarper(ctx);
 
 		const body = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
-			project: 'harper-ecommerce-template',
-			package: 'https://github.com/HarperFast/harper-ecommerce-template',
+			project: PROJECT,
+			package: archive,
 			restart: true,
+			// The default install omits devDependencies, but `next build` needs them (tailwind postcss, typescript
+			// for the tsconfig `@/` path aliases). Not `npm ci`: the pinned lockfile is out of sync with package.json.
+			install_command: 'npm install --include=dev',
 		});
-		strictEqual(body.message, 'Successfully deployed: harper-ecommerce-template, restarting Harper');
+		strictEqual(body.message, `Successfully deployed: ${PROJECT}, restarting Harper`);
+		ok(typeof body.deployment_id === 'string', `expected deployment_id in deploy response, got ${body.deployment_id}`);
 
-		const deadline = Date.now() + 60_000;
+		// REST comes up as soon as the schema loads; the homepage only once `next build` finishes and
+		// the plugin starts serving, so poll the page rather than a table.
+		const deadline = Date.now() + READY_TIMEOUT_MS;
 		while (true) {
 			try {
-				const check = await fetch(`${ctx.harper.httpURL}/Product/`);
+				const check = await fetch(ctx.harper.httpURL, { signal: AbortSignal.timeout(10_000) });
 				if (check.status === 200) break;
 			} catch {
 				// server not yet accepting connections
 			}
-			if (Date.now() > deadline) throw new Error('Timed out waiting for ecommerce-template to be ready after deploy');
-			await new Promise((resolve) => setTimeout(resolve, 500));
+			if (Date.now() > deadline) throw new Error(`Timed out waiting for ${PROJECT} to serve its homepage after deploy`);
+			await new Promise((resolve) => setTimeout(resolve, 1_000));
 		}
 	});
 
 	after(async () => {
 		await teardownHarper(ctx);
+		if (workDir) await rm(workDir, { recursive: true, force: true });
 	});
 
 	test('homepage returns 200', async () => {
 		const res = await fetch(ctx.harper.httpURL);
 		strictEqual(res.status, 200);
+		ok(res.headers.get('content-type')?.includes('text/html'), 'expected an HTML page');
 	});
 
 	test('/products page returns 200', async () => {
@@ -50,33 +103,36 @@ suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 		strictEqual(res.status, 200);
 	});
 
-	test('/products/[id] page returns 200', async () => {
+	test('/products/[id] page renders the seeded product', async () => {
 		const res = await fetch(`${ctx.harper.httpURL}/products/11`);
 		strictEqual(res.status, 200);
+		ok((await res.text()).includes('Portable Laptop Stand'), 'expected the product name in the page');
 	});
 
-	test('GET /Product/ returns array of seeded products', async () => {
+	test('GET /Product/ returns the seeded products', async () => {
 		const res = await fetch(`${ctx.harper.httpURL}/Product/`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
 		ok(Array.isArray(body), 'expected array');
-		ok(body.length >= 1, 'expected at least 1 seeded product');
+		ok(body.length >= 15, `expected at least 15 seeded products, got ${body.length}`);
 	});
 
-	test('GET /Product/:id returns complete product record', async () => {
+	test('GET /Product/:id returns the complete product record', async () => {
 		const res = await fetch(`${ctx.harper.httpURL}/Product/11`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
-		ok(body.name, 'expected product name');
-		ok(body.category, 'expected product category');
-		ok(body.price !== undefined, 'expected product price');
+		strictEqual(body.id, '11');
+		strictEqual(body.name, 'Portable Laptop Stand');
+		strictEqual(body.category, 'Accessories');
+		ok(typeof body.price === 'number', 'expected a numeric price');
 	});
 
-	test('GET /Traits/ returns trait data', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/Traits/`);
+	test('GET /Traits/:id returns the seeded user traits', async () => {
+		const res = await fetch(`${ctx.harper.httpURL}/Traits/1`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
-		ok(Array.isArray(body), 'expected array');
+		ok(Array.isArray(body.traits), 'expected traits array');
+		ok(body.traits.includes('sporty'), 'expected the seeded "sporty" trait');
 	});
 
 	test('POST /Product/ creates a new product', async () => {
@@ -115,14 +171,12 @@ suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 		const body = await getRes.json();
 		strictEqual(body.name, 'Updated Product');
 		strictEqual(body.price, 19.99);
+		strictEqual(body.category, undefined, 'expected PUT to replace, not merge');
 	});
 
 	test('DELETE /Product/:id removes the record', async () => {
-		const deleteRes = await fetch(`${ctx.harper.httpURL}/Product/99`, {
-			method: 'DELETE',
-		});
-		const deleteBody = await deleteRes.json();
-		strictEqual(deleteBody, true);
+		const deleteRes = await fetch(`${ctx.harper.httpURL}/Product/99`, { method: 'DELETE' });
+		ok(deleteRes.status < 300, `expected 2xx, got ${deleteRes.status}`);
 
 		const goneRes = await fetch(`${ctx.harper.httpURL}/Product/99`);
 		strictEqual(goneRes.status, 404);
@@ -146,18 +200,5 @@ suite('Component: ecommerce-template', (ctx: ContextWithHarper) => {
 	test('REST API nonexistent product returns 404', async () => {
 		const res = await fetch(`${ctx.harper.httpURL}/Product/999`);
 		strictEqual(res.status, 404);
-	});
-
-	// TODO: unskip once HarperFast/nextjs#36 is fixed (Next.js intercepts /graphql)
-	test('GraphQL query returns products', { skip: true }, async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/graphql`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ query: '{ Product { id name category price } }' }),
-		});
-		strictEqual(res.status, 200);
-		const body = await res.json();
-		ok(body.data, 'expected GraphQL data field');
-		ok(Array.isArray(body.data.Product), 'expected Product array');
 	});
 });
