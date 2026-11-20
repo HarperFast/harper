@@ -180,6 +180,12 @@ if (
 export const FULL_WRITE_HEAD = 0x40000;
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
+// LMDB only: the stored version once stepped back, so it no longer marks the highest version the row held and a
+// later write can step forward onto one an earlier state held. Always set with VERSION_REUSED, and carried by every
+// later write, since nothing records how far back it stepped. Record-only, like FULL_WRITE_HEAD.
+export const VERSION_REGRESSED = 0x80000;
+if (VERSION_REUSED === VERSION_REGRESSED)
+	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with VERSION_REGRESSED`);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
@@ -1080,13 +1086,16 @@ export function recordUpdater(
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
 		// A write that does not advance the version stores a new value under one a reader may already hold. A
 		// rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
-		if (
-			record !== undefined &&
-			(options?.unchangedValue
-				? existingEntry?.metadataFlags & VERSION_REUSED
-				: versionIsReused(newVersion, existingEntry))
-		)
-			metadataInNextEncoding |= VERSION_REUSED;
+		if (record !== undefined) {
+			const existingFlags = existingEntry?.metadataFlags ?? 0;
+			if (options?.unchangedValue) metadataInNextEncoding |= existingFlags & (VERSION_REUSED | VERSION_REGRESSED);
+			else if (
+				!isRocksDB &&
+				(existingFlags & VERSION_REGRESSED || (existingEntry?.version != null && newVersion < existingEntry.version))
+			)
+				metadataInNextEncoding |= VERSION_REUSED | VERSION_REGRESSED;
+			else if (versionIsReused(newVersion, existingEntry)) metadataInNextEncoding |= VERSION_REUSED;
+		}
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
