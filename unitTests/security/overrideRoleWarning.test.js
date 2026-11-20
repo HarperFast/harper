@@ -64,7 +64,7 @@ describe('a server.getUser override that returns a stored name with another role
 		// only this check's lines: anything else on the thread may warn meanwhile
 		harperLogger.warn = (...args) => {
 			const line = args.join(' ');
-			if (line.startsWith('server.getUser returned user')) warnings.push(line);
+			if (line.startsWith("server.getUser returned user 'override_")) warnings.push(line);
 		};
 		originalGetUser = server.getUser;
 	});
@@ -105,6 +105,12 @@ describe('a server.getUser override that returns a stored name with another role
 		await user.getTrackedUser('override_login', 'token');
 		assert.strictEqual(warnings.length, 1);
 		assert.match(warnings[0], /'override_subject' with role 'override_role'.*record has role 'stored_role'/);
+	});
+
+	it('counts only this check’s warnings for its own names', () => {
+		harperLogger.warn('an unrelated warning');
+		harperLogger.warn("server.getUser returned user 'someone_else' with role 'a'");
+		assert.deepStrictEqual(warnings, []);
 	});
 
 	it('does not warn for a copy of the stored user, a name with no record, or a memoized recordless user', async () => {
