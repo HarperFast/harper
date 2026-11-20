@@ -96,7 +96,6 @@ import {
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
 	freshLocalKey,
-	localStartBound,
 	releaseLocalKey,
 	reserveLocalKey,
 	reservedAroundCallerValue,
@@ -247,6 +246,7 @@ import {
 	isNonHistoryType,
 	isAuditEntryWrite,
 	getAuditResumeFloor,
+	getLogPurgeBound,
 	isResumablePosition,
 	getDatabaseGeneration,
 	auditHistoryAbortMarked,
@@ -2019,11 +2019,6 @@ type SubscriberState = {
 	 * listener avoids duplicate delivery.
 	 */
 	dropDuringReplay: boolean;
-	/** A certifying collection replay's start: its key filter skips an entry at or below it, which the listener takes. */
-	replayStart?: number;
-	/** What a certifying walk delivered that the broadcast may still dispatch (see `handOffWalk`), and its highest key. */
-	replayed?: Map<string, number>;
-	replayedThrough?: number;
 	/** Coalescing guards for the reload re-snapshot (harper-pro#495), driven from the listener. */
 	reloadResnapshotRunning: boolean;
 	reloadResnapshotPending: boolean;
@@ -2111,16 +2106,6 @@ function subscriptionEventFilter(
 		if (!hasAuthoritativeRow) return Boolean(eventFilter);
 		return evaluateFilter(rowFilter, event.value, 'rowFilter');
 	};
-}
-
-const entryIdentity = (origin: number, key: number, version: number, id: Id) => `${origin}|${key}|${version}|${id}`;
-
-function takeReplayed(replayed: Map<string, number>, identity: string): boolean {
-	const left = replayed.get(identity);
-	if (!left) return false;
-	if (left === 1) replayed.delete(identity);
-	else replayed.set(identity, left - 1);
-	return true;
 }
 
 // the log store ends a failed or corrupt log's iteration quietly and records it on the range
@@ -10555,21 +10540,26 @@ export function makeTable(options): TableResourceClass {
 						}
 						return false;
 					};
-					// A purge takes a prefix of a log's segments, each last written before its cutoff, and a reader reports
-					// none that reaches the end of its log, so the floor is the only signal. This node mints its own log's
-					// keys no later than it appends them, so what that log still holds to read was appended after the
-					// highest key read from it, and a floor at or below that key removed none of it. A peer's keys are on
-					// its clock, so its log is held to its start. A log read from 0 is whole from its beginning
-					// (retainsZeroStarts), and its keys can lie below the floor.
+					// The floor passes a start before the purge it announces, and that purge may remove only history this
+					// replay has read. A purge takes a prefix of a log's segments, so one that removed an unread entry of this
+					// node's own log also removed every entry read from it: while the log's purge bound is below the highest
+					// key read, nothing unread is gone. The bound holds whatever the clock (a local key can be minted ahead
+					// of it), and a reader reports no purge that reaches the end of its log. The floor is still held below
+					// that key: it also rises for a purge yet to run. A peer's log is held to its start. A log read from 0 is
+					// whole from its beginning (retainsZeroStarts), and its keys can lie below the floor.
 					const ownStart = plan.startByLog.get('local');
-					let ownReached = ownStart > 0 ? ownStart : Infinity;
+					let ownReached = ownStart;
 					let peerStart = Infinity;
 					for (const [name, start] of plan.startByLog) {
 						if (name !== 'local' && start > 0 && start < peerStart) peerStart = start;
 					}
 					const retained = (): boolean => {
 						const floor = getAuditResumeFloor(auditStore);
-						return !(floor > ownReached) && !(floor > peerStart) && plan!.retainsZeroStarts();
+						if (floor > peerStart || !plan!.retainsZeroStarts()) return false;
+						if (!(ownStart > 0 && floor > ownStart)) return true;
+						if (floor > ownReached) return false;
+						const purgedThrough = getLogPurgeBound(auditStore, 'local');
+						return purgedThrough < ownReached;
 					};
 					// admission facts are mutable: a revocation, hole or generation change bumps the epoch
 					const recheck = (range: any): boolean => {
@@ -10664,12 +10654,6 @@ export function makeTable(options): TableResourceClass {
 						// handled; an early return leaves it before a partly delivered transaction.
 						let handledTxnLogKey: number | undefined;
 						const liveRange = broadcastRange(subscription);
-						if (liveRange && state.reportingProgress) {
-							// a checkpoint certifies every entry appended from here on, and the key gate would drop one at
-							// or below the start, which the replay's key filter skips too
-							state.replayStart = startTime;
-							subscription.ungated = true;
-						}
 						// from a listener: the entry being dispatched is already past the bound, and may still reach this subscription
 						if (liveRange && isDispatching(subscription)) {
 							await rest();
@@ -10971,17 +10955,12 @@ export function makeTable(options): TableResourceClass {
 					if (isRocksDB)
 						for (const ref of entry?.additionalAuditRefs ?? [])
 							if (ref.version > newestRefKey) newestRefKey = ref.version;
-					// a checkpoint certifies every entry appended from here on, and the key gate below would drop a commit
-					// under the head, so a certifying walk drops what it handled itself by identity instead
-					const certifiedWalk = state.reportingProgress ? broadcastRange(subscription) : undefined;
-					const broadcastKey = certifiedWalk && subscription.subscriptions.tables.envs.lastTxnTime;
 					if (startTime < localTime || startTime < newestRefKey) {
 						// start time specified, get the audit history for this record. Set startTime up
 						// front so the listener gate skips any in-flight 'committed' for this version
 						// during the yields below — otherwise that event would be queued and drained as a
 						// duplicate of the entry send.
-						if (certifiedWalk) subscription.ungated = true;
-						else subscription!.startTime = localTime ?? entry?.version;
+						subscription!.startTime = localTime ?? entry?.version;
 						const history = [];
 						let inspected = 0;
 						let missingVersion = false;
@@ -11164,7 +11143,7 @@ export function makeTable(options): TableResourceClass {
 							if (wanted > 0 && history.length > wanted) history.length = wanted;
 							// the live gate is one key across origins, so a replayed late message that also committed during
 							// the replay is dropped from the queue rather than by raising the gate
-							if (!certifiedWalk && state.pendingRealTimeQueue) {
+							if (state.pendingRealTimeQueue) {
 								const replayed = new Map<string, number>();
 								for (const event of history) {
 									const origin = lateOrigins.get(event);
@@ -11182,7 +11161,6 @@ export function makeTable(options): TableResourceClass {
 								});
 							}
 						}
-						if (certifiedWalk && isActive()) handOffWalk(state, certifiedWalk, history, broadcastKey);
 						for (let i = history.length; i > 0;) {
 							if (!send(history[--i], true)) return;
 						}
@@ -12984,12 +12962,8 @@ export function makeTable(options): TableResourceClass {
 	 */
 	function subscriptionListener(this: any, id: Id, auditRecord?: any, txnLogKey?: any, beginTxn?: any) {
 		const state: SubscriberState = this.state;
+		if (state.dropDuringReplay) return;
 		try {
-			if (state.dropDuringReplay) {
-				if (!leftToLive(this, state, auditRecord, txnLogKey)) return;
-				// a collection replay's events carry no transaction delimiters, so nor does one it leaves to the listener
-				if (state.dropDuringReplay && !state.replayed) beginTxn = undefined;
-			}
 			if (isLockControlType(auditRecord.type)) return;
 			if (auditRecord.type === 'reload' && !state.rawEvents && databaseName !== 'system') {
 				// back-filled rows have no history, so a progress certificate cannot pass the marker
@@ -13018,72 +12992,6 @@ export function makeTable(options): TableResourceClass {
 			// a certificate cannot pass an event it failed to deliver
 			if (state.reportingProgress) this.close(error);
 		}
-	}
-	/** Whether a replay that drops live entries leaves this one to the listener. */
-	function leftToLive(subscription: any, state: SubscriberState, auditRecord: any, key: number): boolean {
-		const replayed = state.replayed;
-		// a collection replay reads every key above its start itself
-		if (!replayed) return key <= state.replayStart! && auditRecord.type !== 'end_txn';
-		if (releaseReplayed(subscription, state)) return true;
-		const identity = entryIdentity(auditRecord.nodeId ?? 0, key, auditRecord.version, auditRecord.recordId);
-		if (!takeReplayed(replayed, identity)) return true;
-		if (replayed.size === 0) {
-			state.replayed = undefined;
-			state.dropDuringReplay = false;
-		}
-		return false;
-	}
-	function releaseReplayed(subscription: any, state: SubscriberState): boolean {
-		// no local key at or below the certified watermark is still to be dispatched
-		if (!(certifiedThrough(subscription) >= state.replayedThrough!)) return false;
-		state.replayed = undefined;
-		state.dropDuringReplay = false;
-		return true;
-	}
-	/**
-	 * Ends a certifying walk, which read its entries by reference rather than up to the broadcast's position: the
-	 * broadcast's copies of what it delivered are dropped from the live queue, and from the listener for as long as
-	 * the broadcast may still dispatch one. Everything else the broadcast dispatches is new to the consumer.
-	 * `broadcastKey` is the key the broadcast had last returned when the walk began: it may have been partway
-	 * through that transaction, whose remaining entries the walk's reads cannot be told from, so none is dropped.
-	 */
-	function handOffWalk(state: SubscriberState, liveRange: any, delivered: any[], broadcastKey: number): void {
-		const queue = state.pendingRealTimeQueue;
-		if (!queue || delivered.length === 0) return;
-		// A write still committing keeps the entries appended after it from the broadcast, while a walk reads them
-		// all the same, so the broadcast can be behind the walk with nothing left to peek.
-		const committing = localStartBound(primaryStore.rootStore as any);
-		const behind = liveRange.hasUnreturnedEntry() || (committing !== undefined && 'atOrAbove' in committing);
-		if (!behind && queue.length === 0) return;
-		// no local key at or below the certified watermark is still to be dispatched
-		const dispatched = behind ? certifiedThrough(state.subscription) : Infinity;
-		const replayed = new Map<string, number>();
-		let through = -Infinity;
-		for (const event of delivered) {
-			const key = event.localTime;
-			if (key === broadcastKey) continue;
-			const pending = !(key <= dispatched);
-			if (!pending && queue.length === 0) continue;
-			if (pending && key > through) through = key;
-			const identity = entryIdentity(event[ORIGIN_ID], key, event.version, event.id);
-			replayed.set(identity, (replayed.get(identity) ?? 0) + 1);
-		}
-		if (queue.length > 0) {
-			state.pendingRealTimeQueue = queue.filter(
-				(event) =>
-					!takeReplayed(replayed, entryIdentity(event[QUEUED_ORIGIN], event.localTime, event.version, event.id))
-			);
-			if (behind) {
-				for (const event of delivered) {
-					if (event.localTime <= dispatched)
-						replayed.delete(entryIdentity(event[ORIGIN_ID], event.localTime, event.version, event.id));
-				}
-			}
-		}
-		if (!behind || replayed.size === 0) return;
-		state.replayed = replayed;
-		state.replayedThrough = through;
-		state.dropDuringReplay = true;
 	}
 	/**
 	 * Tracks what a progress-reporting subscription sends and installs its `progress()` and checkpoints: shared
@@ -13192,7 +13100,6 @@ export function makeTable(options): TableResourceClass {
 	}
 	function subscriptionProgress(subscription: any): number | undefined {
 		if (!isSubscriptionActive(subscription)) return;
-		if (subscription.state.replayed) releaseReplayed(subscription, subscription.state);
 		const progress: ProgressState = subscription.progressState;
 		if (!progress.live) return beforeLive(subscription);
 		const certified = certifiedThrough(subscription);
@@ -13257,8 +13164,6 @@ export function makeTable(options): TableResourceClass {
 	}
 	function currentBoundaries(subscription: any, holds?: Map<number, number>) {
 		const progress: ProgressState = subscription.progressState;
-		// a quiet record's listener may never run again, so its consumer's polls release what its walk kept
-		if (subscription.state.replayed) releaseReplayed(subscription, subscription.state);
 		if (!isSubscriptionActive(subscription) || progress.filtersWithoutKey || !isRocksDB) return;
 		return progress.live ? liveBoundaries(subscription, holds) : replayBoundaries(progress);
 	}

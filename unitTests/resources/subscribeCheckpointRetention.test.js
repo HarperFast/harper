@@ -1,7 +1,8 @@
-// A reportProgress subscription that starts from a scalar position certifies every entry appended after it
-// registered, so its replay may drop only what it delivers itself. Also here: the retention recheck of a checkpoint
-// replay, the floor a store certifies on its own tick, and a checkpoint over two origins.
+// A checkpoint replay's retention recheck, the floor a store certifies on its own tick, and a checkpoint over two
+// origins (the deferred findings of harper#3356).
 const assert = require('node:assert');
+const { utimesSync } = require('node:fs');
+const { join } = require('node:path');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -12,7 +13,12 @@ const {
 	raiseAuditFloor,
 	readOriginClosedFloor,
 } = require('#src/resources/auditStore');
-const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
+const {
+	certifyOriginFloor,
+	claimLocalKey,
+	publishOriginFloor,
+	getOriginClosedFloor,
+} = require('#src/resources/originClosedFloor');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { MAX_OVERLAP_MS, membersDigest } = require('#src/resources/subscriptionCheckpoint');
 const { getThisNodeName } = require('#src/server/nodeName');
@@ -57,20 +63,6 @@ async function certifiedCheckpoint(T, subscription) {
 	return checkpoint;
 }
 
-// its write takes its log key now, and commits only when the returned function is called
-async function heldTransaction(write) {
-	let commit;
-	const committed = transaction({}, async (context) => {
-		await write(context);
-		await new Promise((resolve) => (commit = resolve));
-	});
-	await waitFor(() => commit);
-	return () => {
-		commit();
-		return committed;
-	};
-}
-
 const SEQ = Symbol.for('seq');
 
 // a write replicated from `nodeId`, appended to that origin's log under the origin's key
@@ -85,7 +77,7 @@ function applyFromOrigin(T, id, record, nodeId, logKey) {
 const logKeyOf = (T, id) => [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === id).txnLogKey;
 const valuesOf = (events) => events.map((event) => event.value?.value).filter((value) => value !== undefined);
 
-describe('Checkpoints of a subscription that started from a scalar position (harper#3356)', function () {
+describe('Checkpoint replay retention, the certified floor tick, and two origins (harper#3356)', function () {
 	if (!isRocksDB) return;
 	this.timeout(60_000);
 	before(() => {
@@ -95,177 +87,9 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 	});
 	after(() => setOriginCaptureIntervalForTests());
 
-	describe('a collection replay', () => {
-		it('delivers a transaction that commits below the start while the replay is still running', async () => {
-			const T = tableInOwnDatabase();
-			const commitLate = await heldTransaction((context) => T.put('late', { value: 'late' }, context));
-			await T.put('first', { value: 'first' });
-			const startTime = logKeyOf(T, 'first');
-			for (let i = 0; i < 150; i++) await T.put(`fill${i}`, { value: `fill${i}` });
-			// no consumer yet, so the replay stops at the queue's high-water mark until it is drained
-			const subscription = await T.subscribe({ startTime, isCollection: true, reportProgress: true });
-			await waitFor(() => subscription.queue?.length > 100);
-			await commitLate();
-			assert.ok(logKeyOf(T, 'late') < startTime, 'precondition: the held transaction committed below the start');
-			await T.put('after', { value: 'after' });
-			assert.strictEqual(subscription.checkpoint(), undefined, 'nothing is certified while the replay runs');
-			const events = [];
-			subscription.on('data', (event) => events.push(event));
-			await waitFor(() => valuesOf(events).includes('after'));
-			const checkpoint = await certifiedCheckpoint(T, subscription);
-			assert.ok(checkpoint.time - checkpoint.overlap > logKeyOf(T, 'late'), 'the checkpoint certifies past it');
-			const values = valuesOf(events);
-			assert.strictEqual(values.filter((value) => value === 'late').length, 1, 'the late commit is delivered once');
-			for (let i = 0; i < 150; i++) {
-				assert.strictEqual(values.filter((value) => value === `fill${i}`).length, 1, `fill${i} is delivered once`);
-			}
-			subscription.end();
-		});
-	});
-
-	describe('a single-record walk', () => {
-		for (const start of ['startTime', 'previousCount']) {
-			it(`delivers a message that commits below the head while the ${start} walk is still running`, async () => {
-				const T = tableInOwnDatabase();
-				await T.put('seed', { value: 'seed' });
-				const position = start === 'startTime' ? { startTime: logKeyOf(T, 'seed') } : { previousCount: 1000 };
-				// the put takes the transaction's log key now, which its message shares
-				const commitLate = await heldTransaction(async (context) => {
-					await T.put('other', { value: 'other' }, context);
-					await T.publish('r', { value: 'late' }, context);
-				});
-				await T.put('r', { value: 'r0' });
-				for (let i = 0; i < 3000; i++) await T.publish('r', { value: `m${i}` });
-				const events = [];
-				let committing;
-				let walked = 0;
-				let walkedAtDispatch;
-				// the broadcast hands an entry to every subscription in one pass, so this one sees when it reached the other
-				const witness = await T.subscribe({
-					omitCurrent: true,
-					listener: (event) => {
-						if (event.value?.value === 'late') walkedAtDispatch = walked;
-					},
-				});
-				const subscription = await T.subscribe({
-					id: 'r',
-					...position,
-					reportProgress: true,
-					omitCurrent: true,
-					filterKey: 'all',
-					// the walk calls this for each entry it reads, so the commit starts once the walk has taken the head
-					eventFilter: (event) => {
-						if (event.value?.value !== 'late' && event.value?.value !== 'after') walked++;
-						committing ??= commitLate();
-						return true;
-					},
-					listener: (event) => events.push(event),
-				});
-				await waitFor(() => committing !== undefined);
-				await committing;
-				await T.publish('r', { value: 'after' });
-				await waitFor(() => valuesOf(events).includes('after'));
-				assert.ok(walkedAtDispatch < walked, `precondition: dispatched mid-walk (${walkedAtDispatch}/${walked})`);
-				const values = valuesOf(events);
-				assert.ok(values.includes('m2999'), 'precondition: the walk replayed the history');
-				assert.strictEqual(values.filter((value) => value === 'late').length, 1, 'the late message is delivered once');
-				assert.strictEqual(values.filter((value) => value === 'm2999').length, 1);
-				subscription.end();
-				witness.end();
-			});
-		}
-
-		it('delivers once a write the walk read before the broadcast reached it', async () => {
-			const T = tableInOwnDatabase();
-			await T.put('seed', { value: 'seed' });
-			const startTime = logKeyOf(T, 'seed');
-			const other = await T.subscribe({ omitCurrent: true, listener: () => {} });
-			// a transaction far longer than a broadcast batch keeps the broadcast behind while the next one commits
-			await transaction({}, async (context) => {
-				for (let i = 0; i < 20_000; i++) await T.put(`other${i}`, { value: i }, context);
-			});
-			await T.put('r', { value: 'r1' });
-			const events = [];
-			const subscription = await T.subscribe({
-				id: 'r',
-				startTime,
-				reportProgress: true,
-				omitCurrent: true,
-				listener: (event) => events.push(event),
-			});
-			const broadcast = T.auditStore.subscriptionLogRange;
-			assert.ok(broadcast.hasUnreturnedEntry(), 'precondition: the broadcast is behind the log');
-			assert.deepStrictEqual(valuesOf(events), ['r1'], 'the walk delivered it');
-			// a superseding write would hide the first from live delivery, so it waits for the broadcast to pass it
-			await waitFor(() => !broadcast.hasUnreturnedEntry());
-			await T.put('r', { value: 'r2' });
-			await waitFor(() => valuesOf(events).includes('r2'));
-			assert.deepStrictEqual(valuesOf(events), ['r1', 'r2']);
-			assert.strictEqual(subscription.state.replayed, undefined, 'what the walk delivered is no longer kept');
-			subscription.end();
-			other.end();
-		});
-
-		it('delivers the rest of a transaction the broadcast was partway through when the walk began', async () => {
-			const T = tableInOwnDatabase();
-			await T.put('seed', { value: 'seed' });
-			const startTime = logKeyOf(T, 'seed');
-			const events = [];
-			let subscribing;
-			// The broadcast yields after 256 entries, here between the two messages, and the walk reads only the first
-			// of a transaction's entries for a record. Its claim on that one must not take the second.
-			const other = await T.subscribe({
-				omitCurrent: true,
-				listener: (event) => {
-					if (event.value?.value !== 'first') return;
-					subscribing = T.subscribe({
-						id: 'r',
-						startTime,
-						reportProgress: true,
-						omitCurrent: true,
-						listener: (event) => events.push(event),
-					});
-				},
-			});
-			await transaction({}, async (context) => {
-				for (let i = 0; i < 255; i++) await T.put(`other${i}`, { value: i }, context);
-				await T.publish('r', { value: 'first' }, context);
-				await T.publish('r', { value: 'second' }, context);
-			});
-			await waitFor(() => subscribing !== undefined);
-			const subscription = await subscribing;
-			await T.publish('r', { value: 'after' });
-			await waitFor(() => valuesOf(events).includes('after'));
-			assert.ok(valuesOf(events).includes('second'), `the second message is delivered: ${valuesOf(events)}`);
-			subscription.end();
-			other.end();
-		});
-
-		it('keeps nothing of a walk when the broadcast has caught up and no write is committing', async () => {
-			const T = tableInOwnDatabase();
-			await T.put('seed', { value: 'seed' });
-			const startTime = logKeyOf(T, 'seed');
-			const other = await T.subscribe({ omitCurrent: true, listener: () => {} });
-			await T.put('r', { value: 'r1' });
-			await waitFor(() => !T.auditStore.subscriptionLogRange.hasUnreturnedEntry());
-			const events = [];
-			const subscription = await T.subscribe({
-				id: 'r',
-				startTime,
-				reportProgress: true,
-				omitCurrent: true,
-				listener: (event) => events.push(event),
-			});
-			assert.deepStrictEqual(valuesOf(events), ['r1']);
-			assert.strictEqual(subscription.state.replayed, undefined);
-			assert.strictEqual(subscription.state.dropDuringReplay, false);
-			subscription.end();
-			other.end();
-		});
-	});
-
 	describe('the retention recheck of a checkpoint replay', () => {
-		async function checkpointThenFill(T, pad) {
+		const SEGMENT_PAD = 'x'.repeat(200_000);
+		async function checkpointThenFill(T, pad, beforeFill) {
 			const first = [];
 			const subscription = await T.subscribe({
 				omitCurrent: true,
@@ -276,6 +100,7 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			await waitFor(() => valuesOf(first).includes('a'));
 			const checkpoint = await certifiedCheckpoint(T, subscription);
 			subscription.end();
+			beforeFill?.();
 			for (let i = 0; i < 250; i++) await T.put(`fill${i}`, { value: `fill${i}`, pad });
 			return checkpoint;
 		}
@@ -330,10 +155,59 @@ describe('Checkpoints of a subscription that started from a scalar position (har
 			assert.ok(!valuesOf(events).includes('fill249'), 'the replay stopped');
 		});
 
+		it('passes when a purge removes only a log segment it has read', async () => {
+			const T = tableInOwnDatabase();
+			// about 80 entries to a 16 MB segment, so the replay stops in the second of four
+			const checkpoint = await checkpointThenFill(T, SEGMENT_PAD);
+			const log = T.auditStore.logByName.get('local');
+			assert.ok(log.getStats().fileCount >= 3, 'precondition: the history spans several segments');
+			const resumed = await replayHeldAtHighWater(T, checkpoint);
+			const rootStore = T.primaryStore.rootStore;
+			rootStore.flushSync();
+			// a purge removes a segment by its last write, so only the first is aged past the cutoff
+			const before = Date.now() - 60_000;
+			utimesSync(join(log.path, '1.txnlog'), new Date(before - 60_000), new Date(before - 60_000));
+			raiseAuditFloor(T.auditStore, logKeyOf(T, 'fill10'));
+			assert.ok(getAuditResumeFloor(T.auditStore) > checkpoint.time - checkpoint.overlap, 'precondition');
+			assert.strictEqual(
+				rootStore.purgeLogs({ before }).length,
+				1,
+				'precondition: the purge removed the first segment'
+			);
+			const events = [];
+			resumed.on('data', (event) => events.push(event));
+			assert.strictEqual(await resumed.resumeVerified, true);
+			await waitFor(() => valuesOf(events).includes('fill249'));
+			assert.strictEqual(valuesOf(events).filter((value) => value.startsWith('fill')).length, 250);
+			resumed.end();
+		});
+
+		it('refuses when a purge removes unread segments whose keys are ahead of the clock, and so above the floor', async () => {
+			const T = tableInOwnDatabase();
+			const rootStore = T.primaryStore.rootStore;
+			// the claim raises the clock of the whole process, so the test ends only once the wall clock has passed it
+			const ahead = Date.now() + 5000;
+			try {
+				const checkpoint = await checkpointThenFill(T, SEGMENT_PAD, () => claimLocalKey(rootStore, ahead));
+				const resumed = await replayHeldAtHighWater(T, checkpoint);
+				rootStore.flushSync();
+				const before = Date.now() + 1;
+				assert.ok(before < logKeyOf(T, 'fill0'), 'precondition: the history read is keyed above the cutoff');
+				raiseAuditFloor(T.auditStore, before);
+				assert.ok(rootStore.purgeLogs({ before }).length >= 3, 'precondition: the purge removed unread segments');
+				const events = [];
+				resumed.on('data', (event) => events.push(event));
+				assert.strictEqual(await resumed.resumeVerified, false);
+				assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
+			} finally {
+				await sleep(Math.max(0, rootStore.getMonotonicTimestamp() - Date.now()) + 1);
+			}
+		});
+
 		it('refuses when a purge removes every log segment it has not read, which its reader does not report', async () => {
 			const T = tableInOwnDatabase();
 			// about 80 entries to a 16 MB segment, so the replay stops in the second of four
-			const checkpoint = await checkpointThenFill(T, 'x'.repeat(200_000));
+			const checkpoint = await checkpointThenFill(T, SEGMENT_PAD);
 			const log = T.auditStore.logByName.get('local');
 			assert.ok(log.getStats().fileCount >= 3, 'precondition: the history spans several segments');
 			const resumed = await replayHeldAtHighWater(T, checkpoint);
