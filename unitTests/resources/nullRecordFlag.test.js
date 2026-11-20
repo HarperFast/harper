@@ -253,7 +253,7 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 
 	describe('table writes', function () {
 		let Local, Replicated, Indexed, origin, release;
-		const now = Date.now();
+		const now = Date.now() - 1000;
 
 		function storedBytes(Table, id) {
 			const store = Table.primaryStore;
@@ -288,25 +288,32 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 			});
 			Replicated = table({ table: 'NullRecordReplicated', audit: true, attributes });
 			origin = getIdOfRemoteNode('null-record-origin', Replicated.auditStore);
+			const put = (id, version) => ({
+				type: 'put',
+				id,
+				value: { id, name: 'live' },
+				nodeId: origin,
+				version,
+				timestamp: version,
+			});
+			const remove = (id, version, isCopyApply) => ({
+				type: 'delete',
+				id,
+				nodeId: origin,
+				version,
+				timestamp: version,
+				isCopyApply,
+			});
 			const events = [
-				{
-					type: 'put',
-					id: 'replicated',
-					value: { id: 'replicated', name: 'live' },
-					nodeId: origin,
-					version: now,
-					timestamp: now,
-				},
-				{ type: 'delete', id: 'replicated', nodeId: origin, version: now + 1, timestamp: now + 1 },
-				{ type: 'delete', id: 'copied', nodeId: origin, version: now + 2, timestamp: now + 2, isCopyApply: true },
-				{
-					type: 'put',
-					id: 'marker',
-					value: { id: 'marker', name: 'marker' },
-					nodeId: origin,
-					version: now + 3,
-					timestamp: now + 3,
-				},
+				put('replicated', now),
+				remove('replicated', now + 1),
+				remove('copied', now + 2, true),
+				// a copied delete older than the row it meets is recorded on that row, which is stored again
+				put('stamped-live', now + 20),
+				remove('stamped-live', now + 10, true),
+				remove('stamped-gone', now + 20),
+				remove('stamped-gone', now + 10, true),
+				put('marker', now + 30),
 			];
 			const held = new Promise((resolve) => (release = resolve));
 			Replicated.sourcedFrom(
@@ -321,7 +328,7 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 				},
 				{ intermediateSource: true }
 			);
-			await waitFor(async () => (await Replicated.get('marker'))?.name === 'marker', {
+			await waitFor(async () => Boolean(await Replicated.get('marker')), {
 				timeout: 10000,
 				message: 'the replicated events were not applied',
 			});
@@ -355,6 +362,18 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 		it('a copied delete stores a marked tombstone', function () {
 			assert.strictEqual(Replicated.primaryStore.getEntry('copied').value, null);
 			assert.strictEqual(isMarked(Replicated, 'copied'), true);
+		});
+
+		it('a copied delete recorded on a newer row leaves that row marked only if it is a tombstone', function () {
+			if (isLMDB) return this.skip();
+			const live = Replicated.primaryStore.getEntry('stamped-live');
+			const gone = Replicated.primaryStore.getEntry('stamped-gone');
+			assert.strictEqual(live.copiedDeleteBoundary?.version, now + 10, 'the live row was not stored again');
+			assert.strictEqual(gone.copiedDeleteBoundary?.version, now + 10, 'the tombstone was not stored again');
+			assert.strictEqual(live.value.name, 'live');
+			assert.strictEqual(gone.value, null);
+			assert.strictEqual(isMarked(Replicated, 'stamped-live'), false);
+			assert.strictEqual(isMarked(Replicated, 'stamped-gone'), true);
 		});
 
 		it('a message published to an id that holds no record stores a marked row', async function () {
