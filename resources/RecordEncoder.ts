@@ -179,7 +179,7 @@ if (
 export const FULL_WRITE_HEAD = 0x40000;
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
-// Derived by the encode hook and hidden by decode: storage-format.md, "Primary-record null marker".
+// storage-format.md, "Primary-record null marker"
 export const NULL_RECORD = 0x80000;
 const MSGPACK_NIL = 0xc0;
 if (VERSION_REUSED === NULL_RECORD)

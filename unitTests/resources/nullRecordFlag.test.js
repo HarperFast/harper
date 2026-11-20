@@ -35,7 +35,7 @@ function wordMatches(bytes) {
 	return WORD_MASK.every((mask, index) => (bytes[8 + index] & mask) === WORD_MATCH[index]);
 }
 function matchesFilterRule(bytes) {
-	return bytes[0] === VERSION_FIRST_BYTE && wordMatches(bytes);
+	return bytes.length >= 13 && bytes[0] === VERSION_FIRST_BYTE && wordMatches(bytes);
 }
 
 describe('NULL_RECORD metadata bit (harper#4515)', function () {
@@ -205,11 +205,12 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 		});
 
 		it('needs the version byte: a row stored without a version can hold the same bytes at the word offset', async function () {
-			await store.put('unversioned', '0123456\x0e\x08');
+			await store.put('unversioned', '0123456\x0e\x08abc');
 			const bytes = store.getBinarySync('unversioned');
+			assert.strictEqual(bytes.length, 13);
 			assert.ok(wordMatches(bytes));
 			assert.ok(!matchesFilterRule(bytes));
-			assert.strictEqual(store.getEntry('unversioned').value, '0123456\x0e\x08');
+			assert.strictEqual(store.getEntry('unversioned').value, '0123456\x0e\x08abc');
 		});
 
 		it('decodes a marked row to the entry the same row decodes to without the bit', function () {
