@@ -374,6 +374,7 @@ describe('Test configValidator module', () => {
 				[{ perSecond: -1 }, "perSecond' must be greater than or equal to 0"],
 				[{ perSecond: 5, burst: 0 }, "burst' must be greater than or equal to 1"],
 				[{ perSecond: 'fast' }, "perSecond' must be a number"],
+				[{ perSeconds: 5 }, "perSeconds' is not allowed"],
 			]) {
 				config.mqtt = { network: network(limit) };
 				assert.match(

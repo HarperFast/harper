@@ -126,7 +126,7 @@ export interface ServerOptions {
 	securePort?: number;
 	mtls?: boolean;
 	usageType?: string;
-	/** Per-source-address limit on new connections, applied before the TLS handshake (`socket()` listeners only) */
+	/** Per-source-address limit on new connections, for `socket()` listeners; under Node a refused connection on `securePort` never starts its TLS handshake */
 	connectionRateLimit?: import('./serverHelpers/connectionRateLimit.ts').ConnectionRateLimit;
 	/** Worker type that exclusively binds these ports when its dedicated pool runs (e.g. 'replication') */
 	threadType?: string;

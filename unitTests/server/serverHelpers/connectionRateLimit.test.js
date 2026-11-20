@@ -1,4 +1,6 @@
 const assert = require('node:assert');
+const sinon = require('sinon');
+const harperLogger = require('#src/utility/logging/harper_logger');
 const { createServer, connect } = require('node:net');
 const tls = require('node:tls');
 const { EventEmitter, once } = require('node:events');
@@ -76,19 +78,63 @@ describe('connectionRateLimit', () => {
 			assert.equal(admit(undefined), true);
 		});
 
-		it('admits a new address untracked once the tracked-address cap is reached', () => {
-			const admit = createConnectionRateLimiter({ perSecond: 1, burst: 1 }, 'test', now);
-			for (let i = 0; i < 100_000; i++) admit(`10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`);
-			assert.equal(admit('10.0.0.0'), false);
-			assert.equal(admit('192.0.2.1'), true);
-			assert.equal(admit('192.0.2.1'), true);
+		it('admits a new address untracked once the tracked-address cap is reached, and says so', () => {
+			const warn = sinon.stub(harperLogger, 'warn');
+			try {
+				const admit = createConnectionRateLimiter({ perSecond: 1, burst: 1 }, 'test', now);
+				for (let i = 0; i < 100_000; i++) admit(`10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`);
+				assert.equal(admit('192.0.2.1'), true);
+				assert.equal(admit('192.0.2.1'), true);
+				assert.equal(warn.callCount, 1);
+				assert.match(warn.firstCall.args[0], /admitted 1 connection\(s\) from new addresses without a rate limit/);
+				assert.equal(admit('10.0.0.0'), false);
+			} finally {
+				warn.restore();
+			}
+		});
+
+		it('reports drops as one count per minute, never one line per drop', () => {
+			const warn = sinon.stub(harperLogger, 'warn');
+			try {
+				const admit = createConnectionRateLimiter({ perSecond: 0.001, burst: 1 }, 'mqtt on port 1883', now);
+				admit('10.0.0.1');
+				for (let i = 0; i < 100; i++) admit('10.0.0.1');
+				assert.equal(warn.callCount, 1);
+				assert.match(warn.firstCall.args[0], /^mqtt on port 1883: dropped 1 connection/);
+				clock = 59_999;
+				admit('10.0.0.1');
+				assert.equal(warn.callCount, 1);
+				clock = 60_000;
+				admit('10.0.0.1');
+				assert.equal(warn.callCount, 2);
+				assert.match(warn.secondCall.args[0], /dropped 101 connection/);
+			} finally {
+				warn.restore();
+			}
+		});
+
+		it('prunes refilled addresses a step per accept, so new addresses are limited again after the cap', () => {
+			const warn = sinon.stub(harperLogger, 'warn');
+			try {
+				const admit = createConnectionRateLimiter({ perSecond: 1, burst: 1 }, 'test', now);
+				for (let i = 0; i < 100_000; i++) admit(`10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`);
+				clock = 10_000;
+				admit('192.0.2.1');
+				// one step of the prune frees room, but nowhere near the whole map at once
+				assert.equal(admit('192.0.2.2'), true);
+				assert.equal(admit('192.0.2.2'), false);
+				for (let i = 0; i < 2_000; i++) admit('192.0.2.3');
+				for (let i = 0; i < 2_000; i++) assert.equal(admit(`192.0.${3 + (i >> 8)}.${i & 255}`), true);
+				assert.equal(admit('192.0.3.0'), false);
+			} finally {
+				warn.restore();
+			}
 		});
 
 		it('keeps an address still in debt across a prune', () => {
 			const admit = createConnectionRateLimiter({ perSecond: 0.05, burst: 1 }, 'test', now);
 			assert.equal(admit('10.0.0.1'), true);
 			clock = 10_000;
-			// 0.5 tokens back after 10s: still in debt, so the prune keeps it
 			assert.equal(admit('10.0.0.2'), true);
 			assert.equal(admit('10.0.0.1'), false);
 		});
@@ -148,8 +194,10 @@ describe('connectionRateLimit', () => {
 			await once(server, 'listening');
 			try {
 				const client = connect(server.address().port, '127.0.0.1');
-				const [error] = await Promise.race([once(client, 'error'), once(client, 'close').then(() => [])]);
-				if (error) assert.equal(error.code, 'ECONNRESET');
+				// a FIN would end the stream cleanly; only an RST surfaces as ECONNRESET
+				client.resume();
+				const [error] = await once(client, 'error');
+				assert.equal(error.code, 'ECONNRESET');
 				assert.equal(connections, 0);
 			} finally {
 				server.close();

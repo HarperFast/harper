@@ -583,7 +583,10 @@ export function configValidator(configJson, skipFsValidation = false) {
 				connectionRateLimit: Joi.object({
 					perSecond: number.min(0).optional(),
 					burst: number.min(1).optional(),
-				}).optional(),
+				})
+					// a misspelled key would otherwise leave the limit silently off
+					.unknown(false)
+					.optional(),
 			}).required(),
 			webSocket: boolean.optional(),
 			requireAuthentication: boolean.optional(),

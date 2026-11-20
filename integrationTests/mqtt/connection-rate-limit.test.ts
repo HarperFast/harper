@@ -19,7 +19,6 @@ import mqtt, { type MqttClient } from 'mqtt';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'connection-rate-limit');
-const BURST = 2;
 const CONNECT_TIMEOUT_MS = 8_000;
 
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
@@ -27,7 +26,6 @@ const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === '
 suite('MQTT connection rate limit per source address', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	const clients: MqttClient[] = [];
 
-	/** Resolves true on a CONNACK, false when the connection closes without one. */
 	function connects(): Promise<boolean> {
 		return new Promise((resolvePromise) => {
 			const client = mqtt.connect(`mqtt://${ctx.harper.hostname}:1883`, {
@@ -48,7 +46,7 @@ suite('MQTT connection rate limit per source address', { skip: skipSuite }, (ctx
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
 				threads: { count: 1 },
-				mqtt: { network: { connectionRateLimit: { perSecond: 0.001, burst: BURST } } },
+				mqtt: { network: { connectionRateLimit: { perSecond: 0.001, burst: 2 } } },
 			},
 		});
 	});
@@ -58,26 +56,27 @@ suite('MQTT connection rate limit per source address', { skip: skipSuite }, (ctx
 		await teardownHarper(ctx);
 	});
 
-	test('connections within the burst are accepted, the next is closed before CONNACK', async () => {
-		for (let i = 0; i < BURST; i++) ok(await connects(), `connection ${i + 1} of the burst was refused`);
-		strictEqual(await connects(), false);
-	});
-
-	test('the TLS port shares the allowance and closes the connection before the handshake completes', async () => {
-		const outcome = await new Promise<string>((resolvePromise) => {
+	/** The TLS handshake's outcome on 8883, with the error code when it fails. */
+	function tlsOutcome(): Promise<string> {
+		return new Promise((resolvePromise) => {
 			const socket = tlsConnect({ host: ctx.harper.hostname, port: 8883, rejectUnauthorized: false });
 			const timer = setTimeout(() => resolvePromise('timeout'), CONNECT_TIMEOUT_MS);
-			socket.on('error', () => {});
 			socket.once('secureConnect', () => {
 				clearTimeout(timer);
 				socket.destroy();
 				resolvePromise('handshake');
 			});
-			socket.once('close', () => {
+			socket.once('error', (error: NodeJS.ErrnoException) => {
 				clearTimeout(timer);
-				resolvePromise('closed');
+				resolvePromise(error.code ?? 'error');
 			});
 		});
-		strictEqual(outcome, 'closed');
+	}
+
+	test('the TCP and TLS ports share one burst, and a connection past it is reset before TLS or CONNACK', async () => {
+		strictEqual(await tlsOutcome(), 'handshake');
+		ok(await connects(), 'the second connection of the burst was refused');
+		strictEqual(await connects(), false);
+		strictEqual(await tlsOutcome(), 'ECONNRESET');
 	});
 });

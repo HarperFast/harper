@@ -910,7 +910,7 @@ function onSocket(listener?: any, options?: any) {
 	// one limiter across this listener's TCP, TLS and Unix socket servers, so a source can't multiply its allowance by port
 	const admitConnection = createConnectionRateLimiter(
 		options.connectionRateLimit,
-		`${getComponentName()} on port ${options.securePort ?? options.port}`
+		`${getComponentName()} on port ${[options.port, options.securePort].filter(Boolean).join(' and ')}`
 	);
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
@@ -939,10 +939,12 @@ function onSocket(listener?: any, options?: any) {
 				ciphers: effectiveCiphers,
 				SNICallback,
 			},
-			listener
+			// Bun's TLS server is not known to deliver 'connection' through emit before its handshake, so
+			// there the gate falls back to the post-handshake listener rather than possibly not running
+			admitConnection && isBun ? gateListener(listener, admitConnection) : listener
 		);
 		socketServer = secureSocketServer;
-		if (admitConnection) gateConnectionEvents(secureSocketServer, admitConnection);
+		if (admitConnection && !isBun) gateConnectionEvents(secureSocketServer, admitConnection);
 		secureSocketServer.appliedCiphers = effectiveCiphers ?? null;
 		secureSocketServer.verifiesClientCerts = Boolean(options.mtls);
 		secureSocketServer.mtlsRequired = Boolean(options.mtls?.required);
@@ -998,8 +1000,10 @@ function onSocket(listener?: any, options?: any) {
 	}
 	if (options.port) {
 		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });
-		socketServer = createSocketServer({ ...socketOptionDefaults }, listener);
-		if (admitConnection) gateConnectionEvents(socketServer, admitConnection);
+		socketServer = createSocketServer(
+			{ ...socketOptionDefaults },
+			admitConnection ? gateListener(listener, admitConnection) : listener
+		);
 		// See the securePort path above: opt out of reusePort only on macOS so every worker can
 		// accept connections for this listener elsewhere, and mark it worker-owned.
 		if (process.platform === 'darwin') socketServer.noReusePort = true;

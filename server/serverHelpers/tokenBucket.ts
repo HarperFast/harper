@@ -1,7 +1,7 @@
 /**
  * Token bucket: starts full at `burst`, refills at `rate` tokens per
- * second up to `burst`, drained by `tryConsume(1)`. Stateless aside from
- * `tokens` + `lastRefill`, both updated on every consume call.
+ * second up to `burst`, drained by `tryConsume(1)`. `tokens` and
+ * `lastRefill` advance on every call that refills.
  */
 export class TokenBucket {
 	private rate: number;
@@ -59,6 +59,9 @@ export class TokenBucket {
  * single client is typically assigned.
  */
 export function sourceAddressKey(identity: string): string {
+	// the forms a socket reports for nearly every client, without the general path's allocations
+	if (DOTTED_IPV4.test(identity)) return identity;
+	if (MAPPED_IPV4.test(identity)) return identity.slice(7);
 	const address = identity
 		.replace(/^\[|\](:\d+)?$/g, '')
 		.split('%')[0]
@@ -76,6 +79,9 @@ export function sourceAddressKey(identity: string): string {
 		.map((group) => group.toString(16))
 		.join(':')}::/64`;
 }
+
+const DOTTED_IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+const MAPPED_IPV4 = /^::ffff:\d{1,3}(?:\.\d{1,3}){3}$/i;
 
 function expandIpv6(address: string): number[] | undefined {
 	const dotted = address.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
