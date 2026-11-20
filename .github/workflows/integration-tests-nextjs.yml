@@ -30,6 +30,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       relevant: ${{ steps.filter.outputs.relevant }}
+      ecommerce: ${{ steps.filter.outputs.ecommerce }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,6 +52,12 @@ jobs:
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
             echo "No adapter-relevant paths changed -> integration suite will be skipped."
+          fi
+          # The ecommerce-template job also runs when its own test or this workflow changes.
+          if echo "$changed" | grep -Eq '^(resources|server|dataLayer|components|config)/|^package(-lock)?\.json$|^integrationTests/components/ecommerce-template\.test\.ts$|^\.github/workflows/integration-tests-nextjs\.yml$'; then
+            echo "ecommerce=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ecommerce=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Heavy path: only when relevant files changed. Runs and reports informationally --
@@ -153,3 +160,45 @@ jobs:
           name: playwright-traces-node-${{ matrix.node-version }}
           path: integrationTests/test-results/
           retention-days: 7
+
+  # Deploys a pinned harper-ecommerce-template commit to this PR's harper and builds it with Next.js inside
+  # the running instance. Advisory for the same reason as the job above: it pulls the template from GitHub
+  # and its dependencies from npm at test time, so upstream releases and outages can fail it.
+  ecommerce-template:
+    name: Ecommerce template on this PR's harper
+    needs: changes
+    if: needs.changes.outputs.ecommerce == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        timeout-minutes: 6
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run ecommerce-template integration test
+        timeout-minutes: 15
+        env:
+          HARPER_ECOMMERCE_TEMPLATE_TEST: '1'
+          HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
+          FORCE_COLOR: '1'
+        run: npm run test:integration -- integrationTests/components/ecommerce-template.test.ts
+
+      - name: Upload Harper logs on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: harper-logs-ecommerce-template
+          path: /tmp/harper-integration-test-logs/
+          retention-days: 7
+          if-no-files-found: ignore

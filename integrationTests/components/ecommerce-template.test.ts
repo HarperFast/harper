@@ -53,7 +53,13 @@ async function prepareTemplateArchive(workDir: string): Promise<string> {
 // Under HARPER_UWS_HTTP the plugin's guard sees a response but `request._nodeRequest` is null, so every
 // Next.js page 500s ("Cannot read properties of null (reading 'url')") while REST still serves. The Bun
 // adapter has the same null `_nodeRequest`. https://github.com/HarperFast/nextjs/issues/86
-const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun' || !!process.env.HARPER_UWS_HTTP;
+// Opt-in: the suite depends on GitHub, npm and upstream Next.js releases, so it runs only from the advisory
+// job in .github/workflows/integration-tests-nextjs.yml, never in the blocking integration shards.
+const skipSuite =
+	!process.env.HARPER_ECOMMERCE_TEMPLATE_TEST ||
+	process.platform === 'win32' ||
+	process.env.HARPER_RUNTIME === 'bun' ||
+	!!process.env.HARPER_UWS_HTTP;
 
 suite('Component: ecommerce-template', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let workDir: string;
