@@ -2455,6 +2455,7 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
  * given), so a short frame followed by another entry throws into readAuditEntry's catch instead of reading the next
  * entry's bytes.
  */
+// shared by every decode: anything that runs inside readAuditEntry and may decode another entry saves and restores both
 let readPosition = 0;
 let readLimit = 0;
 const FLOAT64_BYTES = new Uint8Array(8);
@@ -2488,7 +2489,7 @@ function readEntryInt(buffer: Uint8Array): number {
 }
 /** Big-endian, bounded by the buffer. */
 export function entryUint32At(buffer: Uint8Array, position: number): number {
-	if (position + 4 > buffer.byteLength) {
+	if (position < 0 || position + 4 > buffer.byteLength) {
 		throw new RangeError(`Error reading uint32 at position ${position} (byteLength ${buffer.byteLength})`);
 	}
 	return (
@@ -2497,7 +2498,7 @@ export function entryUint32At(buffer: Uint8Array, position: number): number {
 }
 /** Big-endian, bounded by `limit`. Does not move the read position. */
 export function entryFloat64At(buffer: Uint8Array, position: number, limit = buffer.byteLength): number {
-	if (position + 8 > limit) {
+	if (position < 0 || position + 8 > limit) {
 		throw new RangeError(`Error reading float64 at position ${position} (end ${limit})`);
 	}
 	FLOAT64_BYTES[0] = buffer[position];
@@ -2599,17 +2600,19 @@ class AuditEntry {
 		this.#recordId = UNDECODED;
 	}
 	get recordId() {
-		// Kept after the first read: the broadcast route, an index runner and a replication sender each read it more
-		// than once. It lives outside readAuditEntry's try/catch, so a corrupt recordId region would otherwise
-		// escape as an uncaught RangeError on property access. Catch and return undefined; callers already treat
-		// missing recordId as a skip-eligible entry.
+		// A primitive id is kept, since several readers each read it; an array id is decoded afresh on every read, so
+		// a reader that mutates the one it got cannot change the next reader's. It lives outside readAuditEntry's
+		// try/catch, so a corrupt recordId region would otherwise escape as an uncaught RangeError on property access.
+		// Catch and return undefined; callers already treat missing recordId as a skip-eligible entry.
 		if (this.#recordId !== UNDECODED) return this.#recordId;
 		const buffer = this.#buffer;
 		const recordIdStart = this.#recordIdStart;
 		const recordIdEnd = this.#recordIdEnd;
 		try {
 			// use a subarray to protect against the underlying buffer being modified
-			return (this.#recordId = readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd));
+			const recordId = readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd);
+			if (typeof recordId !== 'object') this.#recordId = recordId;
+			return recordId;
 		} catch (error) {
 			harperLogger.warn('Failed to decode audit recordId; treating as corrupt', error);
 			return (this.#recordId = undefined);
@@ -2635,7 +2638,6 @@ class AuditEntry {
 		// On a recovered entry this drops the unannounced prefix, so a replication sender —
 		// which strips by the same leading-0x42 test and frames by encoded.length — forwards a
 		// clean entry instead of passing the same misparse to the next hop.
-		// Bounded by the end too, so the first of several entries in one buffer is not framed with the ones after it.
 		return this.#entryStart || this.#end !== undefined
 			? this.#buffer.subarray(this.#entryStart, this.#end)
 			: this.#buffer;
@@ -2705,7 +2707,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		readLimit = end === undefined || end > buffer.byteLength ? buffer.byteLength : end;
 		let previousVersion;
 		let entryStart = start;
-		const firstByte = buffer[start];
+		const firstByte = start < readLimit ? buffer[start] : 0; // 0 starts no action and no previousVersion
 		if (firstByte === PREVIOUS_VERSION_FIRST_BYTE) {
 			previousVersion = readEntryFloat64(buffer);
 		} else if (ACTION_FIRST_BYTE[firstByte] !== 1) {
@@ -2713,7 +2715,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			// physically here but does not announce itself, so the action sits 8 bytes further on.
 			// Recover only when the bytes cannot be anything else, and never for the RocksDB container,
 			// whose prelude flag already consumed its previousVersion before this offset.
-			if (start !== 0 || start + 9 > buffer.byteLength || ACTION_FIRST_BYTE[buffer[start + 8]] !== 1) {
+			if (start !== 0 || start + 9 > readLimit || ACTION_FIRST_BYTE[buffer[start + 8]] !== 1) {
 				return corruptEntry(buffer, start, end, firstByte);
 			}
 			// > 1 is exactly what the superseded writer's own guard could emit, the tightest available
@@ -2826,7 +2828,8 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		if (previousResidencySlot !== undefined) entry.previousResidencySlot = previousResidencySlot;
 		return entry;
 	} catch (error) {
-		harperLogger.error('Reading audit entry error', error, buffer);
+		// offsets, not the bytes: with an explicit end the buffer can hold other entries and their payloads
+		harperLogger.error('Reading audit entry error', error, { start, end, byteLength: buffer.byteLength });
 		return createCorruptAuditSentinel(buffer, start, end);
 	}
 }

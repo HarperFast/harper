@@ -161,17 +161,21 @@ describe('audit log read benchmarks', function () {
 				}
 			});
 		};
-		const subscription = addSubscription(A, 'x', () => {});
+		let subscription;
 		try {
+			subscription = addSubscription(A, 'x', () => {});
 			for (let i = 0; i < 500; i++) await B.put({ id: `warm-${i}`, name: 'w', count: i, tags: [], price: i });
+			// the last warm-up pass may still be queued: let it run before the counters reset
+			await new Promise((resolve) => originalSetImmediate(resolve));
+			await new Promise((resolve) => originalSetImmediate(resolve));
 			passNs = 0;
 			passCount = 0;
 			for (let i = 0; i < PASSES; i++)
 				await B.put({ id: `device/${i % 1000}/timed-${i}`, name: 't', count: i, tags: ['a'], price: i });
-			await waitFor(() => passCount >= PASSES - 10);
+			await waitFor(() => passCount >= PASSES);
 		} finally {
-			subscription.end();
 			global.setImmediate = originalSetImmediate;
+			subscription?.end();
 		}
 		console.log('AUDIT_NOTIFY_PASS', JSON.stringify({ passCount, nsPerPass: Math.round(passNs / passCount) }));
 	});

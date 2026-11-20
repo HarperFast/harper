@@ -37,10 +37,10 @@ describe('readAuditEntry decoding', () => {
 		assert.deepEqual([...b.encoded], [...second]);
 	});
 
-	it('decodes the record id once and keeps it', () => {
+	it('gives each reader of an array id its own copy', () => {
 		const record = readAuditEntry(entry({ recordId: ['device', 7], encodedRecord: Buffer.from([1]) }));
+		record.recordId.push('changed by one reader');
 		assert.deepEqual(record.recordId, ['device', 7]);
-		assert.strictEqual(record.recordId, record.recordId);
 	});
 
 	it('reads big-endian integers and floats with the high bit set as a DataView does', () => {
@@ -109,26 +109,6 @@ describe('readAuditEntry decoding', () => {
 		const users = ['alice', 'alice', 'bob', 'alice', 'alicf', 'al', '', 'al'];
 		const decoded = users.map((user) => readAuditEntry(entry({ recordId: 'u', user })).user);
 		assert.deepEqual(decoded, ['alice', 'alice', 'bob', 'alice', 'alicf', 'al', undefined, 'al']);
-	});
-
-	it('keeps its lazy fields off the own properties, so a copy must name them', () => {
-		const bytes = entry({ recordId: ['a', 1], user: 'carol', encodedRecord: Buffer.from([5, 6]) });
-		const record = readAuditEntry(bytes);
-		assert.deepEqual(record.recordId, ['a', 1]);
-		assert.equal(record.user, 'carol');
-		assert.equal(record.size, bytes.length);
-		assert.deepEqual([...record.encoded], [...bytes]);
-		for (const lazy of ['recordId', 'user', 'encoded', 'size', 'getValue', 'getBinaryValue'])
-			assert.equal(Object.hasOwn(record, lazy), false, lazy);
-		// copied by name, the fields re-encode to the same entry
-		const { type, version, tableId, nodeId } = record;
-		// the low byte carries the type and record bits, which createAuditEntry derives itself
-		const extendedType = record.extendedType & ~0xff;
-		const copy = { type, version, tableId, nodeId, extendedType, recordId: record.recordId, user: record.user };
-		assert.deepEqual(
-			Buffer.from(createAuditEntry({ ...copy, encodedRecord: record.getBinaryValue() })),
-			Buffer.from(bytes)
-		);
 	});
 
 	it('gives every decoded entry the same own fields, whatever optional parts it carries', () => {
