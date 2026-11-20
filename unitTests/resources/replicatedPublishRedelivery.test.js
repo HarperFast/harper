@@ -77,6 +77,16 @@ describe('Re-delivered replicated publishes', function () {
 		assert.equal(loggedMessages('sensor/1'), 1);
 	});
 
+	it('delivers a root-topic publish re-delivered at its origin key once', async () => {
+		const logKey = originClock();
+		await applyFrame(logKey, [{ id: null, n: 1 }]);
+		await drain();
+		await applyFrame(logKey, [{ id: null, n: 1 }]);
+		await drain();
+		assert.deepEqual(received, ['null:1']);
+		assert.equal(loggedMessages(null), 1);
+	});
+
 	it('delivers a re-streamed run once, after newer publishes already arrived', async () => {
 		const keys = [originClock(), originClock(), originClock()];
 		for (const [i, logKey] of keys.entries()) await applyFrame(logKey, [{ id: 'sensor/run', n: i }]);

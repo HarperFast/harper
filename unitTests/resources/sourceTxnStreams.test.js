@@ -2,6 +2,8 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { WRITE_CONDITION } = require('#src/resources/Resource');
+const { ClientError } = require('#src/utility/errors/hdbError');
 const { waitFor } = require('../waitFor');
 const {
 	registerReplicatedApplyFailureListener,
@@ -75,6 +77,92 @@ describe('source transactions keyed by stream', function () {
 		const found = [];
 		for (const id of ids) if (await Table.get(id)) found.push(id);
 		return found;
+	}
+
+	for (const type of ['publish', 'message']) {
+		for (const id of [null, 0, '', 'sensor']) {
+			it(`delivers a replicated ${type} to topic ${JSON.stringify(id)}`, async () => {
+				let ready;
+				const subscribed = new Promise((resolve) => (ready = resolve));
+				let commits = 0;
+				let failure;
+				let nodeId, timestamp;
+				const value = { body: 'from the peer' };
+				const { Table, applied } = start((Table) => {
+					nodeId = getIdOfRemoteNode('root-topic-peer', Table.auditStore);
+					timestamp = NOW + 100 + serial;
+					return [
+						{ type, id, value, nodeId, timestamp, version: timestamp, beginTxn: true, finished: subscribed },
+						put('marker', timestamp, { nodeId }),
+						{
+							type: 'end_txn',
+							localTime: timestamp,
+							remoteNodeIds: [nodeId],
+							onCommit: () => commits++,
+							onFailure: (error) => (failure = error),
+						},
+					];
+				});
+				let subscription;
+				try {
+					const received = [];
+					subscription = await Table.subscribe({ isCollection: true, omitCurrent: true });
+					subscription.on('data', ({ type, id, value }) => {
+						if (type === 'message') received.push({ type, id, value });
+					});
+					ready();
+					await waitFor(() => applied.length === 3);
+					assert.ifError(failure);
+					assert.strictEqual(commits, 1, 'the source transaction must commit');
+					assert.strictEqual((await Table.get('marker'))?.id, 'marker');
+					await waitFor(() => Table.dbisDB.getSync([Symbol.for('seq'), nodeId])?.seqId >= timestamp);
+					assert.ok(
+						[...Table.auditStore.getRange({ start: 1, log: nodeId })].some(
+							(entry) => entry.tableId === Table.tableId && entry.recordId === id && entry.type === 'message'
+						)
+					);
+					await waitFor(() => received.length > 0);
+					assert.deepStrictEqual(received[0], { type: 'message', id, value });
+				} finally {
+					ready();
+					subscription?.end();
+				}
+			});
+		}
+	}
+
+	it('declines a conditional write to a null target through the normal error contract', () => {
+		const { Table } = start([]);
+		assert.throws(
+			() => Table.getResource(null, { [WRITE_CONDITION]: { Resource: Table } }),
+			(error) => error instanceof ClientError && error.statusCode === 501
+		);
+	});
+
+	for (const type of ['put', 'delete']) {
+		it(`rejects a replicated ${type} with a null id without changing records`, async () => {
+			let ready;
+			const seeded = new Promise((resolve) => (ready = resolve));
+			let failure;
+			const { Table, applied } = start((Table) => {
+				const nodeId = getIdOfRemoteNode('root-topic-peer', Table.auditStore);
+				const timestamp = NOW + 200 + serial;
+				return [
+					{ type, id: null, value: { id: 'unexpected' }, nodeId, timestamp, beginTxn: true, finished: seeded },
+					{ type: 'end_txn', onFailure: (error) => (failure = error) },
+				];
+			});
+			try {
+				await Table.put({ id: 'kept' });
+				ready();
+				await waitFor(() => applied.length === 2);
+				assert.ok(failure instanceof ClientError);
+				assert.strictEqual(failure.statusCode, 400);
+				assert.deepStrictEqual(await recordIds(Table, ['kept', 'unexpected']), ['kept']);
+			} finally {
+				ready();
+			}
+		});
 	}
 
 	it('keeps each stream in its own transaction when their events interleave', async () => {
