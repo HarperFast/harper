@@ -1036,7 +1036,8 @@ function deferredIterator(
 		return(value?: any) {
 			returned = true;
 			finish();
-			if (opened) return Promise.resolve(opened.return?.(value) ?? { value, done: true });
+			const inner = opened;
+			if (inner) return Promise.resolve().then(() => inner.return?.(value) ?? { value, done: true });
 			// a model can ignore the abort, so a close closes what opens later rather than waiting for it
 			getIterator()
 				.then((iterator) => iterator.return?.(value))
@@ -1046,7 +1047,12 @@ function deferredIterator(
 		throw(error: any) {
 			returned = true;
 			finish();
-			if (opened) return opened.throw ? Promise.resolve(opened.throw(error)) : Promise.reject(error);
+			const inner = opened;
+			if (inner)
+				return Promise.resolve().then(() => {
+					if (inner.throw) return inner.throw(error);
+					throw error;
+				});
 			getIterator()
 				.then((iterator) => iterator.return?.())
 				.catch(() => {});
@@ -1054,7 +1060,34 @@ function deferredIterator(
 		},
 	};
 }
+const MAX_SORT_TEXTS = 8;
 type SortEmbedding = { sort: Promise<any>; abort: () => void; conditions: any[] };
+function copySortChain(sort: any): any {
+	const copy = { ...sort };
+	if (sort.next) copy.next = copySortChain(sort.next);
+	return copy;
+}
+/** Settles as `promise` does, or rejects with the signal's reason once it aborts, for a backend that ignores the abort. */
+function settleOrAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		promise.catch(() => {});
+		return Promise.reject(signal.reason);
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener('abort', onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener('abort', onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener('abort', onAbort);
+				reject(error);
+			}
+		);
+	});
+}
 function withEmbeddedTargets(sort: any, vectors: Map<any, number[]>): any {
 	const copy = { ...sort };
 	const vector = vectors.get(sort);
@@ -14438,8 +14471,11 @@ export function makeTable(options): TableResourceClass {
 	/** A leading index's checks run here only when no condition can lead instead (#searchSorted plans the rest). */
 	function embedSortTexts(sort: any, context: any, target: any, id: any): SortEmbedding | undefined {
 		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
+		let texts = 0;
 		for (let order = sort; order; order = order.next) {
 			if (order.text === undefined) continue;
+			// every text is billed before the row limit applies
+			if (++texts > MAX_SORT_TEXTS) throw new ClientError(`A sort can embed at most ${MAX_SORT_TEXTS} texts`);
 			const name = Array.isArray(order.attribute) ? order.attribute.join('.') : order.attribute;
 			if (typeof order.text !== 'string' || order.text.trim() === '')
 				throw new ClientError(`The sort text for "${name}" must be a non-empty string`);
@@ -14464,6 +14500,11 @@ export function makeTable(options): TableResourceClass {
 			group.orders.push(order);
 		}
 		if (!textsByAttribute) return;
+		// the caller can change its sort objects while the model answers, so the search uses a copy made now
+		const captured = copySortChain(sort);
+		const copies = new Map();
+		for (let order = sort, copy = captured; order; order = order.next, copy = copy.next) copies.set(order, copy);
+		for (const group of textsByAttribute.values()) group.orders = group.orders.map((order) => copies.get(order));
 		for (let order = sort; order; order = order.next) {
 			if (order.text !== undefined) continue;
 			if (fullTextFieldNames) assertRecordField(order.attribute);
@@ -14534,11 +14575,10 @@ export function makeTable(options): TableResourceClass {
 			);
 		}
 		return {
-			sort: Promise.all(embedded).then(
-				() => withEmbeddedTargets(sort, vectors),
+			sort: (context?.signal ? settleOrAbort(Promise.all(embedded), context.signal) : Promise.all(embedded)).then(
+				() => withEmbeddedTargets(captured, vectors),
 				(error) => {
 					controller.abort();
-					// a client that disconnected is answered with nothing, so its abort is no server fault
 					if (context?.signal?.aborted && error === context.signal.reason)
 						throw Object.assign(requestAbortedError(), { cause: error });
 					throw error;

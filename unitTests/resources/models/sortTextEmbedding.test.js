@@ -75,6 +75,8 @@ function fakeEmbed() {
 }
 
 const queryVector = (text) => Array.from(new Float32Array(QUERY_VECTORS[text]));
+// an LMDB search's transaction is not reachable from the context once its scope is released
+const observesSnapshot = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 
 async function fromAsync(iterable) {
 	const out = [];
@@ -404,6 +406,16 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			const target = { sort: { attribute: 'tag', next: { attribute: 'id' } }, select: ['id'] };
 			Object.defineProperty(target, 'conditions', { value: odd(), enumerable: true });
 			assert.deepEqual(await fromAsync(Doc.search(target)), [{ id: 1 }, { id: 3 }]);
+		});
+
+		it('refuses a sort with more texts than one search embeds, before it calls the model', () => {
+			let sort;
+			for (let i = 0; i < 9; i++) sort = { attribute: 'embedding', text: 'red fruit', next: sort };
+			assert.throws(
+				() => Doc.search({ sort }),
+				(error) => error.statusCode === 400 && /at most 8 texts/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
 		});
 
 		it('refuses an unknown attribute with a 404', () => {
@@ -854,6 +866,43 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('a disconnect fails the search at once while a model that ignores the abort is still answering', async () => {
+			const release = embed.hold({ ignoreAbort: true });
+			try {
+				const request = new AbortController();
+				const result = Doc.search(
+					{ sort: { attribute: 'embedding', text: 'red fruit' }, explain: true },
+					{ signal: request.signal }
+				);
+				result.catch(() => {});
+				await waitFor(() => queryCalls().length > 0);
+				request.abort();
+				const outcome = await Promise.race([
+					result.then(
+						() => 'resolved',
+						(error) => error.statusCode
+					),
+					new Promise((resolve) => setTimeout(() => resolve('still waiting'), 2_000)),
+				]);
+				assert.equal(outcome, 499);
+			} finally {
+				release();
+			}
+		});
+
+		it('searches by the sort as it was when the search started, though the caller changes it after', async () => {
+			const release = embed.hold();
+			const sort = { attribute: 'embedding', text: 'red fruit' };
+			const results = Doc.search({ sort, select: ['content'], limit: 1 });
+			try {
+				await waitFor(() => queryCalls().length > 0);
+				sort.descending = true;
+			} finally {
+				release();
+			}
+			assert.deepEqual(await fromAsync(results), [{ content: 'cherry' }]);
+		});
+
 		it('a model that answers after the request was aborted opens no search', async () => {
 			const release = embed.hold({ ignoreAbort: true });
 			const request = new AbortController();
@@ -919,8 +968,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			const iterator = results[Symbol.asyncIterator]();
 			assert.ok((await iterator.next()).value);
 			const links = context.storeLinks();
-			// an LMDB search's transaction is not reachable from the context once its scope is released
-			if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb')
+			if (observesSnapshot)
 				assert.ok(
 					links.some((txn) => txn.readTxnsUsed > 0),
 					'the search holds a read snapshot'
@@ -954,8 +1002,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			let Tagged;
 			const sort = { attribute: 'embedding', text: 'red fruit' };
 			const select = ['content', 'tag'];
-			// an LMDB search's transaction is not reachable from the context once its scope is released
-			const observesSnapshot = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 			before(async function () {
 				if (native && !(observesSnapshot && getPlaneBinding())) this.skip(); // the native plane needs RocksDB
 				Tagged = table({
