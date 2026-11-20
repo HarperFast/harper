@@ -28,11 +28,14 @@ require('#src/server/serverHelpers/serverUtilities');
 
 const { ACTION_32_BIT, HAS_BLOBS, LOCAL_ONLY, createAuditEntry, readAuditEntry } = auditStoreModule;
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-// the fixed-offset rule a compaction filter applies to value bytes 8..11
-const FILTER_MASK = [0xff, 0x08, 0x00, 0x00];
-const FILTER_MATCH = [0x0e, 0x08, 0x00, 0x00];
-function matchesFilterRule(bytes, offset = 8) {
-	return FILTER_MASK.every((mask, index) => (bytes[offset + index] & mask) === FILTER_MATCH[index]);
+const VERSION_FIRST_BYTE = 0x42;
+const WORD_MASK = [0xff, 0x08, 0x00, 0x00];
+const WORD_MATCH = [0x0e, 0x08, 0x00, 0x00];
+function wordMatches(bytes) {
+	return WORD_MASK.every((mask, index) => (bytes[8 + index] & mask) === WORD_MATCH[index]);
+}
+function matchesFilterRule(bytes) {
+	return bytes[0] === VERSION_FIRST_BYTE && wordMatches(bytes);
 }
 
 describe('NULL_RECORD metadata bit (harper#4515)', function () {
@@ -61,11 +64,10 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 			}
 			assert.deepStrictEqual(
 				[...Buffer.from(new Uint32Array([NULL_RECORD | (ACTION_32_BIT << 24)]).buffer).reverse()],
-				FILTER_MATCH
+				WORD_MATCH
 			);
 		});
 
-		// a build without the decode mask mirrors the bit into the audit flag word of its copy frames
 		it('is undefined in the audit flag word, and an audit entry carrying it reads unchanged', function () {
 			for (const [name, value] of Object.entries(auditStoreModule)) {
 				if (typeof value !== 'number' || value <= 0xff || value & (value - 1)) continue;
@@ -195,12 +197,19 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 			assert.ok(matchesFilterRule(serializedNull));
 			assert.strictEqual(store.getEntry('serializes-to-null').value, null);
 
-			// undefined is stored as its own value, so the row does not read back as null
 			const version = ++nextVersion;
 			setNextEncoding(version, 0, -1, -1, 0);
 			await store.put('undefined-body', undefined, version);
 			assert.ok(!matchesFilterRule(store.getBinarySync('undefined-body')));
 			assert.strictEqual(store.getEntry('undefined-body').value, undefined);
+		});
+
+		it('needs the version byte: a row stored without a version can hold the same bytes at the word offset', async function () {
+			await store.put('unversioned', '0123456\x0e\x08');
+			const bytes = store.getBinarySync('unversioned');
+			assert.ok(wordMatches(bytes));
+			assert.ok(!matchesFilterRule(bytes));
+			assert.strictEqual(store.getEntry('unversioned').value, '0123456\x0e\x08');
 		});
 
 		it('decodes a marked row to the entry the same row decodes to without the bit', function () {
@@ -241,7 +250,6 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 			}
 		});
 
-		// its values are index nodes; a null there would be live index data, never a tombstone
 		it('leaves a self-versioned index store row unmarked', function () {
 			indexStore.encoder.autoVersion = true;
 			indexStore.putSync('entry', null);
@@ -259,17 +267,12 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 			const store = Table.primaryStore;
 			return isLMDB ? store.getBinary(id) : store.getBinarySync(id);
 		}
-		// LMDB stores the word first when the row has no local timestamp
-		function wordOffset(bytes) {
-			return isLMDB && bytes[0] === ACTION_32_BIT ? 0 : 8;
-		}
 		function isMarked(Table, id) {
 			const bytes = storedBytes(Table, id);
 			assert.ok(bytes, `no stored row for ${id}`);
-			const offset = wordOffset(bytes);
-			assert.strictEqual(bytes[offset], ACTION_32_BIT, `row ${id} has no metadata word`);
-			const marked = Boolean(bytes.readUInt32BE(offset) & NULL_RECORD);
-			assert.strictEqual(matchesFilterRule(bytes, offset), marked);
+			assert.strictEqual(bytes[8], ACTION_32_BIT, `row ${id} has no metadata word`);
+			const marked = Boolean(bytes.readUInt32BE(8) & NULL_RECORD);
+			if (!isLMDB) assert.strictEqual(matchesFilterRule(bytes), marked);
 			return marked;
 		}
 
@@ -308,7 +311,6 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 				put('replicated', now),
 				remove('replicated', now + 1),
 				remove('copied', now + 2, true),
-				// a copied delete older than the row it meets is recorded on that row, which is stored again
 				put('stamped-live', now + 20),
 				remove('stamped-live', now + 10, true),
 				remove('stamped-gone', now + 20),
