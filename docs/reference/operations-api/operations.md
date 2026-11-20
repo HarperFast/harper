@@ -2138,6 +2138,7 @@ Operations for restarting Harper and managing system state.
 | `restart`            | Restarts the Harper instance                      | super_user    |
 | `restart_service`    | Restarts a specific Harper service                | super_user    |
 | `system_information` | Returns detailed host system metrics              | super_user    |
+| `server_info`        | Returns the Harper version and capabilities       | any           |
 | `set_status`         | Sets an application-specific status value         | super_user    |
 | `get_status`         | Returns one status value, or the instance summary | super_user    |
 | `clear_status`       | Removes a status entry                            | super_user    |
@@ -2214,6 +2215,26 @@ Valid attribute names are `system`, `time`, `cpu`, `memory`, `disk`, `network`, 
 
 ```json
 { "operation": "system_information" }
+```
+
+### `server_info`
+
+<VersionBadge version="v5.4.2" />
+
+Returns the instance's Harper `version` and its `capabilities`: what it does that a client cannot infer from the version number. Any authenticated user may call it.
+
+| Capability               | Meaning                                                                                                                |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `restore_backup_archive` | [`restore_backup`](../backups/operations.md#restoring-a-get_backup-archive) restores an archive sent as its `payload`. |
+
+`harper restore_backup file=` uploads only to a server that lists `restore_backup_archive`, so a role with an `operations` allowlist that runs that command should list `server_info`.
+
+```json
+{ "operation": "server_info" }
+```
+
+```json
+{ "version": "5.4.2", "capabilities": ["restore_backup_archive"] }
 ```
 
 ### `set_status` / `get_status` / `clear_status`
@@ -2729,7 +2750,7 @@ Operations for license management.
 
 | Operation               | Description                                        | Role Required |
 | ----------------------- | -------------------------------------------------- | ------------- |
-| `registration_info`     | Returns the Harper version and capabilities        | any           |
+| `registration_info`     | Returns the Harper version                         | any           |
 | `install_usage_license` | Installs a Harper usage license block              | super_user    |
 | `get_usage_licenses`    | Returns all usage licenses with consumption counts | super_user    |
 
@@ -2737,14 +2758,12 @@ Operations for license management.
 
 Returns the instance's Harper version, and `deprecated: true`. It no longer returns registration details. `harper deploy` calls it to check the target's version before it uploads, so a role with an `operations` allowlist that runs `harper deploy` should list it.
 
-<VersionBadge type="changed" version="v5.4.2" /> It also returns `capabilities`, the behaviors a client cannot infer from the version number. `restore_backup_archive` means [`restore_backup`](../backups/operations.md#restoring-a-get_backup-archive) restores an archive sent as its `payload`; `harper restore_backup file=` uploads only to a server that lists it, so a role that runs that command should list `registration_info` too.
-
 ```json
 { "operation": "registration_info" }
 ```
 
 ```json
-{ "version": "5.4.2", "deprecated": true, "capabilities": ["restore_backup_archive"] }
+{ "version": "5.3.2", "deprecated": true }
 ```
 
 ### `install_usage_license`

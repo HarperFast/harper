@@ -68,14 +68,20 @@ describe('restore_backup file= from the CLI', () => {
 		process.env.HOME = testDir;
 	});
 
-	it('uploads only to a server that advertises archive restore, whatever its version', () => {
+	it('uploads only to a server that lists archive restore, whatever its version', () => {
 		const { advertisesArchiveRestore } = cliOperationsModule;
+		const { getServerInfo } = require('#src/server/serverInfo');
 		const { getRegistrationInfo } = require('#src/resources/registrationDeprecated');
-		assert.strictEqual(advertisesArchiveRestore(getRegistrationInfo()), true, 'this build advertises it');
+		assert.strictEqual(advertisesArchiveRestore(getServerInfo()), true, 'this build lists it');
+		assert.deepStrictEqual(
+			Object.keys(getRegistrationInfo()),
+			['version', 'deprecated'],
+			'registration_info is unchanged'
+		);
 		assert.strictEqual(advertisesArchiveRestore({ version: '9.0.0', capabilities: ['restore_backup_archive'] }), true);
 		// a server built from the same version number before the capability existed restores its latest backup
 		for (const info of [
-			{ version: getRegistrationInfo().version, deprecated: true },
+			getRegistrationInfo(),
 			{ version: '9.0.0', capabilities: [] },
 			{ version: '9.0.0', capabilities: 'restore_backup_archive' },
 			{ version: '9.0.0', capabilities: { restore_backup_archive: true } },
@@ -101,17 +107,37 @@ describe('restore_backup file= from the CLI', () => {
 		);
 		assert.deepStrictEqual(
 			calls.map((body) => body.operation),
-			['registration_info']
+			['server_info']
 		);
 		assert.match(errorLines.join('\n'), /would restore its latest managed backup instead/);
+	});
+
+	it('reads a server without server_info as one that predates archive restore', async () => {
+		const calls = [];
+		commonUtilsModule.httpRequest = async (options, body) => {
+			calls.push(body.operation);
+			return { statusCode: 400, body: JSON.stringify({ error: "Operation 'server_info' not found" }) };
+		};
+		await assert.rejects(
+			cliOperationsModule.cliOperations(
+				{ operation: 'restore_backup', database: 'orders', file: archive, target: 'example.com' },
+				true
+			),
+			ProcessExitSignal
+		);
+		assert.deepStrictEqual(calls, ['server_info'], 'nothing is uploaded');
+		assert.match(
+			errorLines.join('\n'),
+			/has no server_info operation.*would restore its latest managed backup instead/s
+		);
+		assert.match(errorLines.join('\n'), /Upgrade it/);
 	});
 
 	it('refuses when the probe itself fails', async () => {
 		const calls = [];
 		commonUtilsModule.httpRequest = async (options, body) => {
 			calls.push(body.operation);
-			if (body.operation === 'registration_info')
-				throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+			if (body.operation === 'server_info') throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
 			return { statusCode: 200, body: '{}' };
 		};
 		await assert.rejects(
@@ -121,7 +147,7 @@ describe('restore_backup file= from the CLI', () => {
 			),
 			ProcessExitSignal
 		);
-		assert.deepStrictEqual(calls, ['registration_info']);
+		assert.deepStrictEqual(calls, ['server_info']);
 		assert.doesNotMatch(errorLines.join('\n'), /Upgrade it/, 'a connection failure is not reported as an old server');
 		assert.match(errorLines.join('\n'), /socket hang up/);
 	});
@@ -129,7 +155,7 @@ describe('restore_backup file= from the CLI', () => {
 	it('reports a probe the server refused as that refusal, not as an old server', async () => {
 		for (const [statusCode, hint] of [
 			[401, /credentials/],
-			[403, /allowed registration_info/],
+			[403, /allowed server_info/],
 		]) {
 			errorLines = [];
 			const calls = [];
@@ -144,7 +170,7 @@ describe('restore_backup file= from the CLI', () => {
 				),
 				ProcessExitSignal
 			);
-			assert.deepStrictEqual(calls, ['registration_info'], 'nothing is uploaded');
+			assert.deepStrictEqual(calls, ['server_info'], 'nothing is uploaded');
 			const printed = errorLines.join('\n');
 			assert.match(printed, new RegExp(`status ${statusCode} \\(not for you\\)`));
 			assert.match(printed, hint);
@@ -159,7 +185,7 @@ describe('restore_backup file= from the CLI', () => {
 		const onEscape = (error) => escapes.push(error);
 		process.on('uncaughtException', onEscape);
 		commonUtilsModule.httpRequest = async (options, body) => {
-			if (body.operation === 'registration_info') {
+			if (body.operation === 'server_info') {
 				// gone after the CLI sized it, before the body reaches it
 				fs.removeSync(vanishing);
 				return { statusCode: 200, body: JSON.stringify({ capabilities: ['restore_backup_archive'] }) };
@@ -188,7 +214,7 @@ describe('restore_backup file= from the CLI', () => {
 	it('uploads the file as the last multipart part, with the body length the server sizes it by', async () => {
 		const calls = [];
 		commonUtilsModule.httpRequest = async (options, body) => {
-			if (body.operation === 'registration_info') {
+			if (body.operation === 'server_info') {
 				calls.push({ probe: true });
 				return {
 					statusCode: 200,

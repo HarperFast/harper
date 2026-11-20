@@ -323,7 +323,7 @@ Where a storage quota limits the instance, as on Fabric clusters that Harper hos
 
 #### Older servers
 
-A server without archive restore would ignore the archive and restore its latest managed backup, so the CLI first asks the server what it can do, with [`registration_info`](../operations-api/operations.md#registration_info), and refuses `file=` unless the reply lists the `restore_backup_archive` capability. A server that does not answer, or answers without it, is refused, whatever its version. `harper restore_backup ./data.tar.gz`, with no `file=`, is refused rather than read as a restore of the latest managed backup.
+A server without archive restore would ignore the archive and restore its latest managed backup, so the CLI first asks the server what it can do, with [`server_info`](../operations-api/operations.md#server_info), and refuses `file=` unless the reply lists the `restore_backup_archive` capability. A server that does not answer, has no `server_info` (any release before it), or answers without the capability is refused, whatever its version. `harper restore_backup ./data.tar.gz`, with no `file=`, is refused rather than read as a restore of the latest managed backup.
 
 #### With Harper stopped
 

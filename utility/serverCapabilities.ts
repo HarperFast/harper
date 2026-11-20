@@ -1,6 +1,6 @@
 /**
- * What this server can do that an older one would silently do differently, advertised by
- * `registration_info` so a client can refuse instead of guessing from a version number. Dependency-free:
+ * What this server can do that an older one would silently do differently, listed by `server_info`
+ * so a client can refuse instead of guessing from a version number. Dependency-free:
  * the CLI and the startup graph both import it.
  */
 
