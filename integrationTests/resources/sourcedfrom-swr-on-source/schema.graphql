@@ -1,0 +1,4 @@
+type Quote @table(expiration: 1, eviction: 60) @export {
+	id: ID @primaryKey
+	value: String
+}
