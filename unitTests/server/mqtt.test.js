@@ -42,7 +42,13 @@ describe('mqtt.ts handleApplication raw-socket registration', () => {
 		handleApplication(scope);
 
 		assert.strictEqual(server.calls.length, 1);
-		assert.deepStrictEqual(server.calls[0][1], { port: undefined, securePort: 8883, mtls, usageType: 'mqtt' });
+		assert.deepStrictEqual(server.calls[0][1], {
+			port: undefined,
+			securePort: 8883,
+			mtls,
+			usageType: 'mqtt',
+			connectionRateLimit: undefined,
+		});
 	});
 
 	it('registers the listener from a plain (non-TLS) port alone, without requiring securePort', () => {
@@ -63,7 +69,21 @@ describe('mqtt.ts handleApplication raw-socket registration', () => {
 			securePort: undefined,
 			mtls: undefined,
 			usageType: 'mqtt',
+			connectionRateLimit: undefined,
 		});
+	});
+
+	it('forwards network.connectionRateLimit to the raw socket listener', () => {
+		const server = recordingServer();
+		const connectionRateLimit = { perSecond: 5, burst: 20 };
+		const scope = {
+			options: { getAll: () => ({ network: { port: 1883, securePort: 8883, connectionRateLimit } }) },
+			server,
+		};
+
+		handleApplication(scope);
+
+		assert.strictEqual(server.calls[0][1].connectionRateLimit, connectionRateLimit);
 	});
 });
 

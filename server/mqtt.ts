@@ -108,7 +108,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		requireAuthentication?: boolean;
 	};
 	const server = scope.server;
-	const { port, securePort } = network ?? {};
+	const { port, securePort, connectionRateLimit } = network ?? {};
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	if (!(server as any).mqtt) {
 		(server as any).mqtt = {
@@ -256,7 +256,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					socket.on('close', onClose);
 					socket.on('error', logSocketError);
 				},
-				{ port, securePort, mtls, usageType: 'mqtt' }
+				{ port, securePort, mtls, usageType: 'mqtt', connectionRateLimit }
 			)
 		);
 	}

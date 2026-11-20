@@ -59,6 +59,11 @@ import { startupLog } from '../../bin/run.ts';
 import { SERVERS, setPortServerMap, portServer, socketOptionDefaults } from '../serverRegistry.ts';
 import * as httpComponent from '../http.ts';
 import { withProxyProtocol } from '../serverHelpers/proxyProtocol.ts';
+import {
+	createConnectionRateLimiter,
+	gateConnectionEvents,
+	gateListener,
+} from '../serverHelpers/connectionRateLimit.ts';
 import * as globals from '../../globals.js';
 import { whenScopesClosed, startDeferredScopeCloses } from '../../components/scopeShutdown.ts';
 import { getComponentName } from '../../components/componentLoader.ts';
@@ -902,6 +907,11 @@ function onSocket(listener?: any, options?: any) {
 		} else if (owner !== undefined)
 			throw new Error(`Port ${port} is owned by '${owner}' workers, so it cannot serve listeners on every worker`);
 	}
+	// one limiter across this listener's TCP, TLS and Unix socket servers, so a source can't multiply its allowance by port
+	const admitConnection = createConnectionRateLimiter(
+		options.connectionRateLimit,
+		`${getComponentName()} on port ${options.securePort ?? options.port}`
+	);
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		// usageType lets a caller's certificates (tagged via hdb_certificate.uses) win the quality
@@ -932,6 +942,7 @@ function onSocket(listener?: any, options?: any) {
 			listener
 		);
 		socketServer = secureSocketServer;
+		if (admitConnection) gateConnectionEvents(secureSocketServer, admitConnection);
 		secureSocketServer.appliedCiphers = effectiveCiphers ?? null;
 		secureSocketServer.verifiesClientCerts = Boolean(options.mtls);
 		secureSocketServer.mtlsRequired = Boolean(options.mtls?.required);
@@ -968,7 +979,10 @@ function onSocket(listener?: any, options?: any) {
 			// socket.authorized/remoteAddress at connection time, so the data-interception
 			// approach the HTTP UDS mirror uses (enableProxyProtocol) would apply the
 			// forwarded mTLS identity too late.
-			const udsServer: any = createSocketServer({ ...socketOptionDefaults }, withProxyProtocol(listener));
+			const udsServer: any = createSocketServer(
+				{ ...socketOptionDefaults },
+				withProxyProtocol(admitConnection ? gateListener(listener, admitConnection) : listener)
+			);
 
 			udsServer.isPerThreadSocket = true;
 			udsServer.rawSocketListener = true;
@@ -985,6 +999,7 @@ function onSocket(listener?: any, options?: any) {
 	if (options.port) {
 		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });
 		socketServer = createSocketServer({ ...socketOptionDefaults }, listener);
+		if (admitConnection) gateConnectionEvents(socketServer, admitConnection);
 		// See the securePort path above: opt out of reusePort only on macOS so every worker can
 		// accept connections for this listener elsewhere, and mark it worker-owned.
 		if (process.platform === 'darwin') socketServer.noReusePort = true;
