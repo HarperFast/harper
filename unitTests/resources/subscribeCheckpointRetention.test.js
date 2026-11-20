@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { utimesSync } = require('node:fs');
+const { readdirSync, utimesSync } = require('node:fs');
 const { join } = require('node:path');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
@@ -12,12 +12,7 @@ const {
 	raiseAuditFloor,
 	readOriginClosedFloor,
 } = require('#src/resources/auditStore');
-const {
-	certifyOriginFloor,
-	claimLocalKey,
-	publishOriginFloor,
-	getOriginClosedFloor,
-} = require('#src/resources/originClosedFloor');
+const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { MAX_OVERLAP_MS, membersDigest } = require('#src/resources/subscriptionCheckpoint');
 const { getThisNodeName } = require('#src/server/nodeName');
@@ -66,7 +61,6 @@ async function certifiedCheckpoint(T, subscription) {
 
 const SEQ = Symbol.for('seq');
 
-// a write replicated from `nodeId`, appended to that origin's log under the origin's key
 function applyFromOrigin(T, id, record, nodeId, logKey) {
 	const context = { source: {}, sourceApply: true, timestamp: logKey };
 	return transaction(context, async () => {
@@ -77,6 +71,26 @@ function applyFromOrigin(T, id, record, nodeId, logKey) {
 
 const logKeyOf = (T, id) => [...T.auditStore.getRange({ start: 1 })].find((entry) => entry.recordId === id).txnLogKey;
 const valuesOf = (events) => events.map((event) => event.value?.value).filter((value) => value !== undefined);
+
+async function assertRefused(resumed) {
+	const events = [];
+	resumed.on('data', (event) => events.push(event));
+	assert.strictEqual(await resumed.resumeVerified, false);
+	assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
+	return events;
+}
+
+// A purge removes a segment by its last write. Aged segments stand for ones written while keys were minted ahead of
+// the clock: their keys are above a cutoff that their last write is before.
+const AGED = 3_600_000;
+function purgeAged(T, segments) {
+	const log = T.auditStore.logByName.get('local');
+	const aged = new Date(Date.now() - AGED);
+	for (const file of segments ?? readdirSync(log.path).filter((name) => name.endsWith('.txnlog'))) {
+		utimesSync(join(log.path, file), aged, aged);
+	}
+	return T.primaryStore.rootStore.purgeLogs({ before: Date.now() - AGED / 2 });
+}
 
 describe('Checkpoint replay retention, the certified floor tick, and two origins (harper#3356)', function () {
 	if (!isRocksDB) return;
@@ -111,7 +125,6 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			await fill(T, pad);
 			return checkpoint;
 		}
-		// with no consumer the replay stops at the queue's high-water mark
 		async function replayHeldAtHighWater(T, checkpoint) {
 			const resumed = await T.subscribe({ resume: checkpoint, omitCurrent: true });
 			await waitFor(() => resumed.queue?.length > 100);
@@ -172,17 +185,10 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			const resumed = await replayHeldAtHighWater(T, checkpoint);
 			const rootStore = T.primaryStore.rootStore;
 			rootStore.flushSync();
-			// a purge removes a segment by its last write, so only the first is aged past the cutoff
-			const before = Date.now() - 60_000;
-			utimesSync(join(log.path, '1.txnlog'), new Date(before - 60_000), new Date(before - 60_000));
 			const [inFirstSegment, inSecondSegment] = [logKeyOf(T, 'fill10'), logKeyOf(T, 'fill100')];
 			raiseAuditFloor(T.auditStore, inFirstSegment);
 			assert.ok(getAuditResumeFloor(T.auditStore) > checkpoint.time - checkpoint.overlap, 'precondition');
-			assert.strictEqual(
-				rootStore.purgeLogs({ before }).length,
-				1,
-				'precondition: the purge removed the first segment'
-			);
+			assert.strictEqual(purgeAged(T, ['1.txnlog']).length, 1, 'precondition: the purge removed the first segment');
 			const purgedThrough = getLogPurgeWatermark(T.auditStore, 'local');
 			assert.ok(purgedThrough > inFirstSegment && purgedThrough < inSecondSegment);
 			assert.strictEqual(getLogPurgeWatermark(T.auditStore, 'never-written'), undefined);
@@ -194,45 +200,31 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			resumed.end();
 		});
 
-		// a key minted ahead of the clock is above a floor that a purge of its segment has passed
-		describe('with keys minted ahead of the clock', function () {
-			let T, issuedBefore;
-			before(async function () {
+		for (const floorPassesStart of [true, false]) {
+			const where = floorPassesStart ? 'has passed the start' : 'is still below the start';
+			it(`refuses when a purge removes unread segments keyed above the floor, which ${where}`, async function () {
 				if (!canUnlinkMappedSegments) return this.skip();
-				T = tableInOwnDatabase();
-				issuedBefore = await checkpointOf(T);
-				claimLocalKey(T.primaryStore.rootStore, Date.now() + 10_000);
-			});
-			// the claim raised the clock of the whole process
-			after(async () => {
-				if (T) await sleep(Math.max(0, T.primaryStore.rootStore.getMonotonicTimestamp() - Date.now()) + 1);
-			});
-			async function purgeUnreadOf(T, checkpoint) {
+				const T = tableInOwnDatabase();
+				const checkpoint = await checkpointThenFill(T, SEGMENT_PAD);
 				const resumed = await replayHeldAtHighWater(T, checkpoint);
-				const rootStore = T.primaryStore.rootStore;
-				rootStore.flushSync();
-				const before = Date.now() + 1;
-				assert.ok(before < logKeyOf(T, 'fill0'), 'precondition: what the replay read is keyed above the cutoff');
-				raiseAuditFloor(T.auditStore, before);
-				assert.ok(rootStore.purgeLogs({ before }).length >= 3, 'precondition: the purge removed unread segments');
-				const events = [];
-				resumed.on('data', (event) => events.push(event));
-				assert.strictEqual(await resumed.resumeVerified, false);
-				assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
-			}
-
-			it('refuses when a purge removes unread segments and the floor has passed the start', async () => {
-				await fill(T, SEGMENT_PAD);
-				await purgeUnreadOf(T, issuedBefore);
-				assert.ok(getAuditResumeFloor(T.auditStore) > issuedBefore.time, 'precondition');
+				T.primaryStore.rootStore.flushSync();
+				if (floorPassesStart) raiseAuditFloor(T.auditStore, logKeyOf(T, 'fill10'));
+				const start = checkpoint.time - checkpoint.overlap;
+				assert.strictEqual(getAuditResumeFloor(T.auditStore) > start, floorPassesStart, 'precondition');
+				assert.ok(purgeAged(T).length >= 3, 'precondition: the purge removed unread segments');
+				await assertRefused(resumed);
 			});
+		}
 
-			it('refuses when a purge removes unread segments and the floor is still below the start', async () => {
-				const later = tableInOwnDatabase();
-				const checkpoint = await checkpointThenFill(later, SEGMENT_PAD);
-				await purgeUnreadOf(later, checkpoint);
-				assert.ok(getAuditResumeFloor(later.auditStore) < checkpoint.time - checkpoint.overlap, 'precondition');
-			});
+		it('refuses when a purge removed history after the start before the replay opened', async function () {
+			if (!canUnlinkMappedSegments) return this.skip();
+			const T = tableInOwnDatabase();
+			const checkpoint = await checkpointThenFill(T, SEGMENT_PAD);
+			T.primaryStore.rootStore.flushSync();
+			assert.strictEqual(purgeAged(T, ['1.txnlog']).length, 1, 'precondition: the purge removed the first segment');
+			assert.ok(getAuditResumeFloor(T.auditStore) < checkpoint.time - checkpoint.overlap, 'precondition');
+			const events = await assertRefused(await T.subscribe({ resume: checkpoint, omitCurrent: true }));
+			assert.ok(!valuesOf(events).includes('fill0'), 'precondition: the reader opened past the purged history');
 		});
 
 		it('refuses when a purge removes every log segment it has not read, which its reader does not report', async function () {
@@ -247,10 +239,7 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			const before = Date.now() + 1000;
 			raiseAuditFloor(T.auditStore, before);
 			assert.ok(rootStore.purgeLogs({ before }).length >= 3, 'precondition: the purge removed unread segments');
-			const events = [];
-			resumed.on('data', (event) => events.push(event));
-			assert.strictEqual(await resumed.resumeVerified, false);
-			assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
+			const events = await assertRefused(resumed);
 			assert.ok(!valuesOf(events).includes('fill249'));
 		});
 	});
@@ -382,29 +371,69 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
 		});
 
-		it("refuses when a purge removes unread history of a peer's log, whose keys are above the floor", async function () {
-			if (!canUnlinkMappedSegments) return this.skip();
-			const T = tableInOwnDatabase();
-			const peerId = getIdOfRemoteNode('peer-ahead', T.auditStore);
-			const { checkpoint, peerFloor } = await checkpointWithPeerAhead(T, peerId);
+		async function replayHeldInPeerLog(T, checkpoint, peerId, firstPeerKey) {
 			for (let i = 0; i < 50; i++) await T.put(`local${i}`, { value: `local${i}` });
 			for (let i = 0; i < 150; i++) {
-				await applyFromOrigin(T, `peer${i}`, { id: `peer${i}`, value: `peer${i}` }, peerId, peerFloor + 1000 + i);
+				await applyFromOrigin(T, `peer${i}`, { id: `peer${i}`, value: `peer${i}` }, peerId, firstPeerKey + i);
 			}
 			const resumed = await T.subscribe({ resume: checkpoint, omitCurrent: true });
 			await waitFor(() => resumed.queue?.length > 100);
 			assert.match(resumed.queue.at(-1).value.value, /^peer/, 'precondition: the replay stopped in the peer log');
-			const rootStore = T.primaryStore.rootStore;
-			rootStore.flushSync();
-			// past this node's start and below what the replay read of its log, where its own log alone would pass
-			raiseAuditFloor(T.auditStore, logKeyOf(T, 'local10'));
-			assert.ok(getAuditResumeFloor(T.auditStore) > checkpoint.exceptions[getThisNodeName()], 'precondition');
-			const purged = rootStore.purgeLogs({ before: Date.now() + 1, name: 'peer-ahead' });
-			assert.ok(purged.length >= 1, "precondition: the purge removed the peer's log");
+			T.primaryStore.rootStore.flushSync();
+			return resumed;
+		}
+		const purgePeerLog = (T, name) => T.primaryStore.rootStore.purgeLogs({ before: Date.now() + 1, name });
+
+		for (const floorPassesStart of [true, false]) {
+			const where = floorPassesStart ? "has passed this node's start" : 'has passed no start';
+			it(`refuses when a purge removes unread history of a peer's log and the floor ${where}`, async function () {
+				if (!canUnlinkMappedSegments) return this.skip();
+				const T = tableInOwnDatabase();
+				const peerId = getIdOfRemoteNode('peer-ahead', T.auditStore);
+				const { checkpoint, peerFloor } = await checkpointWithPeerAhead(T, peerId);
+				const resumed = await replayHeldInPeerLog(T, checkpoint, peerId, peerFloor + 1000);
+				// below what the replay read of this node's log, which would pass alone
+				if (floorPassesStart) raiseAuditFloor(T.auditStore, logKeyOf(T, 'local10'));
+				const ownStart = checkpoint.exceptions[getThisNodeName()];
+				assert.strictEqual(getAuditResumeFloor(T.auditStore) > ownStart, floorPassesStart, 'precondition');
+				assert.ok(purgePeerLog(T, 'peer-ahead').length >= 1, "precondition: the purge removed the peer's log");
+				await assertRefused(resumed);
+			});
+		}
+
+		it('refuses when a purge empties the log of a peer read from its beginning, once the floor has passed the start', async function () {
+			if (!canUnlinkMappedSegments) return this.skip();
+			const T = tableInOwnDatabase();
 			const events = [];
-			resumed.on('data', (event) => events.push(event));
-			assert.strictEqual(await resumed.resumeVerified, false);
-			assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				listener: (event) => events.push(event),
+			});
+			await T.put('a', { value: 'a' });
+			await waitFor(() => valuesOf(events).includes('a'));
+			const checkpoint = await certifiedCheckpoint(T, subscription);
+			subscription.end();
+			// the checkpoint does not name this origin, so its whole log is replayed
+			const peerId = getIdOfRemoteNode('peer-new', T.auditStore);
+			const firstPeerKey = Date.now() + 60_000;
+			T.dbisDB.putSync([SEQ, peerId], {
+				seqId: 1,
+				nodes: [
+					{
+						id: peerId,
+						closedFloor: firstPeerKey,
+						originGeneration: 'peer-generation',
+						fullCoverage: true,
+						certifiedFrom: 0,
+					},
+				],
+			});
+			const resumed = await replayHeldInPeerLog(T, checkpoint, peerId, firstPeerKey);
+			raiseAuditFloor(T.auditStore, logKeyOf(T, 'local10'));
+			assert.ok(getAuditResumeFloor(T.auditStore) > checkpoint.time - checkpoint.overlap, 'precondition');
+			assert.ok(purgePeerLog(T, 'peer-new').length >= 1, "precondition: the purge emptied the peer's log");
+			await assertRefused(resumed);
 		});
 	});
 });
