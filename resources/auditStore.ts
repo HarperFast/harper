@@ -9,6 +9,7 @@ import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageTh
 import { convertToMS } from '../utility/common_utils.ts';
 import {
 	LAST_TIMESTAMP_PLACEHOLDER,
+	HAS_REPLICA_DEADLINE,
 	HAS_STRUCTURE_UPDATE,
 	PENDING_LOCAL_TIME,
 	RECEIVED_IDENTITY_REF,
@@ -2298,7 +2299,6 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		user,
 		type,
 		encodedRecord,
-		extendedType,
 		residencyId,
 		previousResidencyId,
 		residencySlot,
@@ -2307,6 +2307,8 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		originatingOperation,
 		previousAdditionalAuditRefs,
 	} = auditRecord;
+	// Full-copy senders may pass the primary row's flags. Replica lifetime is local to its holder.
+	const extendedType = auditRecord.extendedType & ~HAS_REPLICA_DEADLINE;
 	let action = EVENT_TYPES[type];
 	if (!action) {
 		throw new Error(`Invalid audit entry type ${type}`);

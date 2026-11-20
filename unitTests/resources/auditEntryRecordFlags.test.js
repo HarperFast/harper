@@ -26,6 +26,14 @@ describe('Audit entry record flags match the body (#2153)', () => {
 		expiresAt: 1817915930237,
 	};
 
+	it('omits the local replica deadline flag when framing a copy', () => {
+		const { HAS_REPLICA_DEADLINE } = require('#src/resources/RecordEncoder');
+		const copy = { ...baseRecord, type: 'invalidate' };
+		const expected = Buffer.from(createAuditEntry(copy));
+		const withDeadline = createAuditEntry({ ...copy, extendedType: copy.extendedType | HAS_REPLICA_DEADLINE });
+		assert.deepEqual(Buffer.from(withDeadline), expected);
+	});
+
 	it('clears HAS_RECORD on a put minted with no encoded record', () => {
 		const entry = createAuditEntry({ ...baseRecord, encodedRecord: undefined });
 		const read = readAuditEntry(Buffer.from(entry));

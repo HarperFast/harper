@@ -1,5 +1,17 @@
-type Reclaimable @table(database: "replicareclamation", audit: true, replicaExpiration: 3600) @export {
+type Reclaimable
+	@table(database: "replicareclamation", audit: true, replicaExpiration: 3600)
+	@sharded(slots: 2)
+	@export {
 	id: ID @primaryKey
 	name: String @indexed
 	body: String
+}
+type Sliding
+	@table(database: "replicareclamation", audit: true, replicaExpiration: 4, replicaRefreshFraction: 0.25)
+	@sharded(slots: 2)
+	@export {
+	id: ID @primaryKey
+	name: String @indexed
+	body: String
+	validUntil: Float @expiresAt
 }

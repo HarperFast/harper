@@ -38,6 +38,8 @@ The API surface is eight methods:
 
 Generation supports [tool calling](./tool-calling), including a built-in agent loop (`toolMode: 'auto'`) that resolves tool calls in-process. Decisions are served by [decision backends](./backends#decision-backends), including a built-in adapter that scores the allowed values from any configured generative model's log-probabilities where the model exposes them, and votes over structured completions otherwise. Tables can compute embedding vectors automatically at write time with the [`@embed` schema directive](../database/schema#embed), and vectors can be searched with [HNSW vector indexes](../database/schema#vector-indexing); the [`@decide` schema directive](../database/schema#decide) likewise stores a typed decision and its probability whenever a source field is written. New to decisions? Begin with [Start here: typed decisions](#start-here-typed-decisions). Every model call is recorded for [observability and usage accounting](./analytics).
 
+Configured models are also reachable over HTTP by OpenAI-compatible clients through the [OpenAI-Compatible Gateway](./openai-gateway).
+
 ## Start here: typed decisions
 
 <VersionBadge version="v5.3.0" />
