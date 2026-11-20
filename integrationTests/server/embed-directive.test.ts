@@ -58,6 +58,13 @@ const SCHEMA_GRAPHQL = [
 	'\tembedding: [Float] @embed(source: "content", model: "prefixed")',
 	'}',
 	'',
+	'type FailingQueryEmbedDoc @table(database: "embedtest") @sealed @export {',
+	'\tid: ID! @primaryKey',
+	'\tcontent: String',
+	'\ttag: String @indexed',
+	'\tembedding: [Float] @embed(source: "content", model: "failingQuery")',
+	'}',
+	'',
 ].join('\n');
 
 // resources.js wiring for the caching-table @embed path. The Resource base class
@@ -75,6 +82,8 @@ const RESOURCES_JS = [
 	'CachedEmbedDoc.sourcedFrom(CachedEmbedSource);',
 	'',
 ].join('\n');
+
+const FAILING_QUERY_PREFIX = 'fail_query: ';
 
 /** Vectors are stored and returned as a plain JSON number[]. */
 function decodeVector(field: any): number[] | undefined {
@@ -121,6 +130,12 @@ async function startFakeOllama(): Promise<FakeOllama> {
 					const inputs = Array.isArray(parsed.input) ? parsed.input : [parsed.input];
 					embedCalls++;
 					embedInputs.push(inputs);
+					// the failingQuery model embeds documents, and rejects every query
+					if (inputs.some((input) => input.startsWith(FAILING_QUERY_PREFIX))) {
+						res.writeHead(401, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ error: { message: 'upstream rejected key sk-test-secret' } }));
+						return;
+					}
 					const embeddings = inputs.map((s) => deterministicVector(s));
 					res.writeHead(200, { 'Content-Type': 'application/json' });
 					res.end(
@@ -181,6 +196,14 @@ suite('@embed directive end-to-end with fake Ollama', (ctx: any) => {
 							apiKey: 'test',
 							model: 'nomic-ai/nomic-embed-text-v1.5',
 							inputPrefixes: { document: 'search_document: ', query: 'search_query: ' },
+							requestTimeoutMs: 5000,
+						},
+						failingQuery: {
+							backend: 'openai',
+							baseUrl: `${fake.url}/v1`,
+							apiKey: 'test',
+							model: 'fail-query-embed',
+							inputPrefixes: { document: 'search_document: ', query: FAILING_QUERY_PREFIX },
 							requestTimeoutMs: 5000,
 						},
 					},
@@ -309,6 +332,41 @@ suite('@embed directive end-to-end with fake Ollama', (ctx: any) => {
 			.expect(400);
 		ok(/text or a target, not both/.test(JSON.stringify(response.body)), response.text);
 		strictEqual(fake.embedCallCount(), 0);
+	});
+
+	test('a sort text the model fails to embed is the response status of a streamed search', async () => {
+		await request(ctx.harper.httpURL)
+			.post('/FailingQueryEmbedDoc/')
+			.set(client.headers)
+			.send({ id: 'failing-1', content: 'alpha orchard', tag: 'a' })
+			.expect((r: any) => ok([200, 201, 204].includes(r.status), r.text));
+		const sort = { attribute: 'embedding', text: 'beta harbor' };
+		const failed = (label: string, status: number, text: string) => {
+			strictEqual(status, 502, `${label}: ${text}`);
+			ok(/sort text embedding for attribute \W+embedding\W/.test(text), `${label}: ${text}`);
+			ok(!/sk-test-secret/.test(text), `${label} leaks the backend message: ${text}`);
+		};
+		fake.reset();
+		const operation = await client.req().send({
+			operation: 'search_by_conditions',
+			database: 'embedtest',
+			table: 'FailingQueryEmbedDoc',
+			conditions: [{ attribute: 'tag', comparator: 'equals', value: 'a' }],
+			sort,
+			get_attributes: ['id'],
+		});
+		failed('search_by_conditions', operation.status, operation.text);
+		JSON.parse(operation.text); // a complete body, not a cut-off array
+		for (const accept of ['application/json', 'text/csv']) {
+			const response = await fetch(`${ctx.harper.httpURL}/FailingQueryEmbedDoc/`, {
+				method: 'QUERY',
+				headers: { ...client.headers, 'Content-Type': 'application/json', 'Accept': accept },
+				body: JSON.stringify({ sort, select: ['id'] }),
+				signal: AbortSignal.timeout(30_000),
+			});
+			failed(`QUERY ${accept}`, response.status, await response.text());
+		}
+		strictEqual(fake.embedCallCount(), 3);
 	});
 
 	test('happy path: POST → embedder runs → vector stored on record', async () => {

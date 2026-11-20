@@ -55,6 +55,7 @@ import { implicitPrimaryKeyPermission } from '../security/permissionsTranslator.
 import {
 	Resource,
 	SEARCH_AUTHORIZATION,
+	SEARCH_OPENING,
 	WRITE_CONDITION,
 	transformForSelect,
 	nestedSelectTransform,
@@ -8854,7 +8855,7 @@ export function makeTable(options): TableResourceClass {
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 			const sort = typeof target.sort === 'object' && target.sort;
 			if (sort && (sort.text !== undefined || sort.next)) {
-				const embedding = embedSortTexts(sort, context, target.conditions);
+				const embedding = embedSortTexts(sort, context, target, target.id ?? this.getId());
 				if (embedding) return this.#searchAfterEmbedding(target, embedding, context, rowFilter);
 			}
 			return this.#searchSorted(target, sort, context, txn, rowFilter);
@@ -8883,6 +8884,7 @@ export function makeTable(options): TableResourceClass {
 					return searched;
 				});
 			opening.catch(() => {});
+			deferred[SEARCH_OPENING] = opening;
 			deferred.iterate = (options: any = {}) =>
 				deferredIterator(
 					options,
@@ -14418,8 +14420,12 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
-	/** The descriptor and full-text refusals come before any model call, so they cost none. */
-	function embedSortTexts(sort: any, context: any, conditions: any): SortEmbedding | undefined {
+	/**
+	 * The descriptor, index and full-text refusals come before any model call, so they cost none. So do the checks
+	 * of a leading vector sort when the search is sure to lead with it; otherwise which sort leads is the plan's
+	 * choice, made after the call (#searchSorted).
+	 */
+	function embedSortTexts(sort: any, context: any, target: any, id: any): SortEmbedding | undefined {
 		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
 		for (let order = sort; order; order = order.next) {
 			if (order.text === undefined) continue;
@@ -14437,13 +14443,28 @@ export function makeTable(options): TableResourceClass {
 					throw new ClientError(`${name} is not a defined attribute`, 404);
 				throw new ClientError(`A sort with text requires an @embed attribute of this table, and "${name}" is not one`);
 			}
-			indices[attribute.name]?.customIndex?.exactDistance?.({ target: [], distance: order.distance }, null);
+			const customIndex = indices[attribute.name]?.customIndex;
+			if (typeof customIndex?.exactDistance !== 'function')
+				throw new ClientError(`A sort with text requires a vector index, and "${name}" has none`);
+			customIndex.exactDistance({ target: [], distance: order.distance }, null);
 			textsByAttribute ??= new Map();
 			let group = textsByAttribute.get(attribute.name);
 			if (!group) textsByAttribute.set(attribute.name, (group = { attribute, orders: [] }));
 			group.orders.push(order);
 		}
 		if (!textsByAttribute) return;
+		const { conditions } = target;
+		// with no condition, id or `or`, #searchSorted leads with the head of the sort
+		if (
+			!id &&
+			target.operator !== 'or' &&
+			(Array.isArray(conditions)
+				? conditions.length === 0
+				: conditions == null && !Array.isArray(target) && !target[Symbol.iterator])
+		) {
+			const head = Array.isArray(sort.attribute) && sort.attribute.length === 1 ? sort.attribute[0] : sort.attribute;
+			if (typeof head === 'string') indices[head]?.customIndex?.searchDistance?.(sort);
+		}
 		// a one-shot conditions iterator is left for the search to read
 		const conditionList = Array.isArray(conditions)
 			? conditions

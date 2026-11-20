@@ -9,6 +9,12 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { __setEmbedFnForTest } = require('#src/resources/models/embedHook');
 const { searchByValue, searchByConditions } = require('#src/dataLayer/search');
 const { isReleasedTransaction } = require('#src/resources/DatabaseTransaction');
+const { Resources } = require('#src/resources/Resources');
+const { handleApplication } = require('#src/server/REST');
+const { Headers } = require('#src/server/serverHelpers/Headers');
+require('#src/server/serverHelpers/serverUtilities');
+
+const admin = { role: { permission: { super_user: true } } };
 
 // Documents and queries embed differently, as with an asymmetric model: the query vector of a text is
 // not its document vector, so a search that embedded its text as a document would rank differently.
@@ -99,6 +105,33 @@ function recordingContext() {
 		},
 	});
 	return context;
+}
+
+let mounts = 0;
+/** A REST handler that serves each given table at its name; each one is its own mount. */
+function rest(tables) {
+	const resources = new Resources();
+	for (const Table of tables) resources.set(Table.tableName, Table, { rest: true });
+	let handler;
+	handleApplication({
+		resources,
+		options: { getAll: () => ({ webSocket: false }) },
+		routeFor: () => ({ urlPath: `/sort-text-${mounts++}` }),
+		server: { http: (listener) => (handler = listener) },
+	});
+	return (method, url, data, headers = {}) => {
+		const request = { method, url, user: admin, headers: new Headers(headers), data };
+		request.headers.asObject = headers;
+		return handler(request, () => ({ status: 404 }));
+	};
+}
+
+async function bodyOf(response) {
+	if (typeof response.body === 'string' || Buffer.isBuffer(response.body)) return response.body.toString();
+	if (!response.body) return '';
+	const chunks = [];
+	for await (const chunk of response.body) chunks.push(Buffer.from(chunk));
+	return Buffer.concat(chunks).toString();
 }
 
 function rejectsWith(promise, check) {
@@ -292,6 +325,92 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			);
 			assert.equal(embed.calls.length, 0);
 		});
+
+		it('refuses an @embed attribute without a vector index, naming it', () => {
+			const Unindexed = table({
+				table: 'SortTextUnindexedDoc',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'content', type: 'String' },
+					{ name: 'embedding', type: 'Array', embed: { source: 'content', model: 'doc-model' } },
+				],
+			});
+			assert.throws(
+				() => Unindexed.search({ sort: { attribute: 'embedding', text: 'red fruit' } }),
+				(error) => error.statusCode === 400 && /vector index, and "embedding" has none/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+		});
+
+		it('with no condition, refuses what the leading index refuses before it calls the model', () => {
+			assert.throws(
+				() => Doc.search({ sort: { attribute: 'embedding', text: 'red fruit', descending: true } }),
+				(error) => error.statusCode === 400 && /descending sort order with HNSW/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+		});
+
+		it('with no condition, refuses a distance a nativePlane index does not rank by before it calls the model', function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // the native plane needs RocksDB
+			const Native = table({
+				table: 'SortTextNativePlaneDoc',
+				database: 'test',
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'content', type: 'String' },
+					{
+						name: 'embedding',
+						type: 'Array',
+						embed: { source: 'content', model: 'doc-model' },
+						indexed: { type: 'HNSW', nativePlane: true },
+					},
+				],
+			});
+			for (const distance of ['euclidean', 'dotProduct'])
+				assert.throws(
+					() => Native.search({ sort: { attribute: 'embedding', text: 'red fruit', distance } }),
+					(error) => error.statusCode === 400 && /only supports its configured cosine distance/.test(error.message)
+				);
+			assert.equal(embed.calls.length, 0);
+		});
+
+		it('refuses text in the sort of a relationship in the select, which a target sorts', async () => {
+			const Shelf = table({
+				table: 'SortTextShelf',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'docIds', indexed: true, elements: { type: 'ID' } },
+					{
+						name: 'docs',
+						elements: { type: 'SortTextEmbedDoc', definition: { tableClass: Doc } },
+						relationship: { from: 'docIds' },
+					},
+				],
+			});
+			await Shelf.put({ id: 'shelf', docIds: [1, 2, 3, 4] });
+			const select = (sort) => ['id', { name: 'docs', select: ['content'], sort }];
+			for (const search of [
+				() => Shelf.search({ select: select({ attribute: 'embedding', text: 'red fruit' }) }),
+				() =>
+					Shelf.get({
+						id: 'shelf',
+						select: select({ attribute: 'content', next: { attribute: 'embedding', text: 'red fruit' } }),
+					}),
+			])
+				// a get on LMDB answers asynchronously, so its refusal is a rejection
+				await assert.rejects(
+					async () => search(),
+					(error) => error.statusCode === 400 && /select of "docs" can not sort by text/.test(error.message)
+				);
+			assert.equal(embed.calls.length, 0);
+			const [shelf] = await fromAsync(
+				Shelf.search({ select: select({ attribute: 'embedding', target: queryVector('red fruit') }) })
+			);
+			assert.equal(shelf.docs[0].content, 'cherry');
+		});
 	});
 
 	describe('model failures', () => {
@@ -359,6 +478,35 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				);
 			} finally {
 				process.off('unhandledRejection', onUnhandled);
+			}
+		});
+
+		it('fails search_by_conditions itself, before it returns rows to stream', async () => {
+			failure = new Error('backend down');
+			await rejectsWith(
+				searchByConditions({
+					operation: 'search_by_conditions',
+					database: 'test',
+					table: 'SortTextEmbedDoc',
+					conditions: [{ attribute: 'tag', comparator: 'equals', value: 'even' }],
+					sort: { attribute: 'embedding', text: 'red fruit' },
+					get_attributes: ['content'],
+				}),
+				(error) => assert.equal(error.statusCode, 502)
+			);
+		});
+
+		it('answers a REST QUERY with the failure as its status, in every streamed format', async () => {
+			failure = new Error('backend down');
+			const request = rest([Doc]);
+			for (const accept of ['application/json', 'application/x-ndjson', 'text/csv', 'application/cbor']) {
+				const response = await request(
+					'QUERY',
+					'/SortTextEmbedDoc/',
+					{ sort: { attribute: 'embedding', text: 'red fruit' }, select: ['content'] },
+					{ accept }
+				).catch((error) => error);
+				assert.equal(response.statusCode ?? response.status, 502, accept);
 			}
 		});
 	});
@@ -639,5 +787,24 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			rows.map((row) => row.content),
 			['apricot', 'cherry']
 		);
+	});
+
+	it('a REST QUERY ranks by sort text as by its vector', async () => {
+		const request = rest([Doc]);
+		const query = async (sort) => {
+			const response = await request(
+				'QUERY',
+				'/SortTextEmbedDoc/',
+				{ sort, select: ['content'], limit: 2 },
+				{
+					accept: 'application/json',
+				}
+			);
+			assert.equal(response.status ?? 200, 200);
+			return JSON.parse(await bodyOf(response));
+		};
+		const byText = await query({ attribute: 'embedding', text: 'red fruit' });
+		assert.deepEqual(byText, await query({ attribute: 'embedding', target: queryVector('red fruit') }));
+		assert.equal(byText.length, 2);
 	});
 });

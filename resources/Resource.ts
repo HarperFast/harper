@@ -46,7 +46,17 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
+/** On a search result that opens later (a sort's text is embedded first): the promise that it opened, or why not. */
+export const SEARCH_OPENING = Symbol.for('harper.searchOpening');
 export const WRITE_CONDITION = Symbol('writeCondition');
+
+/**
+ * Settles once a search result has opened, so an entry point that streams it can wait before it sends a status:
+ * a failure after its first byte can only cut the response off. Undefined for a result that is already open.
+ */
+export function searchOpening(result: any): Promise<unknown> | undefined {
+	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
+}
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -1378,6 +1388,11 @@ export function assertNestedQueryOptions(select, resource) {
 			(!resource?._prepareRelationshipSelection || !related)
 		)
 			throw new ClientError('Nested query constraints require a relationship attribute');
+		// a nested sort orders each record's related rows, where nothing embeds text (Table.ts embedSortTexts)
+		for (let order = typeof property.sort === 'object' && property.sort; order; order = order.next) {
+			if (order.text !== undefined)
+				throw new ClientError(`The select of "${property.name}" can not sort by text; sort it by a target vector`);
+		}
 		assertNestedQueryOptions(property.select || (Array.isArray(property) ? property : undefined), related);
 	}
 }

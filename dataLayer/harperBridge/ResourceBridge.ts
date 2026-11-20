@@ -39,6 +39,7 @@ import * as signalling from '../../utility/signalling.ts';
 import { SchemaEventMsg } from '../../server/threads/itc.ts';
 import { asyncSetTimeout } from '../../utility/common_utils.ts';
 import { transaction } from '../../resources/transaction.ts';
+import { searchOpening } from '../../resources/Resource.ts';
 import type {
 	Condition,
 	Query,
@@ -121,7 +122,7 @@ export class ResourceBridge extends BridgeMethods {
 			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
 		}
 
-		return table.search(
+		const results = await table.search(
 			{
 				conditions: searchObject.conditions,
 				//set the operator to always be lowercase for later evaluations
@@ -141,6 +142,10 @@ export class ResourceBridge extends BridgeMethods {
 				replicateFrom: searchObject.replicateFrom,
 			}
 		);
+		// the response streams these rows, so a search that opens late fails here, before its status is sent
+		const opening = searchOpening(results);
+		if (opening) await opening;
+		return results;
 	}
 
 	/**

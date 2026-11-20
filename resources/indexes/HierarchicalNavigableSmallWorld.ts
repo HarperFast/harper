@@ -1964,13 +1964,7 @@ export class HierarchicalNavigableSmallWorld {
 		// For quantized (int8) threshold queries, suppress the distance limit so the full candidate
 		// set is returned; rescoreResults() re-filters on exact full-precision distances post-load.
 		if (this.int8 && limit !== undefined) limit = undefined;
-		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
-		let distanceFunction: (a: number[], b: number[]) => number;
-		if (distance === 'cosine') distanceFunction = cosineDistance;
-		else if (distance === 'euclidean') distanceFunction = euclideanDistance;
-		else if (distance === 'dotProduct') distanceFunction = dotProductDistance;
-		else if (distance) throw new ClientError('Unknown distance function');
-		else distanceFunction = this.distance;
+		const distanceFunction = this.searchDistance({ descending, distance });
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
 		if (
@@ -2075,9 +2069,6 @@ export class HierarchicalNavigableSmallWorld {
 			comparator === 'sort' && minResults !== undefined
 				? Math.min(effectiveEf, Math.max(RERANK_MIN, minResults * RERANK_FACTOR))
 				: effectiveEf;
-		if (this.filePrimary && distanceFunction !== this.distance) {
-			throw new ClientError('A nativePlane index only supports its configured cosine distance');
-		}
 		const searchNative = (certified?: DerivedIndexCoverage) => {
 			if (this.filePrimary && this.derivedReadiness() !== 'ready') {
 				throw new ServerError(
@@ -2215,6 +2206,22 @@ export class HierarchicalNavigableSmallWorld {
 			})),
 			filterState
 		);
+	}
+	/**
+	 * The distance function search() ranks by, after the checks it makes before it reads the target, so a caller
+	 * that has yet to compute the target (a sort's text being embedded) can make them first.
+	 */
+	searchDistance({ descending, distance }: { descending?: boolean; distance?: string }) {
+		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
+		let distanceFunction: (a: number[], b: number[]) => number;
+		if (distance === 'cosine') distanceFunction = cosineDistance;
+		else if (distance === 'euclidean') distanceFunction = euclideanDistance;
+		else if (distance === 'dotProduct') distanceFunction = dotProductDistance;
+		else if (distance) throw new ClientError('Unknown distance function');
+		else distanceFunction = this.distance;
+		if (this.filePrimary && distanceFunction !== this.distance)
+			throw new ClientError('A nativePlane index only supports its configured cosine distance');
+		return distanceFunction;
 	}
 	/**
 	 * Exact distance between a query and a record's FULL-precision vector, mirroring search()'s metric
