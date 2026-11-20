@@ -1244,6 +1244,49 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 		assert.deepStrictEqual(harperRes.body, { error: 'OAuth token revoked' });
 	});
 
+	it('records which validator refused a token, and the metadata it declared, on the deferred rejection (#4352)', async () => {
+		const { getDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
+		const REFUSING = 'https://refusing.example/.well-known/oauth-protected-resource/mcp';
+		const CLAIMING = 'https://claiming.example/.well-known/oauth-protected-resource/mcp';
+		registerValidator(
+			async (token) => {
+				if (token === 'refused-by-first') throw credentialRejectionError('token revoked', 401);
+			},
+			{ challenge: { resourceMetadata: REFUSING } }
+		);
+		registerValidator(
+			async (token) => {
+				if (token === 'claimed-for-unknown-user') return { username: 'no-such-oauth-subject' };
+			},
+			{ challenge: { resourceMetadata: CLAIMING } }
+		);
+		registerValidator(async (token) => {
+			if (token === 'refused-by-undeclared') throw credentialRejectionError('token revoked', 401);
+		});
+		const FROZEN = 'https://frozen.example/.well-known/oauth-protected-resource/mcp';
+		registerValidator(
+			async (token) => {
+				if (token === 'refused-frozen') throw Object.freeze(credentialRejectionError('token revoked', 401));
+			},
+			{ challenge: { resourceMetadata: FROZEN } }
+		);
+
+		for (const [token, expected] of [
+			['refused-frozen', FROZEN],
+			['refused-by-first', REFUSING],
+			['claimed-for-unknown-user', CLAIMING],
+			['refused-by-undeclared', null],
+			['claimed-by-nobody', undefined],
+		]) {
+			const { request, body } = await send(APP_OWNED, `Bearer ${token}`);
+			assert.strictEqual(body.servedBy, 'catch-all', token);
+			const deferred = getDeferredCredentialRejection(request);
+			assert.ok(deferred, token);
+			assert.strictEqual(deferred.validatorResourceMetadata, expected, token);
+			assert.ok(Object.isFrozen(deferred), token);
+		}
+	});
+
 	it('fails closed in place with generic Login failed when a validator throws an untagged error', async () => {
 		let secondValidatorCalled = false;
 		registerValidator(async () => {
@@ -2223,5 +2266,38 @@ describe('server.registerBearerValidator (#oauth/279)', () => {
 			await databases.system.hdb_user.delete('memo_backed_user');
 			await databases.system.hdb_role.delete('memo_role');
 		}
+	});
+});
+
+describe('rejecting-validator provenance is per request (#4352)', () => {
+	const {
+		credentialRejectionError: rejection,
+		deferCredentialRejection,
+		getDeferredCredentialRejection,
+	} = require('#src/security/deferredAuthentication');
+	const { markRejectingValidator } = require('#src/security/credentialRejection');
+
+	it('does not carry one request tag to another request deferring the same shared error', () => {
+		const shared = Object.freeze(rejection('token revoked', 401));
+		const first = {};
+		const second = {};
+		markRejectingValidator(first, shared, 'https://first.example/prm');
+		markRejectingValidator(second, shared, 'https://second.example/prm');
+		const third = {};
+		deferCredentialRejection(first, shared, 'Bearer');
+		deferCredentialRejection(second, shared, 'Bearer');
+		deferCredentialRejection(third, shared, 'Bearer');
+
+		assert.strictEqual(getDeferredCredentialRejection(first).validatorResourceMetadata, 'https://first.example/prm');
+		assert.strictEqual(getDeferredCredentialRejection(second).validatorResourceMetadata, 'https://second.example/prm');
+		assert.strictEqual('validatorResourceMetadata' in getDeferredCredentialRejection(third), false);
+	});
+
+	it('ignores a tag recorded for a different error on the same request', () => {
+		const request = {};
+		markRejectingValidator(request, rejection('first', 401), 'https://first.example/prm');
+		const other = rejection('other', 401);
+		deferCredentialRejection(request, other, 'Bearer');
+		assert.strictEqual('validatorResourceMetadata' in getDeferredCredentialRejection(request), false);
 	});
 });

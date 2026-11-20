@@ -3,6 +3,7 @@ import { _assignPackageExport } from '../globals.js';
 import type { Value } from '../resources/analytics/write.ts';
 import type { Resources } from '../resources/Resources.ts';
 import type { McpQuotaHandler } from '../components/mcp/quota.ts';
+import type { McpServerCardInfo } from '../components/mcp/applicationInfo.ts';
 import type { OperationDefinition } from './serverHelpers/serverUtilities.ts';
 import type { Duplex } from 'node:stream';
 import type { Request } from './serverHelpers/Request.ts';
@@ -96,6 +97,17 @@ export interface Server {
 	registerOperation(operationDefinition: OperationDefinition): void;
 	/** Register the durable MCP quota policy (opt-in). The latest registration wins; pass `undefined` to clear. */
 	setMcpQuotaHandler(handler: McpQuotaHandler | undefined): void;
+	/**
+	 * Set the `instructions` the MCP application profile returns on `initialize` (at most 16,384 characters).
+	 * `mcp.application.instructions` in config takes precedence. The latest registration wins; `undefined` clears it.
+	 */
+	setMcpInstructions(instructions: string | undefined): void;
+	/**
+	 * Supply the SEP-2127 server card the MCP application profile serves at `<mountPath>/server-card`: `name`
+	 * (`namespace/name`) and `description` are required once merged with `mcp.application.serverCard`, whose fields
+	 * take precedence. Validated now (throws `TypeError`); the latest registration wins; `undefined` clears it.
+	 */
+	setMcpServerCard(card: McpServerCardInfo | undefined): void;
 	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
 	nodes: Node[];
 	shards: Map<number, string[]>;

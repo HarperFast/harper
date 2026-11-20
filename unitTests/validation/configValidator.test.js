@@ -1055,6 +1055,90 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config, true).error.message).to.include("'mcp.operations.enabled' must be a boolean");
 		});
 
+		it('accepts every rate-limit key rateLimit.ts reads, quoted numbers included (#4352)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			const rateLimit = {
+				perToolPerSecond: 10,
+				perToolBurst: '20',
+				sessionConcurrency: 25,
+				sessionPerSecond: 100,
+				perClientPerSecond: '0.5',
+				perClientBurst: 3,
+				identityHeader: 'x-forwarded-for',
+				initializePerSecond: 10,
+				initializeBurst: 50,
+			};
+			config.mcp = { operations: { rateLimit }, application: { rateLimit } };
+			assert.equal(configValidator(config, true).error, undefined);
+		});
+
+		it('refuses an unknown key in mcp.operations, mcp.application, their rateLimit and mcp.session (#4352)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			for (const [mcp, path] of [
+				[{ application: { authenticaton: { required: true } } }, 'mcp.application.authenticaton'],
+				[{ operations: { alow: ['describe_all'] } }, 'mcp.operations.alow'],
+				[{ application: { rateLimit: { perClientPersecond: 1 } } }, 'mcp.application.rateLimit.perClientPersecond'],
+				[{ operations: { rateLimit: { burst: 1 } } }, 'mcp.operations.rateLimit.burst'],
+				[{ session: { idleTimeout: 60 } }, 'mcp.session.idleTimeout'],
+				[{ operations: { searchMaxResults: 5 } }, 'mcp.operations.searchMaxResults'],
+				[{ aplication: {} }, 'mcp.aplication'],
+			]) {
+				config.mcp = mcp;
+				const message = configValidator(config, true).error?.message ?? '';
+				assert.ok(message.includes(`'${path}' is not allowed`), `${path}: ${message}`);
+			}
+			config.mcp = { application: { stateless: true, instructions: 'x', generatedTools: false, searchMaxResults: 5 } };
+			assert.equal(configValidator(config, true).error, undefined, 'application-only keys stay valid');
+		});
+
+		it('accepts a partial mcp.application.serverCard and names the field of an invalid one (#4347)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = {
+				application: {
+					serverCard: {
+						name: 'fast.harper/fabric',
+						description: 'Read your Harper Fabric organizations and clusters.',
+						url: 'https://fabric.harper.fast/mcp',
+						icons: [{ src: 'https://fabric.harper.fast/icon.png', sizes: ['64x64'] }],
+					},
+				},
+			};
+			assert.equal(configValidator(config, true).error, undefined);
+			config.mcp = { application: { serverCard: { websiteUrl: 'https://fabric.harper.fast' } } };
+			assert.equal(configValidator(config, true).error, undefined, 'a registration can supply the rest');
+			for (const [serverCard, field] of [
+				[{ name: 'fabric' }, 'name'],
+				[{ descripton: 'typo' }, 'descripton'],
+				[{ url: 'http://fabric.harper.fast/mcp' }, 'url'],
+			]) {
+				config.mcp = { application: { serverCard } };
+				const message = configValidator(config, true).error?.message ?? '';
+				assert.ok(message.includes("'mcp.application.serverCard'") && message.includes(field), message);
+			}
+		});
+
+		it('accepts mcp.application.instructions up to 16,384 characters, and nothing else (#4362)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { application: { instructions: 'x'.repeat(16_384) } };
+			assert.equal(configValidator(config, true).error, undefined);
+			for (const instructions of ['x'.repeat(16_385), '', 42, ['a']]) {
+				config.mcp = { application: { instructions } };
+				assert.match(
+					configValidator(config, true).error?.message ?? '',
+					/'mcp\.application\.instructions'/,
+					String(instructions).slice(0, 10)
+				);
+			}
+		});
+
+		it('accepts a boolean mcp.application.stateless and rejects a quoted one (#4346)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.mcp = { application: { stateless: true } };
+			assert.equal(configValidator(config, true).error, undefined);
+			config.mcp = { application: { stateless: 'true' } };
+			assert.match(configValidator(config, true).error.message, /'mcp\.application\.stateless' must be a boolean/);
+		});
+
 		it('rejects mcp.operations.maxTools below 1', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.mcp = { operations: { maxTools: 0 } };

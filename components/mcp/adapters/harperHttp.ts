@@ -68,13 +68,19 @@ export interface McpAuthentication {
 	resourceMetadata?: string;
 }
 
+export interface McpHandlerOptions {
+	stateless?: boolean;
+}
+
 const AUTHENTICATION_OPTIONAL: McpAuthentication = Object.freeze({ required: false });
 
 export function createHarperHttpHandler(
 	profile: McpProfile,
-	authentication: McpAuthentication = AUTHENTICATION_OPTIONAL
+	authentication: McpAuthentication = AUTHENTICATION_OPTIONAL,
+	options: McpHandlerOptions = {}
 ) {
 	const requirePrincipal = authentication.required === true;
+	const stateless = options.stateless === true;
 	return async function mcpHarperHttpHandler(
 		request: HarperHttpRequest,
 		nextHandler: (req: HarperHttpRequest) => unknown
@@ -125,6 +131,7 @@ export function createHarperHttpHandler(
 			profile,
 			clientIp: request.ip,
 			baseUrl: protocol && request.host ? `${protocol}://${request.host}` : undefined,
+			stateless,
 		};
 
 		const res = await handleMcpRequest(norm);
@@ -135,11 +142,12 @@ export function createHarperHttpHandler(
 let warnedNoResourceMetadata = false;
 
 /**
- * Names the RFC 9728 protected-resource metadata in a 401's Bearer challenge. The configured URL is authoritative;
- * otherwise the active Bearer validators' declarations count only when they all name the same URL, because
- * registrations are worker-global and load in no fixed order, so a disagreement could send a client to an
- * authorization server that does not protect this mount. Read per 401: a validator's plugin can load after this
- * mount and unregister on reload.
+ * Names the RFC 9728 protected-resource metadata in a 401's Bearer challenge. The configured URL is authoritative.
+ * For a token a validator refused, that validator's declaration is used, or none when it declared none: another
+ * validator's authorization server did not issue the token. Otherwise the active Bearer validators' declarations
+ * count only when they all name the same URL, because registrations are worker-global and load in no fixed order,
+ * so a disagreement could send a client to an authorization server that does not protect this mount. Read per
+ * 401: a validator's plugin can load after this mount and unregister on reload.
  */
 function nameResourceMetadata(
 	headers: Headers,
@@ -147,8 +155,14 @@ function nameResourceMetadata(
 	authentication: McpAuthentication,
 	credentialRejected: boolean
 ): void {
-	const resourceMetadata = authentication.resourceMetadata ?? declaredResourceMetadata();
-	if (!resourceMetadata && authentication.required && !warnedNoResourceMetadata) {
+	const rejectedBy = credentialRejected
+		? getDeferredCredentialRejection(request)?.validatorResourceMetadata
+		: undefined;
+	const resourceMetadata =
+		authentication.resourceMetadata ??
+		(rejectedBy === undefined ? declaredResourceMetadata() : (rejectedBy ?? undefined));
+	// a refusing validator that declared nothing is not a misconfiguration
+	if (!resourceMetadata && authentication.required && rejectedBy === undefined && !warnedNoResourceMetadata) {
 		warnedNoResourceMetadata = true;
 		harperLogger.warn(
 			'MCP application profile requires authentication but has no single protected-resource metadata URL: set ' +

@@ -15,7 +15,7 @@ import harperLogger, { CREDENTIAL_KEY_PATTERN } from '../../utility/logging/harp
 export interface AuditEntry {
 	timestamp: string;
 	profile: 'operations' | 'application';
-	sessionId: string;
+	sessionId?: string;
 	tool: string;
 	user: string;
 	args: object;
