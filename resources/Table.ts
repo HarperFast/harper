@@ -454,14 +454,8 @@ const MAX_EXACT_COUNT_MS = 1_000;
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
 /**
- * Whether a search answers with a counted page (a Promise) rather than a stream. Counting is a pagination
- * feature, so it requires a bounded page AND window: both the limit and the offset must be finite,
- * non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the window (offset + limit) no larger
- * than MAX_EXACT_COUNT_SCAN. Anything else — a missing/oversized/non-finite/negative limit or offset (a bare
- * collection GET, `{ limit: Infinity }`, `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page window
- * past the scan budget — falls through to the normal streaming path with no count. This bounds the offset
- * too: without it a huge offset would postpone the exact guardrail (which only engages past the page) until
- * that offset was scanned.
+ * Whether a search answers with a counted page (a Promise) rather than a stream. The window is bounded as well as
+ * the page, since a huge offset would otherwise postpone the exact guardrail until that offset was scanned.
  */
 function countPageApplies(target: RequestTarget): boolean {
 	if (!target.count) return false;
@@ -994,6 +988,7 @@ function deferredIterator(
 		onFinish();
 	};
 	const failStep = (error: any) => {
+		if (returned) return { value: undefined, done: true };
 		if (!error?.continueIteration) finish();
 		throw error;
 	};
@@ -1029,29 +1024,24 @@ function deferredIterator(
 					}, failStep);
 				},
 				(error) => {
+					if (returned) return { value: undefined, done: true };
 					finish();
 					throw error;
 				}
 			);
 		},
+		// a close never waits for the search to open (a model can ignore the abort); what opens later is closed then
 		return(value?: any) {
 			returned = true;
 			finish();
-			return getIterator().then(
-				(iterator) => iterator.return?.(value) ?? { value, done: true },
-				() => ({ value, done: true })
-			);
+			iteratorPromise?.then((iterator) => iterator.return?.(value)).catch(() => {});
+			return Promise.resolve({ value, done: true });
 		},
 		throw(error: any) {
 			returned = true;
 			finish();
-			return getIterator().then(
-				(iterator) => {
-					if (iterator.throw) return iterator.throw(error);
-					throw error;
-				},
-				() => Promise.reject(error)
-			);
+			iteratorPromise?.then((iterator) => iterator.return?.()).catch(() => {});
+			return Promise.reject(error);
 		},
 	};
 }
@@ -14456,6 +14446,11 @@ export function makeTable(options): TableResourceClass {
 			group.orders.push(order);
 		}
 		if (!textsByAttribute) return;
+		for (let order = sort; order; order = order.next) {
+			if (order.text !== undefined) continue;
+			if (fullTextFieldNames) assertRecordField(order.attribute);
+			if (typeof order.attribute === 'string') indices[order.attribute]?.customIndex?.exactDistance?.(order, null);
+		}
 		const { conditions } = target;
 		// conditions read from an iterator (a one-shot one, or the target itself) are left for the search to read
 		const conditionList = Array.isArray(conditions)
@@ -14480,6 +14475,7 @@ export function makeTable(options): TableResourceClass {
 			)
 				throw new ClientError('Full-text results can only use descending $score order', 400);
 			const head = sort.attribute;
+			const headName = Array.isArray(head) ? head.join('.') : head;
 			if (head == null && target.operator !== 'or') throw new ClientError('Sort requires an attribute');
 			if (
 				head != null &&
@@ -14487,7 +14483,16 @@ export function makeTable(options): TableResourceClass {
 				!findAttribute(attributes, head) &&
 				!prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
 			)
-				throw new ClientError(`${Array.isArray(head) ? head.join('.') : head} is not a defined attribute`, 404);
+				throw new ClientError(`${headName} is not a defined attribute`, 404);
+			// a condition on the sort's own attribute would order the search in its place
+			if (
+				sort.text !== undefined &&
+				target.operator !== 'or' &&
+				prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
+			)
+				throw new ClientError(
+					`A sort with text on "${headName}" can not be combined with a condition on "${headName}"; sort by the condition's target`
+				);
 			const headAttribute = head != null && findAttribute(attributes, head);
 			if (
 				prepared.length === 0 &&
@@ -14496,10 +14501,7 @@ export function makeTable(options): TableResourceClass {
 				!headAttribute.indexed &&
 				!headAttribute.isPrimaryKey
 			)
-				throw new ClientError(
-					`${Array.isArray(head) ? head.join('.') : head} is not indexed and not combined with any other conditions`,
-					404
-				);
+				throw new ClientError(`${headName} is not indexed and not combined with any other conditions`, 404);
 			if (prepared.length === 0 && !target.explain) {
 				const leading = Array.isArray(head) && head.length === 1 ? head[0] : head;
 				if (typeof leading === 'string')

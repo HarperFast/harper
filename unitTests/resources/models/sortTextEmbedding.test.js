@@ -25,7 +25,6 @@ const DOCUMENT_VECTORS = {
 	banana: [0, 1, 0],
 	cherry: [0, 0, 1],
 };
-// Written mid-test, so not part of the starting rows.
 const LATE_DOCUMENT_VECTORS = { pear: [1, 0.2, 0] };
 const QUERY_VECTORS = {
 	'red fruit': [0.2, 0.1, 1],
@@ -75,7 +74,6 @@ function fakeEmbed() {
 	return embed;
 }
 
-// the model answers with a Float32Array
 const queryVector = (text) => Array.from(new Float32Array(QUERY_VECTORS[text]));
 
 async function fromAsync(iterable) {
@@ -361,6 +359,23 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.equal(embed.calls.length, 0);
 		});
 
+		it('refuses a vector clause without a target ahead of a text clause before it calls the model', () => {
+			assert.throws(
+				() => Doc.search({ sort: { attribute: 'embedding', next: { attribute: 'embedding', text: 'red fruit' } } }),
+				(error) => error.statusCode === 400 && /target vector must be provided/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+		});
+
+		it('refuses a text sort beside a condition on its attribute, which would order the search instead', () => {
+			const threshold = { attribute: 'embedding', comparator: 'lt', value: 2, target: [1, 0, 0] };
+			assert.throws(
+				() => Doc.search({ conditions: [threshold], sort: { attribute: 'embedding', text: 'red fruit' } }),
+				(error) => error.statusCode === 400 && /can not be combined with a condition on "embedding"/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+		});
+
 		it('refuses an unknown attribute with a 404', () => {
 			assert.throws(
 				() => Doc.search({ sort: { attribute: 'nope', text: 'red fruit' } }),
@@ -570,21 +585,24 @@ describe('Vector search by sort text on an @embed attribute', () => {
 
 		it('answers a REST GET with the failure as its status when a resource maps a search behind an async allowRead', async () => {
 			failure = new Error('backend down');
-			class GatedMappedDoc extends Doc {
-				static loadAsInstance = false;
-				async allowRead() {
-					await new Promise((resolve) => setImmediate(resolve));
-					return true;
+			for (const freeze of [false, true]) {
+				class GatedMappedDoc extends Doc {
+					static loadAsInstance = false;
+					async allowRead() {
+						await new Promise((resolve) => setImmediate(resolve));
+						return true;
+					}
+					get(target) {
+						target.sort = { attribute: 'embedding', text: 'red fruit' };
+						const mapped = this.search(target).map((row) => row);
+						return freeze ? Object.freeze(mapped) : mapped;
+					}
 				}
-				get(target) {
-					target.sort = { attribute: 'embedding', text: 'red fruit' };
-					return this.search(target).map((row) => row);
-				}
+				const response = await rest([GatedMappedDoc])('GET', '/SortTextEmbedDoc/', undefined, {
+					accept: 'application/json',
+				}).catch((error) => error);
+				assert.equal(response.statusCode ?? response.status, 502, freeze ? 'frozen' : 'extensible');
 			}
-			const response = await rest([GatedMappedDoc])('GET', '/SortTextEmbedDoc/', undefined, {
-				accept: 'application/json',
-			}).catch((error) => error);
-			assert.equal(response.statusCode ?? response.status, 502);
 		});
 
 		it('leaves the status of a write that answers with a text search alone', async () => {
@@ -705,6 +723,41 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			} finally {
 				release();
 			}
+		});
+
+		it('closes at once while a model that ignores the abort is still answering', async () => {
+			const release = embed.hold({ ignoreAbort: true });
+			try {
+				const iterator = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } })[Symbol.asyncIterator]();
+				const pending = iterator.next();
+				await waitFor(() => queryCalls().length === 1);
+				const closed = await Promise.race([
+					iterator.return().then(() => 'closed'),
+					new Promise((resolve) => setTimeout(() => resolve('still waiting'), 2_000)),
+				]);
+				assert.equal(closed, 'closed');
+				release();
+				assert.deepEqual(await pending, { value: undefined, done: true });
+			} finally {
+				release();
+			}
+		});
+
+		it('a step that fails after return() settles as done', async () => {
+			const verdict = Promise.withResolvers();
+			class SlowlyDenied extends Doc {
+				allowRead() {
+					return verdict.promise;
+				}
+			}
+			const iterator = new SlowlyDenied(null, { user: { username: 'reader' } })
+				.search({ sort: { attribute: 'embedding', text: 'red fruit' }, checkPermission: true })
+				[Symbol.asyncIterator]();
+			const pending = iterator.next();
+			await iterator.return();
+			verdict.resolve(false);
+			assert.deepEqual(await pending, { value: undefined, done: true });
+			assert.equal(embed.calls.length, 0);
 		});
 
 		it('a request aborted while its text is embedded fails as an abort, not a model failure', async () => {

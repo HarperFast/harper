@@ -1118,8 +1118,11 @@ function authorizeSearchResult(result: any, user: any) {
 						} else {
 							const opening = searchOpening(state.results);
 							const derived = result.headers ? result.data : result;
-							if (opening && derived && typeof derived === 'object' && Object.isExtensible(derived))
+							if (opening && derived && typeof derived === 'object') {
+								// a frozen result can not carry the opening, so this verdict waits for it instead
+								if (!Object.isExtensible(derived)) return opening.then(() => result);
 								derived[SEARCH_OPENING] ??= opening;
+							}
 						}
 					}
 				} else if (!state) throw new AccessViolation(user);
