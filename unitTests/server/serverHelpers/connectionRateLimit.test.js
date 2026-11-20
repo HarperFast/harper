@@ -1,5 +1,6 @@
 const assert = require('node:assert');
-const harperLogger = require('#src/utility/logging/harper_logger');
+const harperLogger =
+	require('#src/utility/logging/harper_logger').default || require('#src/utility/logging/harper_logger');
 const { createServer, connect } = require('node:net');
 const tls = require('node:tls');
 const { EventEmitter, once } = require('node:events');
