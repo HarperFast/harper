@@ -83,6 +83,11 @@ export function timestampAbove(value: number): number {
 	return fromBits(toBits(value) + 1n);
 }
 
+/** The next representable timestamp below a positive `value`. */
+export function timestampBelow(value: number): number {
+	return fromBits(toBits(value) - 1n);
+}
+
 function storeMaxWord(words: BigInt64Array, index: number, bits: bigint): bigint {
 	for (;;) {
 		const current = Atomics.load(words, index);
@@ -544,7 +549,7 @@ export function freshLocalKey(rootStore: any): number {
  */
 export function claimLocalKey(rootStore: RocksDatabase, floor: number): number {
 	const registry = registryFor(rootStore);
-	const below = fromBits(toBits(floor) - 1n);
+	const below = timestampBelow(floor);
 	const sample = rootStore.getMonotonicTimestamp();
 	const ahead = sample < floor;
 	if (ahead) {
