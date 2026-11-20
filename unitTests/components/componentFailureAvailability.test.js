@@ -116,12 +116,18 @@ describe('availability with drainOnLoadFailure, through the real loader', () => 
 		const packageDir = path.join(root, 'components', 'broken-package-app');
 		mkdirSync(path.join(packageDir, 'config.yaml'), { recursive: true });
 		writeFileSync(path.join(root, 'harper-config.yaml'), '');
-		const originalGetConfigObj = configUtils.getConfigObj;
-		configUtils.getConfigObj = () => ({ 'broken-package-app': { package: 'broken-package-app' } });
+		// Swapped in place: the native lane loads configUtils as an ES module, whose exports cannot be reassigned.
+		const rootConfig = configUtils.getConfigObj();
+		const savedRootConfig = { ...rootConfig };
+		const replaceRootConfig = (entries) => {
+			for (const key of Object.keys(rootConfig)) delete rootConfig[key];
+			Object.assign(rootConfig, entries);
+		};
+		replaceRootConfig({ 'broken-package-app': { package: 'broken-package-app' } });
 		try {
 			await loadComponent(root, resources, 'test-origin', { isRoot: true });
 		} finally {
-			configUtils.getConfigObj = originalGetConfigObj;
+			replaceRootConfig(savedRootConfig);
 		}
 		assert.strictEqual(componentStatusRegistry.getStatus('broken-package-app')?.loadFailed, true);
 		const result = await availability();
