@@ -1,0 +1,11 @@
+type DurableFeed @table @export {
+	id: ID @primaryKey
+	title: String
+	secret: String
+}
+
+type DurableOther @table @export {
+	id: ID @primaryKey
+	title: String
+	secret: String
+}
