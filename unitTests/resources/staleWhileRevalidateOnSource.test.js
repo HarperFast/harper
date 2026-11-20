@@ -190,6 +190,7 @@ describe('Stale-while-revalidate hook on the source', function () {
 		assert.equal(sourceCalls, 1);
 		pendingCalls[0].resolve({ id: 'async', name: 'fresh async' });
 		assert.equal((await reading).name, 'fresh async');
+		assert.equal(warnings.filter((warning) => warning.includes('"SwrOnSourceAsync" returned a promise')).length, 1);
 	});
 
 	it('lets a hook on the table class take precedence over the source', async function () {

@@ -2280,6 +2280,7 @@ export function makeTable(options): TableResourceClass {
 	let expirationWarningChecked = false;
 	let writerResidencyWarned = false;
 	let staleWithoutEvictionWarned = false;
+	let asyncStaleHookWarned = false;
 	let propertyResolvers: any;
 	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
@@ -9048,7 +9049,7 @@ export function makeTable(options): TableResourceClass {
 				// since those never run the ensureLoaded-gated freshness check this transform
 				// otherwise applies unconditionally to every read.
 				const includeExpired = (target as any).includeExpired === true;
-				// the instance's class: a stale-while-revalidate hook on a table subclass decides for its rows
+				// the instance's class: a table subclass's stale-while-revalidate hook and source apply to its rows
 				const transformToRecord = (this.constructor as typeof TableResource).transformEntryForSelect(
 					select,
 					context,
@@ -14562,9 +14563,14 @@ export function makeTable(options): TableResourceClass {
 		else if (typeof source === 'function' && sourceDefinesInstanceHook(source))
 			allowed = new source(id, context).allowStaleWhileRevalidate(entry, id);
 		if (typeof allowed?.then === 'function') {
-			// the hook is synchronous: a promise it returns does not allow serving stale
 			allowed.then(undefined, (error) => logger.warn?.(error));
 			allowed = false;
+			if (!asyncStaleHookWarned) {
+				asyncStaleHookWarned = true;
+				logger.warn?.(
+					`allowStaleWhileRevalidate for table "${tableName}" returned a promise, which does not allow serving a stale record; return a boolean synchronously.`
+				);
+			}
 		}
 		if (allowed && entry.expiresAt != undefined && !evictionMs && !staleWithoutEvictionWarned) {
 			staleWithoutEvictionWarned = true;
