@@ -10,7 +10,7 @@
  *   npm run test:integration -- "integrationTests/deploy/preview-setup.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, doesNotMatch, match, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, doesNotMatch, match, notStrictEqual, ok, strictEqual } from 'node:assert';
 import { execFile } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -281,6 +281,46 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 		}
 		strictEqual((await asPreviewUser({ operation: 'describe_all' })).status, 403);
 		strictEqual((await asPreviewUser({ operation: 'enable_previews', app: 'docs' })).status, 403);
+	});
+
+	test('enable_previews gives a role whose generation was revoked a new one, and previews deploy again', async () => {
+		const stale = await policyOf('shop');
+		const revoked = stale.grant.constraints.generation;
+		// What disable_previews records on each node, called directly so that the role and its user stay.
+		await sendOperation({ operation: 'fence_preview_releases', app: 'shop', generation: revoked });
+		const reported = await policyOf('shop');
+		strictEqual(reported.enabled, false);
+		match(reported.problems.join('; '), /identity generation that disable_previews revoked on this node/);
+		const redeploy = () =>
+			harper(['preview', 'deploy', 'app=shop', 'pr=12', 'branch=fix/cart', `domain=${DOMAIN}`, 'ttl=30'], {
+				cwd: source,
+				env: previewAuth,
+			});
+		const refused = await redeploy();
+		notStrictEqual(refused.code, 0);
+		match(refused.stdout + refused.stderr, /previews of shop by the identity that built it were disabled/);
+
+		const { grant, repository, repository_id, branch, audience, workflow, environment } = reported;
+		const enabled = await sendOperation({
+			operation: 'enable_previews',
+			app: 'shop',
+			repository,
+			repository_id,
+			branch,
+			audience,
+			workflow,
+			environment,
+			hostSuffix: grant.constraints.hostSuffix,
+			maxPreviews: grant.constraints.maxPreviews,
+			maxTtlDays: grant.constraints.maxTtlDays,
+		});
+		match(enabled.message, /replaced the revoked identity generation of role shop-ci-preview/);
+		strictEqual(enabled.enabled, true, JSON.stringify(enabled.problems));
+		notStrictEqual(enabled.grant.constraints.generation, revoked);
+		strictEqual((await policyOf('shop')).enabled, true);
+
+		const { code, stdout, stderr } = await redeploy();
+		strictEqual(code, 0, `stdout=${stdout} stderr=${stderr}`);
 	});
 
 	test('harper preview teardown drops the preview and removes the identity', async () => {

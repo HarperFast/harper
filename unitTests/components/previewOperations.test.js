@@ -18,7 +18,7 @@ const { deployComponent, getComponents } = require('#js/components/operations');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
 const { addRole, alterRole, getRoleByName } = require('#src/security/role');
-const { addUser, getUserWithRole } = require('#src/security/user');
+const { addUser, alterUser, getUserWithRole } = require('#src/security/user');
 const { addOidcTrust, dropOidcTrust, listOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
 const { databases } = require('#src/resources/databases');
 const { server } = require('#js/server/Server');
@@ -333,8 +333,8 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 		const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsscope', hdb_user: SU });
 		assert.strictEqual(policy.enabled, false);
 		assert.deepStrictEqual(policy.problems, [
-			'trust policy "github-actions-opsscope-preview" allows ["drop_component"], not deploy_component, drop_component, get_components, get_deployment, registration_info',
-			'trust policy "github-actions-opsscope-preview-cleanup" allows ["deploy_component","drop_component"], not drop_component',
+			'trust policy "github-actions-opsscope-preview": operations are ["drop_component"], not ["deploy_component","drop_component","get_components","get_deployment","registration_info"]',
+			'trust policy "github-actions-opsscope-preview-cleanup": operations are ["deploy_component","drop_component"], not ["drop_component"]',
 		]);
 	});
 
@@ -368,9 +368,9 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			const envDrifted = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
 			assert.strictEqual(envDrifted.enabled, false);
 			assert.deepStrictEqual(envDrifted.problems, [
+				'trust policy "github-actions-opsdrift-preview": operations are ["drop_component"], not ["deploy_component","drop_component","get_components","get_deployment","registration_info"]',
 				'trust policy "github-actions-opsdrift-preview" pins environment "preview-cleanup", which is for cleanup',
-				'trust policy "github-actions-opsdrift-preview" allows ["drop_component"], not deploy_component, drop_component, get_components, get_deployment, registration_info',
-				'trust policy "github-actions-opsdrift-preview-cleanup" pins environment "staging", not "preview-cleanup"',
+				'trust policy "github-actions-opsdrift-preview-cleanup": claim environment is "staging", not "preview-cleanup"',
 			]);
 
 			await replacePolicy(baseDeploy, {
@@ -396,7 +396,10 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			assert.strictEqual(unpinned.branch, undefined);
 			assert.strictEqual(unpinned.repository_id, undefined);
 			assert.deepStrictEqual(unpinned.problems, [
+				'trust policy "github-actions-opsdrift-preview": claim repository is "acme/opsdrift", not undefined',
+				'trust policy "github-actions-opsdrift-preview": claim workflow_path is "acme/opsdrift/.github/workflows/preview.yaml", not undefined',
 				'trust policy "github-actions-opsdrift-preview" no longer pins repository_id and a branch workflow_ref as strings',
+				'trust policy "github-actions-opsdrift-preview-cleanup": claim workflow_path is "acme/opsdrift/.github/workflows/preview.yaml", not undefined',
 				'trust policy "github-actions-opsdrift-preview-cleanup" no longer pins repository_id and a branch workflow_ref as strings',
 			]);
 			await replacePolicy(baseDeploy, {
@@ -415,6 +418,7 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			assert.strictEqual(arrayPinned.enabled, false);
 			assert.deepStrictEqual(arrayPinned.problems, [
 				'trust policy "github-actions-opsdrift-preview" no longer pins environment as a non-empty string',
+				'trust policy "github-actions-opsdrift-preview-cleanup": claim repository_id is ["67890"], not "67890"',
 				'trust policy "github-actions-opsdrift-preview-cleanup" no longer pins repository_id and a branch workflow_ref as strings',
 			]);
 
@@ -430,14 +434,49 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			const mismatched = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsdrift', hdb_user: SU });
 			assert.strictEqual(mismatched.enabled, false);
 			assert.deepStrictEqual(mismatched.problems, [
-				`trust policy "github-actions-opsdrift-preview-cleanup" has audience "https://other.example.com:9925/", not "${driftAudience}"`,
-				'trust policy "github-actions-opsdrift-preview-cleanup" pins repository_id "99999", not "67890"',
-				'trust policy "github-actions-opsdrift-preview-cleanup" pins workflow_ref "acme/opsdrift/.github/workflows/other.yaml@refs/heads/main", not "acme/opsdrift/.github/workflows/preview.yaml@refs/heads/main"',
+				`trust policy "github-actions-opsdrift-preview-cleanup": audience is "https://other.example.com:9925/", not "${driftAudience}"`,
+				'trust policy "github-actions-opsdrift-preview-cleanup": claim repository_id is "99999", not "67890"',
+				'trust policy "github-actions-opsdrift-preview-cleanup": claim workflow_ref is "acme/opsdrift/.github/workflows/other.yaml@refs/heads/main", not "acme/opsdrift/.github/workflows/preview.yaml@refs/heads/main"',
 			]);
 		} finally {
 			await replacePolicy(baseDeploy);
 			await replacePolicy(baseCleanup);
 		}
+	});
+
+	it('reports an issuer or an extra claim that makes enable refuse the policy, so status and a rerun agree', async () => {
+		const { databases } = require('#src/resources/databases');
+		const { SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
+		const table = databases.system[SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME];
+		await enablePreviews(enableRequest('opsissuer'));
+		const deployId = 'github-actions-opsissuer-preview';
+		const cleanupId = 'github-actions-opsissuer-preview-cleanup';
+		const [deploy, cleanup] = [await table.get(deployId), await table.get(cleanupId)];
+		const status = () => getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsissuer', hdb_user: SU });
+		// Rows the way an older or hand-written setup leaves them, which add_oidc_trust would not now accept.
+		try {
+			await table.put(deployId, { ...deploy, issuer: 'https://issuer.example.com' });
+			await table.put(cleanupId, { ...cleanup, claims: { ...cleanup.claims, actor: 'someone' } });
+			const drifted = await status();
+			assert.strictEqual(drifted.enabled, false);
+			for (const problem of [
+				'trust policy "github-actions-opsissuer-preview": issuer is "https://issuer.example.com", not "https://token.actions.githubusercontent.com"',
+				'trust policy "github-actions-opsissuer-preview-cleanup": claim actor is "someone", not undefined',
+			]) {
+				assert.ok(drifted.problems.includes(problem), drifted.problems.join('\n'));
+			}
+			await assert.rejects(enablePreviews(enableRequest('opsissuer')), (error) => {
+				assert.strictEqual(error.statusCode, 409);
+				assert.match(error.message, /issuer is "https:\/\/issuer.example.com", not "https:\/\/token.actions/);
+				assert.match(error.message, /claim actor is "someone", not undefined/);
+				return true;
+			});
+		} finally {
+			await table.put(deployId, deploy);
+			await table.put(cleanupId, cleanup);
+		}
+		const restored = await status();
+		assert.strictEqual(restored.enabled, true, JSON.stringify(restored.problems));
 	});
 
 	it('lets another policy that gives a run the same authority stand, since the exchange accepts it', async () => {
@@ -949,6 +988,227 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			assert.ok(await getRoleByName('opsodd-ci-preview'));
 			const policy = await getPreviewPolicy({ operation: 'get_preview_policy', app: 'opsodd', hdb_user: SU });
 			assert.ok(policy.problems.includes('role "opsodd-ci-preview" is not a preview role for opsodd-pr-* alone'));
+		});
+
+		describe('enable_previews after this node revoked the identity generation', () => {
+			const { handleGetDeployment } = require('#src/components/deploymentOperations');
+			const { fencePreviewGeneration } = require('#src/components/previews');
+			const generationOf = async (app) =>
+				(await getRoleByName(`${app}-ci-preview`)).permission.component_deploy.constraints.generation;
+			const statusOf = (app) => getPreviewPolicy({ operation: 'get_preview_policy', app, hdb_user: SU });
+			const previewUserOf = async (app) => {
+				const grant = (await getRoleByName(`${app}-ci-preview`)).permission.component_deploy;
+				// The unit run cannot start an isolated worker; every other bound is the role's own.
+				const { isolated: _isolated, branchedDatabases: _branched, ...constraints } = grant.constraints;
+				return {
+					username: `${app}-ci-preview`,
+					role: {
+						role: `${app}-ci-preview`,
+						permission: { super_user: false, component_deploy: { ...grant, constraints } },
+					},
+				};
+			};
+			const deployAsPreviewUser = async (app, pr) =>
+				deployComponent({
+					operation: 'deploy_component',
+					payload,
+					restart: false,
+					project: `${app}-pr-${pr}`,
+					host: `${app}-${pr}.app.cluster.example.com`,
+					preview: metadata(app, pr),
+					hdb_user: await previewUserOf(app),
+				});
+			const countReplications = () => {
+				const replication = server.replication;
+				const original = replication.replicateOperation;
+				const state = { calls: 0 };
+				return {
+					state,
+					install(answer) {
+						replication.replicateOperation = async (...args) => {
+							state.calls++;
+							return answer(...args);
+						};
+					},
+					restore() {
+						replication.replicateOperation = original;
+					},
+				};
+			};
+
+			it('mints a new generation once every node fenced the old one, and its deploys are admitted', async () => {
+				await enablePreviews(enableRequest('opsrevive'));
+				const revoked = await generationOf('opsrevive');
+				const { deployment_id } = await deploy('opsrevive-pr-2', metadata('opsrevive', 2));
+				const peer = withPeer([{ project: 'opsrevive-pr-2', deployment_id }], () => {
+					throw new Error('unreachable');
+				});
+				try {
+					await assert.rejects(disablePreviews({ operation: 'disable_previews', app: 'opsrevive', hdb_user: SU }), {
+						message: /revoked but not removed/,
+					});
+				} finally {
+					peer.restore();
+				}
+				assert.strictEqual(await generationOf('opsrevive'), revoked, 'the role keeps what a rerun of disable fences');
+
+				const rerun = enableRequest('opsrevive');
+				const replications = countReplications();
+				replications.install(() => {
+					throw new Error('a refused enable sends nothing to a peer');
+				});
+				try {
+					await assert.rejects(enablePreviews(rerun), {
+						statusCode: 409,
+						message: /User "opsrevive-ci-preview".* inactive/,
+					});
+					assert.strictEqual(replications.state.calls, 0, 'the inactive user is refused before any fence is sent');
+				} finally {
+					replications.restore();
+				}
+				await alterUser({ username: 'opsrevive-ci-preview', active: true });
+				const stale = await statusOf('opsrevive');
+				assert.strictEqual(stale.enabled, false);
+				assert.match(
+					stale.problems.join(),
+					/role "opsrevive-ci-preview" is at an identity generation that disable_previews revoked/
+				);
+
+				const silent = withPeer([], () => ({}), { fenced: false });
+				try {
+					await assert.rejects(enablePreviews(rerun), {
+						statusCode: 409,
+						message: /No record was changed\.\n {2}- node-b: it did not acknowledge the fence/,
+					});
+				} finally {
+					silent.restore();
+				}
+				assert.strictEqual(await generationOf('opsrevive'), revoked, 'an unfenced node keeps the old generation');
+				assert.deepStrictEqual(await policiesOf('opsrevive'), []);
+
+				// The peer holds a release this node has no deployment row for: it fenced, which is all that is needed.
+				const acknowledged = withPeer([{ project: 'opsrevive-pr-9', deployment_id: 'no-row-here' }], () => ({}));
+				let response;
+				try {
+					response = await enablePreviews(rerun);
+				} finally {
+					acknowledged.restore();
+				}
+				const fresh = await generationOf('opsrevive');
+				assert.notStrictEqual(fresh, revoked);
+				assert.match(fresh, /^[\w-]{8,}$/);
+				assert.match(
+					response.message,
+					/^Enabled previews of opsrevive: replaced the revoked identity generation of role/
+				);
+				assert.deepStrictEqual(response.created.sort(), [
+					'trust policy github-actions-opsrevive-preview',
+					'trust policy github-actions-opsrevive-preview-cleanup',
+				]);
+				assert.strictEqual(response.enabled, true, JSON.stringify(response.problems));
+				assert.strictEqual((await statusOf('opsrevive')).enabled, true);
+
+				const live = await deployAsPreviewUser('opsrevive', 1);
+				assert.strictEqual(
+					(await handleGetDeployment({ deployment_id: live.deployment_id })).preview.generation,
+					fresh
+				);
+				await assert.rejects(deploy('opsrevive-pr-3', { ...metadata('opsrevive', 3), generation: revoked }), {
+					statusCode: 403,
+					message: /previews of opsrevive .* were disabled/,
+				});
+				assert.ok((await componentNames()).includes('opsrevive-pr-1'));
+			});
+
+			it('replaces it on a single node, and says so when that is all it changed', async () => {
+				await enablePreviews(enableRequest('opssolo'));
+				const revoked = await generationOf('opssolo');
+				await fencePreviewGeneration('opssolo', revoked);
+				const stale = await statusOf('opssolo');
+				assert.strictEqual(stale.enabled, false);
+				assert.match(stale.problems.join(), /revoked on this node/);
+				await assert.rejects(deploy('opssolo-pr-1', { ...metadata('opssolo', 1), generation: revoked }), {
+					statusCode: 403,
+				});
+
+				const response = await enablePreviews(enableRequest('opssolo'));
+				assert.match(
+					response.message,
+					/^Enabled previews of opssolo: replaced the revoked identity generation of role/
+				);
+				assert.deepStrictEqual(response.created, []);
+				assert.strictEqual(response.enabled, true, JSON.stringify(response.problems));
+				const again = await enablePreviews(enableRequest('opssolo'));
+				assert.match(again.message, /already enabled; nothing changed/);
+				assert.strictEqual(await generationOf('opssolo'), response.grant.constraints.generation);
+			});
+
+			it('finishes a run that stopped after the role was replaced, without replacing it again', async () => {
+				await enablePreviews(enableRequest('opsresume'));
+				const revoked = await generationOf('opsresume');
+				await fencePreviewGeneration('opsresume', revoked);
+				await enablePreviews(enableRequest('opsresume'));
+				const replaced = await generationOf('opsresume');
+				assert.notStrictEqual(replaced, revoked);
+				await dropOidcTrust({ operation: 'drop_oidc_trust', id: 'github-actions-opsresume-preview', hdb_user: SU });
+				const resumed = await enablePreviews(enableRequest('opsresume'));
+				assert.deepStrictEqual(resumed.created, ['trust policy github-actions-opsresume-preview']);
+				assert.strictEqual(await generationOf('opsresume'), replaced);
+			});
+
+			it('does not overwrite a role an administrator changed while the nodes were fencing', async () => {
+				await enablePreviews(enableRequest('opsedit', { maxTtlDays: 5 }));
+				const revoked = await generationOf('opsedit');
+				await fencePreviewGeneration('opsedit', revoked);
+				const replications = countReplications();
+				replications.install(async () => {
+					const role = await getRoleByName('opsedit-ci-preview');
+					const grant = role.permission.component_deploy;
+					await alterRole({
+						id: role.id,
+						role: role.role,
+						permission: {
+							...role.permission,
+							component_deploy: { ...grant, constraints: { ...grant.constraints, maxTtlDays: 1 } },
+						},
+					});
+					return { replicated: [{ node: 'node-b', components: [], fenced: true }] };
+				});
+				const savedNodes = server.nodes;
+				server.nodes = [{ name: 'node-b' }];
+				try {
+					await assert.rejects(enablePreviews(enableRequest('opsedit', { maxTtlDays: 5 })), {
+						statusCode: 409,
+						message: /role "opsedit-ci-preview" changed while its revoked identity generation was being fenced/,
+					});
+				} finally {
+					replications.restore();
+					server.nodes = savedNodes;
+				}
+				const kept = (await getRoleByName('opsedit-ci-preview')).permission.component_deploy.constraints;
+				assert.strictEqual(kept.maxTtlDays, 1);
+				assert.strictEqual(kept.generation, revoked);
+			});
+
+			it('reports the revoked generation alongside another defect of the role', async () => {
+				await enablePreviews(enableRequest('opsboth'));
+				await fencePreviewGeneration('opsboth', await generationOf('opsboth'));
+				const role = await getRoleByName('opsboth-ci-preview');
+				await alterRole({
+					id: role.id,
+					role: role.role,
+					permission: { ...role.permission, operations: ['drop_component'] },
+				});
+				const { problems } = await statusOf('opsboth');
+				assert.ok(
+					problems.some((problem) => /identity generation that disable_previews revoked/.test(problem)),
+					problems.join()
+				);
+				assert.ok(
+					problems.some((problem) => /allows \["drop_component"\]/.test(problem)),
+					problems.join()
+				);
+			});
 		});
 	});
 });
