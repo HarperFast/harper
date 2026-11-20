@@ -979,6 +979,10 @@ Returns the expiration time, if one is set.
 
 For caching tables: return `true` to serve the stale entry while revalidation happens concurrently; `false` to wait for the fresh value.
 
+<VersionBadge type="changed" version="v5.4.2" /> Define the hook on the caching table's class or on the source passed to [`sourcedFrom`](#sourcedfromresource-options): as an instance method of a source class (called on an instance of the source for that id), a static method of it, or a method of a plain source object. A hook on the table's class takes precedence over one on the source. Before v5.4.2 a hook on the source was ignored.
+
+A stale entry can only be served until the table's cleanup scan removes it. Without an `eviction` time (see the [`@table` directive](../database/schema.md#table)), that happens soon after the entry expires, and later reads wait for the source; set `eviction` to how long stale entries should remain available. Harper logs a warning the first time a table without an `eviction` time serves a stale entry.
+
 <VersionBadge type="changed" version="v5.4.1" /> A read that serves the stale entry starts a revalidation only if no other request is holding that record's fetch; otherwise it just returns the stale entry. If the revalidation fails, the next read starts another one. This hook is now called before the revalidation starts.
 
 Entry properties:

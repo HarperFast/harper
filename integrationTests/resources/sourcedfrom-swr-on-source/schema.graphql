@@ -1,0 +1,5 @@
+# expires after a second; the eviction time keeps the expired record for the stale reads
+type Quote @table(expiration: 1, eviction: 60) @export {
+	id: ID @primaryKey
+	value: String
+}
