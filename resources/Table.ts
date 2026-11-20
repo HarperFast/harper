@@ -100,6 +100,7 @@ import {
 	reserveLocalKey,
 	reservedAroundCallerValue,
 	reservedLocalKey,
+	timestampBelow,
 } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
@@ -14338,6 +14339,15 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
+	// unlike txnForContext, never opens a link
+	function heldTransactionClock(context: Context): number | undefined {
+		for (let txn: any = context?.transaction; txn && !isReleasedTransaction(txn); txn = txn.next) {
+			if (txn.db?.path !== primaryStore.path) continue;
+			if (txn.open !== TRANSACTION_STATE.OPEN) return undefined;
+			return txn.timestamp || txn.transaction?.getTimestamp();
+		}
+	}
+
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
 		if (isReleasedTransaction(transaction)) transaction = undefined;
@@ -14872,11 +14882,20 @@ export function makeTable(options): TableResourceClass {
 		let inheritedTimestamp: number;
 		let fillKey: unknown;
 		let sourceTimestamp: number;
+		let versionCap: number;
 		let issuanceFailed = false;
 		try {
 			inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
 			fillKey = writeKeyId(id);
 			sourceTimestamp = inheritedTimestamp;
+			if (!context?.timestamp && isRocksDB) {
+				// The requesting transaction read this fill, so the fill orders before that transaction's clock,
+				// which RocksDB fixed when it opened: a write the transaction then makes must supersede it (#2935).
+				// A refresh still advances past the version it replaces.
+				const requesterClock = heldTransactionClock(context);
+				const cap = requesterClock > 0 ? timestampBelow(requesterClock) : undefined;
+				if (!(existingVersion >= cap)) versionCap = cap;
+			}
 			if (!sourceTimestamp) {
 				if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
 				else {
@@ -15031,6 +15050,7 @@ export function makeTable(options): TableResourceClass {
 							}
 						}
 					} else sourceVersion = sourceTimestamp;
+					if (sourceVersion > versionCap) sourceVersion = versionCap;
 					hasChanges = invalidated || (validReportedVersion && reportedVersion > existingVersion) || !existingRecord;
 					const resolveDuration = performance.now() - start;
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
