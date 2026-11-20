@@ -2171,6 +2171,8 @@ export const LOCAL_ONLY = 0x8000;
  * bits the copy walk mirrors into this word; an older reader ignores it.
  */
 export const COPIED_RECORD = 0x100000;
+// 0x80000 stays unassigned in this word: it is the record word's NULL_RECORD, which a build without that flag's
+// decode mask mirrors into copy frames (`nullRecordFlag.test.js`).
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',

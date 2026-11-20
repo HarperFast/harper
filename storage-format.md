@@ -18,6 +18,14 @@ The primary `0x200` flag and audit `0x200` flag have different meanings. A copy 
 
 Attribute slots require a decoder that understands the added fields. Downgrade requires a preactivation backup and can lose subsequent writes. Key-derived conversion needs no record rewrite and supports previous-binary rollback with equivalent legacy schema and placement function. Wire fallback strips the new audit fields and sends connection-only residency references; it does not make the old local decoder compatible.
 
+## Primary-record null marker
+
+`NULL_RECORD` (`0x80000` in the primary metadata word) is set on a row whose encoded value is null: a delete's tombstone, a message published to an id that holds no record, an invalidation that keeps no fields. On RocksDB a versioned row starts with its version, whose leading byte is `0x42`, and the word is the big-endian uint32 at value offset 8, so the marker is `length >= 13 && byte[0] == 0x42 && byte[8] == 0x0E && (byte[9] & 0x08)` whatever optional fields follow the word (13 bytes is the shortest such row: version, word, one body byte). It exists for a reader that sees only fixed offsets of the value, such as a compaction filter.
+
+The test holds only for a primary-store row that has that header. A row stored without a version (a version-less record that `copyDb` migrated, or a raw put) has record bytes at those offsets, which is why the first byte is part of the test. That byte is the decoder's own test for the header and shares its one ambiguity: a version-less classic-structure record with structure id 2, whose first byte is `0x42`. A self-versioned index store writes the same header and is never marked, so the test applies to primary-store column families only.
+
+The record encoder derives the bit from the encoded value on every write (a body of the single byte `0xc0`) and clears it on any other; the decoder removes it from the flags it reports, so no writer sets it and no reader sees it. It states that the value is null, not that the row may be removed: `INVALIDATED`, `REPLICA` and `EVICTED` are in the same word, and retention is the reader's rule. A null row written before the bit existed, or by a build without it, has no marker. A build without it also reports the bit in decoded flags, and a copy sender that mirrors those flags puts it in the audit flag word, where `0x80000` is left unassigned for that reason. LMDB rows carry the bit in the same word; nothing reads it there.
+
 ## Transaction Log Entry Structure
 
 Each transaction log entry consists of two parts:
