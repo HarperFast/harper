@@ -195,7 +195,8 @@ suite('Component: ecommerce-template', { skip: skipSuite }, (ctx: ContextWithHar
 
 	test('DELETE /Product/:id removes the record', async () => {
 		const deleteRes = await fetch(`${ctx.harper.httpURL}/Product/99`, { method: 'DELETE' });
-		ok(deleteRes.status < 300, `expected 2xx, got ${deleteRes.status}`);
+		strictEqual(deleteRes.status, 200);
+		strictEqual(await deleteRes.json(), true);
 
 		const goneRes = await fetch(`${ctx.harper.httpURL}/Product/99`);
 		strictEqual(goneRes.status, 404);
