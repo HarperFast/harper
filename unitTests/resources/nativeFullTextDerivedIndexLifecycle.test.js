@@ -981,3 +981,100 @@ describe('published full-text 0.5.0, 0.7.0 and 0.8.0 to current migration', func
 		});
 	}
 });
+
+describe('a native full-text index that starts with a saved position and no coverage', function () {
+	this.timeout(60_000);
+
+	it('saves its coverage without resetting the index when nothing is left to deliver', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		if (!(await supportsPublishedFullTextBinding())) this.skip();
+		const binding = await loadFullTextNativeBinding();
+		setMainIsWorker(true);
+		const Product = table({
+			database: 'fulltext-coverage-without-delivery',
+			table: 'Product',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		await Product.put('one', { title: 'waterproof boots' });
+		const tail = [...Product.auditStore.getRange({ start: 1 })].at(-1).txnLogKey;
+		const configuration = options(path.join(setupTestDBPath(), `native-coverage-${Date.now()}`), binding);
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(configuration);
+		await lifecycle.initialize({ reclaimRetired: false });
+		const nativeId = `${Product.tableId}.${toBufferKey('one').toString('base64url')}`;
+		// What a stop between an index's two saves leaves: every record indexed, the log position
+		// saved, and no coverage for it.
+		const seeded = await lifecycle.open();
+		await seeded.applyMutationBatch(
+			{
+				upserts: [
+					{
+						id: nativeId,
+						version: String(Product.primaryStore.getEntry('one').version),
+						fields: { title: 'waterproof boots' },
+					},
+				],
+				deletes: [],
+			},
+			{ assumeDistinctIds: true, rejectedUpsert: 'delete' }
+		);
+		await seeded.publish(encodeFullTextCursorPayload({ format: 1, logs: { local: tail } }));
+		await seeded.close({ mode: 'require-clean' });
+
+		let runtime;
+		let unregister;
+		let reader;
+		let resets = 0;
+		let scanned = 0;
+		try {
+			const backend = await createNativeFullTextDerivedIndexBackend({
+				...configuration,
+				id: configuration.indexId,
+				beforeReset: async () => {
+					resets++;
+				},
+			});
+			runtime = new DerivedIndexRuntime(
+				Product.auditStore,
+				(_tableId, recordId) => {
+					const entry = Product.primaryStore.getEntry(recordId);
+					return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+				},
+				{
+					scanRecords: () => {
+						scanned++;
+						return [];
+					},
+				}
+			);
+			unregister = runtime.register({
+				backend,
+				projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+				options: { maxFlushAgeMilliseconds: 10, rebuildBackoffMilliseconds: 10, maxRebuildAttempts: 2 },
+			});
+			const savedCursor = () => {
+				const inspection = lifecycle.inspect();
+				return inspection.state === 'checkpointed'
+					? decodeFullTextCursorPayload(inspection.committedPayload)
+					: undefined;
+			};
+			await waitFor(() => resets > 0 || scanned > 0 || savedCursor()?.coverage, 30_000);
+			assert.strictEqual(resets, 0);
+			assert.strictEqual(scanned, 0);
+			assert.strictEqual(runtime.getReadiness(configuration.indexId).state, 'ready');
+			assert.deepStrictEqual({ ...savedCursor().logs }, { local: tail });
+			reader = await binding.openNativeFullTextReader({
+				...upgradeNativeOptions(configuration, lifecycle),
+				limits: readerLimits,
+			});
+			assert.deepStrictEqual(
+				(await reader.search({ text: 'waterproof', limit: 10 })).hits.map(({ id }) => id),
+				[nativeId]
+			);
+		} finally {
+			await reader?.close();
+			await unregister?.();
+			await runtime?.stop();
+		}
+	});
+});
