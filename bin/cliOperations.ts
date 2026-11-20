@@ -149,9 +149,9 @@ function versionSupportsStreamingDeploy(version: unknown): boolean {
 }
 
 /**
- * Whether a `registration_info` reply advertises archive restore. An older server ignores `payload`
- * and restores its latest managed backup instead, so anything short of the advertised capability —
- * no reply, no list, a list without it — reads as "no".
+ * Whether a `server_info` reply lists archive restore. An older server ignores `payload` and restores
+ * its latest managed backup instead, so anything short of the listed capability — no reply, no list,
+ * a list without it — reads as "no".
  */
 export function advertisesArchiveRestore(info: unknown): boolean {
 	const capabilities = (info as { capabilities?: unknown } | null)?.capabilities;
@@ -162,7 +162,7 @@ export function advertisesArchiveRestore(info: unknown): boolean {
 async function assertTargetRestoresArchives(options: any): Promise<void> {
 	const response = await httpRequest(
 		{ ...options, headers: { ...options.headers, Accept: 'application/json' }, timeout: CLI_OPERATION_TIMEOUT_MS },
-		{ operation: 'registration_info' }
+		{ operation: 'server_info' }
 	);
 	let info: unknown;
 	try {
@@ -172,20 +172,24 @@ async function assertTargetRestoresArchives(options: any): Promise<void> {
 	}
 	if (response.statusCode !== 200) {
 		const reason = (info as { error?: unknown } | undefined)?.error;
+		if (response.statusCode === 400 && typeof reason === 'string' && /Operation 'server_info' not found/.test(reason))
+			throw new Error(
+				`The target Harper has no server_info operation, which arrived with archive restore, so it would restore its latest managed backup instead. Upgrade it, or stop it and restore offline with this CLI.`
+			);
 		const hint =
 			response.statusCode === 401
 				? ' Check the credentials for this target.'
 				: response.statusCode === 403
-					? ' The role must be allowed registration_info, which the CLI asks before uploading an archive.'
+					? ' The role must be allowed server_info, which the CLI asks before uploading an archive.'
 					: '';
 		throw new Error(
-			`The target Harper answered registration_info with status ${response.statusCode}${typeof reason === 'string' ? ` (${reason})` : ''}, so the CLI cannot tell whether it restores an uploaded archive; nothing was sent.${hint}`
+			`The target Harper answered server_info with status ${response.statusCode}${typeof reason === 'string' ? ` (${reason})` : ''}, so the CLI cannot tell whether it restores an uploaded archive; nothing was sent.${hint}`
 		);
 	}
 	if (!advertisesArchiveRestore(info)) {
 		const version = (info as { version?: unknown } | undefined)?.version;
 		throw new Error(
-			`The target Harper (${typeof version === 'string' ? `version ${version}` : 'version unknown'}) does not advertise restoring an uploaded archive, so it would restore its latest managed backup instead. Upgrade it, or stop it and restore offline with this CLI.`
+			`The target Harper (${typeof version === 'string' ? `version ${version}` : 'version unknown'}) does not list restoring an uploaded archive, so it would restore its latest managed backup instead. Upgrade it, or stop it and restore offline with this CLI.`
 		);
 	}
 }

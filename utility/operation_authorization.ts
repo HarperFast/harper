@@ -56,6 +56,7 @@ import type { ReadDenial } from '../resources/Table.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
+import { getServerInfo } from '../server/serverInfo.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
 import * as releaseOperations from '../components/releaseOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
@@ -476,6 +477,7 @@ requiredPermissions.set(
 	regDeprecated.getRegistrationInfo.name,
 	new permission(false, [], terms.OPERATIONS_ENUM.REGISTRATION_INFO)
 );
+requiredPermissions.set(getServerInfo.name, new permission(false, [], terms.OPERATIONS_ENUM.SERVER_INFO));
 requiredPermissions.set(user.userInfo.name, new permission(false, [], terms.OPERATIONS_ENUM.USER_INFO));
 requiredPermissions.set(
 	getStudioConfiguration.name,

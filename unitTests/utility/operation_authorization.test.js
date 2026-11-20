@@ -1967,6 +1967,35 @@ describe('Test operations permissions', function () {
 			});
 		}
 	});
+
+	describe('server_info is open to every role, and to allowlisted ones only by listing', function () {
+		const operation = terms.OPERATIONS_ENUM.SERVER_INFO;
+		function request(permission) {
+			const req_json = makeOpUserSystemRequest(undefined);
+			req_json.operation = operation;
+			req_json.hdb_user.role.permission = permission;
+			return req_json;
+		}
+
+		for (const [label, permission] of [
+			['a role with no permissions at all', { super_user: false }],
+			['a structure_user', { super_user: false, structure_user: true }],
+			['super_user', { super_user: true }],
+			['a role allowlisting it by name', { super_user: false, operations: [operation] }],
+		]) {
+			it(`allows ${label}`, function () {
+				assert.equal(op_auth.verifyPerms(request(permission), dispatchedHandlerName(operation)), null);
+			});
+		}
+
+		it('refuses a role whose allowlist omits it', function () {
+			const result = op_auth.verifyPerms(
+				request({ super_user: false, operations: ['registration_info'] }),
+				dispatchedHandlerName(operation)
+			);
+			assert.deepEqual(result?.unauthorized_access, [TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(operation)]);
+		});
+	});
 });
 
 describe('verifyPerms() — replication directives are super-user only (harper#2898)', function () {
