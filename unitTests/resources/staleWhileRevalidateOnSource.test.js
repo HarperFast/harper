@@ -10,7 +10,6 @@ const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { logger } = require('#src/utility/logging/logger');
 
-// harper#1468: allowStaleWhileRevalidate defined on the source passed to sourcedFrom
 describe('Stale-while-revalidate hook on the source', function () {
 	this.timeout(10_000);
 	let ClassSourced;
@@ -208,15 +207,15 @@ describe('Stale-while-revalidate hook on the source', function () {
 	});
 
 	it('warns once that stale records need an eviction time to stay servable', async function () {
-		const evictionWarnings = () => warnings.filter((warning) => warning.includes('has no eviction time'));
+		const evictionWarnings = (name) =>
+			warnings.filter((warning) => warning.includes('has no eviction time') && warning.includes(`"${name}"`));
 		await expire(Evicting, 'kept');
 		assert.equal((await Evicting.get('kept')).name, 'stale kept');
-		assert.deepEqual(evictionWarnings(), []);
+		assert.deepEqual(evictionWarnings('SwrOnSourceEvicting'), []);
 		await expire(Warned, 'first');
 		await expire(Warned, 'second');
 		assert.equal((await Warned.get('first')).name, 'stale first');
 		assert.equal((await Warned.get('second')).name, 'stale second');
-		assert.equal(evictionWarnings().length, 1);
-		assert.match(evictionWarnings()[0], /SwrOnSourceWarned/);
+		assert.equal(evictionWarnings('SwrOnSourceWarned').length, 1);
 	});
 });

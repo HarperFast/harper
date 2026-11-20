@@ -1,6 +1,5 @@
 /**
- * A sourcedFrom cache serves stale records over HTTP when allowStaleWhileRevalidate is defined on the
- * source class, both while the origin is slow and when it fails. https://github.com/HarperFast/harper/issues/1468
+ * https://github.com/HarperFast/harper/issues/1468
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -25,8 +24,13 @@ suite('sourcedFrom stale-while-revalidate hook on the source', (ctx: ContextWith
 	}
 	const setOrigin = (state: { value?: string; mode?: string }) => request('/Origin/', 'POST', state);
 	// a read that waited on the held origin would not answer within this
-	const staleRead = () => request('/Quote/q', 'GET', undefined, 3_000);
-	const expiry = () => delay(1_500);
+	const staleRead = (id: string) => request(`/Quote/${id}`, 'GET', undefined, 3_000);
+	// past the schema's one-second expiration
+	const cacheThenExpire = async (id: string, value: string) => {
+		await setOrigin({ value, mode: 'ok' });
+		assert.strictEqual((await request(`/Quote/${id}`)).value, value);
+		await delay(1_500);
+	};
 
 	before(async () => {
 		await setupHarperWithFixture(ctx, resolve(import.meta.dirname, 'sourcedfrom-swr-on-source'), {
@@ -45,21 +49,21 @@ suite('sourcedFrom stale-while-revalidate hook on the source', (ctx: ContextWith
 	});
 
 	test('serves the stale record while the origin is slow, then the refreshed one', async () => {
-		assert.strictEqual((await request('/Quote/q')).value, 'v1');
-		await expiry();
-		await setOrigin({ value: 'v2', mode: 'hold' });
-		assert.strictEqual((await staleRead()).value, 'v1');
+		await cacheThenExpire('slow', 'cached');
+		await setOrigin({ value: 'refreshed', mode: 'hold' });
+		assert.strictEqual((await staleRead('slow')).value, 'cached');
 		await setOrigin({ mode: 'ok' });
-		await waitFor(async () => (await request('/Quote/q')).value === 'v2', {
+		await waitFor(async () => (await request('/Quote/slow')).value === 'refreshed', {
 			timeout: 10_000,
 			message: 'the background refresh did not replace the stale record',
 		});
 	});
 
 	test('serves the last good record when the origin fails', async () => {
-		await expiry();
-		await setOrigin({ value: 'v3', mode: 'fail' });
-		assert.strictEqual((await staleRead()).value, 'v2');
-		assert.strictEqual((await staleRead()).value, 'v2');
+		await cacheThenExpire('failing', 'last good');
+		const { calls } = await setOrigin({ value: 'unreachable', mode: 'fail' });
+		assert.strictEqual((await staleRead('failing')).value, 'last good');
+		await waitFor(async () => (await setOrigin({})).calls > calls, { message: 'the origin was not asked' });
+		assert.strictEqual((await staleRead('failing')).value, 'last good');
 	});
 });

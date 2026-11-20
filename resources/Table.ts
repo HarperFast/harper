@@ -2278,6 +2278,8 @@ export function makeTable(options): TableResourceClass {
 	let expirationWarningChecked = false;
 	let writerResidencyWarned = false;
 	let staleWithoutEvictionWarned = false;
+	let instanceHookSource: any;
+	let sourceHasInstanceHook = false;
 	let propertyResolvers: any;
 	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
@@ -9046,7 +9048,7 @@ export function makeTable(options): TableResourceClass {
 				// since those never run the ensureLoaded-gated freshness check this transform
 				// otherwise applies unconditionally to every read.
 				const includeExpired = (target as any).includeExpired === true;
-				// the instance's own class, so a stale-while-revalidate hook on a table subclass decides for its rows
+				// the instance's class: a stale-while-revalidate hook on a table subclass decides for its rows
 				const transformToRecord = (this.constructor as typeof TableResource).transformEntryForSelect(
 					select,
 					context,
@@ -14544,14 +14546,13 @@ export function makeTable(options): TableResourceClass {
 		resource.setRecord(record);
 		return resource;
 	}
-	// The table class's hook decides; without one, the source it is sourcedFrom decides, through a method
-	// of that object or a static or instance method of that class (harper#1468).
 	function allowsStale(resource, source, entry: Entry, id: Id, context: Context): boolean {
 		let allowed;
-		if (resource.allowStaleWhileRevalidate) allowed = resource.allowStaleWhileRevalidate(entry, id);
+		if (typeof resource.allowStaleWhileRevalidate === 'function')
+			allowed = resource.allowStaleWhileRevalidate(entry, id);
 		else if (typeof source?.allowStaleWhileRevalidate === 'function')
 			allowed = source.allowStaleWhileRevalidate(entry, id);
-		else if (typeof source === 'function' && definesMethod(source.prototype, 'allowStaleWhileRevalidate'))
+		else if (typeof source === 'function' && sourceDefinesInstanceHook(source))
 			allowed = new source(id, context).allowStaleWhileRevalidate(entry, id);
 		if (allowed && entry.expiresAt != undefined && !evictionMs && !staleWithoutEvictionWarned) {
 			staleWithoutEvictionWarned = true;
@@ -14561,13 +14562,21 @@ export function makeTable(options): TableResourceClass {
 		}
 		return Boolean(allowed);
 	}
-	// reads own properties only: a resource prototype chain ends in a Proxy that answers any other lookup
-	function definesMethod(prototype, name: string): boolean {
-		for (; prototype && prototype !== Object.prototype; prototype = Object.getPrototypeOf(prototype)) {
-			const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
-			if (descriptor) return typeof descriptor.value === 'function';
+	// resolved once per source: an outage serves many stale reads, and a class's methods are fixed by then
+	function sourceDefinesInstanceHook(source): boolean {
+		if (source !== instanceHookSource) {
+			instanceHookSource = source;
+			sourceHasInstanceHook = false;
+			// own properties only: a resource prototype chain ends in a Proxy that answers any other lookup
+			for (let prototype = source.prototype; prototype && prototype !== Object.prototype;) {
+				if (Object.hasOwn(prototype, 'allowStaleWhileRevalidate')) {
+					sourceHasInstanceHook = typeof prototype.allowStaleWhileRevalidate === 'function';
+					break;
+				}
+				prototype = Object.getPrototypeOf(prototype);
+			}
 		}
-		return false;
+		return sourceHasInstanceHook;
 	}
 	function isPrimaryKeyAttribute(attribute) {
 		return (
