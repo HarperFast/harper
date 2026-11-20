@@ -1,5 +1,3 @@
-// A checkpoint replay's retention recheck, the floor a store certifies on its own tick, and a checkpoint over two
-// origins (the deferred findings of harper#3356).
 const assert = require('node:assert');
 const { utimesSync } = require('node:fs');
 const { join } = require('node:path');
@@ -29,6 +27,8 @@ const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+// Windows refuses to delete a log segment a replay has mapped (resources/audit-retention.md)
+const canUnlinkMappedSegments = process.platform !== 'win32';
 
 let sequence = 0;
 function tableInOwnDatabase() {
@@ -155,7 +155,8 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			assert.ok(!valuesOf(events).includes('fill249'), 'the replay stopped');
 		});
 
-		it('passes when a purge removes only a log segment it has read', async () => {
+		it('passes when a purge removes only a log segment it has read', async function () {
+			if (!canUnlinkMappedSegments) return this.skip();
 			const T = tableInOwnDatabase();
 			// about 80 entries to a 16 MB segment, so the replay stops in the second of four
 			const checkpoint = await checkpointThenFill(T, SEGMENT_PAD);
@@ -182,7 +183,8 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			resumed.end();
 		});
 
-		it('refuses when a purge removes unread segments whose keys are ahead of the clock, and so above the floor', async () => {
+		it('refuses when a purge removes unread segments whose keys are ahead of the clock, and so above the floor', async function () {
+			if (!canUnlinkMappedSegments) return this.skip();
 			const T = tableInOwnDatabase();
 			const rootStore = T.primaryStore.rootStore;
 			// the claim raises the clock of the whole process, so the test ends only once the wall clock has passed it
@@ -204,7 +206,8 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			}
 		});
 
-		it('refuses when a purge removes every log segment it has not read, which its reader does not report', async () => {
+		it('refuses when a purge removes every log segment it has not read, which its reader does not report', async function () {
+			if (!canUnlinkMappedSegments) return this.skip();
 			const T = tableInOwnDatabase();
 			// about 80 entries to a 16 MB segment, so the replay stops in the second of four
 			const checkpoint = await checkpointThenFill(T, SEGMENT_PAD);
@@ -347,6 +350,31 @@ describe('Checkpoint replay retention, the certified floor tick, and two origins
 			// above every key of this node's log, which may hold more than the replay read, and below the peer's
 			raiseAuditFloor(T.auditStore, Date.now() + 10_000);
 			assert.ok(getAuditResumeFloor(T.auditStore) < peerFloor, 'precondition');
+			const events = [];
+			resumed.on('data', (event) => events.push(event));
+			assert.strictEqual(await resumed.resumeVerified, false);
+			assert.strictEqual(events.at(-1)?.code, 'RESUME_HISTORY_UNAVAILABLE');
+		});
+
+		it("refuses when a purge removes unread history of a peer's log, whose keys are above the floor", async function () {
+			if (!canUnlinkMappedSegments) return this.skip();
+			const T = tableInOwnDatabase();
+			const peerId = getIdOfRemoteNode('peer-ahead', T.auditStore);
+			const { checkpoint, peerFloor } = await checkpointWithPeerAhead(T, peerId);
+			for (let i = 0; i < 50; i++) await T.put(`local${i}`, { value: `local${i}` });
+			for (let i = 0; i < 150; i++) {
+				await applyFromOrigin(T, `peer${i}`, { id: `peer${i}`, value: `peer${i}` }, peerId, peerFloor + 1000 + i);
+			}
+			const resumed = await T.subscribe({ resume: checkpoint, omitCurrent: true });
+			await waitFor(() => resumed.queue?.length > 100);
+			assert.match(resumed.queue.at(-1).value.value, /^peer/, 'precondition: the replay stopped in the peer log');
+			const rootStore = T.primaryStore.rootStore;
+			rootStore.flushSync();
+			// past this node's start and below what the replay read of its log, where its own log alone would pass
+			raiseAuditFloor(T.auditStore, logKeyOf(T, 'local10'));
+			assert.ok(getAuditResumeFloor(T.auditStore) > checkpoint.exceptions[getThisNodeName()], 'precondition');
+			const purged = rootStore.purgeLogs({ before: Date.now() + 1, name: 'peer-ahead' });
+			assert.ok(purged.length >= 1, "precondition: the purge removed the peer's log");
 			const events = [];
 			resumed.on('data', (event) => events.push(event));
 			assert.strictEqual(await resumed.resumeVerified, false);

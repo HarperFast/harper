@@ -246,7 +246,7 @@ import {
 	isNonHistoryType,
 	isAuditEntryWrite,
 	getAuditResumeFloor,
-	getLogPurgeBound,
+	getLogPurgeWatermark,
 	isResumablePosition,
 	getDatabaseGeneration,
 	auditHistoryAbortMarked,
@@ -10542,11 +10542,10 @@ export function makeTable(options): TableResourceClass {
 					};
 					// The floor passes a start before the purge it announces, and that purge may remove only history this
 					// replay has read. A purge takes a prefix of a log's segments, so one that removed an unread entry of this
-					// node's own log also removed every entry read from it: while the log's purge bound is below the highest
-					// key read, nothing unread is gone. The bound holds whatever the clock (a local key can be minted ahead
-					// of it), and a reader reports no purge that reaches the end of its log. The floor is still held below
-					// that key: it also rises for a purge yet to run. A peer's log is held to its start. A log read from 0 is
-					// whole from its beginning (retainsZeroStarts), and its keys can lie below the floor.
+					// node's own log also removed every entry read from it: while the log's purge watermark is below the
+					// highest key read, nothing unread is gone. The watermark holds whatever the clock (a key can be minted
+					// ahead of it, so above the floor), and a reader reports no purge that reaches the end of its log. The
+					// floor is still held to that key: it also rises for a purge yet to run.
 					const ownStart = plan.startByLog.get('local');
 					let ownReached = ownStart;
 					let peerStart = Infinity;
@@ -10558,8 +10557,12 @@ export function makeTable(options): TableResourceClass {
 						if (floor > peerStart || !plan!.retainsZeroStarts()) return false;
 						if (!(ownStart > 0 && floor > ownStart)) return true;
 						if (floor > ownReached) return false;
-						const purgedThrough = getLogPurgeBound(auditStore, 'local');
-						return purgedThrough < ownReached;
+						for (const [name, start] of plan!.startByLog) {
+							if (!(start > 0)) continue;
+							const purgedThrough = getLogPurgeWatermark(auditStore, name);
+							if (!(name === 'local' ? purgedThrough < ownReached : purgedThrough <= start)) return false;
+						}
+						return true;
 					};
 					// admission facts are mutable: a revocation, hole or generation change bumps the epoch
 					const recheck = (range: any): boolean => {

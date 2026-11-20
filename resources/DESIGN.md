@@ -235,7 +235,7 @@ A bare `<table>/` row may lack `name` and `isPrimaryKey` (#3225), so use `isPrim
 
 ## Per-origin subscription checkpoints
 
-`checkpoint()` encodes one boundary per origin. **If any known origin lacks a qualifying floor, there is no checkpoint.** A floor publishes only after its pass drains; a live certified subscription is `ungated`: the `startTime` gate drops late lower-key commits. A checkpoint replay is refused once the floor passes a peer log's start, or the highest key read from this node's own log; past its own start it also needs that log's purge bound (`getLogPurgeBound`) below that key, since a purge takes a prefix of segments, a local key can be ahead of the clock, and a reader reports no purge that reaches the end of its log (`subscribeCheckpointRetention.test.js`). Only `updateRecordedSequenceId` writes `[seq, P]` rows (`subscribeCheckpoint.test.js`).
+`checkpoint()` encodes one boundary per origin. **If any known origin lacks a qualifying floor, there is no checkpoint.** A floor publishes only after its pass drains; a live certified subscription is `ungated`: the `startTime` gate drops late lower-key commits. A checkpoint replay is refused once the floor passes a peer log's start, or the highest key read from this node's own log. Past its own start it also needs each log's purge watermark (`getLogPurgeWatermark`) below that key for its own log, and at or below the start for a peer's: a purge takes a prefix of segments, a key can be ahead of the clock and so above the floor, and a reader reports no purge that reaches the end of its log (`subscribeCheckpointRetention.test.js`). Only `updateRecordedSequenceId` writes `[seq, P]` rows (`subscribeCheckpoint.test.js`).
 
 ## Subscription version selection
 
