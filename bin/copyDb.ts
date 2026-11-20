@@ -1032,6 +1032,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 						value,
 						version,
 						expiresAt: entryExpiresAt,
+						replicaDeadline: entryReplicaDeadline,
 						nodeId: entryNodeId,
 						residencyId: entryResidencyId,
 						residencySlot: entryResidencySlot,
@@ -1057,7 +1058,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 									entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
 									entryNodeId ?? sourceMeta?.nodeId ?? -1,
 									entryResidencyId ?? sourceMeta?.residencyId ?? 0,
-									entryResidencySlot ?? sourceMeta?.residencySlot
+									entryResidencySlot ?? sourceMeta?.residencySlot,
+									entryReplicaDeadline ?? sourceMeta?.replicaDeadline
 								);
 							} else {
 								// A flags-word-only prefix (no leading timestamp) is misparsed by the RocksDB
