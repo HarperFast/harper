@@ -1084,16 +1084,6 @@ function purgeWatermark(rootStore: any, name: string): number | null | undefined
 	}
 }
 
-/**
- * The largest key purged from a log, by its native purge watermark alone, or undefined when rocksdb-js does not vouch
- * for one. Unlike `getLogPurgeBound` it estimates nothing from a cutoff, so it holds for a key minted ahead of the clock.
- */
-export function getLogPurgeWatermark(auditStore: any, name: string): number | undefined {
-	if (!auditStore.logByName?.has(name)) return undefined;
-	const watermark = purgeWatermark(auditStore.rootStore, name);
-	return typeof watermark === 'number' ? watermark : undefined;
-}
-
 /** Where the log appends next: it moves with every append and rotation, and survives a restart. */
 function nextLogPosition(log: any): LogPosition | undefined {
 	try {

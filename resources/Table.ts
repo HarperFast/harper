@@ -246,7 +246,6 @@ import {
 	isNonHistoryType,
 	isAuditEntryWrite,
 	getAuditResumeFloor,
-	getLogPurgeWatermark,
 	isResumablePosition,
 	getDatabaseGeneration,
 	auditHistoryAbortMarked,
@@ -10540,49 +10539,21 @@ export function makeTable(options): TableResourceClass {
 						}
 						return false;
 					};
-					// The floor passes a start before the purge it announces, and that purge may remove only history this
-					// replay has read. A purge takes a prefix of a log's segments, so one that removed an unread entry of this
-					// node's own log also removed every entry read from it: at the end, a purge watermark below the highest
-					// key read means nothing unread is gone. That holds from the first entry read, so the watermark must be
-					// below the start then: a reader that opens after a purge starts past the gap without a sign. A peer's log
-					// is held to its start. The watermark decides whatever the floor says: a key can be minted ahead of the
-					// clock, so above the floor, and a reader reports no purge that reaches the end of its log. The floor is
-					// still held to the highest key read (it also rises for a purge yet to run). A log with no watermark has
-					// only the floor, which must then not have passed this node's start.
-					const ownStart = plan.startByLog.get('local');
-					let ownReached = ownStart;
-					let ownFirstRead = false;
-					let peerStart = Infinity;
-					for (const [name, start] of plan.startByLog) {
-						if (name !== 'local' && start > 0 && start < peerStart) peerStart = start;
-					}
-					const retained = (atEnd: boolean): boolean => {
-						const floor = getAuditResumeFloor(auditStore);
-						if (floor > peerStart || !plan!.retainsZeroStarts()) return false;
-						const pastOwnStart = ownStart > 0 && floor > ownStart;
-						if (pastOwnStart && floor > ownReached) return false;
-						if (!atEnd) return true;
-						for (const [name, start] of plan!.startByLog) {
-							const purgedThrough = getLogPurgeWatermark(auditStore, name);
-							if (purgedThrough === undefined) {
-								if (pastOwnStart && auditStore.logByName?.has(name)) return false;
-							} else if (start > 0) {
-								if (!(purgedThrough < (name === 'local' ? ownReached : start))) return false;
-							} else if (pastOwnStart && purgedThrough > 0) return false; // read from 0, and emptied by a purge
-						}
-						return true;
-					};
-					const unretained = () =>
-						refuse(
-							new ResumeHistoryUnavailableError(
-								'The history after a checkpoint boundary is no longer retained; resubscribe to resynchronize'
-							)
-						);
+					// a log is read in physical order, so an unread entry can carry any key above its start: a prune
+					// that passes the lowest certified start may have deleted one, whatever has been read so far
+					let lowestStart = Infinity;
+					for (const start of plan.startByLog.values()) if (start > 0 && start < lowestStart) lowestStart = start;
 					// admission facts are mutable: a revocation, hole or generation change bumps the epoch
-					const recheck = (range: any, atEnd = false): boolean => {
+					const recheck = (range: any): boolean => {
 						const unreadable = unreadableLogRefusal(range);
 						if (unreadable) return refuse(unreadable);
-						if (!retained(atEnd)) return unretained();
+						if (getAuditResumeFloor(auditStore) > lowestStart || !plan!.retainsZeroStarts()) {
+							return refuse(
+								new ResumeHistoryUnavailableError(
+									'The history after a checkpoint boundary is no longer retained; resubscribe to resynchronize'
+								)
+							);
+						}
 						const epoch = readOriginStateEpoch(auditStore.rootStore);
 						if (epoch !== admittedEpoch) {
 							try {
@@ -10603,13 +10574,6 @@ export function makeTable(options): TableResourceClass {
 					});
 					try {
 						for (const auditRecord of replayRange) {
-							if (ownStart > 0 && auditRecord.logName === 'local') {
-								if (!ownFirstRead) {
-									ownFirstRead = true;
-									if (getLogPurgeWatermark(auditStore, 'local') >= ownStart) return unretained();
-								}
-								if (auditRecord.txnLogKey > ownReached) ownReached = auditRecord.txnLogKey;
-							}
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
 								await rest();
@@ -10648,10 +10612,10 @@ export function makeTable(options): TableResourceClass {
 							if (!send(event)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								if (!recheck(replayRange)) return;
-								if ((await subscription.waitForDrain()) === false || !isActive()) return;
+								if ((await subscription.waitForDrain()) === false) return;
 							}
 						}
-						if (!recheck(replayRange, true)) return;
+						if (!recheck(replayRange)) return;
 					} finally {
 						state.dropDuringReplay = false;
 					}
