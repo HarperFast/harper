@@ -14,7 +14,7 @@ import { initLogBridge } from './logBridge.ts';
 // Internal classes and types
 export { ComponentStatus } from './ComponentStatus.ts';
 export { ComponentStatusRegistry, serializeStatusError } from './ComponentStatusRegistry.ts';
-export { CrossThreadStatusCollector, StatusAggregator, crossThreadCollector } from './crossThread.ts';
+export { CrossThreadStatusCollector, StatusAggregator, crossThreadCollector, failedLoads } from './crossThread.ts';
 export type { ComponentStatusMap } from './ComponentStatusRegistry.ts';
 
 // Registry singleton for internal use

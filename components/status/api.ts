@@ -153,6 +153,13 @@ export const lifecycle = {
 	},
 
 	/**
+	 * Mark a load complete while keeping a status the component reported during it
+	 */
+	completed(componentName: string): void {
+		componentStatusRegistry.markLoadSucceeded(componentName);
+	},
+
+	/**
 	 * Mark component as failed to load
 	 */
 	failed(componentName: string, error: Error | string, message?: string): void {

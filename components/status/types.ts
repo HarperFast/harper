@@ -47,6 +47,8 @@ export interface ComponentStatusSummary {
 	loadedAt?: Date;
 	/** How the status was set */
 	source?: ComponentStatusSource;
+	/** The loader's last load of this component failed */
+	loadFailed?: boolean;
 	/** Reports at this thread's current level; resets to 1 when the level changes. */
 	occurrenceCount?: number;
 }

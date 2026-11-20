@@ -608,6 +608,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 				.optional(),
 		}).required(),
 		status: Joi.object({
+			drainOnLoadFailure: boolean.strict().optional(),
 			healthChecks: Joi.object({
 				enabled: boolean.optional(),
 				intervalSeconds: number.min(1).max(2147483).optional(),

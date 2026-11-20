@@ -9,7 +9,8 @@ import { buildHierarchy, type StatusNode } from '../../components/status/hierarc
 import { restartNeeded } from '../../components/requestRestart.ts';
 import { sendItcEvent } from '../threads/itc.ts';
 import { onMessageByType, workers } from '../threads/manageThreads.ts';
-import { ITC_EVENT_TYPES, THREAD_TYPES } from '../../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, ITC_EVENT_TYPES, THREAD_TYPES } from '../../utility/hdbTerms.ts';
+import * as env from '../../utility/environment/environmentManager.ts';
 
 export { clearStatus as clear, getStatus as get, setStatus as set };
 
@@ -103,7 +104,7 @@ function serializeAbnormalities(
 }
 
 interface AllStatusSummary {
-	systemStatus: Promise<AsyncIterable<StatusRecord>>;
+	systemStatus: Promise<AsyncIterable<StatusRecord>> | StatusRecord[];
 	componentStatus: AggregatedComponentStatusWithName[];
 	components?: Record<string, StatusNode>;
 	restartRequired: boolean;
@@ -173,8 +174,12 @@ async function getAllStatus({ components, middleware }: Partial<StatusRequestBod
 	statusLogger.debug?.('getAllStatus');
 	const statusRecords = getStatusTable().search([]);
 
-	// Get aggregated component statuses from all threads
-	const aggregatedStatuses = await statusInternal.query.allThreads();
+	const threadStatuses = drainOnLoadFailure()
+		? await statusInternal.crossThreadCollector.collect(statusInternal.componentStatusRegistry)
+		: undefined;
+	const aggregatedStatuses = threadStatuses
+		? statusInternal.StatusAggregator.aggregate(threadStatuses)
+		: await statusInternal.query.allThreads();
 	const componentStatusArray: AggregatedComponentStatusWithName[] = Array.from(aggregatedStatuses.entries()).map(
 		([name, status]) => ({
 			name,
@@ -190,13 +195,92 @@ async function getAllStatus({ components, middleware }: Partial<StatusRequestBod
 	const restartRequired = restartNeeded();
 
 	const summary: AllStatusSummary = {
-		systemStatus: statusRecords as Promise<AsyncIterable<StatusRecord>>,
+		systemStatus: threadStatuses
+			? await systemStatusWithAvailability(
+					statusRecords,
+					loadFailureMessage(statusInternal.failedLoads(threadStatuses))
+				)
+			: (statusRecords as Promise<AsyncIterable<StatusRecord>>),
 		componentStatus: componentStatusArray,
 		restartRequired,
 	};
 	if (components === true) summary.components = buildHierarchy(aggregatedStatuses);
 	if (middleware === true) summary.middlewareChains = await getMiddlewareChains();
 	return summary;
+}
+
+function drainOnLoadFailure(): boolean {
+	return env.get(CONFIG_PARAMS.STATUS_DRAINONLOADFAILURE) === true;
+}
+
+function loadFailureMessage(failed: string[]): string | undefined {
+	return failed.length === 0 ? undefined : `Failed to load: ${failed.join(', ')}`;
+}
+
+function resolveAvailability(
+	stored: StatusRecord<'availability'> | undefined,
+	failureMessage: string | undefined
+): StatusRecord<'availability'> | undefined {
+	if (stored?.status === 'Unavailable' || !failureMessage) return stored;
+	return { id: 'availability', status: 'Unavailable', message: failureMessage };
+}
+
+async function systemStatusWithAvailability(
+	statusRecords: unknown,
+	failureMessage: string | undefined
+): Promise<StatusRecord[]> {
+	const records: StatusRecord[] = [];
+	let availabilityIndex = -1;
+	for await (const record of statusRecords as AsyncIterable<StatusRecord>) {
+		if (record.id === 'availability') availabilityIndex = records.length;
+		records.push(record);
+	}
+	const availability = resolveAvailability(records[availabilityIndex] as StatusRecord<'availability'>, failureMessage);
+	if (!availability) return records;
+	if (availabilityIndex === -1) records.push(availability);
+	else records[availabilityIndex] = availability;
+	return records;
+}
+
+const LOAD_FAILURES_TTL_MS = 2000;
+let loadFailures: { message: string | undefined; at: number } | undefined;
+let loadFailuresRefresh: Promise<string | undefined> | undefined;
+
+function refreshLoadFailures(): Promise<string | undefined> {
+	if (loadFailuresRefresh) return loadFailuresRefresh;
+	const refresh: Promise<string | undefined> = statusInternal.crossThreadCollector
+		.collect(statusInternal.componentStatusRegistry)
+		.then((threadStatuses) => {
+			const message = loadFailureMessage(statusInternal.failedLoads(threadStatuses));
+			if (loadFailuresRefresh === refresh) loadFailures = { message, at: performance.now() };
+			return message;
+		})
+		.finally(() => {
+			if (loadFailuresRefresh === refresh) loadFailuresRefresh = undefined;
+		});
+	loadFailuresRefresh = refresh;
+	return refresh;
+}
+
+// After the first collection a stale result is served while the next one runs, so a thread slow to
+// answer cannot stall a health probe.
+function currentLoadFailures(): string | undefined | Promise<string | undefined> {
+	if (!loadFailures) return refreshLoadFailures();
+	if (!loadFailuresRefresh && performance.now() - loadFailures.at > LOAD_FAILURES_TTL_MS)
+		refreshLoadFailures().catch((error) => statusLogger.warn?.('Could not refresh component load failures', error));
+	return loadFailures.message;
+}
+
+export function resetLoadFailuresCache(): void {
+	loadFailures = undefined;
+	loadFailuresRefresh = undefined;
+}
+
+// Reads every thread because get_status runs on the main thread, which never runs `handleApplication`.
+async function getAvailabilityStatus(): Promise<StatusRecord<'availability'> | undefined> {
+	const stored = (await getStatusTable().get('availability')) as StatusRecord<'availability'> | undefined;
+	if (stored?.status === 'Unavailable') return stored;
+	return resolveAvailability(stored, await currentLoadFailures());
 }
 
 function getStatus({
@@ -210,6 +294,7 @@ function getStatus({
 	}
 
 	statusLogger.debug?.('getStatus', id);
+	if (id === 'availability' && drainOnLoadFailure()) return getAvailabilityStatus() as Promise<StatusRecord>;
 	return getStatusTable().get(id) as unknown as Promise<StatusRecord>;
 }
 

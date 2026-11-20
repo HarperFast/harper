@@ -23,6 +23,8 @@ export class ComponentStatus {
 	public loadedAt?: Date;
 	/** How the status was set */
 	public source?: ComponentStatusSource;
+	/** The loader's last load of this component failed; kept across later reports until a load succeeds */
+	public loadFailed?: boolean;
 	/** Optional metadata, unpopulated by the log bridge; its deadlines are tracked separately. */
 	public expiresAt?: number;
 	/** Consecutive reports at the current level; resets to 1 on a level change. */
