@@ -64,6 +64,7 @@ In both cases the events in between are lost to this client, so it must load the
 ```javascript
 function subscribe() {
 	const eventSource = new EventSource('https://server/my-resource/');
+	// apply() ignores an event whose version is older than the record it holds
 	eventSource.onmessage = (event) => apply(JSON.parse(event.data));
 	// an empty id means the position is gone and the stream restarts from the current state
 	eventSource.addEventListener('harper-error', (event) => {
@@ -78,6 +79,8 @@ function subscribe() {
 ```
 
 On RocksDB a stream also ends with `harper-error` and an empty `id` when another node's data is copied into the database underneath it, since the copied records have no events to resume from.
+
+On LMDB a log position is not checked against the history the node still retains. A reconnect from a position older than that history gets `200` and the events that remain, with nothing to show that earlier ones are missing.
 
 ### In a Custom Resource
 
