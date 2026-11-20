@@ -1,0 +1,17 @@
+# The database a restart restore replaces. Declared by this component, so the component holds it open.
+type SafeModeLedger @table(database: "restore_safe_mode") @export {
+	id: ID @primaryKey
+	owner: String
+	secret: String
+}
+
+type SafeModeOther @table(database: "restore_safe_mode_other") @export {
+	id: ID @primaryKey
+	owner: String
+	secret: String
+}
+
+type SafeModeBoot @table(database: "restore_safe_mode_other") {
+	id: ID @primaryKey
+	at: Float
+}
