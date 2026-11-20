@@ -66,6 +66,8 @@ export class Request<Body = any> {
 	public authorize?: boolean;
 	public lastModified?: number;
 	public lastRefreshed?: number;
+	/** The `Last-Event-ID` header an event-stream client sends when it reconnects. */
+	declare public lastEventId?: string;
 
 	constructor(nodeRequest: IncomingMessage, nodeResponse?: NodeServerResponse) {
 		this.method = nodeRequest.method;

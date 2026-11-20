@@ -2056,6 +2056,8 @@ type ProgressState = {
 	highestSent: number;
 	/** The queue's own send(), which the tracking send() hands each event to. */
 	queueSend: (event: any) => boolean;
+	/** With `checkpointInterval`: sends a `checkpoint` event through the queue if a boundary advanced. */
+	emitCheckpoint?: () => void;
 };
 
 function isSubscriptionActive(subscription: any): boolean {
@@ -12940,6 +12942,7 @@ export function makeTable(options): TableResourceClass {
 		if (replicaEvictionArmed) armReplicaEviction();
 	}
 	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
+	tableSubscribeMethods.add(TableResource.prototype.subscribe);
 	return TableResource;
 	/**
 	 * Every subscription's live listener, one function for the table: the commit broadcast calls it with
@@ -13025,18 +13028,20 @@ export function makeTable(options): TableResourceClass {
 		subscription.checkpointFloor = (holds?: Map<number, number>) => subscriptionCheckpointFloor(subscription, holds);
 		if (request.checkpointInterval !== undefined) {
 			let lastEmitted: string | undefined;
-			const timer = setInterval(() => {
-				if (!isSubscriptionActive(subscription)) return clearInterval(timer);
+			progress.emitCheckpoint = () => {
 				try {
 					const checkpoint = subscription.checkpoint!();
 					if (!checkpoint) return;
 					const encoded = JSON.stringify(checkpoint);
 					if (encoded === lastEmitted) return;
-					lastEmitted = encoded;
-					subscription.send({ type: 'checkpoint', checkpoint });
+					if (subscription.send({ type: 'checkpoint', checkpoint })) lastEmitted = encoded;
 				} catch (error) {
 					failSubscription(subscription, error);
 				}
+			};
+			const timer = setInterval(() => {
+				if (!isSubscriptionActive(subscription)) return clearInterval(timer);
+				progress.emitCheckpoint!();
 			}, request.checkpointInterval);
 			timer.unref?.();
 			subscription.on('close', () => clearInterval(timer));
@@ -13111,6 +13116,8 @@ export function makeTable(options): TableResourceClass {
 		// a certified subscription takes every live entry from here: the key gate would drop a late
 		// lower-key commit that a floor then certifies as delivered
 		subscription.ungated = true;
+		// a consumer that drops before the first interval would otherwise hold no checkpoint
+		progress.emitCheckpoint?.();
 	}
 	function replayBoundaries(progress: ProgressState): Map<string, MemberBoundary> | undefined {
 		if (!progress.plan) return;
@@ -16713,6 +16720,11 @@ function returnTrue() {
 
 // Compiled from a schema @computed(from:) expression, so every thread, pool workers included, has it.
 const schemaExpressionResolvers = new WeakSet<Function>();
+const tableSubscribeMethods = new WeakSet<Function>();
+/** Whether this is a table's own `subscribe`, rather than an application's override of it. */
+export function isTableSubscribe(method: unknown): boolean {
+	return typeof method === 'function' && tableSubscribeMethods.has(method);
+}
 /**
  * Recreate a computed "from" function from a stored expression string. This is used when a table
  * is loaded from metadata on a thread that hasn't loaded the GraphQL schema, so the computed

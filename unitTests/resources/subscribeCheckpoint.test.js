@@ -425,6 +425,26 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			subscription.end();
 		});
 
+		it('delivers a checkpoint event as it goes live, without waiting out the interval', async () => {
+			const T = tableInOwnDatabase();
+			// floors are already published for a database another consumer tracks
+			const tracked = collector();
+			const tracking = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: tracked });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => tracked.values().includes('a'));
+			await certifiedCheckpoint(T, tracking);
+			const listener = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				checkpointInterval: 3_600_000,
+				listener,
+			});
+			await waitFor(() => listener.events.some((event) => event.type === 'checkpoint'), 10_000);
+			subscription.end();
+			tracking.end();
+		});
+
 		it('refuses another scope with 409, a malformed checkpoint with 400 and a foreign member set with 410', async () => {
 			const T = tableInOwnDatabase();
 			const Other = tableInOwnDatabase();

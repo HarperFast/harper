@@ -20,6 +20,7 @@ import fp from 'fastify-plugin';
 import { parseMultipartRequest, releaseUnreadUpload } from './multipartParser.ts';
 import { deserializeMultipartForm, deserializeMultipartStream } from './multipartForm.ts';
 import { onStartup } from '../../utility/lifecycle.ts';
+import { EVENT_STREAM_CURSOR, tableEventSerializer, voidsEventId, type EventStreamCursor } from './eventStreamIds.ts';
 let JSONStringify: typeof JSON.stringify = stringify;
 let JSONParse: typeof JSON.parse = parse;
 let COMPRESSION_THRESHOLD: number | undefined;
@@ -279,12 +280,22 @@ function serializeSSEFieldValue(value: any) {
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable, _response?: Response, request?: any) {
+		const cursor: EventStreamCursor | undefined = request?.[EVENT_STREAM_CURSOR];
 		// create a readable stream that we use to stream out events from our subscription
 		return errorFrameStream(
 			iterable,
-			this.serialize,
-			(error) => this.serialize({ event: 'harper-error', data: streamErrorRecord(error) }),
-			request?.method === 'GET'
+			cursor ? tableEventSerializer(iterable, cursor, this.serialize) : this.serialize,
+			(error) =>
+				this.serialize({
+					event: 'harper-error',
+					data: streamErrorRecord(error),
+					// An empty id clears the client's Last-Event-ID: reconnecting with a position that was just
+					// refused would replay to the same refusal on every retry.
+					id: cursor && voidsEventId(error) ? '' : undefined,
+				}),
+			request?.method === 'GET',
+			// a subscription delivers what it closes with as its last event
+			cursor && ((value) => value instanceof Error || (value !== undefined && Object.is(value, iterable.closedWith)))
 		);
 	},
 	serialize: function (message) {
@@ -1013,8 +1024,8 @@ function pipelineOnRead(source: Readable, transform: Transform): Transform {
 	return transform;
 }
 
-function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
-	const transformed = transformIterable(iterable, transform, serializeError, eager);
+function errorFrameStream(iterable, transform, serializeError, eager: boolean, isFailure?: (value: any) => boolean) {
+	const transformed = transformIterable(iterable, transform, serializeError, eager, isFailure);
 	const readable = Readable.from(transformed);
 	const startup: StreamStartup = transformed[streamStartup];
 	startup.cancel = () => readable.destroy();
@@ -1052,9 +1063,12 @@ export function waitForStreamStartup(stream) {
 	});
 }
 
-function transformIterable(iterable, transform, serializeError, eager) {
+// `isFailure` names the values that are the source's failure rather than an item: they end the stream as a thrown
+// error does, so one that is the first step is still an HTTP status.
+function transformIterable(iterable, transform, serializeError, eager, isFailure?: (value: any) => boolean) {
 	let iterator;
 	let terminal = false;
+	let cancelled = false;
 	let first = true;
 	let started = false;
 	let firstStep;
@@ -1096,6 +1110,16 @@ function transformIterable(iterable, transform, serializeError, eager) {
 			return handleError(error);
 		}
 	};
+	// without `isFailure` both are the plain steps, with no added promise
+	const failOnFailure = isFailure
+		? (step) => (!terminal && !step.done && isFailure(step.value) ? handleError(step.value) : step)
+		: undefined;
+	const transformRaw = failOnFailure
+		? (step) => {
+				const checked = failOnFailure(step);
+				return checked.then ? checked.then(transformStep) : transformStep(checked);
+			}
+		: transformStep;
 	const getRawNext = () => {
 		if (terminal) return { done: true };
 		let step;
@@ -1104,8 +1128,8 @@ function transformIterable(iterable, transform, serializeError, eager) {
 		} catch (error) {
 			return handleError(error);
 		}
-		if (step.then) return step.then(undefined, handleError);
-		return step;
+		if (step.then) return step.then(failOnFailure, handleError);
+		return failOnFailure ? failOnFailure(step) : step;
 	};
 	const getNext = () => {
 		if (terminal) return { done: true };
@@ -1115,8 +1139,8 @@ function transformIterable(iterable, transform, serializeError, eager) {
 		} catch (error) {
 			return handleError(error);
 		}
-		if (step.then) return step.then(transformStep, handleError);
-		return transformStep(step);
+		if (step.then) return step.then(transformRaw, handleError);
+		return transformRaw(step);
 	};
 	const start = () => {
 		if (started) return;
@@ -1143,7 +1167,8 @@ function transformIterable(iterable, transform, serializeError, eager) {
 		[Symbol.asyncIterator]() {
 			return {
 				next() {
-					if (terminal) return { done: true };
+					if (cancelled) return { done: true };
+					// an eager first step can fail before it is read, and its error frame is still owed
 					if (first) {
 						first = false;
 						start();
@@ -1152,9 +1177,11 @@ function transformIterable(iterable, transform, serializeError, eager) {
 						if (step.then) return step.then(transformStep);
 						return transformStep(step);
 					}
+					if (terminal) return { done: true };
 					return getNext();
 				},
 				return(value) {
+					cancelled = true;
 					terminal = true;
 					started = true;
 					if (!iterator)
