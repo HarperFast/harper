@@ -421,6 +421,8 @@ const ABSENT_ENTRY = Object.freeze({
 	},
 });
 const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
+// whether a source class has an instance allowStaleWhileRevalidate, looked up once: an outage serves many stale reads
+const sourceInstanceHooks = new WeakMap<object, boolean>();
 // `$distance` is left out: it can fall back to the record
 const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
@@ -2278,8 +2280,6 @@ export function makeTable(options): TableResourceClass {
 	let expirationWarningChecked = false;
 	let writerResidencyWarned = false;
 	let staleWithoutEvictionWarned = false;
-	let instanceHookSource: any;
-	let sourceHasInstanceHook = false;
 	let propertyResolvers: any;
 	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
@@ -14277,6 +14277,7 @@ export function makeTable(options): TableResourceClass {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
+				// a caller that passes no resource is forcing a load, so no hook is asked
 				const servesStale = Boolean(entry?.value && resource && allowsStale(resource, source, entry, id, context));
 				if (servesStale) {
 					let acquired: boolean;
@@ -14562,21 +14563,22 @@ export function makeTable(options): TableResourceClass {
 		}
 		return Boolean(allowed);
 	}
-	// resolved once per source: an outage serves many stale reads, and a class's methods are fixed by then
 	function sourceDefinesInstanceHook(source): boolean {
-		if (source !== instanceHookSource) {
-			instanceHookSource = source;
-			sourceHasInstanceHook = false;
+		let defines = sourceInstanceHooks.get(source);
+		if (defines === undefined) {
+			defines = false;
 			// own properties only: a resource prototype chain ends in a Proxy that answers any other lookup
 			for (let prototype = source.prototype; prototype && prototype !== Object.prototype;) {
-				if (Object.hasOwn(prototype, 'allowStaleWhileRevalidate')) {
-					sourceHasInstanceHook = typeof prototype.allowStaleWhileRevalidate === 'function';
+				const descriptor = Object.getOwnPropertyDescriptor(prototype, 'allowStaleWhileRevalidate');
+				if (descriptor) {
+					defines = typeof descriptor.value === 'function';
 					break;
 				}
 				prototype = Object.getPrototypeOf(prototype);
 			}
+			sourceInstanceHooks.set(source, defines);
 		}
-		return sourceHasInstanceHook;
+		return defines;
 	}
 	function isPrimaryKeyAttribute(attribute) {
 		return (

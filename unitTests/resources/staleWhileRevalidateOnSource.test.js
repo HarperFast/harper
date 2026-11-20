@@ -20,6 +20,7 @@ describe('Stale-while-revalidate hook on the source', function () {
 	let Evicting;
 	let TableDecides;
 	let SubclassAllows;
+	let HooklessClass;
 	let sourceCalls;
 	let pendingCalls;
 	let hookCalls;
@@ -45,6 +46,7 @@ describe('Stale-while-revalidate hook on the source', function () {
 		Warned = table({ table: 'SwrOnSourceWarned', database: 'test', attributes });
 		Evicting = table({ table: 'SwrOnSourceEvicting', database: 'test', attributes });
 		const Hookless = table({ table: 'SwrOnSourceHookless', database: 'test', attributes });
+		HooklessClass = table({ table: 'SwrOnSourceHooklessClass', database: 'test', attributes });
 		getDatabases();
 		class StalePolicy extends Resource {
 			allowStaleWhileRevalidate(entry, id) {
@@ -62,6 +64,13 @@ describe('Stale-while-revalidate hook on the source', function () {
 		Warned.sourcedFrom(Origin);
 		Evicting.sourcedFrom(Origin, { eviction: 60 });
 		Hookless.sourcedFrom({ get: heldGet });
+		HooklessClass.sourcedFrom(
+			class HooklessOrigin extends Resource {
+				get() {
+					return heldGet();
+				}
+			}
+		);
 		SubclassAllows = class extends Hookless {
 			allowStaleWhileRevalidate() {
 				return true;
@@ -151,6 +160,15 @@ describe('Stale-while-revalidate hook on the source', function () {
 		assert.equal(sourceCalls, 1);
 		pendingCalls[0].resolve({ id: 'declined', name: 'fresh declined' });
 		assert.equal((await reading).name, 'fresh declined');
+	});
+
+	it('waits for the source when neither the table nor the source class has a hook', async function () {
+		await expire(HooklessClass, 'hookless');
+		const reading = HooklessClass.get('hookless');
+		await delay(20);
+		assert.equal(sourceCalls, 1);
+		pendingCalls[0].resolve({ id: 'hookless', name: 'fresh hookless' });
+		assert.equal((await reading).name, 'fresh hookless');
 	});
 
 	it('lets a hook on the table class take precedence over the source', async function () {
