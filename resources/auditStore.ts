@@ -2487,18 +2487,18 @@ function readEntryInt(buffer: Uint8Array): number {
 	readPosition += 3;
 	return number;
 }
-/** Big-endian, bounded by the buffer. */
 export function entryUint32At(buffer: Uint8Array, position: number): number {
-	if (position < 0 || position + 4 > buffer.byteLength) {
+	// negated, so a NaN or fractional position fails too
+	if (!(position >= 0 && position + 4 <= buffer.byteLength && Number.isInteger(position))) {
 		throw new RangeError(`Error reading uint32 at position ${position} (byteLength ${buffer.byteLength})`);
 	}
 	return (
 		buffer[position] * 0x1000000 + ((buffer[position + 1] << 16) | (buffer[position + 2] << 8) | buffer[position + 3])
 	);
 }
-/** Big-endian, bounded by `limit`. Does not move the read position. */
+/** Bounded by `limit` and the buffer; does not move the read position. */
 export function entryFloat64At(buffer: Uint8Array, position: number, limit = buffer.byteLength): number {
-	if (position < 0 || position + 8 > limit) {
+	if (!(position >= 0 && position + 8 <= Math.min(limit, buffer.byteLength) && Number.isInteger(position))) {
 		throw new RangeError(`Error reading float64 at position ${position} (end ${limit})`);
 	}
 	FLOAT64_BYTES[0] = buffer[position];
@@ -2828,8 +2828,11 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		if (previousResidencySlot !== undefined) entry.previousResidencySlot = previousResidencySlot;
 		return entry;
 	} catch (error) {
-		// offsets, not the bytes: with an explicit end the buffer can hold other entries and their payloads
-		harperLogger.error('Reading audit entry error', error, { start, end, byteLength: buffer.byteLength });
+		// Offsets, not the bytes: with an explicit end the buffer can hold other entries and their payloads. Contained,
+		// so a throwing log sink cannot carry this out of the decode and stall the iteration running it.
+		try {
+			harperLogger.error('Reading audit entry error', error, { start, end, byteLength: buffer.byteLength });
+		} catch {}
 		return createCorruptAuditSentinel(buffer, start, end);
 	}
 }
@@ -2845,7 +2848,9 @@ function corruptEntry(buffer: Uint8Array, start: number, end: number | undefined
 		warnContained('Audit entry header begins with neither an action nor a previousVersion; treating as corrupt', {
 			firstByte,
 			// the 8 prefix bytes plus the action byte: the classifying bytes, stopping before the recordId
-			header: Buffer.from(buffer.subarray(start, Math.min(start + 9, buffer.byteLength))).toString('hex'),
+			header: Buffer.from(
+				buffer.subarray(start, Math.min(start + 9, end ?? buffer.byteLength, buffer.byteLength))
+			).toString('hex'),
 		});
 	}
 	return createCorruptAuditSentinel(buffer, start, end);

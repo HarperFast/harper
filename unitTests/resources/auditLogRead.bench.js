@@ -66,7 +66,7 @@ describe('audit log read benchmarks', function () {
 	});
 
 	function stage(name, run) {
-		run(); // warm
+		run();
 		run();
 		const times = [];
 		let count = 0;
@@ -144,8 +144,9 @@ describe('audit log read benchmarks', function () {
 		);
 	});
 
-	it('times whole notify passes for a subscription on another table', async () => {
-		// times the broadcast's own pass by wrapping the setImmediate that schedules it
+	it('times the notify passes a commit causes for a subscription on another table', async () => {
+		// times the broadcast's own passes by wrapping the setImmediate that schedules them; commits a pass finds
+		// together share it, so the result is pass CPU per committed write
 		const originalSetImmediate = global.setImmediate;
 		let passNs = 0,
 			passCount = 0;
@@ -161,22 +162,26 @@ describe('audit log read benchmarks', function () {
 				}
 			});
 		};
+		const drain = async () => {
+			for (let i = 0; i < 3; i++) await new Promise((resolve) => originalSetImmediate(resolve));
+		};
 		let subscription;
 		try {
 			subscription = addSubscription(A, 'x', () => {});
 			for (let i = 0; i < 500; i++) await B.put({ id: `warm-${i}`, name: 'w', count: i, tags: [], price: i });
-			// the last warm-up pass may still be queued: let it run before the counters reset
-			await new Promise((resolve) => originalSetImmediate(resolve));
-			await new Promise((resolve) => originalSetImmediate(resolve));
+			await drain();
 			passNs = 0;
 			passCount = 0;
 			for (let i = 0; i < PASSES; i++)
 				await B.put({ id: `device/${i % 1000}/timed-${i}`, name: 't', count: i, tags: ['a'], price: i });
-			await waitFor(() => passCount >= PASSES);
+			await drain();
 		} finally {
 			global.setImmediate = originalSetImmediate;
 			subscription?.end();
 		}
-		console.log('AUDIT_NOTIFY_PASS', JSON.stringify({ passCount, nsPerPass: Math.round(passNs / passCount) }));
+		console.log(
+			'AUDIT_NOTIFY_PASS',
+			JSON.stringify({ writes: PASSES, passCount, nsPerWrite: Math.round(passNs / PASSES) })
+		);
 	});
 });
