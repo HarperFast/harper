@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
-const { getAuditFloor } = require('#src/resources/auditStore');
+const { getAuditFloor, getDatabaseGeneration, raiseAuditFloor } = require('#src/resources/auditStore');
 const { Transaction } = require('@harperfast/rocksdb-js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -42,11 +42,11 @@ describe('A publish older than its record', function () {
 		T0 = caseBase += 100_000;
 	});
 
-	function apply(key, nodeId, writes) {
+	function apply(key, nodeId, writes, Table = Topics) {
 		const context = { source: {}, sourceApply: true, timestamp: key };
 		return transaction(context, async () => {
 			for (const write of writes) {
-				const resource = await Topics.getResource(write.id, context);
+				const resource = await Table.getResource(write.id, context);
 				const options = { isNotification: true, nodeId, version: write.version ?? key };
 				if (write.message) resource._writePublish(write.id, write.message, options);
 				else if (write.remove) await resource._writeDelete(write.id, options);
@@ -80,6 +80,98 @@ describe('A publish older than its record', function () {
 	}
 
 	describe('the record value', () => {
+		onRocksDB('keeps unaudited CRDT receipts after a burst of late publishes', async () => {
+			const NoAudit = table({
+				table: 'NoAuditLatePublishes',
+				database: 'noAuditLatePublishes',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+				audit: false,
+			});
+			const origin = getIdOfRemoteNode('no-audit-late-publish-origin', NoAudit.auditStore);
+			await apply(at(30_000), origin, [{ id: 'counter', record: { id: 'counter', n: 0 } }], NoAudit);
+			const increment = [{ id: 'counter', record: { n: { __op__: 'add', value: 1 } }, fullUpdate: false }];
+			for (let n = 1; n <= 3; n++) await apply(at(n * 1000), origin, increment, NoAudit);
+			const receipts = NoAudit.primaryStore.getEntry('counter').receivedIdentityRefs;
+			assert.ok(receipts.length >= 3, 'precondition: several CRDT identities are recorded');
+			for (let n = 1; n <= 24; n++) await apply(at(5000 + n), origin, [{ id: 'counter', message: { n } }], NoAudit);
+			const afterPublish = NoAudit.primaryStore.getEntry('counter');
+			await apply(at(1000), origin, increment, NoAudit);
+			assert.deepEqual(
+				{ receipts: afterPublish.receivedIdentityRefs, n: (await NoAudit.get('counter')).n },
+				{ receipts, n: 3 },
+				'late publishes must preserve every receipt and a redelivery must not increment again'
+			);
+			assert.equal(afterPublish.additionalAuditRefs, undefined);
+		});
+
+		onRocksDB('keeps an unaudited late publish retry free of audit refs', async () => {
+			const NoAudit = table({
+				table: 'NoAuditPublishRetry',
+				database: 'noAuditPublishRetry',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+				audit: false,
+			});
+			const origin = getIdOfRemoteNode('no-audit-retry-origin', NoAudit.auditStore);
+			await apply(at(30_000), origin, [{ id: 'counter', record: { id: 'counter', n: 0 } }], NoAudit);
+			const increment = [{ id: 'counter', record: { n: { __op__: 'add', value: 1 } }, fullUpdate: false }];
+			await apply(at(1000), origin, increment, NoAudit);
+			const context = { source: {}, sourceApply: true, timestamp: at(5000) };
+			let native, receipts, publishWrite;
+			await transaction(context, async () => {
+				const resource = await NoAudit.getResource('counter', context);
+				await resource._writePublish(
+					'counter',
+					{ n: 'late' },
+					{ isNotification: true, nodeId: origin, version: at(5000) }
+				);
+				publishWrite = context.transaction.writes.find((write) => write.key === 'counter');
+				await context.transaction.save(publishWrite);
+				native = context.transaction.transaction;
+				await apply(at(40_000), origin, increment, NoAudit);
+				receipts = NoAudit.primaryStore.getEntry('counter').receivedIdentityRefs;
+			});
+			assert.ok(native.retries > 0, 'precondition: the publish really retried against the concurrent add');
+			assert.notStrictEqual(publishWrite.loggedBase, undefined, 'precondition: the retry retains its logged base');
+			assert.notStrictEqual(native.relogOnRetry, true, 'precondition: the retry uses the existing log entry');
+			const entry = NoAudit.primaryStore.getEntry('counter');
+			assert.equal(entry.additionalAuditRefs, undefined);
+			assert.deepEqual(entry.receivedIdentityRefs, receipts);
+			await apply(at(1000), origin, increment, NoAudit);
+			assert.equal((await NoAudit.get('counter')).n, 2);
+		});
+
+		onRocksDB('keeps an unaudited publish head locator without adding late refs', async () => {
+			const NoAudit = table({
+				table: 'NoAuditPublishHead',
+				database: 'noAuditPublishHead',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+				audit: false,
+			});
+			const origin = getIdOfRemoteNode('no-audit-head-origin', NoAudit.auditStore);
+			await apply(at(40_007), origin, [{ id: 'topic', message: { n: 1 }, version: at(40_000) }], NoAudit);
+			const refs = NoAudit.primaryStore.getEntry('topic').additionalAuditRefs;
+			assert.deepEqual(refs, [{ version: at(40_007), nodeId: origin }]);
+			await apply(at(50_000), origin, [{ id: 'topic', message: { n: 2 }, version: at(30_000) }], NoAudit);
+			assert.deepEqual(NoAudit.primaryStore.getEntry('topic').additionalAuditRefs, refs);
+			const events = [];
+			const subscription = await NoAudit.subscribe({
+				id: 'topic',
+				startTime: at(39_000),
+				omitCurrent: true,
+				listener: (event) => events.push(event),
+			});
+			try {
+				assert.equal(NoAudit.audit, true, 'subscribe enables auditing');
+				assert.deepEqual(
+					messagesOf(events),
+					[1],
+					'the head stays discoverable; unaudited late messages are not replayed'
+				);
+			} finally {
+				subscription.end();
+			}
+		});
+
 		it('keeps the newer put when a late put arrives (control, no publish)', async () => {
 			await put('c1', 'B', at(200));
 			await put('c1', 'C', at(170));
@@ -233,6 +325,92 @@ describe('A publish older than its record', function () {
 			await apply(at(40_000), peerB, [{ id: 's7', message: { n: 2 }, version: at(20_000) }]);
 			assert.equal(recordState('s7').version, 30_000);
 			assert.deepEqual(await backfill('s7', { startTime: at(35_000) }), [2]);
+		});
+
+		onRocksDB('keeps the requested live gate after replaying only a late ref', async () => {
+			await publish('gate', 3, at(30_000));
+			await apply(at(40_000), peerB, [{ id: 'gate', message: { n: 2 }, version: at(20_000) }]);
+			const events = [];
+			const subscription = await Topics.subscribe({
+				id: 'gate',
+				startTime: at(35_000),
+				omitCurrent: true,
+				listener: (event) => events.push(event),
+			});
+			try {
+				assert.deepEqual(messagesOf(events), [2], 'the retained late message is replayed');
+				await publish('gate', 'too-old', at(32_000));
+				await publish('gate', 'end', at(90_000));
+				await waitFor(() => events.some((event) => event.value?.n === 'end'), { timeout: 5000 });
+				assert.deepEqual(messagesOf(events), [2, 'end']);
+			} finally {
+				subscription.end();
+			}
+		});
+
+		onRocksDB('resumes from a retained late ref when the older head was pruned', async () => {
+			const Retained = table({
+				table: 'RetainedLatePublish',
+				database: 'retainedLatePublish',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+				audit: true,
+			});
+			const headOrigin = getIdOfRemoteNode('retained-head', Retained.auditStore);
+			const lateOrigin = getIdOfRemoteNode('retained-late', Retained.auditStore);
+			await apply(at(30_000), headOrigin, [{ id: 'topic', message: { n: 3 } }], Retained);
+			await apply(at(40_000), lateOrigin, [{ id: 'topic', message: { n: 2 }, version: at(20_000) }], Retained);
+			const store = Retained.auditStore;
+			raiseAuditFloor(store, at(35_000));
+			store.rootStore.flushSync();
+			await waitFor(
+				() => {
+					store.rootStore.purgeLogs({ name: 'retained-head', before: at(35_000) });
+					return !store.getSync(at(30_000), Retained.tableId, 'topic', headOrigin, true);
+				},
+				{ timeout: 5000 }
+			);
+			assert.ok(store.getSync(at(40_000), Retained.tableId, 'topic', lateOrigin, true));
+			const events = [];
+			const request = {
+				id: 'topic',
+				startTime: at(35_000),
+				databaseGeneration: getDatabaseGeneration(store).id,
+				omitCurrent: true,
+				listener: (event) => events.push(event),
+			};
+			const subscription = await Retained.subscribe({ ...request });
+			try {
+				assert.equal(await subscription.resumeVerified, true, events.map(String).join(', '));
+				assert.equal(subscription.closed, false);
+				assert.deepEqual(messagesOf(events), [2]);
+			} finally {
+				subscription.end();
+			}
+			raiseAuditFloor(store, at(45_000));
+			store.rootStore.flushSync();
+			await waitFor(
+				() => {
+					store.rootStore.purgeLogs({ name: 'retained-late', before: at(45_000) });
+					return !store.getSync(at(40_000), Retained.tableId, 'topic', lateOrigin, true);
+				},
+				{ timeout: 5000 }
+			);
+			events.length = 0;
+			const missing = await Retained.subscribe({ ...request });
+			try {
+				assert.equal(await missing.resumeVerified, false, 'a missing late ref above startTime still refuses');
+				assert.equal(events[0]?.constructor.name, 'ResumeHistoryUnavailableError');
+			} finally {
+				missing.end();
+			}
+		});
+
+		onRocksDB('replays late refs carried only by a retained head below startTime', async () => {
+			await publish('head-refs', 0, at(30_000));
+			await apply(at(50_000), peerB, [{ id: 'head-refs', message: { n: 1 }, version: at(20_000) }]);
+			await publish('head-refs', 3, at(32_000));
+			await apply(at(60_000), peerB, [{ id: 'head-refs', message: { n: 2 }, version: at(25_000) }]);
+			assert.deepEqual(await backfill('head-refs', { startTime: at(40_000) }), [1, 2]);
 		});
 
 		onRocksDB('backfills a late message from a transaction that also writes thousands of other records', async () => {

@@ -23,7 +23,7 @@ Declarations compile to `fullTextIndexes`, never `attributes` (no stored value).
 - LMDB merges keep the older version (`noAuditOutOfOrderPatch.test.js`). Duplicates use committed identity; only minted keys mark a retry's own staging (`readsOwnStaging`, `replicatedRetryDuplicate.test.js`).
 - RocksDB's watermark stalls at uncommitted entries, so ref walks pass `followingCommittedRef`. Gap: history walks follow one chain, plus late messages (#3977).
 - A replicated publish is skipped only on its logged entry (`isMessageLogged`), at or below the record's version, with abort markers on; in history older than the process only a record vouches for it (`replicatedPublishRedelivery.test.js`).
-- **A record's version never moves back**: a message older than it keeps the version and refs its entry, which history walks reach by `isLateEntry` (`latePublishVersionRegression.test.js`).
+- **A record's version never moves back**: older messages keep it; only audited RocksDB tables reference them for history. Unaudited late publishes keep existing locators and receipts, without late-message replay (`isLateEntry`, `latePublishVersionRegression.test.js`).
 - `FULL_WRITE_HEAD`: the head replaced the record and is unchanged since; any other write clears it (`fullWriteHead.test.js`).
 - Named-log misses never fall back to `local`; `local` reads filter by `nodeId` (`auditLog.test.js`).
 - Equal versions tie only within an origin, else node name orders (`precedesAudited`, `equalVersionOriginOrder.test.js`).
@@ -51,7 +51,7 @@ Each element gets its own target (`elementTargetFactory`) without `checkPermissi
 
 ## Database generation and resumable positions
 
-**No readable copy keeps its source's generation; a collection position resumes only in the current generation, with a finite cursor >= the resume floor** (`isResumablePosition`, RocksDB); below the floor a single-record resume needs a complete history walk. Rechecked at each replay yield (pruning raises the floor before deleting); checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, commits below a recorded position (#2928; `databaseGeneration.test.js`).
+**No readable copy keeps its source's generation; a collection position resumes only in the current generation, with a finite cursor >= the resume floor** (`isResumablePosition`, RocksDB); below the floor a single-record resume needs a complete history walk. Rechecked at each replay yield (pruning raises the floor before deleting); checkpoint only after `resumeVerified`. Gaps: filesystem copies, base-copy back-fill before `reload`, late refs hidden by a pruned head at or below a single-record cursor, commits below a recorded position (#2928; `databaseGeneration.test.js`).
 
 ## Origin-closed timestamp floor
 
