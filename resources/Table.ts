@@ -421,7 +421,7 @@ const ABSENT_ENTRY = Object.freeze({
 	},
 });
 const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
-// whether a source class has an instance allowStaleWhileRevalidate, looked up once: an outage serves many stale reads
+// looked up once per source class: an outage serves many stale reads
 const sourceInstanceHooks = new WeakMap<object, boolean>();
 // `$distance` is left out: it can fall back to the record
 const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
@@ -10314,10 +10314,16 @@ export function makeTable(options): TableResourceClass {
 					if (!(entry.metadataFlags & (INVALIDATED | EVICTED)) || context?.onlyIfCached) return entry;
 					const id = entry.key;
 					if (hasSourceGet && !context?.noCache && !needsResidentLoad(entry, context)) {
-						const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(id)?.value;
+						let staleEntry = entry;
+						let record = entry.deref ? entry.deref() : entry.value;
+						if (record == null) {
+							// a collected lazy record: the hook reads the stale record from the entry it is given
+							staleEntry = primaryStore.getEntry(id);
+							record = staleEntry?.value;
+						}
 						if (
 							record &&
-							allowsStale(staleResource(resourceClass, context, entry, record), source, entry, id, context)
+							allowsStale(staleResource(resourceClass, context, entry, record), source, staleEntry, id, context)
 						) {
 							(staleKept ??= new WeakSet()).add(entry);
 							return selectionStopped ? SKIP : entry;
