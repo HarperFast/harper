@@ -46,19 +46,19 @@ jobs:
           # Effective path list mirrors the paths the trigger used to filter on:
           #   resources/** server/** dataLayer/** components/** config/**
           #   package.json package-lock.json
+          relevant=false
           if echo "$changed" | grep -Eq '^(resources|server|dataLayer|components|config)/|^package(-lock)?\.json$'; then
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            relevant=true
             echo "Adapter-relevant paths changed -> integration suite will run."
           else
-            echo "relevant=false" >> "$GITHUB_OUTPUT"
             echo "No adapter-relevant paths changed -> integration suite will be skipped."
           fi
-          # The ecommerce-template job also runs when its own test or this workflow changes.
-          if echo "$changed" | grep -Eq '^(resources|server|dataLayer|components|config)/|^package(-lock)?\.json$|^integrationTests/components/ecommerce-template\.test\.ts$|^\.github/workflows/integration-tests-nextjs\.yml$'; then
-            echo "ecommerce=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ecommerce=false" >> "$GITHUB_OUTPUT"
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+          ecommerce=$relevant
+          if echo "$changed" | grep -Eq '^integrationTests/components/ecommerce-template\.test\.ts$|^\.github/workflows/integration-tests-nextjs\.yml$'; then
+            ecommerce=true
           fi
+          echo "ecommerce=$ecommerce" >> "$GITHUB_OUTPUT"
 
   # Heavy path: only when relevant files changed. Runs and reports informationally --
   # this is not wired to a required gate job, so it never blocks a harper merge.
@@ -161,9 +161,9 @@ jobs:
           path: integrationTests/test-results/
           retention-days: 7
 
-  # Deploys a pinned harper-ecommerce-template commit to this PR's harper and builds it with Next.js inside
-  # the running instance. Advisory for the same reason as the job above: it pulls the template from GitHub
-  # and its dependencies from npm at test time, so upstream releases and outages can fail it.
+  # Advisory for the same reason as the job above: integrationTests/components/ecommerce-template.test.ts
+  # pulls the template from GitHub and its dependencies from npm at test time, so upstream releases and
+  # outages can fail it.
   ecommerce-template:
     name: Ecommerce template on this PR's harper
     needs: changes
@@ -176,7 +176,9 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
+          package-manager-cache: false
+          check-latest: true
 
       - name: Install dependencies
         timeout-minutes: 6
