@@ -15,7 +15,6 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 
 describe('connectionRateLimit', () => {
-	/** Runs `body` with harperLogger.warn recording into the array it is given. */
 	function withWarnings(body) {
 		const originalWarn = harperLogger.warn;
 		const warnings = [];
@@ -198,7 +197,10 @@ describe('connectionRateLimit', () => {
 				const client = connect(server.address().port, '127.0.0.1');
 				// a FIN would end the stream cleanly; only an RST surfaces as ECONNRESET
 				client.resume();
-				const [error] = await once(client, 'error');
+				const [error] = await Promise.race([
+					once(client, 'error'),
+					new Promise((resolve) => client.on('close', () => resolve([{ code: 'closed without an RST' }]))),
+				]);
 				assert.equal(error.code, 'ECONNRESET');
 				assert.equal(connections, 0);
 			} finally {

@@ -56,7 +56,6 @@ suite('MQTT connection rate limit per source address', { skip: skipSuite }, (ctx
 		await teardownHarper(ctx);
 	});
 
-	/** The TLS handshake's outcome on 8883, with the error code when it fails. */
 	function tlsOutcome(): Promise<string> {
 		return new Promise((resolvePromise) => {
 			const socket = tlsConnect({ host: ctx.harper.hostname, port: 8883, rejectUnauthorized: false });

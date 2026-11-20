@@ -12,7 +12,7 @@ type ConnectionAdmission = (address: string | undefined) => boolean;
 
 const PRUNE_INTERVAL_MS = 10_000;
 // no single accept pays for sweeping the whole map
-const PRUNE_STEP = 64;
+const PRUNE_STEP = 16;
 // Past this many tracked addresses a new one is admitted untracked: memory stays bounded, no tracked bucket is
 // evicted (eviction would refund it), and a flood of distinct sources cannot starve the legitimate new ones the
 // way a shared overflow bucket would. A per-address limit cannot bound a distributed flood in any case.
@@ -59,12 +59,14 @@ export function createConnectionRateLimiter(
 			pendingReport ??= setTimeout(
 				() => {
 					pendingReport = undefined;
-					report(clock());
+					if (dropped > 0 || untracked > 0) report(clock());
 				},
 				REPORT_INTERVAL_MS - (now - lastReportAt)
 			).unref();
 			return;
 		}
+		clearTimeout(pendingReport);
+		pendingReport = undefined;
 		lastReportAt = now;
 		if (dropped > 0) {
 			harperLogger.warn?.(
