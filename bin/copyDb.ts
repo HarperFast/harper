@@ -39,6 +39,8 @@ import {
 	clearNextEncoding,
 	lastMetadata,
 	METADATA,
+	VERSION_REGRESSED,
+	VERSION_REUSED,
 } from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
@@ -1053,7 +1055,9 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 							if (version) {
 								setNextEncoding(
 									version,
-									entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
+									// these speak only for readers of the source store, and RocksDB full-text search and
+									// history carry would treat every migrated row that had one as unverifiable
+									(entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0) & ~(VERSION_REUSED | VERSION_REGRESSED),
 									entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
 									entryNodeId ?? sourceMeta?.nodeId ?? -1,
 									entryResidencyId ?? sourceMeta?.residencyId ?? 0,

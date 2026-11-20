@@ -1087,14 +1087,13 @@ export function recordUpdater(
 		// A write that does not advance the version stores a new value under one a reader may already hold. A
 		// rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
 		if (record !== undefined) {
-			const existingFlags = existingEntry?.metadataFlags ?? 0;
-			if (options?.unchangedValue) metadataInNextEncoding |= existingFlags & (VERSION_REUSED | VERSION_REGRESSED);
-			else if (
-				!isRocksDB &&
-				(existingFlags & VERSION_REGRESSED || (existingEntry?.version != null && newVersion < existingEntry.version))
-			)
+			if (options?.unchangedValue)
+				metadataInNextEncoding |= existingEntry?.metadataFlags & (VERSION_REUSED | VERSION_REGRESSED);
+			else if (versionIsReused(newVersion, existingEntry))
+				metadataInNextEncoding |=
+					!isRocksDB && newVersion < existingEntry.version ? VERSION_REUSED | VERSION_REGRESSED : VERSION_REUSED;
+			else if (!isRocksDB && existingEntry?.metadataFlags & VERSION_REGRESSED)
 				metadataInNextEncoding |= VERSION_REUSED | VERSION_REGRESSED;
-			else if (versionIsReused(newVersion, existingEntry)) metadataInNextEncoding |= VERSION_REUSED;
 		}
 		const putOptions: {
 			version: number;
