@@ -179,6 +179,13 @@ if (
 export const FULL_WRITE_HEAD = 0x40000;
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
+// The stored record is null: a delete's tombstone or any other record-less row. For a reader of the value at fixed
+// offsets (a compaction filter); the encoder derives it from the record it encodes and decode hides it, so no
+// caller sets or sees it. Rows written before it carry none. Undefined in the audit flag word, where a build
+// without the decode mask mirrors it (harper-pro's copy frames).
+export const NULL_RECORD = 0x80000;
+if (VERSION_REUSED === NULL_RECORD)
+	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with NULL_RECORD`);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
@@ -496,6 +503,7 @@ export class RecordEncoder extends StructonEncoder {
 				if (blobsWereEncoded) metadata |= HAS_BLOBS;
 				if (auditRefsToEncode > 0) metadata |= HAS_ADDITIONAL_AUDIT_REFS;
 				if (metadata >= 0) {
+					metadata = record === null ? metadata | NULL_RECORD : metadata & ~NULL_RECORD;
 					dataView.setUint32(position, metadata | (ACTION_32_BIT << 24)); // use the extended action byte
 					position += 4;
 					if (expiresAt >= 0) {
@@ -700,7 +708,7 @@ export class RecordEncoder extends StructonEncoder {
 					if (nextByte === ACTION_32_BIT) {
 						const dataView =
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-						metadataFlags = dataView.getUint32(position);
+						metadataFlags = dataView.getUint32(position) & ~NULL_RECORD;
 						position += 4;
 					} else {
 						metadataFlags = nextByte | (buffer[position + 1] << 5);

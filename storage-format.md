@@ -16,6 +16,12 @@ The primary `0x200` flag and audit `0x200` flag have different meanings. A copy 
 
 Attribute slots require a decoder that understands the added fields. Downgrade requires a preactivation backup and can lose subsequent writes. Key-derived conversion needs no record rewrite and supports previous-binary rollback with equivalent legacy schema and placement function. Wire fallback strips the new audit fields and sends connection-only residency references; it does not make the old local decoder compatible.
 
+## Primary-record null marker
+
+`NULL_RECORD` (`0x80000` in the primary metadata word) is set on a row whose encoded value is null: a delete's tombstone, a message published to an id that holds no record, an invalidation that keeps no fields. On RocksDB the word is the big-endian uint32 at value offset 8, so the marker is `(byte[8] == 0x0E) && (byte[9] & 0x08)` whatever optional fields follow the word. It exists for a reader that sees only fixed offsets of the value, such as a compaction filter.
+
+The record encoder derives the bit from the value on every write and clears it on a non-null value; the decoder removes it from the flags it reports, so no writer sets it and no reader sees it. It states that the value is null, not that the row may be removed: `INVALIDATED`, `REPLICA` and `EVICTED` are in the same word, and retention is the reader's rule. A row written before the bit existed, or by a build without it, has a null value and no marker. A build without it also reports the bit in decoded flags, and a copy sender that mirrors those flags puts it in the audit flag word, where `0x80000` is left unassigned for that reason. LMDB rows carry the bit in the same word; nothing reads it there.
+
 ## Transaction Log Entry Structure
 
 Each transaction log entry consists of two parts:
