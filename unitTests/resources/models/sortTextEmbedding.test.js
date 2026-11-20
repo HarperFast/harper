@@ -846,79 +846,81 @@ describe('Vector search by sort text on an @embed attribute', () => {
 		});
 	});
 
-	describe('row errors', () => {
-		let Tagged;
-		const sort = { attribute: 'embedding', text: 'red fruit' };
-		const select = ['content', 'tag'];
-		// an LMDB search's transaction is not reachable from the context once its scope is released
-		const observesSnapshot = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
-		// a native index answers asynchronously, so a row error rejects a step rather than throwing from it
-		const native = observesSnapshot && Boolean(getPlaneBinding());
-		before(async () => {
-			Tagged = table({
-				table: 'SortTextFailingRowDoc',
-				database: 'test',
-				audit: native,
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'content', type: 'String' },
-					{ name: 'tag', computed: true },
-					{
-						name: 'embedding',
-						type: 'Array',
-						embed: { source: 'content', model: 'doc-model' },
-						indexed: native ? { type: 'HNSW', nativePlane: true } : { type: 'HNSW', distance: 'cosine' },
-					},
-				],
+	// a JS index answers synchronously, so a row error throws from a step; a native one rejects the step
+	for (const native of [false, true])
+		describe(`row errors on a ${native ? 'native' : 'JS'} index`, () => {
+			let Tagged;
+			const sort = { attribute: 'embedding', text: 'red fruit' };
+			const select = ['content', 'tag'];
+			// an LMDB search's transaction is not reachable from the context once its scope is released
+			const observesSnapshot = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+			before(async function () {
+				if (native && !(observesSnapshot && getPlaneBinding())) this.skip(); // the native plane needs RocksDB
+				Tagged = table({
+					table: native ? 'SortTextFailingRowNativeDoc' : 'SortTextFailingRowDoc',
+					database: 'test',
+					audit: native,
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'content', type: 'String' },
+						{ name: 'tag', computed: true },
+						{
+							name: 'embedding',
+							type: 'Array',
+							embed: { source: 'content', model: 'doc-model' },
+							indexed: native ? { type: 'HNSW', nativePlane: true } : { type: 'HNSW', distance: 'cosine' },
+						},
+					],
+				});
+				Tagged.updatedAttributes();
+				Tagged.setComputedAttribute('tag', (record) => {
+					if (record.content === 'banana') throw new Error('tag failed');
+					return 'ok';
+				});
+				for (const [index, content] of Object.keys(DOCUMENT_VECTORS).entries())
+					await Tagged.put(index + 1, { content });
+				const current = { attribute: 'embedding', target: [1, 0, 0], maxIndexLagMilliseconds: 0 };
+				await waitFor(async () => {
+					try {
+						return (await fromAsync(Tagged.search({ sort: current }))).length === 4;
+					} catch (error) {
+						if (error.statusCode === 503) return false;
+						throw error;
+					}
+				});
 			});
-			Tagged.updatedAttributes();
-			Tagged.setComputedAttribute('tag', (record) => {
-				if (record.content === 'banana') throw new Error('tag failed');
-				return 'ok';
-			});
-			for (const [index, content] of Object.keys(DOCUMENT_VECTORS).entries()) await Tagged.put(index + 1, { content });
-			const current = { attribute: 'embedding', target: [1, 0, 0], maxIndexLagMilliseconds: 0 };
-			await waitFor(async () => {
-				try {
-					return (await fromAsync(Tagged.search({ sort: current }))).length === 4;
-				} catch (error) {
-					if (error.statusCode === 503) return false;
-					throw error;
+
+			it('reports a recovered row and keeps the search, and its snapshot, for the rows after it', async () => {
+				const recovered = [];
+				const context = recordingContext();
+				const iterator = Tagged.search({ sort, select }, context)
+					.mapError((error) => {
+						recovered.push(error);
+						return error;
+					})
+					[Symbol.asyncIterator]();
+				const rows = [];
+				let heldAfterTheError;
+				for (let step; !(step = await iterator.next()).done;) {
+					rows.push(step.value);
+					if (recovered.length === 1) heldAfterTheError ??= context.storeLinks().some((txn) => txn.readTxnsUsed > 0);
 				}
+				assert.equal(rows.length, 4);
+				assert.equal(recovered.length, 1);
+				assert.match(recovered[0].message, /tag failed/);
+				if (observesSnapshot) assert.equal(heldAfterTheError, true, 'the snapshot outlives a recovered row');
+			});
+
+			it('releases the snapshot of a search a row error ends', async () => {
+				const context = recordingContext();
+				await assert.rejects(fromAsync(Tagged.search({ sort, select }, context)), /tag failed/);
+				const links = context.storeLinks();
+				if (observesSnapshot) assert.ok(links.length > 0);
+				await waitFor(() => links.every((txn) => !txn.readTxnsUsed), {
+					message: () => `read snapshot still held (${links.map((txn) => txn.readTxnsUsed)})`,
+				});
 			});
 		});
-
-		it('reports a recovered row and keeps the search, and its snapshot, for the rows after it', async () => {
-			const recovered = [];
-			const context = recordingContext();
-			const iterator = Tagged.search({ sort, select }, context)
-				.mapError((error) => {
-					recovered.push(error);
-					return error;
-				})
-				[Symbol.asyncIterator]();
-			const rows = [];
-			let heldAfterTheError;
-			for (let step; !(step = await iterator.next()).done;) {
-				rows.push(step.value);
-				if (recovered.length === 1) heldAfterTheError ??= context.storeLinks().some((txn) => txn.readTxnsUsed > 0);
-			}
-			assert.equal(rows.length, 4);
-			assert.equal(recovered.length, 1);
-			assert.match(recovered[0].message, /tag failed/);
-			if (observesSnapshot) assert.equal(heldAfterTheError, true, 'the snapshot outlives a recovered row');
-		});
-
-		it('releases the snapshot of a search a row error ends', async () => {
-			const context = recordingContext();
-			await assert.rejects(fromAsync(Tagged.search({ sort, select }, context)), /tag failed/);
-			const links = context.storeLinks();
-			if (observesSnapshot) assert.ok(links.length > 0);
-			await waitFor(() => links.every((txn) => !txn.readTxnsUsed), {
-				message: () => `read snapshot still held (${links.map((txn) => txn.readTxnsUsed)})`,
-			});
-		});
-	});
 
 	describe('return shapes', () => {
 		it('a counted page is a Promise, as without text', async () => {
