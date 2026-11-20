@@ -93,6 +93,7 @@ import {
 	instanceWriteInSyncCommitHook,
 	commitHooksRunning,
 	registerStoreTable,
+	requestAbortedError,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -454,8 +455,8 @@ const MAX_EXACT_COUNT_MS = 1_000;
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
 /**
- * Whether a search answers with a counted page (a Promise) rather than a stream. The window is bounded as well as
- * the page, since a huge offset would otherwise postpone the exact guardrail until that offset was scanned.
+ * The window is bounded as well as the page, since a huge offset would otherwise postpone the exact guardrail until
+ * that offset was scanned.
  */
 function countPageApplies(target: RequestTarget): boolean {
 	if (!target.count) return false;
@@ -1030,17 +1031,21 @@ function deferredIterator(
 				}
 			);
 		},
-		// a close never waits for the search to open (a model can ignore the abort); what opens later is closed then
+		// a model can ignore the abort, so a close closes what opens later rather than waiting for it
 		return(value?: any) {
 			returned = true;
 			finish();
-			iteratorPromise?.then((iterator) => iterator.return?.(value)).catch(() => {});
+			getIterator()
+				.then((iterator) => iterator.return?.(value))
+				.catch(() => {});
 			return Promise.resolve({ value, done: true });
 		},
 		throw(error: any) {
 			returned = true;
 			finish();
-			iteratorPromise?.then((iterator) => iterator.return?.()).catch(() => {});
+			getIterator()
+				.then((iterator) => iterator.return?.())
+				.catch(() => {});
 			return Promise.reject(error);
 		},
 	};
@@ -8862,6 +8867,16 @@ export function makeTable(options): TableResourceClass {
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 			const sort = typeof target.sort === 'object' && target.sort;
 			if (sort && (sort.text !== undefined || sort.next)) {
+				const { conditions } = target;
+				// a one-shot conditions iterator is read once, for the preflight and the search alike
+				if (
+					conditions &&
+					typeof conditions === 'object' &&
+					!Array.isArray(conditions) &&
+					conditions[Symbol.iterator] &&
+					Object.isExtensible(target)
+				)
+					target.conditions = Array.from(conditions);
 				const embedding = embedSortTexts(sort, context, target, target.id ?? this.getId());
 				if (embedding) return this.#searchAfterEmbedding(target, embedding, context, rowFilter);
 			}
@@ -8882,6 +8897,9 @@ export function makeTable(options): TableResourceClass {
 					(sort) => (discarded ? [] : search(sort)),
 					(error) => {
 						if (discarded) return [];
+						// a client that disconnected is answered with nothing, so its abort is not a server fault
+						if (context?.signal?.aborted && error === context.signal.reason)
+							throw Object.assign(requestAbortedError(), { cause: error });
 						throw error;
 					}
 				)
@@ -14449,7 +14467,9 @@ export function makeTable(options): TableResourceClass {
 		for (let order = sort; order; order = order.next) {
 			if (order.text !== undefined) continue;
 			if (fullTextFieldNames) assertRecordField(order.attribute);
-			if (typeof order.attribute === 'string') indices[order.attribute]?.customIndex?.exactDistance?.(order, null);
+			const attribute =
+				Array.isArray(order.attribute) && order.attribute.length === 1 ? order.attribute[0] : order.attribute;
+			if (typeof attribute === 'string') indices[attribute]?.customIndex?.exactDistance?.(order, null);
 		}
 		const { conditions } = target;
 		// conditions read from an iterator (a one-shot one, or the target itself) are left for the search to read

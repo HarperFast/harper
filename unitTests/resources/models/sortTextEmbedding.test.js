@@ -337,7 +337,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.deepEqual(await query({ attribute: 'embedding', text: 'red fruit' }), byTarget);
 		});
 
-		it('refuses an undefined or missing sort head before a text sort after it calls the model', () => {
+		it('refuses an undefined or missing sort head ahead of a text sort before it calls the model', () => {
 			const next = { attribute: 'embedding', text: 'red fruit' };
 			assert.throws(
 				() => Doc.search({ sort: { attribute: 'nope', next } }),
@@ -360,19 +360,25 @@ describe('Vector search by sort text on an @embed attribute', () => {
 		});
 
 		it('refuses a vector clause without a target ahead of a text clause before it calls the model', () => {
-			assert.throws(
-				() => Doc.search({ sort: { attribute: 'embedding', next: { attribute: 'embedding', text: 'red fruit' } } }),
-				(error) => error.statusCode === 400 && /target vector must be provided/.test(error.message)
-			);
+			for (const attribute of ['embedding', ['embedding']])
+				assert.throws(
+					() => Doc.search({ sort: { attribute, next: { attribute: 'embedding', text: 'red fruit' } } }),
+					(error) => error.statusCode === 400 && /target vector must be provided/.test(error.message)
+				);
 			assert.equal(embed.calls.length, 0);
 		});
 
 		it('refuses a text sort beside a condition on its attribute, which would order the search instead', () => {
 			const threshold = { attribute: 'embedding', comparator: 'lt', value: 2, target: [1, 0, 0] };
-			assert.throws(
-				() => Doc.search({ conditions: [threshold], sort: { attribute: 'embedding', text: 'red fruit' } }),
-				(error) => error.statusCode === 400 && /can not be combined with a condition on "embedding"/.test(error.message)
-			);
+			function* once() {
+				yield threshold;
+			}
+			for (const conditions of [[threshold], once()])
+				assert.throws(
+					() => Doc.search({ conditions, sort: { attribute: 'embedding', text: 'red fruit' } }),
+					(error) =>
+						error.statusCode === 400 && /can not be combined with a condition on "embedding"/.test(error.message)
+				);
 			assert.equal(embed.calls.length, 0);
 		});
 
@@ -771,8 +777,9 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				release();
 			}
 			await rejectsWith(fromAsync(results), (error) => {
-				assert.equal(error.name, 'AbortError');
-				assert.notEqual(error.statusCode, 502);
+				// the client disconnected: 499, answered with nothing and logged as no server fault
+				assert.equal(error.statusCode, 499);
+				assert.equal(error.cause?.name, 'AbortError');
 			});
 		});
 
@@ -819,7 +826,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			} finally {
 				release();
 			}
-			await rejectsWith(fromAsync(results), (error) => assert.equal(error.name, 'AbortError'));
+			await rejectsWith(fromAsync(results), (error) => assert.equal(error.statusCode, 499));
 			assert.deepEqual(
 				context.installed.slice(installedBeforeAbort).filter((txn) => !isReleasedTransaction(txn)),
 				[]
