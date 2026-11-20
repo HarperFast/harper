@@ -363,6 +363,27 @@ describe('Test configValidator module', () => {
 			}
 		});
 
+		it('accepts mqtt.network.connectionRateLimit with a non-negative perSecond and a burst of at least one', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			const network = (connectionRateLimit) => ({ port: 1883, securePort: 8883, connectionRateLimit });
+			for (const limit of [{}, { perSecond: 0 }, { perSecond: 0.5 }, { perSecond: 5, burst: 20 }]) {
+				config.mqtt = { network: network(limit) };
+				assert.strictEqual(configValidator(config).error, undefined, JSON.stringify(limit));
+			}
+			for (const [limit, message] of [
+				[{ perSecond: -1 }, "perSecond' must be greater than or equal to 0"],
+				[{ perSecond: 5, burst: 0 }, "burst' must be greater than or equal to 1"],
+				[{ perSecond: 'fast' }, "perSecond' must be a number"],
+				[{ perSeconds: 5 }, "perSeconds' is not allowed"],
+			]) {
+				config.mqtt = { network: network(limit) };
+				assert.match(
+					configValidator(config).error?.message,
+					new RegExp(`mqtt\\.network\\.connectionRateLimit\\.${message}`)
+				);
+			}
+		});
+
 		it('accepts a well-formed sql config section', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.sql = { engine: 'new', allowFullScan: true, maxSortRows: 500, maxHashRows: 500 };

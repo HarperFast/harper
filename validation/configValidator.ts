@@ -580,6 +580,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 						required: boolean.optional(),
 					}),
 				]),
+				connectionRateLimit: Joi.object({
+					perSecond: number.min(0).optional(),
+					burst: number.min(1).optional(),
+				})
+					.unknown(false)
+					.optional(),
 			}).required(),
 			webSocket: boolean.optional(),
 			requireAuthentication: boolean.optional(),

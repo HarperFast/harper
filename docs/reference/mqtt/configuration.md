@@ -44,6 +44,41 @@ Default: `8883`
 
 The port for secure MQTT connections (MQTTS). Uses the `tls` configuration for certificates. See [TLS Configuration](../http/tls.md) for certificate setup.
 
+## Connection Rate Limit
+
+### `mqtt.network.connectionRateLimit`
+
+<VersionBadge version="v5.5.0" />
+
+Type: `object`
+
+Default: none (no limit)
+
+Limits how fast one source address can open new MQTT connections on `mqtt.network.port` and `mqtt.network.securePort`. A connection over the limit is reset as soon as it is accepted: on `securePort` that is before the TLS handshake, and on both ports it is before any MQTT packet is read or logged. Use it to keep a flood of connections from a few addresses, such as bots that are refused at authentication anyway, from consuming the CPU each handshake and rejection costs.
+
+| Property    | Type   | Default     | Description                                                                                                  |
+| ----------- | ------ | ----------- | ------------------------------------------------------------------------------------------------------------ |
+| `perSecond` | number | `0`         | New connections per second admitted from one source address once its burst is spent. `0` disables the limit. |
+| `burst`     | number | `perSecond` | Connections one source address can open back to back before `perSecond` applies. Never less than `1`.        |
+
+```yaml
+mqtt:
+  network:
+    connectionRateLimit:
+      perSecond: 5
+      burst: 20
+```
+
+- **Per source address.** IPv4 addresses are limited individually, an IPv4-mapped IPv6 address counts as its IPv4 address, and IPv6 addresses share one limit per `/64`. The TCP and TLS ports share one allowance.
+- **Per worker thread.** Each thread keeps its own counts. Where every thread accepts on the MQTT ports (Linux), one address's connections are spread across threads, so the node-wide limit is up to `perSecond` (and `burst`) times the thread count.
+- **Behind a proxy.** On the Unix domain socket mirror a fronting proxy connects to (`tls.unixDomainSockets`), the limit applies to the client address the proxy forwards in its PROXY protocol header. The proxy has already completed TLS there, so the limit saves the MQTT and authentication work, not the handshake. A connection with no forwarded address is not limited.
+- **Many clients behind one address.** Devices behind one NAT share an address and so share its allowance. Set `burst` high enough for them to reconnect together after an outage.
+- **Many distinct addresses.** Each thread tracks up to 100,000 addresses. Past that, connections from new addresses are admitted without a limit, so a flood from many addresses cannot lock out legitimate new clients. No per-address limit can stop a flood spread across that many addresses; that needs a limit in front of Harper.
+- **Bun.** Under the Bun runtime, a connection over the limit on `securePort` is closed after the TLS handshake rather than before it.
+- **Not covered.** MQTT over WebSockets (`mqtt.webSocket`) is served by the HTTP port and is not limited by this setting.
+
+Dropped connections are not logged one by one. Each thread logs a warning with the count at most once a minute, and another when it has admitted connections from new addresses past its address limit.
+
 ## WebSocket
 
 ### `mqtt.webSocket`

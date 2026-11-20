@@ -34,6 +34,7 @@
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { TokenBucket, sourceAddressKey } from '../../server/serverHelpers/tokenBucket.ts';
 
 export interface RateLimitConfig {
 	perToolPerSecond: number;
@@ -181,64 +182,13 @@ export function resolveClientIdentity(
 	return clientIp || undefined;
 }
 
-/**
- * Token bucket: starts full at `burst`, refills at `rate` tokens per
- * second up to `burst`, drained by `tryConsume(1)`. Stateless aside from
- * `tokens` + `lastRefill`, both updated on every consume call.
- */
-class TokenBucket {
-	private rate: number;
-	private burst: number;
-	private tokens: number;
-	private lastRefill: number;
-	constructor(rate: number, burst: number) {
-		this.rate = rate;
-		this.burst = burst;
-		this.tokens = burst;
-		this.lastRefill = now();
-	}
-	tryConsume(): boolean {
-		this.refill();
-		if (this.tokens >= 1) {
-			this.tokens -= 1;
-			return true;
-		}
-		return false;
-	}
-	/** Apply a changed rate/burst without refunding tokens already spent. */
-	reconfigure(rate: number, burst: number): void {
-		if (rate === this.rate && burst === this.burst) return;
-		this.refill();
-		this.rate = rate;
-		this.burst = burst;
-		this.tokens = Math.min(this.tokens, burst);
-	}
-	isFull(): boolean {
-		this.refill();
-		return this.tokens >= this.burst;
-	}
-	/**
-	 * Refill-and-check, without consuming. Used by `tryAdmit` to peek each
-	 * bucket so denial doesn't burn a token in *another* bucket.
-	 */
-	hasToken(): boolean {
-		this.refill();
-		return this.tokens >= 1;
-	}
-	private refill(): void {
-		const t = now();
-		const elapsedSec = (t - this.lastRefill) / 1000;
-		this.lastRefill = t;
-		if (elapsedSec <= 0) return;
-		this.tokens = Math.min(this.burst, this.tokens + elapsedSec * this.rate);
-	}
-}
-
 /** Lazily monkey-patchable for tests. */
 let now: () => number = () => Date.now();
 export function _setClockForTest(fn: (() => number) | undefined): void {
 	now = fn ?? (() => Date.now());
 }
+// every bucket reads `now` through this, so a test clock set after a bucket exists still applies
+const clock = () => now();
 
 interface SessionState {
 	perTool: Map<string, TokenBucket>;
@@ -329,7 +279,7 @@ function getOrCreate(sessionId: string, profile: 'operations' | 'application'): 
 		const config = configFor(profile);
 		s = {
 			perTool: new Map(),
-			sessionRate: new TokenBucket(config.sessionPerSecond, config.sessionPerSecond),
+			sessionRate: new TokenBucket(config.sessionPerSecond, config.sessionPerSecond, clock),
 			inFlight: 0,
 			config,
 			profile,
@@ -350,7 +300,7 @@ function getOrCreateClient(
 	const key = `${profile}\n${identity}`;
 	let c = clients.get(key);
 	if (!c) {
-		c = { rate: new TokenBucket(config.perClientPerSecond, config.perClientBurst), lastSeen: now() };
+		c = { rate: new TokenBucket(config.perClientPerSecond, config.perClientBurst, clock), lastSeen: now() };
 		clients.set(key, c);
 	} else {
 		c.lastSeen = now();
@@ -400,7 +350,7 @@ export function tryAdmit(
 	}
 	let toolBucket = state.perTool.get(toolName);
 	if (!toolBucket) {
-		toolBucket = new TokenBucket(state.config.perToolPerSecond, state.config.perToolBurst);
+		toolBucket = new TokenBucket(state.config.perToolPerSecond, state.config.perToolBurst, clock);
 		state.perTool.set(toolName, toolBucket);
 	}
 	const clientState =
@@ -452,11 +402,11 @@ export function tryAdmitInitialize(
 	}
 	const t = now();
 	pruneInitializeClients(state, config, t);
-	let key = clientIdentity ? initializeIdentity(clientIdentity) : SHARED_IDENTITY;
+	let key = clientIdentity ? sourceAddressKey(clientIdentity) : SHARED_IDENTITY;
 	if (!state.clients.has(key) && state.clients.size >= MAX_INITIALIZE_IDENTITIES) key = SHARED_IDENTITY;
 	let c = state.clients.get(key);
 	if (!c) {
-		c = { rate: new TokenBucket(config.initializePerSecond, config.initializeBurst), config };
+		c = { rate: new TokenBucket(config.initializePerSecond, config.initializeBurst, clock), config };
 		state.clients.set(key, c);
 	} else {
 		reconfigureInitializeClient(c, config);
@@ -464,41 +414,4 @@ export function tryAdmitInitialize(
 	return c.rate.tryConsume()
 		? { allowed: true }
 		: { allowed: false, retryAfterSeconds: Math.ceil(1 / config.initializePerSecond) };
-}
-
-function initializeIdentity(identity: string): string {
-	const address = identity
-		.replace(/^\[|\](:\d+)?$/g, '')
-		.split('%')[0]
-		.toLowerCase();
-	const ipv4WithPort = address.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
-	if (ipv4WithPort) return ipv4WithPort[1];
-	if (!address.includes(':')) return address;
-	const groups = expandIpv6(address);
-	if (!groups) return address;
-	if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
-		return `${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`;
-	}
-	return `${groups
-		.slice(0, 4)
-		.map((group) => group.toString(16))
-		.join(':')}::/64`;
-}
-
-function expandIpv6(address: string): number[] | undefined {
-	const dotted = address.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-	if (dotted) {
-		const [, prefix, a, b, c, d] = dotted;
-		address = `${prefix}${((+a << 8) | +b).toString(16)}:${((+c << 8) | +d).toString(16)}`;
-	}
-	const [head, tail, extra] = address.split('::');
-	if (extra !== undefined) return undefined;
-	const headGroups = head ? head.split(':') : [];
-	const tailGroups = tail ? tail.split(':') : [];
-	const fill = tail === undefined ? 0 : 8 - headGroups.length - tailGroups.length;
-	if (fill < 0) return undefined;
-	const groups = [...headGroups, ...Array(fill).fill('0'), ...tailGroups].map((group) =>
-		/^[0-9a-f]{1,4}$/.test(group) ? parseInt(group, 16) : NaN
-	);
-	return groups.length === 8 && groups.every((group) => group >= 0) ? groups : undefined;
 }

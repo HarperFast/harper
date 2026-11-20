@@ -898,6 +898,8 @@ export const CONFIG_PARAMS = {
 	MQTT_NETWORK_MTLS_REQUIRED: 'mqtt_network_mtls_required',
 	MQTT_NETWORK_MTLS_CERTIFICATEAUTHORITY: 'mqtt_network_mtls_certificateAuthority',
 	MQTT_NETWORK_MTLS_USER: 'mqtt_network_mtls_user',
+	MQTT_NETWORK_CONNECTIONRATELIMIT_PERSECOND: 'mqtt_network_connectionRateLimit_perSecond',
+	MQTT_NETWORK_CONNECTIONRATELIMIT_BURST: 'mqtt_network_connectionRateLimit_burst',
 	MQTT_REQUIREAUTHENTICATION: 'mqtt_requireAuthentication',
 	MQTT_LOGGING_LEVEL: 'mqtt_logging_level',
 	MQTT_LOGGING_PATH: 'mqtt_logging_path',
