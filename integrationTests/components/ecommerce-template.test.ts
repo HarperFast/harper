@@ -57,6 +57,7 @@ async function prepareTemplateArchive(workDir: string): Promise<string> {
 
 // Under HARPER_UWS_HTTP the plugin's guard sees a response but `request._nodeRequest` is null, so every
 // Next.js page 500s ("Cannot read properties of null (reading 'url')") while REST still serves.
+// https://github.com/HarperFast/nextjs/issues/86
 const skipSuite = process.platform === 'win32' || !!process.env.HARPER_UWS_HTTP;
 
 suite('Component: ecommerce-template', { skip: skipSuite }, (ctx: ContextWithHarper) => {
