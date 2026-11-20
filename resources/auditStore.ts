@@ -2449,6 +2449,76 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	}
 }
 
+/**
+ * Header reads for readAuditEntry, indexing the entry's bytes: a DataView per entry cost more than the header read,
+ * and a cached one would pin a purged log file's mapping. Reads stop at the entry's end (the buffer's when none is
+ * given), so a short frame followed by another entry throws into readAuditEntry's catch instead of reading the next
+ * entry's bytes.
+ */
+let readPosition = 0;
+let readLimit = 0;
+const FLOAT64_BYTES = new Uint8Array(8);
+const FLOAT64_VIEW = new DataView(FLOAT64_BYTES.buffer);
+function entryOverrun(needed: number): RangeError {
+	return new RangeError(
+		`Audit entry read of ${needed} byte(s) at position ${readPosition} passes its end ${readLimit}`
+	);
+}
+function readEntryInt(buffer: Uint8Array): number {
+	if (readPosition >= readLimit) throw entryOverrun(1);
+	const first = buffer[readPosition++];
+	if (first < 0x80) return first;
+	if (first < 0xc0) {
+		if (readPosition >= readLimit) throw entryOverrun(1);
+		return ((first & 0x3f) << 8) | buffer[readPosition++];
+	}
+	if (first === 0xff) {
+		if (readPosition + 4 > readLimit) throw entryOverrun(4);
+		const number =
+			buffer[readPosition] * 0x1000000 +
+			((buffer[readPosition + 1] << 16) | (buffer[readPosition + 2] << 8) | buffer[readPosition + 3]);
+		readPosition += 4;
+		return number;
+	}
+	if (readPosition + 3 > readLimit) throw entryOverrun(3);
+	const number =
+		((first & 0x3f) << 24) | (buffer[readPosition] << 16) | (buffer[readPosition + 1] << 8) | buffer[readPosition + 2];
+	readPosition += 3;
+	return number;
+}
+/** Big-endian, bounded by the buffer. */
+export function entryUint32At(buffer: Uint8Array, position: number): number {
+	if (position + 4 > buffer.byteLength) {
+		throw new RangeError(`Error reading uint32 at position ${position} (byteLength ${buffer.byteLength})`);
+	}
+	return (
+		buffer[position] * 0x1000000 + ((buffer[position + 1] << 16) | (buffer[position + 2] << 8) | buffer[position + 3])
+	);
+}
+/** Big-endian, bounded by `limit`. Does not move the read position. */
+export function entryFloat64At(buffer: Uint8Array, position: number, limit = buffer.byteLength): number {
+	if (position + 8 > limit) {
+		throw new RangeError(`Error reading float64 at position ${position} (end ${limit})`);
+	}
+	FLOAT64_BYTES[0] = buffer[position];
+	FLOAT64_BYTES[1] = buffer[position + 1];
+	FLOAT64_BYTES[2] = buffer[position + 2];
+	FLOAT64_BYTES[3] = buffer[position + 3];
+	FLOAT64_BYTES[4] = buffer[position + 4];
+	FLOAT64_BYTES[5] = buffer[position + 5];
+	FLOAT64_BYTES[6] = buffer[position + 6];
+	FLOAT64_BYTES[7] = buffer[position + 7];
+	return FLOAT64_VIEW.getFloat64(0);
+}
+function readEntryFloat64(buffer: Uint8Array): number {
+	const value = entryFloat64At(buffer, readPosition, readLimit);
+	readPosition += 8;
+	return value;
+}
+
+// undefined is a decoded id (a corrupt one), so an unread id needs its own marker
+const UNDECODED = Symbol('undecoded');
+
 class AuditEntry {
 	#buffer: Uint8Array;
 	#start: number;
@@ -2460,6 +2530,7 @@ class AuditEntry {
 	#usernameEnd: number;
 	#value: any;
 	#action: number;
+	#recordId: any;
 	declare residencySlot?: number;
 	declare previousResidencySlot?: number;
 	declare type: string;
@@ -2525,21 +2596,23 @@ class AuditEntry {
 		this.#recordIdEnd = recordIdEnd;
 		this.#usernameStart = usernameStart;
 		this.#usernameEnd = usernameEnd;
+		this.#recordId = UNDECODED;
 	}
 	get recordId() {
-		// The recordId is decoded lazily and lives outside readAuditEntry's try/catch,
-		// so a corrupt recordId region would otherwise escape as an uncaught RangeError
-		// on property access. Catch and return undefined; callers already treat missing
-		// recordId as a skip-eligible entry.
+		// Kept after the first read: the broadcast route, an index runner and a replication sender each read it more
+		// than once. It lives outside readAuditEntry's try/catch, so a corrupt recordId region would otherwise
+		// escape as an uncaught RangeError on property access. Catch and return undefined; callers already treat
+		// missing recordId as a skip-eligible entry.
+		if (this.#recordId !== UNDECODED) return this.#recordId;
 		const buffer = this.#buffer;
 		const recordIdStart = this.#recordIdStart;
 		const recordIdEnd = this.#recordIdEnd;
 		try {
 			// use a subarray to protect against the underlying buffer being modified
-			return readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd);
+			return (this.#recordId = readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd));
 		} catch (error) {
 			harperLogger.warn('Failed to decode audit recordId; treating as corrupt', error);
-			return undefined;
+			return (this.#recordId = undefined);
 		}
 	}
 	getBinaryRecordId() {
@@ -2562,7 +2635,10 @@ class AuditEntry {
 		// On a recovered entry this drops the unannounced prefix, so a replication sender —
 		// which strips by the same leading-0x42 test and frames by encoded.length — forwards a
 		// clean entry instead of passing the same misparse to the next hop.
-		return this.#entryStart ? this.#buffer.subarray(this.#entryStart, this.#end) : this.#buffer;
+		// Bounded by the end too, so the first of several entries in one buffer is not framed with the ones after it.
+		return this.#entryStart || this.#end !== undefined
+			? this.#buffer.subarray(this.#entryStart, this.#end)
+			: this.#buffer;
 	}
 	get size() {
 		// only the recovered prefix is discounted; every other case keeps its existing basis
@@ -2625,15 +2701,13 @@ class AuditEntry {
  */
 export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): AuditRecord {
 	try {
-		const decoder =
-			(buffer as any).decoder ||
-			((buffer as any).decoder = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-		decoder.position = start;
+		readPosition = start;
+		readLimit = end === undefined || end > buffer.byteLength ? buffer.byteLength : end;
 		let previousVersion;
 		let entryStart = start;
 		const firstByte = buffer[start];
 		if (firstByte === PREVIOUS_VERSION_FIRST_BYTE) {
-			previousVersion = decoder.readFloat64();
+			previousVersion = readEntryFloat64(buffer);
 		} else if (ACTION_FIRST_BYTE[firstByte] !== 1) {
 			// Written before the writer enforced the leading-0x42 contract (harper#2247): the field is
 			// physically here but does not announce itself, so the action sits 8 bytes further on.
@@ -2644,40 +2718,45 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			}
 			// > 1 is exactly what the superseded writer's own guard could emit, the tightest available
 			// bound on "these bytes really are an old previousVersion"
-			if (!(decoder.getFloat64(start) > 1)) return corruptEntry(buffer, start, end, firstByte);
-			entryStart = decoder.position = start + 8;
+			if (!(entryFloat64At(buffer, start, readLimit) > 1)) return corruptEntry(buffer, start, end, firstByte);
+			entryStart = readPosition = start + 8;
 			// The value itself is dropped, not reported. It cannot lead with 0x42 (that is the branch
 			// above), and audit keys carry the same constraint, so it could never have addressed a
 			// retrievable entry; reporting it would only feed an unrepresentable value back to
 			// createAuditEntry through the resolveRecord re-mint in RecordEncoder, which now rejects it.
 		}
-		const action = decoder.readInt();
+		const action = readEntryInt(buffer);
 		if (entryStart !== start && !isDecodableAction(action)) {
 			return corruptEntry(buffer, start, end, firstByte);
 		}
-		const nodeId = decoder.readInt();
-		const tableId = decoder.readInt();
+		const nodeId = readEntryInt(buffer);
+		const tableId = readEntryInt(buffer);
 		if (entryStart !== start && !warnedRecoveredTables.has(tableId)) {
 			warnedRecoveredTables.add(tableId);
+			// a log sink that reads an audit entry while it handles this would move the shared cursor
+			const position = readPosition;
+			const limit = readLimit;
 			warnContained('Audit entry carries an unannounced previousVersion field; recovering its field offsets', {
 				tableId,
 				firstByte,
 			});
+			readPosition = position;
+			readLimit = limit;
 		}
-		let length = decoder.readInt();
+		let length = readEntryInt(buffer);
 		// A corrupt length field (e.g., a 0xff-prefixed uint32) would otherwise push
-		// decoder.position hundreds of megabytes past the buffer; the next readFloat64
+		// the read position hundreds of megabytes past the entry; the next float64 read
 		// then throws with the bogus position in the message. Failing fast here keeps
 		// the throw inside this try/catch so we surface a sentinel instead.
-		if (length < 0 || decoder.position + length > buffer.byteLength) {
+		if (length < 0 || readPosition + length > readLimit) {
 			throw new RangeError(
-				`Audit entry recordId length ${length} exceeds remaining buffer (position ${decoder.position}, byteLength ${buffer.byteLength})`
+				`Audit entry recordId length ${length} exceeds remaining entry (position ${readPosition}, end ${readLimit})`
 			);
 		}
-		const recordIdStart = decoder.position;
-		const recordIdEnd = (decoder.position += length);
+		const recordIdStart = readPosition;
+		const recordIdEnd = (readPosition += length);
 		// TODO: Once we support multiple format versions, we can conditionally read the version (and the previousResidencyId)
-		const version = decoder.readFloat64();
+		const version = readEntryFloat64(buffer);
 		let residencyId,
 			previousResidencyId,
 			residencySlot,
@@ -2686,42 +2765,43 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			originatingOperation,
 			previousAdditionalAuditRefs;
 		if (action & HAS_CURRENT_RESIDENCY_ID) {
-			residencyId = decoder.readInt();
+			residencyId = readEntryInt(buffer);
 		}
 		if (action & HAS_PREVIOUS_RESIDENCY_ID) {
-			previousResidencyId = decoder.readInt();
+			previousResidencyId = readEntryInt(buffer);
 		}
-		if (action & HAS_CURRENT_RESIDENCY_SLOT) residencySlot = decoder.readInt();
-		if (action & HAS_PREVIOUS_RESIDENCY_SLOT) previousResidencySlot = decoder.readInt();
+		if (action & HAS_CURRENT_RESIDENCY_SLOT) residencySlot = readEntryInt(buffer);
+		if (action & HAS_PREVIOUS_RESIDENCY_SLOT) previousResidencySlot = readEntryInt(buffer);
 		if (residencySlot > 65535 || previousResidencySlot > 65535) throw new RangeError('Invalid audit sharding slot');
 		if (action & HAS_EXPIRATION_EXTENDED_TYPE) {
-			expiresAt = decoder.readFloat64();
+			expiresAt = readEntryFloat64(buffer);
 		}
 		if (action & HAS_ORIGINATING_OPERATION) {
-			const operationId = decoder.readInt();
+			const operationId = readEntryInt(buffer);
 			originatingOperation = ORIGINATING_OPERATIONS[operationId];
 		}
 		if (action & HAS_ADDITIONAL_AUDIT_REFS) {
-			const count = buffer[decoder.position++];
+			if (readPosition >= readLimit) throw entryOverrun(1);
+			const count = buffer[readPosition++];
 			if (count > 0) {
 				previousAdditionalAuditRefs = [];
 				for (let i = 0; i < count; i++) {
-					const refVersion = decoder.readFloat64();
-					const refNodeId = decoder.readInt();
+					const refVersion = readEntryFloat64(buffer);
+					const refNodeId = readEntryInt(buffer);
 					// a build that predates the kind bit copies a record's identity refs here as they read
 					if (refNodeId < RECEIVED_IDENTITY_REF)
 						previousAdditionalAuditRefs.push({ version: refVersion, nodeId: refNodeId });
 				}
 			}
 		}
-		length = decoder.readInt();
-		if (length < 0 || decoder.position + length > buffer.byteLength) {
+		length = readEntryInt(buffer);
+		if (length < 0 || readPosition + length > readLimit) {
 			throw new RangeError(
-				`Audit entry username length ${length} exceeds remaining buffer (position ${decoder.position}, byteLength ${buffer.byteLength})`
+				`Audit entry username length ${length} exceeds remaining entry (position ${readPosition}, end ${readLimit})`
 			);
 		}
-		const usernameStart = decoder.position;
-		const usernameEnd = (decoder.position += length);
+		const usernameStart = readPosition;
+		const usernameEnd = (readPosition += length);
 		const entry = new AuditEntry(
 			buffer,
 			start,
@@ -2794,7 +2874,7 @@ function createCorruptAuditSentinel(buffer: Uint8Array, start: number, end: numb
 		originatingOperation: undefined,
 		previousAdditionalAuditRefs: undefined,
 		get encoded() {
-			return start ? buffer.subarray(start, end) : buffer;
+			return start || end !== undefined ? buffer.subarray(start, end) : buffer;
 		},
 		get size() {
 			return start !== undefined && end !== undefined ? end - start : buffer.byteLength;

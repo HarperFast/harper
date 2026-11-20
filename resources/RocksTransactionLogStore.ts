@@ -7,7 +7,14 @@ import {
 import { isReservedForLocalAppend } from './originClosedFloor.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { exportIdMapping, getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
-import { Decoder, readAuditEntry, ENTRY_DATAVIEW, type AuditRecord, createAuditEntry } from './auditStore.ts';
+import {
+	readAuditEntry,
+	entryFloat64At,
+	entryUint32At,
+	ENTRY_DATAVIEW,
+	type AuditRecord,
+	createAuditEntry,
+} from './auditStore.ts';
 import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
 import {
 	createCorruptFrameReporter,
@@ -688,20 +695,18 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// with the timestamp preserved so iteration advances past the bad entry;
 			// downstream consumers already skip records with no `tableId`/`type`.
 			try {
-				const decoder = new Decoder(data.buffer, data.byteOffset, data.byteLength);
-				(data as any).dataView = decoder;
 				// This represents the data that shouldn't be transferred for replication
-				let structureVersion = decoder.getUint32(0);
+				const structureVersion = entryUint32At(data, 0);
 				let position = 4;
 				let previousResidencyId: number;
 				let previousVersion: number;
 				if (structureVersion & HAS_PREVIOUS_RESIDENCY_ID) {
-					previousResidencyId = decoder.getUint32(position);
+					previousResidencyId = entryUint32At(data, position);
 					position += 4;
 				}
 				if (structureVersion & HAS_PREVIOUS_VERSION) {
 					// does previous residency id and version actually require separate flags?
-					previousVersion = decoder.getFloat64(position);
+					previousVersion = entryFloat64At(data, position);
 					position += 8;
 				}
 				const auditRecord = readAuditEntry(data, position, undefined);
