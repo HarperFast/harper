@@ -206,7 +206,6 @@ import {
 	validateFullTextScoringOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 	keyPredicate,
-	INDEX_STARTUPS,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
@@ -994,7 +993,6 @@ function deferredIterator(
 		completed = true;
 		onFinish();
 	};
-	// a recoverable row error leaves the search open for the rows after it
 	const failStep = (error: any) => {
 		if (!error?.continueIteration) finish();
 		throw error;
@@ -8883,46 +8881,19 @@ export function makeTable(options): TableResourceClass {
 			const deferred: any = new ExtendedIterable();
 			let results: any;
 			let discarded = false;
-			let startups: { settled: Promise<unknown>; cancel: () => void }[] | undefined;
-			const cancelStartups = () => startups?.forEach((startup) => startup.cancel());
 			const opening = embedding.sort
 				.then(
-					(sort) => {
-						if (discarded) return [];
-						startups = sort[INDEX_STARTUPS];
-						return search(sort);
-					},
+					(sort) => (discarded ? [] : search(sort)),
 					(error) => {
 						if (discarded) return [];
 						throw error;
 					}
 				)
-				.then(
-					(searched) => {
-						results = searched;
-						if (discarded) {
-							cancelStartups();
-							searched.onDone?.();
-						} else if (startups?.length)
-							return Promise.all(startups.map((startup) => startup.settled)).then(
-								() => searched,
-								(error) => {
-									cancelStartups();
-									if (results) {
-										results = undefined;
-										searched.onDone?.();
-									}
-									if (discarded) return [];
-									throw error;
-								}
-							);
-						return searched;
-					},
-					(error) => {
-						cancelStartups();
-						throw error;
-					}
-				);
+				.then((searched) => {
+					results = searched;
+					if (discarded) searched.onDone?.();
+					return searched;
+				});
 			opening.catch(() => {});
 			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false);
 			deferred.iterate = (options: any = {}) =>
@@ -8936,9 +8907,7 @@ export function makeTable(options): TableResourceClass {
 				deferred.onDone = null;
 				discarded = true;
 				embedding.abort();
-				cancelStartups();
 				results?.onDone?.();
-				results = undefined;
 			};
 			deferred.selectApplied = true;
 			deferred.getColumns = () =>
@@ -8964,7 +8933,6 @@ export function makeTable(options): TableResourceClass {
 			let orderAlignedCondition;
 			let syntheticOrderCondition;
 			const filtered = {};
-			if (sort?.[INDEX_STARTUPS]) filtered[INDEX_STARTUPS] = sort[INDEX_STARTUPS];
 
 			function orderConditions(conditions: Condition[], operator: string) {
 				if (target.enforceExecutionOrder) return conditions; // don't rearrange conditions
@@ -14514,6 +14482,18 @@ export function makeTable(options): TableResourceClass {
 				!prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
 			)
 				throw new ClientError(`${Array.isArray(head) ? head.join('.') : head} is not a defined attribute`, 404);
+			const headAttribute = head != null && findAttribute(attributes, head);
+			if (
+				prepared.length === 0 &&
+				!target.allowFullScan &&
+				headAttribute &&
+				!headAttribute.indexed &&
+				!headAttribute.isPrimaryKey
+			)
+				throw new ClientError(
+					`${Array.isArray(head) ? head.join('.') : head} is not indexed and not combined with any other conditions`,
+					404
+				);
 			if (prepared.length === 0 && !target.explain) {
 				const leading = Array.isArray(head) && head.length === 1 ? head[0] : head;
 				if (typeof leading === 'string')
@@ -14541,11 +14521,7 @@ export function makeTable(options): TableResourceClass {
 		}
 		return {
 			sort: Promise.all(embedded).then(
-				() => {
-					const embedded = withEmbeddedTargets(sort, vectors);
-					embedded[INDEX_STARTUPS] = [];
-					return embedded;
-				},
+				() => withEmbeddedTargets(sort, vectors),
 				(error) => {
 					controller.abort();
 					throw error;

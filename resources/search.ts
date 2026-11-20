@@ -64,8 +64,6 @@ const SYMBOL_OPERATORS = {
 	'===': 'equals',
 	'!==': 'not_equal',
 };
-/** On a search's join map: the index searches to start at once, for a search that settles them before a status. */
-export const INDEX_STARTUPS = Symbol('indexStartups');
 export const COERCIBLE_OPERATORS = {
 	lt: true,
 	le: true,
@@ -1559,16 +1557,6 @@ export function searchByIndex(
 					: (searched as Promise<any[]>).then(processEntries);
 				// A consumer may abandon this lazy iterable without calling next().
 				pending.catch(() => {});
-				const startups = leaseHost?.[INDEX_STARTUPS];
-				if (startups) {
-					start?.resolve();
-					startups.push({
-						settled: pending,
-						cancel: () => {
-							if (!settled) controller?.abort();
-						},
-					});
-				}
 				const results: any = new ExtendedIterable();
 				results.iterate = (options?: { async?: boolean }) => {
 					if (!options?.async) {

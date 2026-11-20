@@ -12,7 +12,6 @@ const { isReleasedTransaction } = require('#src/resources/DatabaseTransaction');
 const { Resources } = require('#src/resources/Resources');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-const { searchOpening } = require('#src/resources/Resource');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -350,6 +349,18 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.equal(embed.calls.length, 0);
 		});
 
+		it('refuses an unindexed sort head with nothing else to lead before it calls the model, as for a target', () => {
+			for (const next of [
+				{ attribute: 'embedding', text: 'red fruit' },
+				{ attribute: 'embedding', target: queryVector('red fruit') },
+			])
+				assert.throws(
+					() => Doc.search({ sort: { attribute: 'content', next } }),
+					(error) => error.statusCode === 404 && /content is not indexed/.test(error.message)
+				);
+			assert.equal(embed.calls.length, 0);
+		});
+
 		it('refuses an unknown attribute with a 404', () => {
 			assert.throws(
 				() => Doc.search({ sort: { attribute: 'nope', text: 'red fruit' } }),
@@ -671,85 +682,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 	});
 
 	describe('results that are not ready yet', () => {
-		it('fails the opening, and a REST QUERY with its 503, while a native index stays behind', async function () {
-			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !getPlaneBinding()) this.skip(); // the native plane needs RocksDB
-			const Lagging = table({
-				table: 'SortTextLaggingDoc',
-				database: 'test',
-				audit: true,
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'content', type: 'String' },
-					{
-						name: 'embedding',
-						type: 'Array',
-						embed: { source: 'content', model: 'doc-model' },
-						indexed: { type: 'HNSW', nativePlane: true },
-					},
-				],
-			});
-			Lagging.updatedAttributes();
-			const index = Lagging.indices.embedding.customIndex;
-			const current = { attribute: 'embedding', target: [1, 0, 0], maxIndexLagMilliseconds: 0 };
-			await waitFor(async () => {
-				try {
-					await fromAsync(Lagging.search({ sort: current }));
-					return true;
-				} catch (error) {
-					if (error.statusCode === 503) return false;
-					throw error;
-				}
-			});
-			const { flushDerived } = index;
-			const gate = Promise.withResolvers();
-			index.flushDerived = async function (...args) {
-				await gate.promise;
-				return flushDerived.apply(this, args);
-			};
-			try {
-				await Lagging.put(1, { content: 'apple' });
-				const sort = { attribute: 'embedding', text: 'red fruit', waitForIndexMilliseconds: Number.MIN_VALUE };
-				await assert.rejects(searchOpening(Lagging.search({ sort })), { code: 'DERIVED_INDEX_LAGGING' });
-				// an index the planner drives from a condition starts as the opening does too
-				const threshold = {
-					attribute: 'embedding',
-					comparator: 'lt',
-					value: 2,
-					target: [1, 0, 0],
-					waitForIndexMilliseconds: Number.MIN_VALUE,
-				};
-				await assert.rejects(
-					searchOpening(
-						Lagging.search({ conditions: [threshold], sort: { attribute: 'embedding', text: 'red fruit' } })
-					),
-					{ code: 'DERIVED_INDEX_LAGGING' }
-				);
-				// a search discarded while its index waits stops that wait, which would otherwise outlive it
-				const calls = embed.calls.length;
-				const waiting = Lagging.search({
-					sort: { attribute: 'embedding', text: 'red fruit', waitForIndexMilliseconds: 20_000 },
-				})[Symbol.asyncIterator]();
-				const step = waiting.next();
-				step.catch(() => {});
-				await waitFor(() => embed.calls.length > calls);
-				await new Promise((resolve) => setImmediate(resolve));
-				const discardedAt = Date.now();
-				await waiting.return();
-				assert.deepEqual(await step, { value: undefined, done: true });
-				assert.ok(Date.now() - discardedAt < 5_000, 'the discard did not wait out the index');
-				const response = await rest([Lagging])(
-					'QUERY',
-					'/SortTextLaggingDoc/',
-					{ sort, select: ['id'] },
-					{ accept: 'application/json' }
-				).catch((error) => error);
-				assert.equal(response.statusCode ?? response.status, 503);
-			} finally {
-				gate.resolve();
-				delete index.flushDerived;
-			}
-		});
-
 		it('refuses synchronous iteration, and that ends the search', async () => {
 			const release = embed.hold();
 			const results = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } });
