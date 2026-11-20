@@ -12,6 +12,8 @@ const { isReleasedTransaction } = require('#src/resources/DatabaseTransaction');
 const { Resources } = require('#src/resources/Resources');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
+const { searchOpening } = require('#src/resources/Resource');
+const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 require('#src/server/serverHelpers/serverUtilities');
 
 const admin = { role: { permission: { super_user: true } } };
@@ -338,6 +340,14 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.deepEqual(await query({ attribute: 'embedding', text: 'red fruit' }), byTarget);
 		});
 
+		it('refuses an undefined sort head before a text sort after it calls the model', () => {
+			assert.throws(
+				() => Doc.search({ sort: { attribute: 'nope', next: { attribute: 'embedding', text: 'red fruit' } } }),
+				(error) => error.statusCode === 404 && /nope is not a defined attribute/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+		});
+
 		it('refuses an unknown attribute with a 404', () => {
 			assert.throws(
 				() => Doc.search({ sort: { attribute: 'nope', text: 'red fruit' } }),
@@ -567,7 +577,8 @@ describe('Vector search by sort text on an @embed attribute', () => {
 		it('leaves the status of a write that answers with a text search alone', async () => {
 			failure = new Error('backend down');
 			class SearchingPostDoc extends Doc {
-				post() {
+				async post() {
+					await Doc.put(99, { content: 'pear' });
 					return this.search({ sort: { attribute: 'embedding', text: 'red fruit' } });
 				}
 			}
@@ -577,8 +588,13 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				{},
 				{ accept: 'application/json' }
 			).catch((error) => error);
-			assert.equal(response.status ?? 200, 200);
-			await assert.rejects(bodyOf(response));
+			try {
+				assert.equal(response.status ?? 200, 200);
+				await assert.rejects(bodyOf(response));
+				assert.equal((await Doc.get(99))?.content, 'pear');
+			} finally {
+				await Doc.delete(99);
+			}
 		});
 
 		it('answers a REST QUERY with the failure as its status when the table maps its search', async () => {
@@ -653,6 +669,58 @@ describe('Vector search by sort text on an @embed attribute', () => {
 	});
 
 	describe('results that are not ready yet', () => {
+		it('fails the opening, and a REST QUERY with its 503, while a native index stays behind', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !getPlaneBinding()) this.skip(); // the native plane needs RocksDB
+			const Lagging = table({
+				table: 'SortTextLaggingDoc',
+				database: 'test',
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'content', type: 'String' },
+					{
+						name: 'embedding',
+						type: 'Array',
+						embed: { source: 'content', model: 'doc-model' },
+						indexed: { type: 'HNSW', nativePlane: true },
+					},
+				],
+			});
+			Lagging.updatedAttributes();
+			const index = Lagging.indices.embedding.customIndex;
+			const current = { attribute: 'embedding', target: [1, 0, 0], maxIndexLagMilliseconds: 0 };
+			await waitFor(async () => {
+				try {
+					await fromAsync(Lagging.search({ sort: current }));
+					return true;
+				} catch (error) {
+					if (error.statusCode === 503) return false;
+					throw error;
+				}
+			});
+			const { flushDerived } = index;
+			const gate = Promise.withResolvers();
+			index.flushDerived = async function (...args) {
+				await gate.promise;
+				return flushDerived.apply(this, args);
+			};
+			try {
+				await Lagging.put(1, { content: 'apple' });
+				const sort = { attribute: 'embedding', text: 'red fruit', waitForIndexMilliseconds: Number.MIN_VALUE };
+				await assert.rejects(searchOpening(Lagging.search({ sort })), { code: 'DERIVED_INDEX_LAGGING' });
+				const response = await rest([Lagging])(
+					'QUERY',
+					'/SortTextLaggingDoc/',
+					{ sort, select: ['id'] },
+					{ accept: 'application/json' }
+				).catch((error) => error);
+				assert.equal(response.statusCode ?? response.status, 503);
+			} finally {
+				gate.resolve();
+				delete index.flushDerived;
+			}
+		});
+
 		it('refuses synchronous iteration, and that ends the search', async () => {
 			const release = embed.hold();
 			const results = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } });
@@ -817,6 +885,80 @@ describe('Vector search by sort text on an @embed attribute', () => {
 		});
 	});
 
+	describe('row errors', () => {
+		let Tagged;
+		const sort = { attribute: 'embedding', text: 'red fruit' };
+		const select = ['content', 'tag'];
+		// an LMDB search's transaction is not reachable from the context once its scope is released
+		const observesSnapshot = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+		// a native index answers asynchronously, so a row error rejects a step rather than throwing from it
+		const native = observesSnapshot && Boolean(getPlaneBinding());
+		before(async () => {
+			Tagged = table({
+				table: 'SortTextFailingRowDoc',
+				database: 'test',
+				audit: native,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'content', type: 'String' },
+					{ name: 'tag', computed: true },
+					{
+						name: 'embedding',
+						type: 'Array',
+						embed: { source: 'content', model: 'doc-model' },
+						indexed: native ? { type: 'HNSW', nativePlane: true } : { type: 'HNSW', distance: 'cosine' },
+					},
+				],
+			});
+			Tagged.updatedAttributes();
+			Tagged.setComputedAttribute('tag', (record) => {
+				if (record.content === 'banana') throw new Error('tag failed');
+				return 'ok';
+			});
+			for (const [index, content] of Object.keys(DOCUMENT_VECTORS).entries()) await Tagged.put(index + 1, { content });
+			const current = { attribute: 'embedding', target: [1, 0, 0], maxIndexLagMilliseconds: 0 };
+			await waitFor(async () => {
+				try {
+					return (await fromAsync(Tagged.search({ sort: current }))).length === 4;
+				} catch (error) {
+					if (error.statusCode === 503) return false;
+					throw error;
+				}
+			});
+		});
+
+		it('reports a recovered row and keeps the search, and its snapshot, for the rows after it', async () => {
+			const recovered = [];
+			const context = recordingContext();
+			const iterator = Tagged.search({ sort, select }, context)
+				.mapError((error) => {
+					recovered.push(error);
+					return error;
+				})
+				[Symbol.asyncIterator]();
+			const rows = [];
+			let heldAfterTheError;
+			for (let step; !(step = await iterator.next()).done;) {
+				rows.push(step.value);
+				if (recovered.length === 1) heldAfterTheError ??= context.storeLinks().some((txn) => txn.readTxnsUsed > 0);
+			}
+			assert.equal(rows.length, 4);
+			assert.equal(recovered.length, 1);
+			assert.match(recovered[0].message, /tag failed/);
+			if (observesSnapshot) assert.equal(heldAfterTheError, true, 'the snapshot outlives a recovered row');
+		});
+
+		it('releases the snapshot of a search a row error ends', async () => {
+			const context = recordingContext();
+			await assert.rejects(fromAsync(Tagged.search({ sort, select }, context)), /tag failed/);
+			const links = context.storeLinks();
+			if (observesSnapshot) assert.ok(links.length > 0);
+			await waitFor(() => links.every((txn) => !txn.readTxnsUsed), {
+				message: () => `read snapshot still held (${links.map((txn) => txn.readTxnsUsed)})`,
+			});
+		});
+	});
+
 	describe('return shapes', () => {
 		it('a counted page is a Promise, as without text', async () => {
 			const page = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, limit: 2, count: 'exact' });
@@ -830,6 +972,16 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			const results = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, count: 'exact' });
 			assert.equal(typeof results.then, 'undefined');
 			assert.equal((await fromAsync(results)).length, 4);
+		});
+
+		it('explains a leading descending sort, which only running the index refuses, as for a target', async () => {
+			for (const sort of [
+				{ attribute: 'embedding', text: 'red fruit', descending: true },
+				{ attribute: 'embedding', target: queryVector('red fruit'), descending: true },
+			]) {
+				const plan = await Doc.search({ sort, explain: true });
+				assert.ok(Array.isArray(plan.conditions), JSON.stringify(sort));
+			}
 		});
 
 		it('explain resolves to the plan with the embedded vector as the target', async () => {

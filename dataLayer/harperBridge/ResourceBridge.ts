@@ -76,7 +76,6 @@ export type SearchByConditionsRequest = Query &
 		operator?: Operator;
 	};
 
-/** The rows of a search that opens late stream only once it has opened, so its failure is the operation's. */
 function afterOpening(results: any) {
 	const opening = searchOpening(results);
 	return opening ? opening.then(() => results) : results;

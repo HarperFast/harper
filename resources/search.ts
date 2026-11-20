@@ -64,6 +64,8 @@ const SYMBOL_OPERATORS = {
 	'===': 'equals',
 	'!==': 'not_equal',
 };
+/** A sort condition's list of index searches to start at once, for a search that must settle them before a status. */
+export const INDEX_STARTUPS = Symbol('indexStartups');
 export const COERCIBLE_OPERATORS = {
 	lt: true,
 	le: true,
@@ -1557,6 +1559,11 @@ export function searchByIndex(
 					: (searched as Promise<any[]>).then(processEntries);
 				// A consumer may abandon this lazy iterable without calling next().
 				pending.catch(() => {});
+				const startups = (searchCondition as any)[INDEX_STARTUPS];
+				if (startups) {
+					start?.resolve();
+					startups.push(pending);
+				}
 				const results: any = new ExtendedIterable();
 				results.iterate = (options?: { async?: boolean }) => {
 					if (!options?.async) {

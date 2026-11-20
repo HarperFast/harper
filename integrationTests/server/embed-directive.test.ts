@@ -130,7 +130,6 @@ async function startFakeOllama(): Promise<FakeOllama> {
 					const inputs = Array.isArray(parsed.input) ? parsed.input : [parsed.input];
 					embedCalls++;
 					embedInputs.push(inputs);
-					// query embeddings fail; documents still embed
 					if (inputs.some((input) => input.startsWith(FAILING_QUERY_PREFIX))) {
 						res.writeHead(401, { 'Content-Type': 'application/json' });
 						res.end(JSON.stringify({ error: { message: 'upstream rejected key sk-test-secret' } }));
@@ -356,7 +355,7 @@ suite('@embed directive end-to-end with fake Ollama', (ctx: any) => {
 			get_attributes: ['id'],
 		});
 		failed('search_by_conditions', operation.status, operation.text);
-		JSON.parse(operation.text); // a complete body, not a cut-off array
+		JSON.parse(operation.text);
 		for (const accept of ['application/json', 'text/csv']) {
 			const response = await fetch(`${ctx.harper.httpURL}/FailingQueryEmbedDoc/`, {
 				method: 'QUERY',

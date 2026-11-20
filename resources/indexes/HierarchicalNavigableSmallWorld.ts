@@ -2195,7 +2195,6 @@ export class HierarchicalNavigableSmallWorld {
 			filterState
 		);
 	}
-	/** The distance function search() ranks by, after the checks it makes that need no target. */
 	searchDistance(
 		descending: boolean | undefined,
 		distance: string | undefined,

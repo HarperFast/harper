@@ -49,10 +49,7 @@ export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 export const SEARCH_OPENING = Symbol.for('harper.searchOpening');
 export const WRITE_CONDITION = Symbol('writeCondition');
 
-/**
- * Settles once a search result that opens late (its sort text is embedded first) has opened, so a streaming entry
- * point can fail before it sends a status. Undefined for a result that is already open.
- */
+/** Undefined for a search result that is already open. */
 export function searchOpening(result: any): Promise<unknown> | undefined {
 	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
 }
@@ -1120,7 +1117,6 @@ function authorizeSearchResult(result: any, user: any) {
 							if (Object.isFrozen(result)) return { ...result, data: state.results };
 							result.data = state.results;
 						} else {
-							// a transform of the gate opens when the search behind it does
 							const opening = searchOpening(state.results);
 							const derived = result.headers ? result.data : result;
 							if (opening && derived && typeof derived === 'object' && Object.isExtensible(derived))

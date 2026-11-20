@@ -206,6 +206,7 @@ import {
 	validateFullTextScoringOptions,
 	ALTERNATE_COMPARATOR_NAMES,
 	keyPredicate,
+	INDEX_STARTUPS,
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
@@ -993,6 +994,11 @@ function deferredIterator(
 		completed = true;
 		onFinish();
 	};
+	// a recoverable row error leaves the search open for the rows after it
+	const failStep = (error: any) => {
+		if (!error?.continueIteration) finish();
+		throw error;
+	};
 	const getIterator = () =>
 		(iteratorPromise ||= openResults().then((results: any) =>
 			results.iterate
@@ -1009,21 +1015,15 @@ function deferredIterator(
 			}
 			if (returned) return Promise.resolve({ value: undefined, done: true });
 			return getIterator().then(
-				(iterator) =>
-					returned
-						? { value: undefined, done: true }
-						: Promise.resolve(iterator.next(value)).then(
-								(result) => {
-									// a stream destroyed mid-step returns without waiting for that step
-									if (returned) return { value: undefined, done: true };
-									if (result.done) finish();
-									return result;
-								},
-								(error) => {
-									finish();
-									throw error;
-								}
-							),
+				(iterator) => {
+					if (returned) return { value: undefined, done: true };
+					return Promise.resolve(iterator.next(value)).then((result) => {
+						// a stream destroyed mid-step returns without waiting for that step
+						if (returned) return { value: undefined, done: true };
+						if (result.done) finish();
+						return result;
+					}, failStep);
+				},
 				(error) => {
 					finish();
 					throw error;
@@ -8883,9 +8883,14 @@ export function makeTable(options): TableResourceClass {
 			const deferred: any = new ExtendedIterable();
 			let results: any;
 			let discarded = false;
+			let startups: Promise<unknown>[] | undefined;
 			const opening = embedding.sort
 				.then(
-					(sort) => (discarded ? [] : search(sort)),
+					(sort) => {
+						if (discarded) return [];
+						startups = sort[INDEX_STARTUPS];
+						return search(sort);
+					},
 					(error) => {
 						if (discarded) return [];
 						throw error;
@@ -8894,6 +8899,15 @@ export function makeTable(options): TableResourceClass {
 				.then((searched) => {
 					results = searched;
 					if (discarded) searched.onDone?.();
+					else if (startups?.length)
+						return Promise.all(startups).then(
+							() => searched,
+							(error) => {
+								results = undefined;
+								searched.onDone?.();
+								throw error;
+							}
+						);
 					return searched;
 				});
 			opening.catch(() => {});
@@ -14475,10 +14489,18 @@ export function makeTable(options): TableResourceClass {
 				conditionsContainFullText(prepared, TableResource.fullTextIndexes)
 			)
 				throw new ClientError('Full-text results can only use descending $score order', 400);
-			if (prepared.length === 0) {
-				const head = Array.isArray(sort.attribute) && sort.attribute.length === 1 ? sort.attribute[0] : sort.attribute;
-				if (typeof head === 'string')
-					indices[head]?.customIndex?.searchDistance?.(
+			const head = sort.attribute;
+			if (
+				head != null &&
+				target.operator !== 'or' &&
+				!findAttribute(attributes, head) &&
+				!prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
+			)
+				throw new ClientError(`${Array.isArray(head) ? head.join('.') : head} is not a defined attribute`, 404);
+			if (prepared.length === 0 && !target.explain) {
+				const leading = Array.isArray(head) && head.length === 1 ? head[0] : head;
+				if (typeof leading === 'string')
+					indices[leading]?.customIndex?.searchDistance?.(
 						sort.descending,
 						sort.distance,
 						sort.maxIndexLagMilliseconds,
@@ -14502,7 +14524,11 @@ export function makeTable(options): TableResourceClass {
 		}
 		return {
 			sort: Promise.all(embedded).then(
-				() => withEmbeddedTargets(sort, vectors),
+				() => {
+					const embedded = withEmbeddedTargets(sort, vectors);
+					embedded[INDEX_STARTUPS] = [];
+					return embedded;
+				},
 				(error) => {
 					controller.abort();
 					throw error;
