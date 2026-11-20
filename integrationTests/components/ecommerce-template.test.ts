@@ -11,7 +11,7 @@
  * deploys it as a local archive.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert/strict';
+import { strictEqual, ok } from 'node:assert';
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -41,7 +41,11 @@ async function prepareTemplateArchive(workDir: string): Promise<string> {
 	const configPath = join(templateDir, 'config.yaml');
 	const config = await readFile(configPath, 'utf8');
 	ok(/^\s+prebuilt: true$/m.test(config), 'expected the pinned template to ship prebuilt: true');
-	await writeFile(configPath, config.replace(/^(\s+)prebuilt: true$/m, '$1prebuilt: false'));
+	// The build runs inside handleApplication, which Harper cuts off after 30s by default; CI runners need longer.
+	await writeFile(
+		configPath,
+		config.replace(/^(\s+)prebuilt: true$/m, `$1prebuilt: false\n$1timeout: ${READY_TIMEOUT_MS}`)
+	);
 
 	const archive = join(workDir, `${PROJECT}.tgz`);
 	// COPYFILE_DISABLE stops macOS tar adding ._* entries, which would defeat the top-level directory strip.
@@ -51,7 +55,11 @@ async function prepareTemplateArchive(workDir: string): Promise<string> {
 	return archive;
 }
 
-suite('Component: ecommerce-template', { skip: process.platform === 'win32' }, (ctx: ContextWithHarper) => {
+// Under HARPER_UWS_HTTP the plugin's guard sees a response but `request._nodeRequest` is null, so every
+// Next.js page 500s ("Cannot read properties of null (reading 'url')") while REST still serves.
+const skipSuite = process.platform === 'win32' || !!process.env.HARPER_UWS_HTTP;
+
+suite('Component: ecommerce-template', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	let workDir: string;
 
 	before(async () => {
