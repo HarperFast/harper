@@ -454,9 +454,14 @@ const MAX_EXACT_COUNT_MS = 1_000;
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
 /**
- * Whether a search answers with a counted page (a Promise) rather than a stream: only for a bounded page and window,
- * finite non-negative integers with limit <= MAX_COUNT_PAGE and offset + limit <= MAX_EXACT_COUNT_SCAN. A bounded
- * offset keeps a huge one from postponing the exact guardrail until it was scanned.
+ * Whether a search answers with a counted page (a Promise) rather than a stream. Counting is a pagination
+ * feature, so it requires a bounded page AND window: both the limit and the offset must be finite,
+ * non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the window (offset + limit) no larger
+ * than MAX_EXACT_COUNT_SCAN. Anything else — a missing/oversized/non-finite/negative limit or offset (a bare
+ * collection GET, `{ limit: Infinity }`, `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page window
+ * past the scan budget — falls through to the normal streaming path with no count. This bounds the offset
+ * too: without it a huge offset would postpone the exact guardrail (which only engages past the page) until
+ * that offset was scanned.
  */
 function countPageApplies(target: RequestTarget): boolean {
 	if (!target.count) return false;
@@ -950,7 +955,6 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 	return carryThroughTransforms(iterable, SEARCH_AUTHORIZATION, authorization, SEARCH_AUTHORIZATION_TRANSFORMS, true);
 }
 
-/** Sets `key` on a search result and on what its transforms return, as a mapped search is still that search. */
 function carryThroughTransforms(iterable: any, key: symbol, value: any, wrapped: symbol, inheritSelect: boolean) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
 	iterable[key] = value;
@@ -1794,6 +1798,12 @@ function copySelection(select) {
 	if (copy.sort && typeof copy.sort === 'object') copy.sort = copySelection(copy.sort);
 	if (copy.next) copy.next = copySelection(copy.next);
 	return copy;
+}
+
+function withIdCondition(conditions: any[], id: any): any[] {
+	return id
+		? [{ attribute: null, comparator: Array.isArray(id) ? 'prefix' : 'starts_with', value: id }].concat(conditions)
+		: conditions;
 }
 
 function searchConditions(target: any): any[] {
@@ -8910,17 +8920,7 @@ export function makeTable(options): TableResourceClass {
 		#searchSorted(target: RequestTarget, sort: any, context: any, txn: any, rowFilter: any): any {
 			let effectiveSelect: any;
 			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes) ?? [];
-			let conditions: any = searchConditions(target);
-			const id = target.id ?? this.getId();
-			if (id) {
-				conditions = [
-					{
-						attribute: null,
-						comparator: Array.isArray(id) ? 'prefix' : 'starts_with',
-						value: id,
-					},
-				].concat(conditions);
-			}
+			let conditions: any = withIdCondition(searchConditions(target), target.id ?? this.getId());
 			// Never mutate the caller's conditions in place. Query planning annotates
 			// and restructures conditions as it runs — it pushes a `{ comparator: 'sort' }`
 			// pseudo-condition for index-order alignment, sets `descending`, caches
@@ -14423,7 +14423,7 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
-	/** Refusals that need no plan come before the model call; so do a leading index's, when nothing else can lead. */
+	/** A leading index's checks run here only when no condition can lead instead (#searchSorted plans the rest). */
 	function embedSortTexts(sort: any, context: any, target: any, id: any): SortEmbedding | undefined {
 		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
 		for (let order = sort; order; order = order.next) {
@@ -14465,7 +14465,7 @@ export function makeTable(options): TableResourceClass {
 					: undefined;
 		if (conditionList) {
 			const prepared = TableResource._prepareQueryConditions(
-				cloneConditions(conditionList),
+				cloneConditions(withIdCondition(conditionList, id)),
 				target.operator,
 				target,
 				context
@@ -14475,8 +14475,7 @@ export function makeTable(options): TableResourceClass {
 				conditionsContainFullText(prepared, TableResource.fullTextIndexes)
 			)
 				throw new ClientError('Full-text results can only use descending $score order', 400);
-			// with no condition to lead, the head of the sort leads
-			if (!id && prepared.length === 0) {
+			if (prepared.length === 0) {
 				const head = Array.isArray(sort.attribute) && sort.attribute.length === 1 ? sort.attribute[0] : sort.attribute;
 				if (typeof head === 'string')
 					indices[head]?.customIndex?.searchDistance?.(

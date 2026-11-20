@@ -319,6 +319,25 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.equal(embed.calls.length, 0);
 		});
 
+		it('prepares the conditions as the search does, with the id prefix', async () => {
+			const query = (sort) =>
+				(async () =>
+					fromAsync(
+						Doc.search({
+							id: 1,
+							operator: 'or',
+							conditions: [{ attribute: 'tag', value: 'even' }],
+							sort,
+							select: ['id'],
+						})
+					))().then(
+					(rows) => ({ rows }),
+					(error) => ({ error: error.message })
+				);
+			const byTarget = await query({ attribute: 'embedding', target: queryVector('red fruit') });
+			assert.deepEqual(await query({ attribute: 'embedding', text: 'red fruit' }), byTarget);
+		});
+
 		it('refuses an unknown attribute with a 404', () => {
 			assert.throws(
 				() => Doc.search({ sort: { attribute: 'nope', text: 'red fruit' } }),
@@ -524,6 +543,42 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				).catch((error) => error);
 				assert.equal(response.statusCode ?? response.status, 502, accept);
 			}
+		});
+
+		it('answers a REST GET with the failure as its status when a resource maps a search behind an async allowRead', async () => {
+			failure = new Error('backend down');
+			class GatedMappedDoc extends Doc {
+				static loadAsInstance = false;
+				async allowRead() {
+					await new Promise((resolve) => setImmediate(resolve));
+					return true;
+				}
+				get(target) {
+					target.sort = { attribute: 'embedding', text: 'red fruit' };
+					return this.search(target).map((row) => row);
+				}
+			}
+			const response = await rest([GatedMappedDoc])('GET', '/SortTextEmbedDoc/', undefined, {
+				accept: 'application/json',
+			}).catch((error) => error);
+			assert.equal(response.statusCode ?? response.status, 502);
+		});
+
+		it('leaves the status of a write that answers with a text search alone', async () => {
+			failure = new Error('backend down');
+			class SearchingPostDoc extends Doc {
+				post() {
+					return this.search({ sort: { attribute: 'embedding', text: 'red fruit' } });
+				}
+			}
+			const response = await rest([SearchingPostDoc])(
+				'POST',
+				'/SortTextEmbedDoc/',
+				{},
+				{ accept: 'application/json' }
+			).catch((error) => error);
+			assert.equal(response.status ?? 200, 200);
+			await assert.rejects(bodyOf(response));
 		});
 
 		it('answers a REST QUERY with the failure as its status when the table maps its search', async () => {

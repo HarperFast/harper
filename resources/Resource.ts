@@ -46,13 +46,12 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
-/** On a search result that opens later (a sort's text is embedded first): the promise that it opened, or why not. */
 export const SEARCH_OPENING = Symbol.for('harper.searchOpening');
 export const WRITE_CONDITION = Symbol('writeCondition');
 
 /**
- * Settles once a search result has opened, so an entry point that streams it can wait before it sends a status:
- * a failure after its first byte can only cut the response off. Undefined for a result that is already open.
+ * Settles once a search result that opens late (its sort text is embedded first) has opened, so a streaming entry
+ * point can fail before it sends a status. Undefined for a result that is already open.
  */
 export function searchOpening(result: any): Promise<unknown> | undefined {
 	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
@@ -1120,6 +1119,12 @@ function authorizeSearchResult(result: any, user: any) {
 						if (result.headers && result.data === gate) {
 							if (Object.isFrozen(result)) return { ...result, data: state.results };
 							result.data = state.results;
+						} else {
+							// a transform of the gate opens when the search behind it does
+							const opening = searchOpening(state.results);
+							const derived = result.headers ? result.data : result;
+							if (opening && derived && typeof derived === 'object' && Object.isExtensible(derived))
+								derived[SEARCH_OPENING] ??= opening;
 						}
 					}
 				} else if (!state) throw new AccessViolation(user);

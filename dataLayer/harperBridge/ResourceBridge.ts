@@ -76,6 +76,12 @@ export type SearchByConditionsRequest = Query &
 		operator?: Operator;
 	};
 
+/** The rows of a search that opens late stream only once it has opened, so its failure is the operation's. */
+function afterOpening(results: any) {
+	const opening = searchOpening(results);
+	return opening ? opening.then(() => results) : results;
+}
+
 /**
  * Bridge between the operations/REST/SQL API layer and the underlying resource layer.
  * Handles search (by conditions, hash, or value), schema/table/attribute CRUD, record
@@ -122,7 +128,7 @@ export class ResourceBridge extends BridgeMethods {
 			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
 		}
 
-		const results = await table.search(
+		const results = table.search(
 			{
 				conditions: searchObject.conditions,
 				//set the operator to always be lowercase for later evaluations
@@ -142,9 +148,7 @@ export class ResourceBridge extends BridgeMethods {
 				replicateFrom: searchObject.replicateFrom,
 			}
 		);
-		const opening = searchOpening(results);
-		if (opening) await opening;
-		return results;
+		return results?.then ? results.then(afterOpening) : afterOpening(results);
 	}
 
 	/**

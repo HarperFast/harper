@@ -613,9 +613,11 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			await writeCondition.release();
 			writeCondition.release = undefined;
 		}
-		// a failure after the first byte could only cut the response off
-		const opening = searchOpening(responseData);
-		if (opening) await opening;
+		// a read answers a late failure with its status; a write's status must not deny what it committed
+		if (method === 'GET' || method === 'HEAD' || method === 'QUERY') {
+			const opening = searchOpening(responseData);
+			if (opening) await opening;
+		}
 		let status = request.response.status;
 		let lastModification = request.lastModified;
 		let deferredRead = false;
