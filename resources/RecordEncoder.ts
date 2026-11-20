@@ -1078,9 +1078,8 @@ export function recordUpdater(
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
-		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
-		// Both engines: LMDB stores the write's own time, so a tie keeps the version and an older one can
-		// return to a version an earlier state held (harper#4483)
+		// A write that does not advance the version stores a new value under one a reader may already hold. A
+		// rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
 		if (
 			record !== undefined &&
 			(options?.unchangedValue

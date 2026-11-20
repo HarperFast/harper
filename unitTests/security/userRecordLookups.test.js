@@ -38,7 +38,7 @@ function deferred() {
 let userChanges = 0;
 user.onUserChange(() => userChanges++);
 
-// the context and options the source-apply handler passes for a replicated full write
+// a replicated full put, with the options the source-apply writeUpdate in resources/Table.ts passes
 function applyRoleFrom(nodeName, role, version) {
 	const Role = databases.system.hdb_role;
 	const context = { source: {}, sourceApply: true, timestamp: version };
@@ -159,7 +159,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			const now = Date.now();
 			const login = { logins: { __op__: 'add', value: 1 } };
 			await databases.system.hdb_user.patch('lookup_user', login, { timestamp: now + 100 });
-			// out of order: merged onto the newer record and stored under its version
+			// out of order: RocksDB stores it under the newer record's version, LMDB under its own older one
 			await databases.system.hdb_user.patch('lookup_user', login, { timestamp: now + 50 });
 			const entry = databases.system.hdb_user.primaryStore.getEntry('lookup_user');
 			assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
@@ -173,8 +173,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 		});
 
 		it('applies a replicated role write that ties the role version to the next lookup', async () => {
-			// harper#4483: another node's full put at the same timestamp wins the tie by node name, so it is
-			// stored under the version the derived-role memo was keyed on
+			// harper#4483: the other node wins the tie by node name
 			await testUtils.seedUsers([lookupUser()]);
 			const now = Date.now() + 100;
 			const role = { id: 'lookup_role', role: 'lookup_role', permission: { super_user: false } };
