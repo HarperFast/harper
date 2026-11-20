@@ -73,12 +73,17 @@ describe('a server.getUser override that returns a stored name with another role
 
 	it('warns once per name on an HTTP Basic login, naming both roles', async () => {
 		await testUtils.seedUsers([storedUser('override_basic')]);
-		server.getUser = async (username) => ({ username, active: true, role: overrideRole('override_role') });
+		let lookups = 0;
+		server.getUser = async (username) => {
+			lookups++;
+			return { username, active: true, role: overrideRole('override_role') };
+		};
 		assert.strictEqual((await basicLogin('override_basic')).status, 200);
 		assert.strictEqual(warnings.length, 1);
 		assert.match(warnings[0], /'override_basic' with role 'override_role'.*record has role 'stored_role'/);
 		await databases.system.hdb_user.put({ ...storedUser('override_basic'), role: 'stored_role', active: true });
-		assert.strictEqual((await basicLogin('override_basic')).status, 200, 'a later login, after the cache evicts');
+		assert.strictEqual((await basicLogin('override_basic')).status, 200);
+		assert.strictEqual(lookups, 2, 'the record change evicted the cached login');
 		assert.strictEqual(warnings.length, 1, 'the name has warned');
 	});
 

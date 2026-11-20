@@ -699,7 +699,8 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	const built: UserProvenance | undefined = (user as any)[PROVENANCE];
 	if (built) {
 		// an override may hand back the built-in lookup's view with its role swapped
-		warnOnStoredRoleMismatch(user, built.username === user.username ? built : undefined);
+		if (!warnedRoleMismatches.has(user.username))
+			warnOnStoredRoleMismatch(user, built.username === user.username ? built : userRecordVersions(user.username));
 		return undefined;
 	}
 	const table = systemTable(USER_TABLE_NAME);
@@ -726,7 +727,6 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 			else provenance.recordless = true;
 		}
 	}
-	const read = provenance;
 	if (!firsts) trackedProvenance.set(user, (firsts = new Map()));
 	const first = firsts.get(provenance.username);
 	if (!first) {
@@ -747,22 +747,26 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 	} else if (first.userStamp !== null && (provenance.userStamp === null || provenance.userStamp === UNREAD_RECORD))
 		provenance = first;
 	else provenance.recordless = false;
-	if (!provenance.recordless) warnOnStoredRoleMismatch(user, read.username === user.username ? read : undefined);
+	// read again: the login's own read came before server.getUser resolved
+	if (!provenance.recordless && !warnedRoleMismatches.has(user.username))
+		warnOnStoredRoleMismatch(user, userRecordVersions(user.username));
 	return provenance;
 }
 
-// `own` is what this lookup read for the user's own name, if it read that name
-function warnOnStoredRoleMismatch(user: User, own?: UserProvenance): void {
-	if (warnedRoleMismatches.has(user.username)) return;
-	own ??= userRecordVersions(user.username);
+function warnOnStoredRoleMismatch(user: User, own: UserProvenance): void {
 	// no live user or role record to re-read: re-authorization revokes it instead
 	if (own.userStamp === null || own.userStamp === UNREAD_RECORD || own.roleStamp === null) return;
 	const admittedRoleId = user.role?.id;
 	if (admittedRoleId === own.roleId) return;
-	const message = `server.getUser returned user '${String(user.username)}' with role '${String(admittedRoleId)}', but its hdb_user record has role '${String(own.roleId)}': live subscriptions and MCP sessions re-authorize it by name and use role '${String(own.roleId)}'`;
+	harperLogger.warn(
+		`server.getUser returned user '${printable(user.username)}' with role '${printable(admittedRoleId)}', but its hdb_user record has role '${printable(own.roleId)}': live subscriptions and MCP sessions re-authorize it by name and use role '${printable(own.roleId)}'`
+	);
 	if (warnedRoleMismatches.size >= MAX_WARNED_ROLE_MISMATCHES) warnedRoleMismatches = new Set();
 	warnedRoleMismatches.add(user.username);
-	harperLogger.warn(message);
+}
+
+function printable(value: unknown): unknown {
+	return typeof value === 'string' || typeof value === 'number' ? value : typeof value;
 }
 
 /**
