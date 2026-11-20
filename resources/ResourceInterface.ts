@@ -76,7 +76,24 @@ export interface ResourceInterface<Record extends object = any>
 export interface Session {
 	id?: any;
 	user?: User;
-	update: (updatedSession: any) => unknown;
+	/** Numeric metadata for `update()`'s `ifVersion`; preserved application-owned values may have another type. */
+	version?: number;
+	/**
+	 * `ifVersion` rechecks the latest committed local session before writing. Missing, deleted,
+	 * expired, changed, or version-reused sessions reject with `.code === 'VERSION_CONFLICT'`.
+	 * This is best effort, not compare-and-set: writes in flight at the check, later writes,
+	 * and remote writes not yet replicated can still race. The ordinary put uses last-write-wins.
+	 * A stored version beyond this node's next local write also rejects with a retryable conflict.
+	 * Capture `version` before awaiting external work; it describes the initially loaded session
+	 * and is not refreshed.
+	 * `retryable: true` requires a fresh load, such as a later request, rather than retrying this
+	 * request's version. Reused versions and application-owned `version` fields are non-retryable;
+	 * move an application field to another name before using conditional updates.
+	 * An explicit options argument requires a finite numeric `ifVersion`; invalid options,
+	 * including undefined metadata or a non-numeric application value, throw a 400 synchronously.
+	 * Await conditional updates inside try/catch to handle both validation errors and rejections.
+	 */
+	update: (updatedSession: any, options?: { ifVersion: number }) => unknown;
 	delete: (id: any) => Promise<void>;
 }
 
