@@ -49,7 +49,6 @@ export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
 export const SEARCH_OPENING = Symbol.for('harper.searchOpening');
 export const WRITE_CONDITION = Symbol('writeCondition');
 
-/** Undefined for a search result that is already open. */
 export function searchOpening(result: any): Promise<unknown> | undefined {
 	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
 }

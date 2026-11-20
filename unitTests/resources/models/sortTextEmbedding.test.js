@@ -340,11 +340,13 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.deepEqual(await query({ attribute: 'embedding', text: 'red fruit' }), byTarget);
 		});
 
-		it('refuses an undefined sort head before a text sort after it calls the model', () => {
+		it('refuses an undefined or missing sort head before a text sort after it calls the model', () => {
+			const next = { attribute: 'embedding', text: 'red fruit' };
 			assert.throws(
-				() => Doc.search({ sort: { attribute: 'nope', next: { attribute: 'embedding', text: 'red fruit' } } }),
+				() => Doc.search({ sort: { attribute: 'nope', next } }),
 				(error) => error.statusCode === 404 && /nope is not a defined attribute/.test(error.message)
 			);
+			assert.throws(() => Doc.search({ sort: { next } }), /Sort requires an attribute/);
 			assert.equal(embed.calls.length, 0);
 		});
 
@@ -708,6 +710,33 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				await Lagging.put(1, { content: 'apple' });
 				const sort = { attribute: 'embedding', text: 'red fruit', waitForIndexMilliseconds: Number.MIN_VALUE };
 				await assert.rejects(searchOpening(Lagging.search({ sort })), { code: 'DERIVED_INDEX_LAGGING' });
+				// an index the planner drives from a condition starts as the opening does too
+				const threshold = {
+					attribute: 'embedding',
+					comparator: 'lt',
+					value: 2,
+					target: [1, 0, 0],
+					waitForIndexMilliseconds: Number.MIN_VALUE,
+				};
+				await assert.rejects(
+					searchOpening(
+						Lagging.search({ conditions: [threshold], sort: { attribute: 'embedding', text: 'red fruit' } })
+					),
+					{ code: 'DERIVED_INDEX_LAGGING' }
+				);
+				// a search discarded while its index waits stops that wait, which would otherwise outlive it
+				const calls = embed.calls.length;
+				const waiting = Lagging.search({
+					sort: { attribute: 'embedding', text: 'red fruit', waitForIndexMilliseconds: 20_000 },
+				})[Symbol.asyncIterator]();
+				const step = waiting.next();
+				step.catch(() => {});
+				await waitFor(() => embed.calls.length > calls);
+				await new Promise((resolve) => setImmediate(resolve));
+				const discardedAt = Date.now();
+				await waiting.return();
+				assert.deepEqual(await step, { value: undefined, done: true });
+				assert.ok(Date.now() - discardedAt < 5_000, 'the discard did not wait out the index');
 				const response = await rest([Lagging])(
 					'QUERY',
 					'/SortTextLaggingDoc/',
