@@ -983,6 +983,7 @@ function deferredIterator(
 	let returned = false;
 	let completed = false;
 	let iteratorPromise: Promise<AsyncIterator<any>>;
+	let opened: AsyncIterator<any> | undefined;
 	const finish = () => {
 		if (completed) return;
 		completed = true;
@@ -994,12 +995,13 @@ function deferredIterator(
 		throw error;
 	};
 	const getIterator = () =>
-		(iteratorPromise ||= openResults().then((results: any) =>
-			results.iterate
-				? results.iterate(iterationOptions)
-				: results[Symbol.asyncIterator]
-					? results[Symbol.asyncIterator](iterationOptions)
-					: results[Symbol.iterator]()
+		(iteratorPromise ||= openResults().then(
+			(results: any) =>
+				(opened = results.iterate
+					? results.iterate(iterationOptions)
+					: results[Symbol.asyncIterator]
+						? results[Symbol.asyncIterator](iterationOptions)
+						: results[Symbol.iterator]())
 		));
 	return {
 		next(value?: any) {
@@ -1031,10 +1033,11 @@ function deferredIterator(
 				}
 			);
 		},
-		// a model can ignore the abort, so a close closes what opens later rather than waiting for it
 		return(value?: any) {
 			returned = true;
 			finish();
+			if (opened) return Promise.resolve(opened.return?.(value) ?? { value, done: true });
+			// a model can ignore the abort, so a close closes what opens later rather than waiting for it
 			getIterator()
 				.then((iterator) => iterator.return?.(value))
 				.catch(() => {});
@@ -1043,6 +1046,7 @@ function deferredIterator(
 		throw(error: any) {
 			returned = true;
 			finish();
+			if (opened) return opened.throw ? Promise.resolve(opened.throw(error)) : Promise.reject(error);
 			getIterator()
 				.then((iterator) => iterator.return?.())
 				.catch(() => {});
@@ -1050,7 +1054,7 @@ function deferredIterator(
 		},
 	};
 }
-type SortEmbedding = { sort: Promise<any>; abort: () => void };
+type SortEmbedding = { sort: Promise<any>; abort: () => void; conditions: any[] };
 function withEmbeddedTargets(sort: any, vectors: Map<any, number[]>): any {
 	const copy = { ...sort };
 	const vector = vectors.get(sort);
@@ -8867,16 +8871,6 @@ export function makeTable(options): TableResourceClass {
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 			const sort = typeof target.sort === 'object' && target.sort;
 			if (sort && (sort.text !== undefined || sort.next)) {
-				const { conditions } = target;
-				// a one-shot conditions iterator is read once, for the preflight and the search alike
-				if (
-					conditions &&
-					typeof conditions === 'object' &&
-					!Array.isArray(conditions) &&
-					conditions[Symbol.iterator] &&
-					Object.isExtensible(target)
-				)
-					target.conditions = Array.from(conditions);
 				const embedding = embedSortTexts(sort, context, target, target.id ?? this.getId());
 				if (embedding) return this.#searchAfterEmbedding(target, embedding, context, rowFilter);
 			}
@@ -8887,7 +8881,9 @@ export function makeTable(options): TableResourceClass {
 		#searchAfterEmbedding(target: RequestTarget, embedding: SortEmbedding, context: any, rowFilter: any): any {
 			const scope = context ?? {};
 			const search = (sort: any) =>
-				transaction(scope, () => this.#searchSorted(target, sort, context, txnForContext(scope), rowFilter));
+				transaction(scope, () =>
+					this.#searchSorted(target, sort, context, txnForContext(scope), rowFilter, embedding.conditions)
+				);
 			if (target.explain || countPageApplies(target)) return embedding.sort.then(search);
 			const deferred: any = new ExtendedIterable();
 			let results: any;
@@ -8897,9 +8893,6 @@ export function makeTable(options): TableResourceClass {
 					(sort) => (discarded ? [] : search(sort)),
 					(error) => {
 						if (discarded) return [];
-						// a client that disconnected is answered with nothing, so its abort is not a server fault
-						if (context?.signal?.aborted && error === context.signal.reason)
-							throw Object.assign(requestAbortedError(), { cause: error });
 						throw error;
 					}
 				)
@@ -8929,10 +8922,17 @@ export function makeTable(options): TableResourceClass {
 			return deferred;
 		}
 
-		#searchSorted(target: RequestTarget, sort: any, context: any, txn: any, rowFilter: any): any {
+		#searchSorted(
+			target: RequestTarget,
+			sort: any,
+			context: any,
+			txn: any,
+			rowFilter: any,
+			conditionList?: any[]
+		): any {
 			let effectiveSelect: any;
 			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes) ?? [];
-			let conditions: any = withIdCondition(searchConditions(target), target.id ?? this.getId());
+			let conditions: any = withIdCondition(conditionList ?? searchConditions(target), target.id ?? this.getId());
 			// Never mutate the caller's conditions in place. Query planning annotates
 			// and restructures conditions as it runs — it pushes a `{ comparator: 'sort' }`
 			// pseudo-condition for index-order alignment, sets `descending`, caches
@@ -14471,67 +14471,53 @@ export function makeTable(options): TableResourceClass {
 				Array.isArray(order.attribute) && order.attribute.length === 1 ? order.attribute[0] : order.attribute;
 			if (typeof attribute === 'string') indices[attribute]?.customIndex?.exactDistance?.(order, null);
 		}
-		const { conditions } = target;
-		// conditions read from an iterator (a one-shot one, or the target itself) are left for the search to read
-		const conditionList = Array.isArray(conditions)
-			? conditions
-			: conditions == null
-				? Array.isArray(target) || target[Symbol.iterator]
-					? undefined
-					: []
-				: typeof conditions === 'object' && !conditions[Symbol.iterator]
-					? [conditions]
-					: undefined;
-		if (conditionList) {
-			const prepared = TableResource._prepareQueryConditions(
-				cloneConditions(withIdCondition(conditionList, id)),
-				target.operator,
-				target,
-				context
-			).conditions;
-			if (
-				TableResource.fullTextIndexes.length > 0 &&
-				conditionsContainFullText(prepared, TableResource.fullTextIndexes)
-			)
-				throw new ClientError('Full-text results can only use descending $score order', 400);
-			const head = sort.attribute;
-			const headName = Array.isArray(head) ? head.join('.') : head;
-			if (head == null && target.operator !== 'or') throw new ClientError('Sort requires an attribute');
-			if (
-				head != null &&
-				target.operator !== 'or' &&
-				!findAttribute(attributes, head) &&
-				!prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
-			)
-				throw new ClientError(`${headName} is not a defined attribute`, 404);
-			// a condition on the sort's own attribute would order the search in its place
-			if (
-				sort.text !== undefined &&
-				target.operator !== 'or' &&
-				prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
-			)
-				throw new ClientError(
-					`A sort with text on "${headName}" can not be combined with a condition on "${headName}"; sort by the condition's target`
+		// read once, so a one-shot iterator gives the preflight and the search the same conditions
+		const conditionList = searchConditions(target);
+		const prepared = TableResource._prepareQueryConditions(
+			cloneConditions(withIdCondition(conditionList, id)),
+			target.operator,
+			target,
+			context
+		).conditions;
+		if (TableResource.fullTextIndexes.length > 0 && conditionsContainFullText(prepared, TableResource.fullTextIndexes))
+			throw new ClientError('Full-text results can only use descending $score order', 400);
+		const head = sort.attribute;
+		const headName = Array.isArray(head) ? head.join('.') : head;
+		if (head == null && target.operator !== 'or') throw new ClientError('Sort requires an attribute');
+		if (
+			head != null &&
+			target.operator !== 'or' &&
+			!findAttribute(attributes, head) &&
+			!prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
+		)
+			throw new ClientError(`${headName} is not a defined attribute`, 404);
+		// a condition on the sort's own attribute would order the search in its place
+		if (
+			sort.text !== undefined &&
+			target.operator !== 'or' &&
+			prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
+		)
+			throw new ClientError(
+				`A sort with text on "${headName}" can not be combined with a condition on "${headName}"; sort by the condition's target`
+			);
+		const headAttribute = head != null && findAttribute(attributes, head);
+		if (
+			prepared.length === 0 &&
+			!target.allowFullScan &&
+			headAttribute &&
+			!headAttribute.indexed &&
+			!headAttribute.isPrimaryKey
+		)
+			throw new ClientError(`${headName} is not indexed and not combined with any other conditions`, 404);
+		if (prepared.length === 0 && !target.explain) {
+			const leading = Array.isArray(head) && head.length === 1 ? head[0] : head;
+			if (typeof leading === 'string')
+				indices[leading]?.customIndex?.searchDistance?.(
+					sort.descending,
+					sort.distance,
+					sort.maxIndexLagMilliseconds,
+					sort.waitForIndexMilliseconds
 				);
-			const headAttribute = head != null && findAttribute(attributes, head);
-			if (
-				prepared.length === 0 &&
-				!target.allowFullScan &&
-				headAttribute &&
-				!headAttribute.indexed &&
-				!headAttribute.isPrimaryKey
-			)
-				throw new ClientError(`${headName} is not indexed and not combined with any other conditions`, 404);
-			if (prepared.length === 0 && !target.explain) {
-				const leading = Array.isArray(head) && head.length === 1 ? head[0] : head;
-				if (typeof leading === 'string')
-					indices[leading]?.customIndex?.searchDistance?.(
-						sort.descending,
-						sort.distance,
-						sort.maxIndexLagMilliseconds,
-						sort.waitForIndexMilliseconds
-					);
-			}
 		}
 		const controller = new AbortController();
 		const signal = context?.signal ? AbortSignal.any([controller.signal, context.signal]) : controller.signal;
@@ -14552,10 +14538,14 @@ export function makeTable(options): TableResourceClass {
 				() => withEmbeddedTargets(sort, vectors),
 				(error) => {
 					controller.abort();
+					// a client that disconnected is answered with nothing, so its abort is no server fault
+					if (context?.signal?.aborted && error === context.signal.reason)
+						throw Object.assign(requestAbortedError(), { cause: error });
 					throw error;
 				}
 			),
 			abort: () => controller.abort(),
+			conditions: conditionList,
 		};
 	}
 

@@ -373,13 +373,37 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			function* once() {
 				yield threshold;
 			}
-			for (const conditions of [[threshold], once()])
+			const sort = { attribute: 'embedding', text: 'red fruit' };
+			for (const target of [
+				{ conditions: [threshold], sort },
+				{ conditions: once(), sort },
+				Object.freeze({ conditions: once(), sort }),
+			])
 				assert.throws(
-					() => Doc.search({ conditions, sort: { attribute: 'embedding', text: 'red fruit' } }),
+					() => new Doc(null, {}).search(target),
 					(error) =>
 						error.statusCode === 400 && /can not be combined with a condition on "embedding"/.test(error.message)
 				);
 			assert.equal(embed.calls.length, 0);
+		});
+
+		it('searches by the one-shot conditions the preflight read', async () => {
+			function* odd() {
+				yield { attribute: 'tag', value: 'odd' };
+			}
+			const rows = await fromAsync(
+				Doc.search({ conditions: odd(), sort: { attribute: 'embedding', text: 'red fruit' }, select: ['id'] })
+			);
+			assert.deepEqual(rows.map((row) => row.id).sort(), [1, 3]);
+		});
+
+		it('leaves a sort chain without text, and its one-shot conditions, to the search as before', async () => {
+			function* odd() {
+				yield { attribute: 'tag', value: 'odd' };
+			}
+			const target = { sort: { attribute: 'tag', next: { attribute: 'id' } }, select: ['id'] };
+			Object.defineProperty(target, 'conditions', { value: odd(), enumerable: true });
+			assert.deepEqual(await fromAsync(Doc.search(target)), [{ id: 1 }, { id: 3 }]);
 		});
 
 		it('refuses an unknown attribute with a 404', () => {
@@ -777,7 +801,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				release();
 			}
 			await rejectsWith(fromAsync(results), (error) => {
-				// the client disconnected: 499, answered with nothing and logged as no server fault
 				assert.equal(error.statusCode, 499);
 				assert.equal(error.cause?.name, 'AbortError');
 			});
@@ -810,6 +833,25 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			await iterator.return();
 			releaseRow();
 			assert.deepEqual(await step, { value: undefined, done: true });
+		});
+
+		it('an explain or counted page whose client disconnects while its text is embedded fails with 499', async () => {
+			for (const shape of [{ explain: true }, { count: 'exact', limit: 2 }]) {
+				const release = embed.hold();
+				const request = new AbortController();
+				const result = Doc.search(
+					{ sort: { attribute: 'embedding', text: 'red fruit' }, ...shape },
+					{ signal: request.signal }
+				);
+				try {
+					await waitFor(() => queryCalls().length > 0);
+					request.abort();
+				} finally {
+					release();
+				}
+				await rejectsWith(result, (error) => assert.equal(error.statusCode, 499, JSON.stringify(shape)));
+				embed.calls.length = 0;
+			}
 		});
 
 		it('a model that answers after the request was aborted opens no search', async () => {
