@@ -142,7 +142,6 @@ export class ResourceBridge extends BridgeMethods {
 				replicateFrom: searchObject.replicateFrom,
 			}
 		);
-		// the response streams these rows, so a search that opens late fails here, before its status is sent
 		const opening = searchOpening(results);
 		if (opening) await opening;
 		return results;

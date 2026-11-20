@@ -108,7 +108,6 @@ function recordingContext() {
 }
 
 let mounts = 0;
-/** A REST handler that serves each given table at its name; each one is its own mount. */
 function rest(tables) {
 	const resources = new Resources();
 	for (const Table of tables) resources.set(Table.tableName, Table, { rest: true });
@@ -308,6 +307,18 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.equal(embed.calls.length, 0);
 		});
 
+		it('refuses an invalid condition before it calls the model', () => {
+			assert.throws(
+				() =>
+					Doc.search({
+						conditions: [{ attribute: 'nope', value: 1 }],
+						sort: { attribute: 'embedding', text: 'red fruit' },
+					}),
+				(error) => error.statusCode === 404 && /nope is not a defined attribute/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+		});
+
 		it('refuses an unknown attribute with a 404', () => {
 			assert.throws(
 				() => Doc.search({ sort: { attribute: 'nope', text: 'red fruit' } }),
@@ -351,7 +362,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.equal(embed.calls.length, 0);
 		});
 
-		it('with no condition, refuses a distance a nativePlane index does not rank by before it calls the model', function () {
+		it('with no condition, refuses what a nativePlane index refuses before it calls the model', function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // the native plane needs RocksDB
 			const Native = table({
 				table: 'SortTextNativePlaneDoc',
@@ -368,10 +379,15 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					},
 				],
 			});
-			for (const distance of ['euclidean', 'dotProduct'])
+			for (const [options, message] of [
+				[{ distance: 'euclidean' }, /only supports its configured cosine distance/],
+				[{ distance: 'dotProduct' }, /only supports its configured cosine distance/],
+				[{ waitForIndexMilliseconds: 30001 }, /waitForIndexMilliseconds must be a finite number/],
+				[{ maxIndexLagMilliseconds: -1 }, /maxIndexLagMilliseconds must be a finite nonnegative number/],
+			])
 				assert.throws(
-					() => Native.search({ sort: { attribute: 'embedding', text: 'red fruit', distance } }),
-					(error) => error.statusCode === 400 && /only supports its configured cosine distance/.test(error.message)
+					() => Native.search({ sort: { attribute: 'embedding', text: 'red fruit', ...options } }),
+					(error) => error.statusCode === 400 && message.test(error.message)
 				);
 			assert.equal(embed.calls.length, 0);
 		});
@@ -508,6 +524,22 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				).catch((error) => error);
 				assert.equal(response.statusCode ?? response.status, 502, accept);
 			}
+		});
+
+		it('answers a REST QUERY with the failure as its status when the table maps its search', async () => {
+			failure = new Error('backend down');
+			class MappedDoc extends Doc {
+				search(target) {
+					return super.search(target).map((row) => row);
+				}
+			}
+			const response = await rest([MappedDoc])(
+				'QUERY',
+				'/SortTextEmbedDoc/',
+				{ sort: { attribute: 'embedding', text: 'red fruit' }, select: ['content'] },
+				{ accept: 'application/json' }
+			).catch((error) => error);
+			assert.equal(response.statusCode ?? response.status, 502);
 		});
 	});
 

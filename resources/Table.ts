@@ -454,14 +454,9 @@ const MAX_EXACT_COUNT_MS = 1_000;
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
 /**
- * Whether a search answers with a counted page (a Promise) rather than a stream. Counting is a pagination
- * feature, so it requires a bounded page AND window: both the limit and the offset must be finite,
- * non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the window (offset + limit) no larger
- * than MAX_EXACT_COUNT_SCAN. Anything else — a missing/oversized/non-finite/negative limit or offset (a bare
- * collection GET, `{ limit: Infinity }`, `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page window
- * past the scan budget — falls through to the normal streaming path with no count. This bounds the offset
- * too: without it a huge offset would postpone the exact guardrail (which only engages past the page) until
- * that offset was scanned.
+ * Whether a search answers with a counted page (a Promise) rather than a stream: only for a bounded page and window,
+ * finite non-negative integers with limit <= MAX_COUNT_PAGE and offset + limit <= MAX_EXACT_COUNT_SCAN. A bounded
+ * offset keeps a huge one from postponing the exact guardrail until it was scanned.
  */
 function countPageApplies(target: RequestTarget): boolean {
 	if (!target.count) return false;
@@ -949,22 +944,30 @@ const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
-function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
+const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
+
+function propagateSearchAuthorization(iterable: any, authorization: Promise<any>) {
+	return carryThroughTransforms(iterable, SEARCH_AUTHORIZATION, authorization, SEARCH_AUTHORIZATION_TRANSFORMS, true);
+}
+
+/** Sets `key` on a search result and on what its transforms return, as a mapped search is still that search. */
+function carryThroughTransforms(iterable: any, key: symbol, value: any, wrapped: symbol, inheritSelect: boolean) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
-	iterable[SEARCH_AUTHORIZATION] = authorization;
-	if (source) {
-		if (source.selectApplied) iterable.selectApplied = true;
-		if (source.getColumns && !iterable.getColumns) iterable.getColumns = source.getColumns;
-	}
-	if (iterable[SEARCH_AUTHORIZATION_TRANSFORMS]) return iterable;
-	Object.defineProperty(iterable, SEARCH_AUTHORIZATION_TRANSFORMS, { value: true });
+	iterable[key] = value;
+	if (iterable[wrapped]) return iterable;
+	Object.defineProperty(iterable, wrapped, { value: true });
 	for (const methodName of AUTHORIZATION_TRANSFORM_METHODS) {
 		const transform = iterable[methodName];
 		if (typeof transform !== 'function') continue;
 		Object.defineProperty(iterable, methodName, {
 			configurable: true,
 			value: function (...args: any[]) {
-				return propagateSearchAuthorization(transform.apply(this, args), authorization, this);
+				const derived = transform.apply(this, args);
+				if (inheritSelect && derived && typeof derived === 'object') {
+					if (this.selectApplied) derived.selectApplied = true;
+					if (this.getColumns && !derived.getColumns) derived.getColumns = this.getColumns;
+				}
+				return carryThroughTransforms(derived, key, value, wrapped, inheritSelect);
 			},
 		});
 	}
@@ -8884,7 +8887,7 @@ export function makeTable(options): TableResourceClass {
 					return searched;
 				});
 			opening.catch(() => {});
-			deferred[SEARCH_OPENING] = opening;
+			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false);
 			deferred.iterate = (options: any = {}) =>
 				deferredIterator(
 					options,
@@ -14420,11 +14423,7 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
-	/**
-	 * The descriptor, index and full-text refusals come before any model call, so they cost none. So do the checks
-	 * of a leading vector sort when the search is sure to lead with it; otherwise which sort leads is the plan's
-	 * choice, made after the call (#searchSorted).
-	 */
+	/** Refusals that need no plan come before the model call; so do a leading index's, when nothing else can lead. */
 	function embedSortTexts(sort: any, context: any, target: any, id: any): SortEmbedding | undefined {
 		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
 		for (let order = sort; order; order = order.next) {
@@ -14454,29 +14453,40 @@ export function makeTable(options): TableResourceClass {
 		}
 		if (!textsByAttribute) return;
 		const { conditions } = target;
-		// with no condition, id or `or`, #searchSorted leads with the head of the sort
-		if (
-			!id &&
-			target.operator !== 'or' &&
-			(Array.isArray(conditions)
-				? conditions.length === 0
-				: conditions == null && !Array.isArray(target) && !target[Symbol.iterator])
-		) {
-			const head = Array.isArray(sort.attribute) && sort.attribute.length === 1 ? sort.attribute[0] : sort.attribute;
-			if (typeof head === 'string') indices[head]?.customIndex?.searchDistance?.(sort);
-		}
-		// a one-shot conditions iterator is left for the search to read
+		// conditions read from an iterator (a one-shot one, or the target itself) are left for the search to read
 		const conditionList = Array.isArray(conditions)
 			? conditions
-			: conditions && typeof conditions === 'object' && !conditions[Symbol.iterator]
-				? [conditions]
-				: undefined;
-		if (
-			conditionList &&
-			TableResource.fullTextIndexes.length > 0 &&
-			conditionsContainFullText(conditionList, TableResource.fullTextIndexes)
-		)
-			throw new ClientError('Full-text results can only use descending $score order', 400);
+			: conditions == null
+				? Array.isArray(target) || target[Symbol.iterator]
+					? undefined
+					: []
+				: typeof conditions === 'object' && !conditions[Symbol.iterator]
+					? [conditions]
+					: undefined;
+		if (conditionList) {
+			const prepared = TableResource._prepareQueryConditions(
+				cloneConditions(conditionList),
+				target.operator,
+				target,
+				context
+			).conditions;
+			if (
+				TableResource.fullTextIndexes.length > 0 &&
+				conditionsContainFullText(prepared, TableResource.fullTextIndexes)
+			)
+				throw new ClientError('Full-text results can only use descending $score order', 400);
+			// with no condition to lead, the head of the sort leads
+			if (!id && prepared.length === 0) {
+				const head = Array.isArray(sort.attribute) && sort.attribute.length === 1 ? sort.attribute[0] : sort.attribute;
+				if (typeof head === 'string')
+					indices[head]?.customIndex?.searchDistance?.(
+						sort.descending,
+						sort.distance,
+						sort.maxIndexLagMilliseconds,
+						sort.waitForIndexMilliseconds
+					);
+			}
+		}
 		const controller = new AbortController();
 		const signal = context?.signal ? AbortSignal.any([controller.signal, context.signal]) : controller.signal;
 		const vectors = new Map<any, number[]>();

@@ -1388,7 +1388,6 @@ export function assertNestedQueryOptions(select, resource) {
 			(!resource?._prepareRelationshipSelection || !related)
 		)
 			throw new ClientError('Nested query constraints require a relationship attribute');
-		// a nested sort orders each record's related rows, where nothing embeds text (Table.ts embedSortTexts)
 		for (let order = typeof property.sort === 'object' && property.sort; order; order = order.next) {
 			if (order.text !== undefined)
 				throw new ClientError(`The select of "${property.name}" can not sort by text; sort it by a target vector`);

@@ -613,7 +613,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			await writeCondition.release();
 			writeCondition.release = undefined;
 		}
-		// a search that opens late (its sort text is embedded first) fails here, while the failure can still be the status
+		// a failure after the first byte could only cut the response off
 		const opening = searchOpening(responseData);
 		if (opening) await opening;
 		let status = request.response.status;

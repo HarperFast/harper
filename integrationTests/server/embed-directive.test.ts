@@ -130,7 +130,7 @@ async function startFakeOllama(): Promise<FakeOllama> {
 					const inputs = Array.isArray(parsed.input) ? parsed.input : [parsed.input];
 					embedCalls++;
 					embedInputs.push(inputs);
-					// the failingQuery model embeds documents, and rejects every query
+					// query embeddings fail; documents still embed
 					if (inputs.some((input) => input.startsWith(FAILING_QUERY_PREFIX))) {
 						res.writeHead(401, { 'Content-Type': 'application/json' });
 						res.end(JSON.stringify({ error: { message: 'upstream rejected key sk-test-secret' } }));

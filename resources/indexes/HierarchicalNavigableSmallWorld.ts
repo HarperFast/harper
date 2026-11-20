@@ -1964,26 +1964,14 @@ export class HierarchicalNavigableSmallWorld {
 		// For quantized (int8) threshold queries, suppress the distance limit so the full candidate
 		// set is returned; rescoreResults() re-filters on exact full-precision distances post-load.
 		if (this.int8 && limit !== undefined) limit = undefined;
-		const distanceFunction = this.searchDistance({ descending, distance });
+		const distanceFunction = this.searchDistance(
+			descending,
+			distance,
+			maxIndexLagMilliseconds,
+			waitForIndexMilliseconds
+		);
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
-		if (
-			this.filePrimary &&
-			(typeof maxIndexLagMilliseconds !== 'number' ||
-				!Number.isFinite(maxIndexLagMilliseconds) ||
-				maxIndexLagMilliseconds < 0)
-		)
-			throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
-		if (
-			this.filePrimary &&
-			(typeof waitForIndexMilliseconds !== 'number' ||
-				!Number.isFinite(waitForIndexMilliseconds) ||
-				waitForIndexMilliseconds < 0 ||
-				waitForIndexMilliseconds > MAX_WAIT_FOR_INDEX_MILLISECONDS)
-		)
-			throw new ClientError(
-				`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`
-			);
 
 		const txnOptions = context.transaction; // should have a nested RocksDB transaction
 		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
@@ -2207,11 +2195,13 @@ export class HierarchicalNavigableSmallWorld {
 			filterState
 		);
 	}
-	/**
-	 * The distance function search() ranks by, after the checks it makes before it reads the target, so a caller
-	 * that has yet to compute the target (a sort's text being embedded) can make them first.
-	 */
-	searchDistance({ descending, distance }: { descending?: boolean; distance?: string }) {
+	/** The distance function search() ranks by, after the checks it makes that need no target. */
+	searchDistance(
+		descending: boolean | undefined,
+		distance: string | undefined,
+		maxIndexLagMilliseconds = DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
+		waitForIndexMilliseconds = 0
+	) {
 		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
 		let distanceFunction: (a: number[], b: number[]) => number;
 		if (distance === 'cosine') distanceFunction = cosineDistance;
@@ -2221,6 +2211,23 @@ export class HierarchicalNavigableSmallWorld {
 		else distanceFunction = this.distance;
 		if (this.filePrimary && distanceFunction !== this.distance)
 			throw new ClientError('A nativePlane index only supports its configured cosine distance');
+		if (
+			this.filePrimary &&
+			(typeof maxIndexLagMilliseconds !== 'number' ||
+				!Number.isFinite(maxIndexLagMilliseconds) ||
+				maxIndexLagMilliseconds < 0)
+		)
+			throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
+		if (
+			this.filePrimary &&
+			(typeof waitForIndexMilliseconds !== 'number' ||
+				!Number.isFinite(waitForIndexMilliseconds) ||
+				waitForIndexMilliseconds < 0 ||
+				waitForIndexMilliseconds > MAX_WAIT_FOR_INDEX_MILLISECONDS)
+		)
+			throw new ClientError(
+				`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`
+			);
 		return distanceFunction;
 	}
 	/**
