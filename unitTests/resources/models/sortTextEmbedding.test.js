@@ -322,9 +322,10 @@ describe('Vector search by sort text on an @embed attribute', () => {
 
 		it('prepares the conditions as the search does, with the id prefix', async () => {
 			const query = (sort) =>
+				// a search with an id resolves that resource first, which a cold read answers with a Promise
 				(async () =>
 					fromAsync(
-						Doc.search({
+						await Doc.search({
 							id: 1,
 							operator: 'or',
 							conditions: [{ attribute: 'tag', value: 'even' }],
