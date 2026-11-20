@@ -89,7 +89,13 @@ per percentile boundary (`p1`, `p10`, `p25`, `median`, `p75`, `p90`, `p95`, `p99
 maximum). An entry is a bare number when its bucket covers a single sample, or
 `{ "value": <sample>, "count": <samples> }` when it covers several, so a consumer reading raw
 entries must handle both shapes. The aggregate table's percentile fields are rolled up from these
-buckets.
+buckets. A raw entry can lack `distribution` when the main thread, which computes distributions for
+every worker, is behind: the oldest report waiting for it has waited more than two seconds, or the runs waiting fill buffers
+with room for more than 16,777,216 runs, about 100 MB (a run is a value repeated in a row, so a fan-out's identical samples count once). It still carries `mean` and `count`, which the aggregate row includes, but
+the aggregate percentiles cover only the entries that kept a distribution. While this continues, the server logs a
+warning at most once a minute. If reports back up, with 1,000 raw reports, or about 64 MB of them besides their runs, waiting
+to be summarized or written, the server drops whole reports, `mean` and `count` included, and logs a warning at most once
+a minute.
 
 ## Aggregate Analytics (`hdb_analytics`)
 
@@ -163,15 +169,15 @@ Harper automatically tracks the following metrics for all services. Applications
 
 ### MQTT / WebSocket Metrics
 
-| `metric`           | `path` | `method`     | `type` | Unit  | Description                                      |
-| ------------------ | ------ | ------------ | ------ | ----- | ------------------------------------------------ |
-| `mqtt-connections` |        |              |        | count | Number of open direct MQTT connections           |
-| `ws-connections`   |        |              |        | count | Number of open WebSocket connections             |
-| `connection`       | `mqtt` | `connect`    |        | %     | Percentage of successful direct MQTT connections |
-| `connection`       | `mqtt` | `disconnect` |        | %     | Percentage of explicit direct MQTT disconnects   |
-| `connection`       | `ws`   | `connect`    |        | %     | Percentage of successful WebSocket connections   |
-| `connection`       | `ws`   | `disconnect` |        | %     | Percentage of explicit WebSocket disconnects     |
-| `bytes-sent`       | topic  | mqtt command | `mqtt` | bytes | Bytes sent for a given MQTT command and topic    |
+| `metric`           | `path`            | `method`     | `type` | Unit  | Description                                                             |
+| ------------------ | ----------------- | ------------ | ------ | ----- | ----------------------------------------------------------------------- |
+| `mqtt-connections` |                   |              |        | count | Number of open direct MQTT connections                                  |
+| `ws-connections`   |                   |              |        | count | Number of open WebSocket connections                                    |
+| `connection`       | `mqtt`            | `connect`    |        | %     | Percentage of successful direct MQTT connections                        |
+| `connection`       | `mqtt`            | `disconnect` |        | %     | Percentage of explicit direct MQTT disconnects                          |
+| `connection`       | `ws`              | `connect`    |        | %     | Percentage of successful WebSocket connections                          |
+| `connection`       | `ws`              | `disconnect` |        | %     | Percentage of explicit WebSocket disconnects                            |
+| `bytes-sent`       | first topic level | mqtt command | `mqtt` | bytes | Bytes sent for a given MQTT command, under the first level of its topic |
 
 ### Replication Metrics
 

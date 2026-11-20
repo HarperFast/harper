@@ -99,6 +99,66 @@ describe('recordAction', () => {
 		]);
 	});
 
+	it('keeps every path on its own action once a level holds more keys than an array does', async function () {
+		this.timeout(30000);
+		const metric = METRIC_PREFIX + 'many-paths';
+		const paths = Array.from({ length: 12 }, (_, i) => 'path' + i);
+		analytics.setAnalyticsEnabled(true);
+		const round = (n) => {
+			for (let i = 0; i < paths.length; i++) analytics.recordAction(i * 10 + n, metric, paths[i], 'GET');
+		};
+		round(0);
+		round(1);
+		for (const path of paths) assert.ok(isIndexed(metric, path, 'GET'), `${path} is indexed`);
+		round(2);
+		assert.deepStrictEqual(
+			await nextReport(metric),
+			paths.map((path, i) => ({ path, method: 'GET', type: undefined, count: 3, mean: i * 10 + 1 }))
+		);
+	});
+
+	it('records a repeated tuple and the tuples beside it into their own actions', async function () {
+		this.timeout(30000);
+		const metric = METRIC_PREFIX + 'repeats';
+		analytics.setAnalyticsEnabled(true);
+		const calls = [
+			[1, 'Topic', 'publish', 'mqtt'],
+			[1, 'Topic', 'publish', 'mqtt'],
+			[2, 'Other', 'publish', 'mqtt'],
+			[1, 'Topic', 'publish', 'mqtt'],
+			[3, 'Topic', 'puback', 'mqtt'],
+			[1, 'Topic', 'publish', 'mqtt'],
+			[4, 'Topic', 'publish', 'ws'],
+			[1, 'Topic', 'publish', 'mqtt'],
+			[5, 'Topic', 'publish', undefined],
+			[1, 'Topic', 'publish', 'mqtt'],
+			[6, 'Topic', undefined, 'mqtt'],
+			[1, 'Topic', 'publish', 'mqtt'],
+			[7, undefined, 'publish', 'mqtt'],
+		];
+		for (let round = 0; round < 2; round++)
+			for (const [value, path, method, type] of calls) analytics.recordAction(value, metric, path, method, type);
+		assert.deepStrictEqual(await nextReport(metric), [
+			{ path: 'Topic', method: 'publish', type: 'mqtt', count: 14, mean: 1 },
+			{ path: 'Other', method: 'publish', type: 'mqtt', count: 2, mean: 2 },
+			{ path: 'Topic', method: 'puback', type: 'mqtt', count: 2, mean: 3 },
+			{ path: 'Topic', method: 'publish', type: 'ws', count: 2, mean: 4 },
+			{ path: 'Topic', method: 'publish', type: undefined, count: 2, mean: 5 },
+			{ path: 'Topic', method: undefined, type: 'mqtt', count: 2, mean: 6 },
+			{ path: undefined, method: 'publish', type: 'mqtt', count: 2, mean: 7 },
+		]);
+	});
+
+	it('indexes a NaN argument as a Map would', async function () {
+		this.timeout(30000);
+		const metric = METRIC_PREFIX + 'nan';
+		analytics.setAnalyticsEnabled(true);
+		// NaN goes in the type: listeners other suites leave registered call startsWith on a reported path
+		for (const value of [1, 2, 3]) analytics.recordAction(value, metric, 'Nan', 'GET', NaN);
+		assert.ok(isIndexed(metric, 'Nan', 'GET', NaN), 'NaN finds its own key');
+		assert.deepStrictEqual(await nextReport(metric), [{ path: 'Nan', method: 'GET', type: NaN, count: 3, mean: 2 }]);
+	});
+
 	it('records an object argument into the action its key names without indexing it', async function () {
 		this.timeout(30000);
 		const metric = METRIC_PREFIX + 'object';

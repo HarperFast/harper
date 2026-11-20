@@ -49,12 +49,51 @@ the window still being recorded, and the queue-depth high-water marks restart wi
 holds only actions an `activeActions` lookup returned, and only for primitive arguments (an object
 would key by identity and split per call), so alias spellings and key collisions that `actionKey`
 merges stay one action; it is replaced with `activeActions` here and at each rotation, since
-a stale index would take later samples into an action nothing reports.
-`flushAnalytics()` has already rotated the previous window out and yields once per action, so it also
+a stale index would take later samples into an action nothing reports. The last tuple each metric
+remembers lives on its index entry for the same reason, and only an indexed tuple is remembered.
+`flushAnalytics()` has already rotated the previous window out and yields after each action it may spend long on
+(every action on the main thread, which sorts; only callbacks on a worker), so it also
 captures `analyticsGeneration`, which every reset advances, and stops after a yield, before each
 listener and before the sink once it changes. A listener that resets keeps the report it was handed, as
 do the listeners before it; later listeners and the sink do not get it. Pinned by the three in-flight
 cases in `../../unitTests/resources/analytics/aggregationCycle.test.js`.
+
+An `actionRecorder` keeps the action it looked up for one window: `analyticsWindow` advances wherever
+`activeActions` is replaced (a reset, and each flush's rotation), and a recorder from an earlier window looks
+its action up again. Without the advance it would keep writing into an action a flush already took. Within a
+window the flush timer is armed, since only a rotation or an exit disarms it.
+
+A numeric action keeps its samples as runs (a value and a 16-bit count), so a fan-out's sample per subscriber
+fills one slot. Runs need not be maximal: 0 and -0 never share one, and a full run starts another.
+`distributionOfRuns` gives exactly the distribution sorting every sample gave, radix-sorting the float32 bits
+into `Float32Array#sort`'s order (-0 before 0, NaN last). A worker does not sort: its report message lists
+each numeric entry's runs beside the report, by the entry's position after its listeners ran, and transfers their
+buffers; `recordAnalytics` on the main thread computes the distribution, in a local flush's field order, before
+anything stores or reads the row. No entry holds runs, so a callback metric's fields are stored as returned, whatever
+their names. A worker's own analytics listeners see `mean` and `count` but no `distribution`. Every worker flushes each
+second, so their reports arrive together: the main thread queues them in arrival order and summarizes within
+`SUMMARY_TURN_MS` per event-loop turn, a large sort stopping between its passes (`summarizePending`), so a turn
+ends at the first check past that budget, the checks falling between linear passes over a report's runs, instead of
+after every worker's sorts (8 workers at 1M samples/s each stalled it 84-90 ms when summarized on arrival). The
+once-a-second burst is not a backlog: only once the oldest queued report has waited `SUMMARY_BEHIND_MS`, or past
+`MAX_PENDING_RUNS` queued (a memory bound, so counted at the room their transferred buffers hold), is a report stored without its distributions, keeping every metric's mean
+and count (warned at most once a minute);
+aggregation takes a key's percentiles from the bins its rows carry, not from its count, so such a row cannot run
+that walk past them. The main thread's own report, queued behind them, follows the reset rule above: one from
+before a reset is not stored after it. The final main-thread flush waits for the queue before the raw store's
+commit barrier, or a worker's last report would be lost at exit. On RocksDB a raw report is written through a
+transaction (`PrimaryRocksDatabase.putOffThread`), since a plain `put` writes on the calling thread and a write stall
+would stall the main thread with it. Those commits run on the database's commit threads, which can finish them out of
+key order, and the raw cursor above skips a key below one it has read, so they go one at a time; and a RocksDB store
+has no commit barrier, so exit waits for them itself. At most `MAX_REPORT_WRITES` reports, and `MAX_REPORT_WRITE_BYTES`
+of heap as `estimateReportBytes` overestimates it (every top-level field of every entry, and for a queued report
+the distributions it will gain), wait for commits, and the same bound covers the summary queue and the commits together (`admitsWaiting`),
+since a report with nothing to summarize still queues behind one being summarized; past it a report is dropped whole
+(warned at most once a minute), though one is always admitted when nothing waits. A report waiting behind another
+write is encoded when its own write starts, so an entry a listener keeps changing is stored as it is then. A report
+from before a reset is not written after it. These commits are not tracked as the thread's
+outstanding writes, so a stuck one makes the main thread refuse no writes to other databases. Pinned by
+`../../unitTests/resources/analytics/sampleRuns.test.js`.
 
 ## Per-thread rows carry a `thread` attribute under their own metric name (`resources/analytics/write.ts`)
 
@@ -87,4 +126,4 @@ always a caller's measure.
 
 `watchFullTextTelemetryConfiguration` initializes and reloads through the shared watcher's nested root, environment overlay and transactional `refreshConfigSubtree`; it never reads the missing camel-case flat aggregate. Invalid edits retain valid policy. Missing files retain valid policy and overrides, matching the root watcher; valid edits retire only changed overrides. `fullTextTelemetryConfiguration.test.js` pins initialization, override retirement and deletion/recreation. Native runtime/query policy remains frozen separately. Binding telemetry types are structural: `buildDist.test.mjs` checks compilation and emitted declarations without the optional package.
 
-Final main-thread analytics flush awaits its own raw write and the raw store’s existing commit barrier for worker reports. This is commit completion, not a new disk-sync guarantee; the process shutdown deadline still bounds it. `describe_metric` omits null-valued attributes from inferred metadata rather than describing unavailable scalar observations as objects; stored rows and `get_analytics` retain their null values.
+Final main-thread analytics flush awaits its own raw write, the queued worker reports and their raw writes, then the raw store's commit barrier where it has one. This is commit completion, not a new disk-sync guarantee; the process shutdown deadline still bounds it. `describe_metric` omits null-valued attributes from inferred metadata rather than describing unavailable scalar observations as objects; stored rows and `get_analytics` retain their null values.

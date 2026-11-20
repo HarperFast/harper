@@ -431,6 +431,59 @@ describe('analytics aggregation cycle', () => {
 		assert.strictEqual(byThread[0].perThread, undefined);
 	});
 
+	it('takes percentiles from the rows that carry a distribution when another row for the key has none', async function () {
+		this.timeout(30000);
+		await nextPeriod();
+		await runCycle();
+		const first = lastRawKey() + 1;
+		// a report stored while summaries were behind keeps its count and mean but no distribution
+		const behind = durationReport(first + 1, 0, 'NoDistributionPath', 30, 6);
+		delete behind.metrics[0].distribution;
+		await seedRawReports([durationReport(first, 0, 'NoDistributionPath', 10, 2), behind]);
+		await nextPeriod();
+		await runCycle();
+		const aggregate = await waitFor(
+			() => aggregatedMetrics('duration', first + 1).find((row) => row.path === 'NoDistributionPath'),
+			{ timeout: 10000, message: 'the duration row was aggregated' }
+		);
+		assert.strictEqual(aggregate.count, 40);
+		assert.strictEqual(aggregate.mean, 5);
+		assert.strictEqual(aggregate.p95, 2);
+	});
+
+	it('leaves malformed distribution buckets out instead of stalling the cycle', async function () {
+		this.timeout(30000);
+		await nextPeriod();
+		await runCycle();
+		const first = lastRawKey() + 1;
+		const malformed = durationReport(first + 1, 0, 'MalformedBucketPath', 5, 9);
+		malformed.metrics[0].distribution = [
+			null,
+			{ value: 'nine', count: 2 },
+			{ value: 9, count: 0 },
+			{ value: 9, count: '2' },
+		];
+		const empty = durationReport(first + 2, 0, 'EmptyBucketPath', 5, 9);
+		empty.metrics[0].distribution = [];
+		const notAnArray = durationReport(first + 3, 0, 'EmptyBucketPath', 1, 9);
+		notAnArray.metrics[0].distribution = { value: 9, count: 1 };
+		await seedRawReports([durationReport(first, 0, 'MalformedBucketPath', 10, 2), malformed, empty, notAnArray]);
+		await nextPeriod();
+		await runCycle();
+		const aggregate = await waitFor(
+			() => aggregatedMetrics('duration', first + 3).find((row) => row.path === 'MalformedBucketPath'),
+			{ timeout: 10000, message: 'the duration row was aggregated' }
+		);
+		assert.strictEqual(aggregate.count, 15);
+		assert.strictEqual(aggregate.p95, 2);
+		const withoutBins = await waitFor(
+			() => aggregatedMetrics('duration', first + 3).find((row) => row.path === 'EmptyBucketPath'),
+			{ timeout: 10000, message: 'the row with no buckets was aggregated' }
+		);
+		assert.strictEqual(withoutBins.count, 6);
+		assert.strictEqual(withoutBins.p95, undefined);
+	});
+
 	it('rolls duration up once per thread, across its paths, without changing its aggregate rows', async function () {
 		this.timeout(30000);
 		await nextPeriod();

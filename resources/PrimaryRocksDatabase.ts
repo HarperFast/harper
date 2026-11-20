@@ -233,6 +233,31 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		return super.putSync(id, value, options);
 	}
 
+	/**
+	 * `put` writes on the calling thread (rocksdb-js's async put is putSync), so a write stall stalls that thread. This
+	 * stages the value in a transaction instead, whose commit runs on this database's commit threads.
+	 */
+	putOffThread(id: any, value: any): Promise<number | void> {
+		let transaction: Transaction;
+		try {
+			transaction = new Transaction(this.store);
+			this.putSync(id, value, { transaction });
+		} catch (error) {
+			try {
+				transaction?.abort();
+			} catch {}
+			return Promise.reject(error);
+		}
+		// untracked: a stalled commit to this store must not make this thread refuse writes to other databases
+		return commitTrackedRocksTransaction(transaction, this, undefined, false).catch((error) => {
+			// a refused commit leaves the transaction open, holding its snapshot
+			try {
+				transaction.abort();
+			} catch {}
+			throw error;
+		});
+	}
+
 	removeSync(id: any, options?: any): any {
 		this.#cache?.delete(id);
 		return super.removeSync(id, options);

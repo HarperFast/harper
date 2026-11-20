@@ -295,7 +295,7 @@ import {
 	entryMap,
 	storedFieldsOnly,
 } from './RecordEncoder.ts';
-import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
+import { actionRecorder } from './analytics/write.ts';
 import {
 	commutativeOpsOf,
 	hasCommutativeOp,
@@ -2667,6 +2667,10 @@ export function makeTable(options): TableResourceClass {
 	const recordDbRead = actionRecorder('db-read', tableName, null);
 	// a covered row is read from its index entry, whose size the scan does not report
 	const recordCoveredRead = databaseName !== 'system' ? () => recordDbRead(1) : undefined;
+	const recordDbMessage = databaseName !== 'system' ? actionRecorder('db-message', tableName, null) : undefined;
+	const recordCacheHit = actionRecorder('cache-hit', tableName);
+	const recordCacheResolved = actionRecorder('cache-resolution', tableName, null, 'success');
+	const recordCacheResolveFailed = actionRecorder('cache-resolution', tableName, null, 'fail');
 	function conditionForWrite(context, id: Id) {
 		const condition = context?.[WRITE_CONDITION];
 		const matches =
@@ -12967,9 +12971,7 @@ export function makeTable(options): TableResourceClass {
 				state.pendingRealTimeQueue.push(event);
 			} else {
 				if (state.allowsEvent && !state.allowsEvent(event)) return;
-				if (databaseName !== 'system') {
-					recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
-				}
+				recordDbMessage?.(auditRecord.size ?? 1);
 				this.send(event);
 			}
 		} catch (error) {
@@ -13261,9 +13263,7 @@ export function makeTable(options): TableResourceClass {
 		// Covers the pendingRealTimeQueue drain and the reload re-snapshot (#495) delivery.
 		if (!alreadyFiltered && allowsEvent && !allowsEvent(event)) return isSubscriptionActive(subscription);
 		if (!isSubscriptionActive(subscription)) return false;
-		if (databaseName !== 'system') {
-			recordAction(event.size ?? 1, 'db-message', tableName, null);
-		}
+		recordDbMessage?.(event.size ?? 1);
 		return subscription.send(event);
 	}
 	// A copyApply base copy back-fills rows as snapshots with NO per-row audit entries, so the live
@@ -14267,7 +14267,7 @@ export function makeTable(options): TableResourceClass {
 					// TODO: Allow getEntryByVariation to find a sub-variation of this record and determine if
 					// it still needs to be loaded from source
 				} else needsSourceData = true;
-				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
+				recordCacheHit(!needsSourceData);
 			}
 			if (needsSourceData) {
 				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
@@ -15033,7 +15033,7 @@ export function makeTable(options): TableResourceClass {
 					} else sourceVersion = sourceTimestamp;
 					hasChanges = invalidated || (validReportedVersion && reportedVersion > existingVersion) || !existingRecord;
 					const resolveDuration = performance.now() - start;
-					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
+					recordCacheResolved(resolveDuration);
 					if (responseHeaders)
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
 					if (expirationMs && sourceContext.expiresAt == undefined) sourceContext.expiresAt = Date.now() + expirationMs;
@@ -15193,7 +15193,7 @@ export function makeTable(options): TableResourceClass {
 						reject(error ?? settlingError);
 					}
 					const resolveDuration = performance.now() - start;
-					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
+					recordCacheResolveFailed(resolveDuration);
 					if (responseHeaders)
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
 					if (!fill.failure) warnWaitersOfFailedFill(fill, id, error);
