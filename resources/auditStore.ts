@@ -2838,18 +2838,18 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 }
 
 /**
- * Reject a header whose first byte can be neither an action nor a previousVersion field. Returns the
- * sentinel directly rather than throwing into readAuditEntry's catch, whose error log is not
- * contained: a throwing log sink there would escape the decoder and stall the iteration it runs in.
+ * Reject a header whose first byte can be neither an action nor a previousVersion field, returning the sentinel
+ * directly rather than through readAuditEntry's catch.
  */
 function corruptEntry(buffer: Uint8Array, start: number, end: number | undefined, firstByte: number): AuditRecord {
 	if (!warnedUndecodableHeader) {
 		warnedUndecodableHeader = true;
 		warnContained('Audit entry header begins with neither an action nor a previousVersion; treating as corrupt', {
 			firstByte,
-			// the 8 prefix bytes plus the action byte: the classifying bytes, stopping before the recordId
+			// the 8 prefix bytes plus the action byte, stopping before the recordId and inside the entry (a negative
+			// subarray end would count from the end of the buffer)
 			header: Buffer.from(
-				buffer.subarray(start, Math.min(start + 9, end ?? buffer.byteLength, buffer.byteLength))
+				buffer.subarray(start, Math.max(start, Math.min(start + 9, end ?? buffer.byteLength, buffer.byteLength)))
 			).toString('hex'),
 		});
 	}

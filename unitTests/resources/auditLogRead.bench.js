@@ -162,8 +162,18 @@ describe('audit log read benchmarks', function () {
 				}
 			});
 		};
+		// until no pass has run for several turns, so every queued pass and its yield continuations have finished
 		const drain = async () => {
-			for (let i = 0; i < 3; i++) await new Promise((resolve) => originalSetImmediate(resolve));
+			let quietTurns = 0;
+			let seen = passCount;
+			while (quietTurns < 5) {
+				await new Promise((resolve) => originalSetImmediate(resolve));
+				if (passCount === seen) quietTurns++;
+				else {
+					seen = passCount;
+					quietTurns = 0;
+				}
+			}
 		};
 		let subscription;
 		try {
