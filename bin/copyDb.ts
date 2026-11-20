@@ -40,6 +40,8 @@ import {
 	lastMetadata,
 	METADATA,
 	HAS_ADDITIONAL_AUDIT_REFS,
+	VERSION_REGRESSED,
+	VERSION_REUSED,
 } from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
@@ -1109,7 +1111,10 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 							// entry fields are set by handleLocalTimeForGets for patched stores
 							const sourceMeta = lastMetadata;
 							if (version) {
-								const metadataFlags = entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0;
+								// these speak only for readers of the source store, and RocksDB full-text search and
+								// history carry would treat every migrated row that had one as unverifiable
+								const metadataFlags =
+									(entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0) & ~(VERSION_REUSED | VERSION_REGRESSED);
 								setNextEncoding(
 									version,
 									metadataFlags,
