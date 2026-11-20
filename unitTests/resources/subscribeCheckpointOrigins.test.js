@@ -20,6 +20,7 @@ const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+const CAPTURE_INTERVAL_MS = 100;
 
 let sequence = 0;
 function tableInOwnDatabase() {
@@ -62,7 +63,7 @@ describe('The certified floor tick and two-origin checkpoints (harper#3356)', fu
 	before(() => {
 		setupTestDBPath();
 		setMainIsWorker(true);
-		setOriginCaptureIntervalForTests(100);
+		setOriginCaptureIntervalForTests(CAPTURE_INTERVAL_MS);
 	});
 	after(() => setOriginCaptureIntervalForTests());
 
@@ -96,6 +97,8 @@ describe('The certified floor tick and two-origin checkpoints (harper#3356)', fu
 				await waitFor(() => held > 0, 30_000, 50);
 				const persisted = readOriginClosedFloor(T.auditStore);
 				assert.ok(persisted > keyOfWrite, 'the tick persisted a floor past the write');
+				// several capture intervals, so a floor advertised early would have reached a checkpoint
+				await sleep(CAPTURE_INTERVAL_MS * 5);
 				assert.ok(!(getOriginClosedFloor(rootStore)?.floor >= persisted), 'an unsynced floor is not advertised');
 				assert.ok(!(subscription.checkpoint()?.time >= persisted), 'and no checkpoint carries it');
 				synced();
@@ -122,7 +125,9 @@ describe('The certified floor tick and two-origin checkpoints (harper#3356)', fu
 			await sleep(2);
 			const ownFloor = certify(T);
 			const peerFloor = ownFloor + MAX_OVERLAP_MS + 60_000;
-			await applyFromOrigin(T, 'p1', { id: 'p1', value: 'p1' }, peerId, ownFloor + 1000);
+			// far enough above this node's floor that its own tick does not certify past it during the test
+			const p1Key = ownFloor + MAX_OVERLAP_MS / 2;
+			await applyFromOrigin(T, 'p1', { id: 'p1', value: 'p1' }, peerId, p1Key);
 			await waitFor(() => valuesOf(events).includes('p1'));
 			T.dbisDB.putSync([SEQ, peerId], {
 				seqId: 1,
@@ -143,13 +148,13 @@ describe('The certified floor tick and two-origin checkpoints (harper#3356)', fu
 			let checkpoint;
 			await waitFor(() => (checkpoint = subscription.checkpoint())?.members === members, 10_000);
 			subscription.end();
-			return { checkpoint, ownFloor, peerFloor };
+			return { checkpoint, p1Key, peerFloor };
 		}
 
 		it('names the origin that lags the common boundary and resumes each from its own', async () => {
 			const T = tableInOwnDatabase();
 			const peerId = getIdOfRemoteNode('peer-ahead', T.auditStore);
-			const { checkpoint, ownFloor, peerFloor } = await checkpointWithPeerAhead(T, peerId);
+			const { checkpoint, p1Key, peerFloor } = await checkpointWithPeerAhead(T, peerId);
 			assert.deepStrictEqual(
 				Object.keys(checkpoint.exceptions),
 				[getThisNodeName()],
@@ -158,7 +163,7 @@ describe('The certified floor tick and two-origin checkpoints (harper#3356)', fu
 			const ownBoundary = checkpoint.exceptions[getThisNodeName()];
 			const commonBoundary = checkpoint.time - checkpoint.overlap;
 			assert.strictEqual(checkpoint.time, peerFloor);
-			assert.ok(ownBoundary <= ownFloor && ownFloor + 1000 < commonBoundary, 'precondition: p1 lies between the two');
+			assert.ok(ownBoundary < p1Key && p1Key < commonBoundary, 'precondition: p1 lies between the two');
 			await T.put('b', { value: 'b' });
 			await applyFromOrigin(T, 'p2', { id: 'p2', value: 'p2' }, peerId, peerFloor + 1000);
 			const replayed = [];
@@ -188,7 +193,7 @@ describe('The certified floor tick and two-origin checkpoints (harper#3356)', fu
 			assert.match(resumed.queue.at(-1).value.value, /^peer/, 'precondition: the replay stopped in the peer log');
 			// above every key of this node's log, which may hold more than the replay read, and below the peer's
 			raiseAuditFloor(T.auditStore, Date.now() + 10_000);
-			assert.ok(getAuditResumeFloor(T.auditStore) < peerFloor, 'precondition');
+			assert.ok(getAuditResumeFloor(T.auditStore) < checkpoint.time - checkpoint.overlap, 'precondition');
 			const events = [];
 			resumed.on('data', (event) => events.push(event));
 			assert.strictEqual(await resumed.resumeVerified, false);
