@@ -10542,10 +10542,11 @@ export function makeTable(options): TableResourceClass {
 					};
 					// The floor passes a start before the purge it announces, and that purge may remove only history this
 					// replay has read. A purge takes a prefix of a log's segments, so one that removed an unread entry of this
-					// node's own log also removed every entry read from it: while the log's purge watermark is below the
-					// highest key read, nothing unread is gone. The watermark holds whatever the clock (a key can be minted
-					// ahead of it, so above the floor), and a reader reports no purge that reaches the end of its log. The
-					// floor is still held to that key: it also rises for a purge yet to run.
+					// node's own log also removed every entry read from it: while that log's purge watermark is below the
+					// highest key read, nothing unread is gone. A peer's log is held to its start. The watermark is checked
+					// whatever the floor says: a key can be minted ahead of the clock, so above the floor, and a reader
+					// reports no purge that reaches the end of its log. The floor is still held to the highest key read (it
+					// also rises for a purge yet to run), and is all there is for a log with no watermark.
 					const ownStart = plan.startByLog.get('local');
 					let ownReached = ownStart;
 					let peerStart = Infinity;
@@ -10555,12 +10556,14 @@ export function makeTable(options): TableResourceClass {
 					const retained = (): boolean => {
 						const floor = getAuditResumeFloor(auditStore);
 						if (floor > peerStart || !plan!.retainsZeroStarts()) return false;
-						if (!(ownStart > 0 && floor > ownStart)) return true;
-						if (floor > ownReached) return false;
+						const pastOwnStart = ownStart > 0 && floor > ownStart;
+						if (pastOwnStart && floor > ownReached) return false;
 						for (const [name, start] of plan!.startByLog) {
 							if (!(start > 0)) continue;
 							const purgedThrough = getLogPurgeWatermark(auditStore, name);
-							if (!(name === 'local' ? purgedThrough < ownReached : purgedThrough <= start)) return false;
+							if (purgedThrough === undefined) {
+								if (pastOwnStart) return false;
+							} else if (!(purgedThrough < (name === 'local' ? ownReached : start))) return false;
 						}
 						return true;
 					};
