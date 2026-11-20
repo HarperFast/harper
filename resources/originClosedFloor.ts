@@ -83,7 +83,6 @@ export function timestampAbove(value: number): number {
 	return fromBits(toBits(value) + 1n);
 }
 
-/** The next representable timestamp below a positive `value`. */
 export function timestampBelow(value: number): number {
 	return fromBits(toBits(value) - 1n);
 }

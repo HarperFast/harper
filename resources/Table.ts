@@ -14616,7 +14616,7 @@ export function makeTable(options): TableResourceClass {
 		};
 	}
 
-	/** The clock of the open RocksDB transaction `context` holds on this database, without opening one. */
+	// unlike txnForContext, never opens a link
 	function heldTransactionClock(context: Context): number | undefined {
 		for (let txn: any = context?.transaction; txn && !isReleasedTransaction(txn); txn = txn.next) {
 			if (txn.db?.path !== primaryStore.path) continue;
@@ -15216,9 +15216,10 @@ export function makeTable(options): TableResourceClass {
 			if (!context?.timestamp && isRocksDB) {
 				// The requesting transaction read this fill, so the fill orders before that transaction's clock,
 				// which RocksDB fixed when it opened: a write the transaction then makes must supersede it (#2935).
-				// A caller's context.timestamp is that write's version as given, so it is inherited unchanged.
+				// A refresh still advances past the version it replaces.
 				const requesterClock = heldTransactionClock(context);
-				if (requesterClock > 0) versionCap = timestampBelow(requesterClock);
+				const cap = requesterClock > 0 ? timestampBelow(requesterClock) : undefined;
+				if (!(existingVersion >= cap)) versionCap = cap;
 			}
 			if (!sourceTimestamp) {
 				if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();

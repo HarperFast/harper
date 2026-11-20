@@ -119,7 +119,7 @@ Same-thread waiters reuse only a committed, kept, plain-data fill (`isSharableRe
 
 ## getFromSource() keeps source versions separate from fill ordering
 
-A source's `lastModified` caps at local time: the version is the last-writer-wins token. A first fill replaces a raced record only with a strictly greater version; executing-node tie-breaks let replicas diverge at one version. A non-advancing RocksDB version carries `VERSION_REUSED`; renumbering needs a migration (`caching-rocks-database.test.js`). On LMDB one `ifVersion` guards all fill puts (`sourceFillConditionalWrite.test.js`). A RocksDB transaction's clock is fixed at its first read, so a fill read inside it versions below that clock, or the transaction's own later write would lose to it (`heldTransactionClock`, `writeAfterEnsureLoaded.test.js`).
+A source's `lastModified` caps at local time: the version is the last-writer-wins token. A first fill replaces a raced record only with a strictly greater version; executing-node tie-breaks let replicas diverge at one version. A non-advancing RocksDB version carries `VERSION_REUSED`; renumbering needs a migration (`caching-rocks-database.test.js`). On LMDB one `ifVersion` guards all fill puts (`sourceFillConditionalWrite.test.js`). A RocksDB transaction's clock is fixed at its first read, so a fill the transaction itself starts versions below that clock, unless the caller set `context.timestamp` or that would not advance past the record's version; otherwise the transaction's own later write loses to it (`heldTransactionClock`, `writeAfterEnsureLoaded.test.js`). A waiter served another request's fill gets no cap: its later write still orders by its clock.
 
 ## getFromSource() record locks outlive neither their handle nor a close
 
