@@ -173,7 +173,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 		});
 
 		it('applies a replicated role write that ties the role version to the next lookup', async () => {
-			// harper#4483: the other node wins the tie by node name
+			// harper#4483: the other node wins the tie, its suffixed name sorting after the local one
 			await testUtils.seedUsers([lookupUser()]);
 			const now = Date.now() + 100;
 			const role = { id: 'lookup_role', role: 'lookup_role', permission: { super_user: false } };
@@ -192,7 +192,8 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 		});
 
 		it('applies a replicated role write that steps forward onto a version the role held before', async () => {
-			// harper#4483: on LMDB the older write steps the version back, so the tie no longer looks non-advancing
+			// harper#4483: on LMDB the older merge steps the version back to now - 50, so the write at now advances it
+			// onto the version found was stamped with
 			await testUtils.seedUsers([lookupUser()]);
 			const now = Date.now() + 300;
 			const role = { id: 'lookup_role', role: 'lookup_role', permission: { super_user: false }, merges: 0 };
