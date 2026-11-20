@@ -1,9 +1,6 @@
 'use strict';
 
-// A write that follows ensureLoaded() in the same transaction is based on the record the source fill
-// returned, so it must supersede that fill. On RocksDB the transaction's clock is fixed when it first
-// reads, before the fill is versioned, so the fill has to order below that clock or the later write
-// loses to it as an out-of-order older write (harper#2935).
+// harper#2935: a write after ensureLoaded() supersedes the fill that read started
 
 require('../testUtils');
 const assert = require('node:assert');
@@ -80,6 +77,16 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		reportLastModified = true;
 		await writerAfterLoad().put('reported', { value: 8 });
 		assert.equal(await settledValue('reported'), 8);
+	});
+
+	it('keeps a write over a fill that refreshes an invalidated record', async function () {
+		await Target.put('invalidated', { value: 1 });
+		await Target.invalidate('invalidated');
+		const invalidatedVersion = Target.primaryStore.getEntry('invalidated').version;
+		await writerAfterLoad().put('invalidated', { value: 8 });
+		assert.equal(sourceGets, 1);
+		assert.equal(await settledValue('invalidated'), 8);
+		assert.ok(Target.primaryStore.getEntry('invalidated').version > invalidatedVersion);
 	});
 
 	it('keeps a write made after the transaction already wrote another record', async function () {
