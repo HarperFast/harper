@@ -55,6 +55,7 @@ import { implicitPrimaryKeyPermission } from '../security/permissionsTranslator.
 import {
 	Resource,
 	SEARCH_AUTHORIZATION,
+	SEARCH_OPENING,
 	WRITE_CONDITION,
 	transformForSelect,
 	nestedSelectTransform,
@@ -92,6 +93,7 @@ import {
 	instanceWriteInSyncCommitHook,
 	commitHooksRunning,
 	registerStoreTable,
+	requestAbortedError,
 } from './DatabaseTransaction.ts';
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
@@ -272,6 +274,7 @@ import {
 	combineWriteHooks,
 	type WriteHook,
 	createDefaultEmbedder,
+	embedQueryTexts,
 	type EmbedAttribute,
 	type Embedder,
 } from './models/embedHook.ts';
@@ -448,6 +451,23 @@ const MAX_EXACT_COUNT_MS = 1_000;
 // not a finite, non-negative integer, e.g. `{ limit: Infinity }` / `{ limit: NaN }`) falls through to the normal
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
+/**
+ * The window is bounded as well as the page, since a huge offset would otherwise postpone the exact guardrail until
+ * that offset was scanned.
+ */
+function countPageApplies(target: RequestTarget): boolean {
+	if (!target.count) return false;
+	const pageLimit = target.limit as number;
+	const offset = target.offset || 0;
+	return (
+		Number.isInteger(pageLimit) &&
+		pageLimit >= 0 &&
+		pageLimit <= MAX_COUNT_PAGE &&
+		Number.isInteger(offset) &&
+		offset >= 0 &&
+		offset + pageLimit <= MAX_EXACT_COUNT_SCAN
+	);
+}
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
 // check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
 const COUNT_YIELD_INTERVAL = 2_048;
@@ -932,26 +952,159 @@ const FULL_TEXT_READ_PERMISSION = Symbol('fullTextReadPermission');
 const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
-function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
+const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
+
+function propagateSearchAuthorization(iterable: any, authorization: Promise<any>) {
+	return carryThroughTransforms(iterable, SEARCH_AUTHORIZATION, authorization, SEARCH_AUTHORIZATION_TRANSFORMS, true);
+}
+
+function carryThroughTransforms(iterable: any, key: symbol, value: any, wrapped: symbol, inheritSelect: boolean) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
-	iterable[SEARCH_AUTHORIZATION] = authorization;
-	if (source) {
-		if (source.selectApplied) iterable.selectApplied = true;
-		if (source.getColumns && !iterable.getColumns) iterable.getColumns = source.getColumns;
-	}
-	if (iterable[SEARCH_AUTHORIZATION_TRANSFORMS]) return iterable;
-	Object.defineProperty(iterable, SEARCH_AUTHORIZATION_TRANSFORMS, { value: true });
+	iterable[key] = value;
+	if (iterable[wrapped]) return iterable;
+	Object.defineProperty(iterable, wrapped, { value: true });
 	for (const methodName of AUTHORIZATION_TRANSFORM_METHODS) {
 		const transform = iterable[methodName];
 		if (typeof transform !== 'function') continue;
 		Object.defineProperty(iterable, methodName, {
 			configurable: true,
 			value: function (...args: any[]) {
-				return propagateSearchAuthorization(transform.apply(this, args), authorization, this);
+				const derived = transform.apply(this, args);
+				if (inheritSelect && derived && typeof derived === 'object') {
+					if (this.selectApplied) derived.selectApplied = true;
+					if (this.getColumns && !derived.getColumns) derived.getColumns = this.getColumns;
+				}
+				return carryThroughTransforms(derived, key, value, wrapped, inheritSelect);
 			},
 		});
 	}
 	return iterable;
+}
+function deferredIterator(
+	options: any,
+	openResults: () => Promise<any>,
+	onFinish: () => void,
+	synchronousIterationMessage: string
+) {
+	const asynchronous = options === true || options?.async;
+	const iterationOptions = options === true ? { async: true } : { ...options, async: true };
+	let returned = false;
+	let completed = false;
+	let iteratorPromise: Promise<AsyncIterator<any>>;
+	let opened: AsyncIterator<any> | undefined;
+	const finish = () => {
+		if (completed) return;
+		completed = true;
+		onFinish();
+	};
+	const failStep = (error: any) => {
+		if (returned) return { value: undefined, done: true };
+		if (!error?.continueIteration) finish();
+		throw error;
+	};
+	const getIterator = () =>
+		(iteratorPromise ||= openResults().then(
+			(results: any) =>
+				(opened = results.iterate
+					? results.iterate(iterationOptions)
+					: results[Symbol.asyncIterator]
+						? results[Symbol.asyncIterator](iterationOptions)
+						: results[Symbol.iterator]())
+		));
+	return {
+		next(value?: any) {
+			if (!asynchronous) {
+				finish();
+				throw new Error(synchronousIterationMessage);
+			}
+			if (returned) return Promise.resolve({ value: undefined, done: true });
+			return getIterator().then(
+				(iterator) => {
+					if (returned) return { value: undefined, done: true };
+					let step;
+					try {
+						step = iterator.next(value);
+					} catch (error) {
+						failStep(error);
+					}
+					return Promise.resolve(step).then((result) => {
+						// a stream destroyed mid-step returns without waiting for that step
+						if (returned) return { value: undefined, done: true };
+						if (result.done) finish();
+						return result;
+					}, failStep);
+				},
+				(error) => {
+					if (returned) return { value: undefined, done: true };
+					finish();
+					throw error;
+				}
+			);
+		},
+		return(value?: any) {
+			returned = true;
+			finish();
+			const inner = opened;
+			if (inner) return Promise.resolve().then(() => inner.return?.(value) ?? { value, done: true });
+			// a model can ignore the abort, so a close closes what opens later rather than waiting for it
+			getIterator()
+				.then((iterator) => iterator.return?.(value))
+				.catch(() => {});
+			return Promise.resolve({ value, done: true });
+		},
+		throw(error: any) {
+			returned = true;
+			finish();
+			const inner = opened;
+			if (inner)
+				return Promise.resolve().then(() => {
+					if (inner.throw) return inner.throw(error);
+					throw error;
+				});
+			getIterator()
+				.then((iterator) => iterator.return?.())
+				.catch(() => {});
+			return Promise.reject(error);
+		},
+	};
+}
+const MAX_SORT_TEXTS = 8;
+type SortEmbedding = { sort: Promise<any>; abort: () => void; conditions: any[] };
+function copySortChain(sort: any): any {
+	const copy = { ...sort };
+	if (sort.next) copy.next = copySortChain(sort.next);
+	return copy;
+}
+/** Settles as `promise` does, or rejects with the signal's reason once it aborts, for a backend that ignores the abort. */
+function settleOrAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		promise.catch(() => {});
+		return Promise.reject(signal.reason);
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener('abort', onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener('abort', onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener('abort', onAbort);
+				reject(error);
+			}
+		);
+	});
+}
+function withEmbeddedTargets(sort: any, vectors: Map<any, number[]>): any {
+	const copy = { ...sort };
+	const vector = vectors.get(sort);
+	if (vector) {
+		copy.target = vector;
+		delete copy.text;
+	}
+	if (sort.next) copy.next = withEmbeddedTargets(sort.next, vectors);
+	return copy;
 }
 type UpdatePermission = boolean | { [attribute: string]: boolean };
 const RESTRICTED_REPLACEMENT = Object.freeze({});
@@ -1688,6 +1841,12 @@ function copySelection(select) {
 	if (copy.sort && typeof copy.sort === 'object') copy.sort = copySelection(copy.sort);
 	if (copy.next) copy.next = copySelection(copy.next);
 	return copy;
+}
+
+function withIdCondition(conditions: any[], id: any): any[] {
+	return id
+		? [{ attribute: null, comparator: Array.isArray(id) ? 'prefix' : 'starts_with', value: id }].concat(conditions)
+		: conditions;
 }
 
 function searchConditions(target: any): any[] {
@@ -8682,8 +8841,6 @@ export function makeTable(options): TableResourceClass {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			assertNestedQueryOptions(target.select, this.constructor);
 			if (fullTextFieldNames || hasRelationships) assertFullTextSelection(target.select);
-			let effectiveSelect: any;
-			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes) ?? [];
 			if (target.checkPermission) {
 				// Direct instance callers may request the same one-shot operation gate used by the
 				// transactional Resource API. Application row filtering is explicit via target.rowFilter.
@@ -8694,6 +8851,7 @@ export function makeTable(options): TableResourceClass {
 					throw new AccessViolation((context as any).user);
 				}
 				if (allowed != null && typeof (allowed as any).then === 'function') {
+					const getColumns = (): ColumnsList => buildSelectColumns(target.select, attributes) ?? [];
 					const self = this;
 					const gatedResults: any = new ExtendedIterable();
 					let resolvedResults: any;
@@ -8726,75 +8884,18 @@ export function makeTable(options): TableResourceClass {
 					gatedResults.selectApplied = true;
 					gatedResults.getColumns = () =>
 						resolvedResults?.getColumns ? resolvedResults.getColumns() : (earlyColumns ??= getColumns());
-					gatedResults.iterate = (options: any = {}) => {
-						const asynchronous = options === true || options?.async;
-						const iterationOptions = options === true ? { async: true } : { ...options, async: true };
-						let returned = false;
-						let completed = false;
-						let iteratorPromise: Promise<AsyncIterator<any>>;
-						const finish = () => {
-							if (completed) return;
-							completed = true;
-							gatedResults.onDone?.();
-						};
-						const getIterator = () =>
-							(iteratorPromise ||= authorization.then((state: any) => {
-								if (state.error) throw state.error;
-								if (!state.allowed) throw new AccessViolation((context as any).user);
-								const results = state.results;
-								return results.iterate
-									? results.iterate(iterationOptions)
-									: results[Symbol.asyncIterator]
-										? results[Symbol.asyncIterator](iterationOptions)
-										: results[Symbol.iterator]();
-							}));
-						return {
-							next(value?: any) {
-								if (!asynchronous) {
-									throw new Error('Can not synchronously iterate while allowRead is asynchronous');
-								}
-								if (returned) return Promise.resolve({ value: undefined, done: true });
-								return getIterator().then(
-									(iterator) =>
-										returned
-											? { value: undefined, done: true }
-											: Promise.resolve(iterator.next(value)).then(
-													(result) => {
-														if (result.done) finish();
-														return result;
-													},
-													(error) => {
-														finish();
-														throw error;
-													}
-												),
-									(error) => {
-										finish();
-										throw error;
-									}
-								);
-							},
-							return(value?: any) {
-								returned = true;
-								finish();
-								return getIterator().then(
-									(iterator) => iterator.return?.(value) ?? { value, done: true },
-									() => ({ value, done: true })
-								);
-							},
-							throw(error: any) {
-								returned = true;
-								finish();
-								return getIterator().then(
-									(iterator) => {
-										if (iterator.throw) return iterator.throw(error);
-										throw error;
-									},
-									() => Promise.reject(error)
-								);
-							},
-						};
-					};
+					gatedResults.iterate = (options: any = {}) =>
+						deferredIterator(
+							options,
+							() =>
+								authorization.then((state: any) => {
+									if (state.error) throw state.error;
+									if (!state.allowed) throw new AccessViolation((context as any).user);
+									return state.results;
+								}),
+							() => gatedResults.onDone?.(),
+							'Can not synchronously iterate while allowRead is asynchronous'
+						);
 					return propagateSearchAuthorization(gatedResults, authorization);
 				}
 				if (!allowed) {
@@ -8807,18 +8908,70 @@ export function makeTable(options): TableResourceClass {
 				throw new ClientError('rowFilter must be synchronous');
 			}
 			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
-
-			let conditions: any = searchConditions(target);
-			const id = target.id ?? this.getId();
-			if (id) {
-				conditions = [
-					{
-						attribute: null,
-						comparator: Array.isArray(id) ? 'prefix' : 'starts_with',
-						value: id,
-					},
-				].concat(conditions);
+			const sort = typeof target.sort === 'object' && target.sort;
+			if (sort && (sort.text !== undefined || sort.next)) {
+				const embedding = embedSortTexts(sort, context, target, target.id ?? this.getId());
+				if (embedding) return this.#searchAfterEmbedding(target, embedding, context, rowFilter);
 			}
+			return this.#searchSorted(target, sort, context, txn, rowFilter);
+		}
+
+		/** The search starts only after the model call, through `transaction()`: a model call has no deadline, so no read snapshot is reserved across it. */
+		#searchAfterEmbedding(target: RequestTarget, embedding: SortEmbedding, context: any, rowFilter: any): any {
+			const scope = context ?? {};
+			const search = (sort: any) =>
+				transaction(scope, () =>
+					this.#searchSorted(target, sort, context, txnForContext(scope), rowFilter, embedding.conditions)
+				);
+			if (target.explain || countPageApplies(target)) return embedding.sort.then(search);
+			const deferred: any = new ExtendedIterable();
+			let results: any;
+			let discarded = false;
+			const opening = embedding.sort
+				.then(
+					(sort) => (discarded ? [] : search(sort)),
+					(error) => {
+						if (discarded) return [];
+						throw error;
+					}
+				)
+				.then((searched) => {
+					results = searched;
+					if (discarded) searched.onDone?.();
+					return searched;
+				});
+			opening.catch(() => {});
+			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false);
+			deferred.iterate = (options: any = {}) =>
+				deferredIterator(
+					options,
+					() => opening,
+					() => deferred.onDone?.(),
+					'Can not synchronously iterate a search whose sort embeds text'
+				);
+			deferred.onDone = () => {
+				deferred.onDone = null;
+				discarded = true;
+				embedding.abort();
+				results?.onDone?.();
+			};
+			deferred.selectApplied = true;
+			deferred.getColumns = () =>
+				results?.getColumns ? results.getColumns() : (buildSelectColumns(target.select, attributes) ?? []);
+			return deferred;
+		}
+
+		#searchSorted(
+			target: RequestTarget,
+			sort: any,
+			context: any,
+			txn: any,
+			rowFilter: any,
+			conditionList?: any[]
+		): any {
+			let effectiveSelect: any;
+			const getColumns = (): ColumnsList => buildSelectColumns(effectiveSelect ?? target.select, attributes) ?? [];
+			let conditions: any = withIdCondition(conditionList ?? searchConditions(target), target.id ?? this.getId());
 			// Never mutate the caller's conditions in place. Query planning annotates
 			// and restructures conditions as it runs — it pushes a `{ comparator: 'sort' }`
 			// pseudo-condition for index-order alignment, sets `descending`, caches
@@ -8868,7 +9021,6 @@ export function makeTable(options): TableResourceClass {
 			const prepared = TableResource._prepareQueryConditions(conditions, operator, target, context);
 			conditions = prepared.conditions;
 			const includeFullTextHighlights = prepared.includeFullTextHighlights;
-			let sort = typeof target.sort === 'object' && target.sort;
 			if (
 				TableResource.fullTextIndexes.length > 0 &&
 				conditionsContainFullText(conditions, TableResource.fullTextIndexes)
@@ -9071,24 +9223,8 @@ export function makeTable(options): TableResourceClass {
 				// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
 				// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
 				// table estimate. Opt-in only — the default streaming path below is untouched.
-				//
-				// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
-				// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
-				// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
-				// oversized/non-finite/negative limit or offset (a bare collection GET, `{ limit: Infinity }`,
-				// `{ limit: NaN }`, `{ offset: -5, limit: 10 }`) or a deep-page window past the scan budget — falls through to the
-				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
-				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
 				const pageLimit = target.limit as number;
-				if (
-					target.count &&
-					Number.isInteger(pageLimit) &&
-					pageLimit >= 0 &&
-					pageLimit <= MAX_COUNT_PAGE &&
-					Number.isInteger(offset) &&
-					offset >= 0 &&
-					offset + pageLimit <= MAX_EXACT_COUNT_SCAN
-				) {
+				if (countPageApplies(target)) {
 					const wantExact = target.count === 'exact';
 					const pageEnd = offset + pageLimit;
 					const countStart = performance.now();
@@ -14338,6 +14474,127 @@ export function makeTable(options): TableResourceClass {
 			!primaryStore.encoder.resolvedAttributeNames?.has(name)
 		);
 	}
+	/** A leading index's checks run here only when no condition can lead instead (#searchSorted plans the rest). */
+	function embedSortTexts(sort: any, context: any, target: any, id: any): SortEmbedding | undefined {
+		let textsByAttribute: Map<string, { attribute: any; orders: any[] }> | undefined;
+		let texts = 0;
+		for (let order = sort; order; order = order.next) {
+			if (order.text === undefined) continue;
+			// every text is billed before the row limit applies
+			if (++texts > MAX_SORT_TEXTS) throw new ClientError(`A sort can embed at most ${MAX_SORT_TEXTS} texts`);
+			const name = Array.isArray(order.attribute) ? order.attribute.join('.') : order.attribute;
+			if (typeof order.text !== 'string' || order.text.trim() === '')
+				throw new ClientError(`The sort text for "${name}" must be a non-empty string`);
+			if (order.target !== undefined) throw new ClientError(`A sort on "${name}" can have text or a target, not both`);
+			if (order.model !== undefined)
+				throw new ClientError(`A sort can not set a model; its text is embedded with the @embed model of "${name}"`);
+			const attributeName =
+				Array.isArray(order.attribute) && order.attribute.length === 1 ? order.attribute[0] : order.attribute;
+			const attribute = typeof attributeName === 'string' ? findAttribute(attributes, attributeName) : undefined;
+			if (!attribute?.embed) {
+				if (typeof attributeName === 'string' && !attribute)
+					throw new ClientError(`${name} is not a defined attribute`, 404);
+				throw new ClientError(`A sort with text requires an @embed attribute of this table, and "${name}" is not one`);
+			}
+			const customIndex = indices[attribute.name]?.customIndex;
+			if (typeof customIndex?.exactDistance !== 'function')
+				throw new ClientError(`A sort with text requires a vector index, and "${name}" has none`);
+			customIndex.exactDistance({ target: [], distance: order.distance }, null);
+			textsByAttribute ??= new Map();
+			let group = textsByAttribute.get(attribute.name);
+			if (!group) textsByAttribute.set(attribute.name, (group = { attribute, orders: [] }));
+			group.orders.push(order);
+		}
+		if (!textsByAttribute) return;
+		// the caller can change its sort objects while the model answers, so the search uses a copy made now
+		const captured = copySortChain(sort);
+		const copies = new Map();
+		for (let order = sort, copy = captured; order; order = order.next, copy = copy.next) copies.set(order, copy);
+		for (const group of textsByAttribute.values()) group.orders = group.orders.map((order) => copies.get(order));
+		for (let order = sort; order; order = order.next) {
+			if (order.text !== undefined) continue;
+			if (fullTextFieldNames) assertRecordField(order.attribute);
+			const attribute =
+				Array.isArray(order.attribute) && order.attribute.length === 1 ? order.attribute[0] : order.attribute;
+			if (typeof attribute === 'string') indices[attribute]?.customIndex?.exactDistance?.(order, null);
+		}
+		// read once, so a one-shot iterator gives the preflight and the search the same conditions
+		const conditionList = searchConditions(target);
+		const prepared = TableResource._prepareQueryConditions(
+			cloneConditions(withIdCondition(conditionList, id)),
+			target.operator,
+			target,
+			context
+		).conditions;
+		if (TableResource.fullTextIndexes.length > 0 && conditionsContainFullText(prepared, TableResource.fullTextIndexes))
+			throw new ClientError('Full-text results can only use descending $score order', 400);
+		const head = sort.attribute;
+		const headName = Array.isArray(head) ? head.join('.') : head;
+		if (head == null && target.operator !== 'or') throw new ClientError('Sort requires an attribute');
+		if (
+			head != null &&
+			target.operator !== 'or' &&
+			!findAttribute(attributes, head) &&
+			!prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
+		)
+			throw new ClientError(`${headName} is not a defined attribute`, 404);
+		// a condition on the sort's own attribute would order the search in its place
+		if (
+			sort.text !== undefined &&
+			target.operator !== 'or' &&
+			prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
+		)
+			throw new ClientError(
+				`A sort with text on "${headName}" can not be combined with a condition on "${headName}"; sort by the condition's target`
+			);
+		const headAttribute = head != null && findAttribute(attributes, head);
+		if (
+			prepared.length === 0 &&
+			!target.allowFullScan &&
+			headAttribute &&
+			!headAttribute.indexed &&
+			!headAttribute.isPrimaryKey
+		)
+			throw new ClientError(`${headName} is not indexed and not combined with any other conditions`, 404);
+		if (prepared.length === 0 && !target.explain) {
+			const leading = Array.isArray(head) && head.length === 1 ? head[0] : head;
+			if (typeof leading === 'string')
+				indices[leading]?.customIndex?.searchDistance?.(
+					sort.descending,
+					sort.distance,
+					sort.maxIndexLagMilliseconds,
+					sort.waitForIndexMilliseconds
+				);
+		}
+		const controller = new AbortController();
+		const signal = context?.signal ? AbortSignal.any([controller.signal, context.signal]) : controller.signal;
+		const vectors = new Map<any, number[]>();
+		const embedded = [];
+		for (const [name, { attribute, orders }] of textsByAttribute) {
+			embedded.push(
+				embedQueryTexts(
+					orders.map((order) => order.text),
+					attribute.embed,
+					name,
+					signal
+				).then((embeddings) => orders.forEach((order, index) => vectors.set(order, embeddings[index])))
+			);
+		}
+		return {
+			sort: (context?.signal ? settleOrAbort(Promise.all(embedded), context.signal) : Promise.all(embedded)).then(
+				() => withEmbeddedTargets(captured, vectors),
+				(error) => {
+					controller.abort();
+					if (context?.signal?.aborted && error === context.signal.reason)
+						throw Object.assign(requestAbortedError(), { cause: error });
+					throw error;
+				}
+			),
+			abort: () => controller.abort(),
+			conditions: conditionList,
+		};
+	}
+
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
 		if (isReleasedTransaction(transaction)) transaction = undefined;

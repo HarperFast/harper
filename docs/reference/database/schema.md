@@ -407,6 +407,8 @@ Write semantics:
 
 Multiple `@embed` attributes on one type are computed concurrently.
 
+<VersionBadge version="v5.5.0" /> To search by similarity to a text, pass the text in the vector `sort` and Harper embeds it with the same model, as a query: see [Searching by Text](#searching-by-text).
+
 ### `@fullText`
 
 <VersionBadge version="v5.3.0" /> <EngineBadge engines="RocksDB" />
@@ -868,6 +870,42 @@ let results = Document.search({
 ```
 
 `$distance` is available in both `sort`-based ranking and `conditions`-based threshold queries. It is not set by a threshold condition that another condition drives, or by one on a relationship path; add a `sort` on the vector with the same `target` to select it for the queried table's own vector.
+
+### Searching by Text
+
+<VersionBadge version="v5.5.0" />
+
+On an attribute with [`@embed`](#embed), a `sort` can carry `text` instead of `target`. Harper embeds the text with that attribute's model as a search query (`inputType: 'query'`; the write side embeds documents with `'document'`), then runs the same nearest-neighbor search with the resulting vector:
+
+```javascript
+let results = Document.search({
+	select: ['title', '$distance'],
+	sort: { attribute: 'embedding', text: 'what is harper?' },
+	limit: 5,
+});
+```
+
+The operations API takes the same `sort` on `search_by_value` and `search_by_conditions`:
+
+```json
+{
+	"operation": "search_by_value",
+	"database": "data",
+	"table": "Document",
+	"attribute": "id",
+	"value": "*",
+	"sort": { "attribute": "embedding", "text": "what is harper?" },
+	"get_attributes": ["title", "$distance"],
+	"limit": 5
+}
+```
+
+- `text` must be a non-empty string, and one search embeds at most 8 texts. A sort with both `text` and `target`, a `model` key, or `text` on an attribute without `@embed` or without a vector index (including one reached through a relationship) is rejected with a 400, before the model is called. So is `text` in the `sort` of a relationship in the `select`; sort those by `target`. The model is always the attribute's own, because vectors from another model do not compare with the stored ones.
+- A failure to compute the embedding fails the search with a 502, or with a 400 when the text is too long for the model. The error's `cause` holds the model's error for code that calls `search()` directly. REST reads (`GET`, `HEAD`, `QUERY`) and `search_by_conditions` wait for the embedding before they send a status, so this failure, or an error the search raises as it opens, is the response's status rather than a cut-off stream. An error the index raises once the search is open, such as a native index still behind after `waitForIndexMilliseconds`, still ends a streamed response, as it does for a search by `target`. A condition on an undefined attribute or with an invalid operator is refused before the model is called, as is an undefined or unindexed sort head that has nothing else to lead, and so, in a search with no conditions, is what its leading vector index refuses (a `descending` order, a `distance` a `nativePlane` index does not use, or an out-of-range index wait). A failure found only as the search runs, such as an unknown comparator or a condition its index cannot answer, still costs the call, and is the response's status.
+- Every search with `text` calls the model. Read permission on the table is enough to run one. Code that repeats one query can embed it once with [`models.embed(text, { model, inputType: 'query' })`](../models/api.md#embed), using the attribute's `@embed` model, and pass `Array.from(vector)` as `target`.
+- Outside a transaction you opened, the search reads from a snapshot taken after the text is embedded, so a slow model call holds none open. Inside one, it reads in that transaction, like any search. Iterate its results with `for await`, and `await` the plan of an `explain: true` search.
+- A threshold condition (`comparator: 'lt'`) still needs a `target`. A text sort can not be combined with a condition on its own attribute, which would order the search in its place.
+- A custom embedder set with `setEmbedAttribute` must produce vectors in the same space as the attribute's model, since search embeds the text with that model.
 
 ### Per-Query Search Options
 
