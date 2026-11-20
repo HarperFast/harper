@@ -40,7 +40,6 @@ describe('migration: records carry the version/metadata prefix (#2012)', functio
 		for (const id of ['a', 'b', 'c']) {
 			sourceVersions.set(id, Tbl.primaryStore.getEntry(id).version);
 		}
-		// an older write merged under its own version leaves the row flagged on LMDB
 		const now = Date.now() + 300;
 		const merge = { rank: { __op__: 'add', value: 1 } };
 		await Tbl.put({ id: 'd', name: 'delta', rank: 4 }, { timestamp: now - 100 });
