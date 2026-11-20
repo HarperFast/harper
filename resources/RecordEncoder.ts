@@ -1084,8 +1084,8 @@ export function recordUpdater(
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
-		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value. A
-		// stepped-back row stays flagged through every later write, a tie at the stepped-back version included.
+		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value. The
+		// VERSION_REGRESSED carry is tested before versionIsReused, so a tie at the stepped-back version keeps it.
 		if (record !== undefined) {
 			if (options?.unchangedValue)
 				metadataInNextEncoding |= existingEntry?.metadataFlags & (VERSION_REUSED | VERSION_REGRESSED);
