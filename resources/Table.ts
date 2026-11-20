@@ -14561,6 +14561,11 @@ export function makeTable(options): TableResourceClass {
 			allowed = source.allowStaleWhileRevalidate(entry, id);
 		else if (typeof source === 'function' && sourceDefinesInstanceHook(source))
 			allowed = new source(id, context).allowStaleWhileRevalidate(entry, id);
+		if (typeof allowed?.then === 'function') {
+			// the hook is synchronous: a promise it returns does not allow serving stale
+			allowed.then(undefined, (error) => logger.warn?.(error));
+			allowed = false;
+		}
 		if (allowed && entry.expiresAt != undefined && !evictionMs && !staleWithoutEvictionWarned) {
 			staleWithoutEvictionWarned = true;
 			logger.warn?.(
@@ -14573,7 +14578,7 @@ export function makeTable(options): TableResourceClass {
 		let defines = sourceInstanceHooks.get(source);
 		if (defines === undefined) {
 			defines = false;
-			// own properties only: a resource prototype chain ends in a Proxy that answers any other lookup
+			// own properties only: reading through the Proxy at the end of a resource prototype chain runs its get trap
 			for (let prototype = source.prototype; prototype && prototype !== Object.prototype;) {
 				const descriptor = Object.getOwnPropertyDescriptor(prototype, 'allowStaleWhileRevalidate');
 				if (descriptor) {
