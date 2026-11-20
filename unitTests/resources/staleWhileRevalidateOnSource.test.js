@@ -21,6 +21,7 @@ describe('Stale-while-revalidate hook on the source', function () {
 	let TableDecides;
 	let SubclassAllows;
 	let HooklessClass;
+	let AsyncHooked;
 	let sourceCalls;
 	let pendingCalls;
 	let hookCalls;
@@ -39,14 +40,15 @@ describe('Stale-while-revalidate hook on the source', function () {
 			{ name: 'id', isPrimaryKey: true },
 			{ name: 'name', indexed: true },
 		];
-		ClassSourced = table({ table: 'SwrOnSourceClass', database: 'test', attributes });
-		ObjectSourced = table({ table: 'SwrOnSourceObject', database: 'test', attributes });
-		StaticSourced = table({ table: 'SwrOnSourceStatic', database: 'test', attributes });
-		QuerySourced = table({ table: 'SwrOnSourceQuery', database: 'test', attributes });
-		Warned = table({ table: 'SwrOnSourceWarned', database: 'test', attributes });
-		Evicting = table({ table: 'SwrOnSourceEvicting', database: 'test', attributes });
-		const Hookless = table({ table: 'SwrOnSourceHookless', database: 'test', attributes });
-		HooklessClass = table({ table: 'SwrOnSourceHooklessClass', database: 'test', attributes });
+		ClassSourced = table({ table: 'SwrOnSourceClass', database: 'swrOnSource', attributes });
+		ObjectSourced = table({ table: 'SwrOnSourceObject', database: 'swrOnSource', attributes });
+		StaticSourced = table({ table: 'SwrOnSourceStatic', database: 'swrOnSource', attributes });
+		QuerySourced = table({ table: 'SwrOnSourceQuery', database: 'swrOnSource', attributes });
+		Warned = table({ table: 'SwrOnSourceWarned', database: 'swrOnSource', attributes });
+		Evicting = table({ table: 'SwrOnSourceEvicting', database: 'swrOnSource', attributes });
+		const Hookless = table({ table: 'SwrOnSourceHookless', database: 'swrOnSource', attributes });
+		HooklessClass = table({ table: 'SwrOnSourceHooklessClass', database: 'swrOnSource', attributes });
+		AsyncHooked = table({ table: 'SwrOnSourceAsync', database: 'swrOnSource', attributes });
 		getDatabases();
 		class StalePolicy extends Resource {
 			allowStaleWhileRevalidate(entry, id) {
@@ -64,6 +66,16 @@ describe('Stale-while-revalidate hook on the source', function () {
 		Warned.sourcedFrom(Origin);
 		Evicting.sourcedFrom(Origin, { eviction: 60 });
 		Hookless.sourcedFrom({ get: heldGet });
+		AsyncHooked.sourcedFrom(
+			class AsyncOrigin extends Resource {
+				get() {
+					return heldGet();
+				}
+				async allowStaleWhileRevalidate() {
+					return true;
+				}
+			}
+		);
 		HooklessClass.sourcedFrom(
 			class HooklessOrigin extends Resource {
 				get() {
@@ -169,6 +181,15 @@ describe('Stale-while-revalidate hook on the source', function () {
 		assert.equal(sourceCalls, 1);
 		pendingCalls[0].resolve({ id: 'hookless', name: 'fresh hookless' });
 		assert.equal((await reading).name, 'fresh hookless');
+	});
+
+	it('waits for the source when the hook returns a promise', async function () {
+		await expire(AsyncHooked, 'async');
+		const reading = AsyncHooked.get('async');
+		await delay(20);
+		assert.equal(sourceCalls, 1);
+		pendingCalls[0].resolve({ id: 'async', name: 'fresh async' });
+		assert.equal((await reading).name, 'fresh async');
 	});
 
 	it('lets a hook on the table class take precedence over the source', async function () {
