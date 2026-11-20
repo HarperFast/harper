@@ -611,6 +611,8 @@ const PROVENANCE = Symbol('record provenance');
 const trackedProvenance = new WeakMap<User, Map<unknown, UserProvenance>>();
 // bounds the login names one memoized user keeps a first lookup for; its own name's is never dropped
 const MAX_TRACKED_NAMES = 64;
+const MAX_WARNED_ROLE_MISMATCHES = 1024;
+let warnedRoleMismatches = new Set<string>();
 
 function provenanceOf(username: string, entries: UserEntries): UserProvenance {
 	return {
@@ -718,6 +720,7 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 			else provenance.recordless = true;
 		}
 	}
+	if (provenance.username === user.username) warnOnStoredRoleMismatch(user, provenance);
 	if (!firsts) trackedProvenance.set(user, (firsts = new Map()));
 	const first = firsts.get(provenance.username);
 	if (!first) {
@@ -739,6 +742,21 @@ function trackUserRecords(user: User, versions: UserProvenance): UserProvenance 
 		provenance = first;
 	else provenance.recordless = false;
 	return provenance;
+}
+
+/**
+ * A holder that re-authorizes a component's user re-reads it by name, so its record's role, not the one
+ * the component returned, governs the rest of a live subscription or MCP session.
+ */
+function warnOnStoredRoleMismatch(user: User, provenance: UserProvenance): void {
+	if (provenance.userStamp === null || provenance.userStamp === UNREAD_RECORD) return;
+	const admittedRoleId = user.role?.id;
+	if (admittedRoleId === provenance.roleId || warnedRoleMismatches.has(user.username)) return;
+	if (warnedRoleMismatches.size >= MAX_WARNED_ROLE_MISMATCHES) warnedRoleMismatches = new Set();
+	warnedRoleMismatches.add(user.username);
+	harperLogger.warn(
+		`server.getUser returned user '${user.username}' with role '${admittedRoleId}', but its hdb_user record has role '${provenance.roleId}': live subscriptions and MCP sessions re-authorize '${user.username}' by name and use role '${provenance.roleId}'`
+	);
 }
 
 /**

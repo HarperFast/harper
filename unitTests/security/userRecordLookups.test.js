@@ -12,6 +12,8 @@ const { authentication } = require('#src/security/auth');
 const { getDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { registerLiveSubscription } = require('#src/server/liveSubscriptionAuth');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const harperLogger = require('#src/utility/logging/harper_logger');
+const sinon = require('sinon');
 
 const PASSWORD = 'lookup-password';
 const hashOf = (plain) => password.hash(plain, password.HASH_FUNCTION.SHA256);
@@ -537,6 +539,29 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await databases.system.hdb_user.delete('lookup_user');
 			assert.strictEqual(user.isCurrentUser(aliased), false, 'it is checked against the record it copied');
 			assert.strictEqual(user.isCurrentUser(admitted), false, 'and against the login name’s record');
+		});
+
+		it('warns once per name when a component returns a stored name with another role', async () => {
+			const warn = sinon.stub(harperLogger, 'warn');
+			try {
+				await testUtils.seedUsers([
+					lookupUser({ username: 'lookup_role_copy' }),
+					lookupUser({ username: 'lookup_role_override' }),
+				]);
+				resolvedFor('lookup_role_copy', structuredClone(user.getUserWithRole('lookup_role_copy')));
+				resolvedFor('lookup_role_unbacked', componentUser('lookup_role_unbacked'));
+				assert.strictEqual(warn.callCount, 0, 'a copy of its record, or a name no record has');
+
+				resolvedFor('lookup_role_override', componentUser('lookup_role_override'));
+				resolvedFor('lookup_role_override', componentUser('lookup_role_override'));
+				assert.strictEqual(warn.callCount, 1);
+				assert.match(
+					warn.firstCall.args[0],
+					/'lookup_role_override' with role 'undefined'.*record has role 'lookup_role'/
+				);
+			} finally {
+				warn.restore();
+			}
 		});
 	});
 
