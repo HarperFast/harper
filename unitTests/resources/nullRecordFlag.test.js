@@ -1,5 +1,3 @@
-// NULL_RECORD (harper#4515): a stored row carries the bit in its metadata word exactly when its record is
-// null, whatever optional header fields sit between the word and the body, and no reader sees it.
 const { setupTestDBPath } = require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
@@ -67,8 +65,7 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 			);
 		});
 
-		// A build without the decode mask hands the bit to harper-pro's copy sender, which mirrors record flags
-		// above 0xff into the copy frame's audit flag word. It stays harmless only while that word leaves it undefined.
+		// a build without the decode mask mirrors the bit into the audit flag word of its copy frames
 		it('is undefined in the audit flag word, and an audit entry carrying it reads unchanged', function () {
 			for (const [name, value] of Object.entries(auditStoreModule)) {
 				if (typeof value !== 'number' || value <= 0xff || value & (value - 1)) continue;
@@ -187,13 +184,22 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 			assert.strictEqual(store.getEntry('migrated-live').value.id, 2);
 		});
 
-		// the cleanup scan tests `record === null`, and undefined is stored as its own value, not as null
-		it('does not mark an undefined record', async function () {
+		it('follows the encoded body, not the value passed in', async function () {
+			class SerializesToNull extends Error {
+				toJSON() {
+					return null;
+				}
+			}
+			const serializedNull = write('serializes-to-null', new SerializesToNull(), {});
+			assert.strictEqual(serializedNull.length, 13);
+			assert.ok(matchesFilterRule(serializedNull));
+			assert.strictEqual(store.getEntry('serializes-to-null').value, null);
+
+			// undefined is stored as its own value, so the row does not read back as null
 			const version = ++nextVersion;
 			setNextEncoding(version, 0, -1, -1, 0);
 			await store.put('undefined-body', undefined, version);
-			const bytes = store.getBinarySync('undefined-body');
-			assert.strictEqual(bytes.readUInt32BE(8) & NULL_RECORD, 0);
+			assert.ok(!matchesFilterRule(store.getBinarySync('undefined-body')));
 			assert.strictEqual(store.getEntry('undefined-body').value, undefined);
 		});
 
@@ -213,12 +219,12 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 				size: entry.size,
 			});
 			for (const { mask, flags, options } of combinations) {
-				const marked = Buffer.from(store.getBinarySync(`null-${mask}`));
+				const marked = Buffer.from(write(`decode-${mask}`, null, options));
 				const unmarked = Buffer.from(marked);
 				unmarked[9] &= ~0x08;
 				assert.notDeepStrictEqual(unmarked, marked);
 				rawStore.putSync(`unmarked-${mask}`, unmarked);
-				const entry = entryFields(store.getEntry(`null-${mask}`));
+				const entry = entryFields(store.getEntry(`decode-${mask}`));
 				assert.deepStrictEqual(entry, entryFields(store.getEntry(`unmarked-${mask}`)), `combination ${mask}`);
 				assert.strictEqual(entry.value, null);
 				assert.strictEqual(entry.metadataFlags & NULL_RECORD, 0);
@@ -227,8 +233,11 @@ describe('NULL_RECORD metadata bit (harper#4515)', function () {
 					assert.strictEqual(entry[name], options[name], `combination ${mask} ${name}`);
 				assert.deepStrictEqual(entry.additionalAuditRefs, options.additionalAuditRefs);
 			}
-			for (const { key, value } of store.getRange({ start: 'null-', end: 'null-~', versions: true })) {
+			const ranged = Array.from(store.getRange({ start: 'decode-', end: 'decode-~', versions: true }));
+			assert.strictEqual(ranged.length, combinations.length);
+			for (const { key, value, metadataFlags } of ranged) {
 				assert.strictEqual(value, null, String(key));
+				assert.strictEqual(metadataFlags & NULL_RECORD, 0, String(key));
 			}
 		});
 
