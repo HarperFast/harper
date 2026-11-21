@@ -26,6 +26,7 @@ import {
 	positionBefore,
 	validateCheckpoint,
 	type LogCursor,
+	type MovedCursors,
 	type ResumeCursors,
 	type SubscriptionCheckpoint,
 } from '../resources/subscriptionCheckpoint.ts';
@@ -1117,9 +1118,9 @@ type DurableEntry = {
 	takenThrough?: number;
 	/**
 	 * The topic's position in each origin's transaction log (see `SavedCursors`): the logs it differs in from its
-	 * database's shared vector, as `[origin, cursor, readThrough]`, or its whole vector with the generation that saved it.
+	 * database's shared vector, or its whole vector with the node and generation that saved it.
 	 */
-	cursors?: [string, number, number][] | SavedCursors;
+	cursors?: SavedCursor[] | SavedCursors;
 };
 /**
  * Positions in each origin's transaction log, as keys of that log: `readThrough` is the last complete transaction
@@ -1128,9 +1129,20 @@ type DurableEntry = {
  * arrived late, with a key below `startTime`, is delivered. Keyed by origin node name: the record replicates,
  * and this node's own log has another name on every other node.
  */
-type SavedCursors = { generation: string; logs: [origin: string, cursor: number, readThrough: number][] };
+type SavedCursors = { generation: string; node: string; logs: SavedCursor[] };
+/**
+ * `originGeneration` is there when the saving node vouched for the origin: its log of it held every entry in the
+ * origin's own order, so the position names the same entries on another node that vouches for the origin too.
+ */
+type SavedCursor = [origin: string, cursor: number, readThrough: number, originGeneration?: string];
 /** A record's `cursors`, by database name: the read-through its live topics share. */
-type SharedCursors = { [database: string]: { generation: string; logs: [origin: string, readThrough: number][] } };
+type SharedCursors = {
+	[database: string]: {
+		generation: string;
+		node: string;
+		logs: [origin: string, readThrough: number, originGeneration?: string][];
+	};
+};
 const MAX_CURSOR_LOGS = 1024;
 function isLogKey(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 0;
@@ -1139,35 +1151,41 @@ function isLogKey(value: unknown): value is number {
 function loadCursors(
 	saved: unknown,
 	shared: SharedCursors[string] | undefined
-): { generation: string; logs: Map<string, LogCursor> } | undefined {
+): { generation: string; node: string; logs: Map<string, LogCursor> } | undefined {
 	const logs = new Map<string, LogCursor>();
-	let generation: unknown;
+	const vouchedGeneration = (generation: unknown) => (typeof generation === 'string' ? generation : undefined);
+	let from: any;
 	let held: unknown;
 	if (Array.isArray(saved)) {
 		if (!shared || !Array.isArray(shared.logs)) return;
-		generation = shared.generation;
+		from = shared;
 		for (const log of shared.logs) {
 			if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1])) return;
-			logs.set(log[0], { cursor: log[1], readThrough: log[1] });
+			logs.set(log[0], { cursor: log[1], readThrough: log[1], generation: vouchedGeneration(log[2]) });
 		}
 		held = saved;
 	} else if (saved && typeof saved === 'object') {
-		generation = (saved as any).generation;
-		held = (saved as any).logs;
+		from = saved;
+		held = from.logs;
 	}
-	if (typeof generation !== 'string' || !Array.isArray(held)) return;
+	if (typeof from?.generation !== 'string' || typeof from.node !== 'string' || !Array.isArray(held)) return;
 	for (const log of held) {
 		if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1]) || !isLogKey(log[2])) return;
-		logs.set(log[0], { cursor: log[1], readThrough: log[2] });
+		logs.set(log[0], { cursor: log[1], readThrough: log[2], generation: vouchedGeneration(log[3]) });
 	}
 	if (logs.size === 0 || logs.size > MAX_CURSOR_LOGS) return;
-	return { generation, logs };
+	return { generation: from.generation, node: from.node, logs };
 }
 function sameCursors(a: Map<string, LogCursor> | undefined, b: Map<string, LogCursor>): boolean {
 	if (a?.size !== b.size) return false;
 	for (const [origin, position] of b) {
 		const other = a.get(origin);
-		if (other?.cursor !== position.cursor || other.readThrough !== position.readThrough) return false;
+		if (
+			other?.cursor !== position.cursor ||
+			other.readThrough !== position.readThrough ||
+			other.generation !== position.generation
+		)
+			return false;
 	}
 	return true;
 }
@@ -1221,6 +1239,7 @@ type TopicState = {
 	/** By origin node name: the topic's position in each transaction log, and the database generation they are of. */
 	cursors?: Map<string, LogCursor>;
 	cursorGeneration?: string;
+	cursorNode?: string;
 	/** The positions were read from this connection's subscription; otherwise they are the ones the record held. */
 	cursorsLive?: boolean;
 };
@@ -1475,6 +1494,17 @@ function resumesFromCheckpoint(entry: DurableEntry): boolean {
 }
 
 /**
+ * The topic's saved log positions for a resume from its checkpoint, in another database generation than the one
+ * that saved them: each origin both nodes vouch for is read after its position instead of from its boundary.
+ */
+function movedCursors(state: TopicState): MovedCursors | undefined {
+	const { cursors, cursorGeneration: generation, cursorNode: node, entry } = state;
+	if (!cursors || generation === undefined || node === undefined) return;
+	const takenThrough = entry.takenThrough < entry.startTime ? entry.takenThrough : entry.startTime;
+	return { node, generation, takenThrough, logs: cursors };
+}
+
+/**
  * Resumes from the topic's scalar and, when its log positions were saved in this database generation, from them:
  * each log is then read after its cursor in arrival order, and the start is the key every earlier delivery at or
  * below which was taken. From here on the subscription keeps log positions either way.
@@ -1483,9 +1513,13 @@ function fromScalar(request: any, state: TopicState): any {
 	const entry = state.entry;
 	request.startTime = entry.startTime;
 	request[LOG_CURSORS] = true;
-	if (!boundToCurrentGeneration(entry)) return request;
-	request.databaseGeneration = entry.databaseGeneration;
-	if (!state.cursors || state.cursorGeneration !== entry.databaseGeneration) return request;
+	const bound = boundToCurrentGeneration(entry);
+	if (bound) request.databaseGeneration = entry.databaseGeneration;
+	// a start no pass has certified yet came from this node's clock, and the positions bind it to their generation;
+	// one of another generation resumes unchecked, by key
+	if (!bound && (entry.databaseGeneration ?? entry.foreignGeneration) !== undefined) return request;
+	if (!state.cursors || state.cursorGeneration !== currentGeneration(entry.topic)) return request;
+	request.databaseGeneration = state.cursorGeneration;
 	const thisNode = getThisNodeName();
 	const logs = new Map<string, LogCursor>();
 	for (const [origin, position] of state.cursors) logs.set(origin === thisNode ? 'local' : origin, position);
@@ -1556,6 +1590,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				if (cursors) {
 					state.cursors = cursors.logs;
 					state.cursorGeneration = cursors.generation;
+					state.cursorNode = cursors.node;
 					if (isLogKey(entry.takenThrough) && entry.takenThrough < startTime)
 						state.entry.takenThrough = entry.takenThrough;
 				}
@@ -1599,7 +1634,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				if (durable && resumesFromCheckpoint(state.entry)) {
 					try {
 						await this.resumeSubscription(
-							{ topic, qos, rh: 2, resume: checkpoint, filterKey: topic, reportProgress: true, [LOG_CURSORS]: true },
+							{
+								topic,
+								qos,
+								rh: 2,
+								resume: checkpoint,
+								filterKey: topic,
+								reportProgress: true,
+								[LOG_CURSORS]: movedCursors(state) ?? true,
+							},
 							durable
 						);
 						continue;
@@ -1649,6 +1692,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state = newTopicState({ ...state.entry, qos: subscription.qos });
 			state.cursors = replaced.cursors;
 			state.cursorGeneration = replaced.cursorGeneration;
+			state.cursorNode = replaced.cursorNode;
 			this.topics.set(subscription.topic, state);
 			if (subscription.qos === 2) {
 				state.received = replaced.received;
@@ -2032,8 +2076,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (existing?.entry.qos > 0) {
 				// replacing a subscription must lose nothing, so the new one continues the topic's position
 				this.advancePositions();
-				if (resumesFromCheckpoint(existing.entry)) request.resume = existing.entry.checkpoint;
-				else fromScalar(request, existing);
+				if (resumesFromCheckpoint(existing.entry)) {
+					request.resume = existing.entry.checkpoint;
+					request[LOG_CURSORS] = movedCursors(existing);
+				} else fromScalar(request, existing);
 			}
 			request[LOG_CURSORS] ??= true;
 		}
@@ -2242,7 +2288,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (typeof key === 'number' && !event.fromScan) hold(key, event[LOG_NAME], event[LOG_BEFORE]);
 		}
 		// a delivery with no log position holds every log where it was
-		return unplaced ? null : { logs, lowest };
+		if (unplaced) return null;
+		for (const [origin, generation] of subscription.vouchedOrigins?.() ?? []) {
+			const position = logs.get(origin);
+			if (position) position.generation = generation;
+		}
+		return { logs, lowest };
 	}
 	setCursors(state: TopicState, positions: { logs: Map<string, LogCursor>; lowest: number }): boolean {
 		const entry = state.entry;
@@ -2256,6 +2307,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			!sameCursors(state.cursors, positions.logs);
 		state.cursors = positions.logs;
 		state.cursorGeneration = generation;
+		state.cursorNode = getThisNodeName();
 		state.cursorsLive = true;
 		entry.takenThrough = takenThrough;
 		return changed;
@@ -2370,7 +2422,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const subscriptions = [];
 		this.inFlightChanged = false;
 		this.qos1ReceiptsUnsaved = false;
-		let sharedCursors: Map<string, { generation: string; logs: Map<string, number> }> | undefined;
+		let sharedCursors: Map<string, { generation: string; logs: Map<string, LogCursor> }> | undefined;
 		for (const state of this.topics.values()) {
 			const { qos, topic, startTime, databaseGeneration, foreignGeneration } = state.entry;
 			const saved: DurableEntry = { qos, topic };
@@ -2381,23 +2433,29 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				let shared = database === undefined ? undefined : sharedCursors?.get(database);
 				if (database !== undefined && !shared) {
 					// the database's live topics have read the same broadcast, so the first one's read-through is shared
-					shared = { generation: state.cursorGeneration, logs: new Map() };
-					for (const [origin, position] of state.cursors) shared.logs.set(origin, position.readThrough);
+					shared = { generation: state.cursorGeneration, logs: state.cursors };
 					(sharedCursors ??= new Map()).set(database, shared);
 				}
+				const savedCursor = (origin: string, { cursor, readThrough, generation }: LogCursor): SavedCursor =>
+					generation === undefined ? [origin, cursor, readThrough] : [origin, cursor, readThrough, generation];
 				if (shared?.generation === state.cursorGeneration) {
-					// every log it differs in is written out, with both keys, so it takes nothing else from the shared vector
-					const held: [string, number, number][] = [];
-					for (const [origin, { cursor, readThrough }] of state.cursors) {
-						const sharedThrough = shared.logs.get(origin);
-						if (cursor !== sharedThrough || readThrough !== sharedThrough) held.push([origin, cursor, readThrough]);
+					// every log it differs in is written out whole, so it takes nothing else from the shared vector
+					const held: SavedCursor[] = [];
+					for (const [origin, position] of state.cursors) {
+						const through = shared.logs.get(origin);
+						if (
+							position.cursor !== through?.readThrough ||
+							position.readThrough !== through.readThrough ||
+							position.generation !== through.generation
+						)
+							held.push(savedCursor(origin, position));
 					}
 					for (const origin of shared.logs.keys()) if (!state.cursors.has(origin)) held.push([origin, 0, 0]);
 					saved.cursors = held;
 				} else {
-					const logs: [string, number, number][] = [];
-					for (const [origin, { cursor, readThrough }] of state.cursors) logs.push([origin, cursor, readThrough]);
-					saved.cursors = { generation: state.cursorGeneration, logs };
+					const logs: SavedCursor[] = [];
+					for (const [origin, position] of state.cursors) logs.push(savedCursor(origin, position));
+					saved.cursors = { generation: state.cursorGeneration, node: state.cursorNode!, logs };
 				}
 			}
 			if ((databaseGeneration ?? foreignGeneration) !== undefined)
@@ -2428,7 +2486,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const record: any = { id: this.sessionId, incarnation: this.incarnation, subscriptions };
 		if (sharedCursors) {
 			const cursors: SharedCursors = (record.cursors = {});
-			for (const [database, { generation, logs }] of sharedCursors) cursors[database] = { generation, logs: [...logs] };
+			const node = getThisNodeName();
+			for (const [database, { generation, logs }] of sharedCursors) {
+				cursors[database] = { generation, node, logs: [] };
+				for (const [origin, { readThrough, generation: originGeneration }] of logs)
+					cursors[database].logs.push(
+						originGeneration === undefined ? [origin, readThrough] : [origin, readThrough, originGeneration]
+					);
+			}
 		}
 		const awaitingRelease = [];
 		for (const [messageId, exchange] of this.awaitingRelease ?? []) {

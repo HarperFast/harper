@@ -575,8 +575,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 							}
 							const iterator = trackCorruptFrames(log, queryOptions);
 							if (positionsTracked) {
-								iterator.completedKey = expectedExactStart ?? 0;
-								iterator.needsPredecessor = needsPredecessor;
+								const exact = expectedExactStart !== undefined && options.exactStart === true;
+								iterator.completedKey = exact ? expectedExactStart : 0;
+								iterator.needsPredecessor = needsPredecessor || (!exact && expectedExactStart > 0);
 							}
 							iterators.push(iterator);
 							expectedExactStarts.push(expectedExactStart);
