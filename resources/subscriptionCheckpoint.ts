@@ -435,7 +435,11 @@ export function vouchedOrigins(floors: CertifiedFloors | undefined): Map<string,
  * it holds. Every other origin keeps its checkpoint boundary. This node's own log is the origin itself; the saving
  * node's own log is one it vouches for by being its origin.
  */
-export function movedCursorStarts(auditStore: any, dbisDb: any, saved: MovedCursors): Map<string, LogCursor> | undefined {
+export function movedCursorStarts(
+	auditStore: any,
+	dbisDb: any,
+	saved: MovedCursors
+): Map<string, LogCursor> | undefined {
 	if (typeof auditStore.holdsTransaction !== 'function') return;
 	const states = readOriginStates(auditStore, dbisDb);
 	auditStore.loadLogs?.();

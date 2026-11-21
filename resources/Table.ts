@@ -10860,7 +10860,10 @@ export function makeTable(options): TableResourceClass {
 						for (const logName of movedStarts.keys()) {
 							if (readByKey?.has(logName) || vouched?.has(logName)) continue;
 							return refuse(
-								new ServerError('The state of an origin changed while its history was replayed; reconnect to retry', 503)
+								new ServerError(
+									'The state of an origin changed while its history was replayed; reconnect to retry',
+									503
+								)
 							);
 						}
 						return true;

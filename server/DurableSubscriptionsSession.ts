@@ -2262,13 +2262,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	readCursors(state: TopicState): { logs: Map<string, LogCursor>; lowest: number } | null | undefined {
 		const subscription = state.subscription;
 		// only a pulled queue hands each message from the queue to `unacked` in one step
-		if (!state.verified || !subscription?.logCursors || !(subscription.consumer instanceof Delivery || isPullable(subscription)))
+		if (
+			!state.verified ||
+			!subscription?.logCursors ||
+			!(subscription.consumer instanceof Delivery || isPullable(subscription))
+		)
 			return;
 		const positions: Map<string, number> | undefined = subscription.logCursors();
 		if (!positions) return null;
 		const thisNode = getThisNodeName();
 		const logs = new Map<string, LogCursor>();
-		for (const [log, readThrough] of positions) logs.set(log === 'local' ? thisNode : log, { cursor: readThrough, readThrough });
+		for (const [log, readThrough] of positions)
+			logs.set(log === 'local' ? thisNode : log, { cursor: readThrough, readThrough });
 		const held = new Set<string>();
 		let lowest = Infinity;
 		let unplaced = false;
