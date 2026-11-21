@@ -10915,9 +10915,11 @@ export function makeTable(options): TableResourceClass {
 							});
 						}
 						const inScope = request.onlyChildren ? replayScope(thisId, true, true) : undefined;
+						// A log read from its saved position is read in arrival order, so a key bounds what was read only once
+						// every log is read to the handoff: then it is the highest key read.
+						let highestReplayed: number | undefined;
 						const recordCursor = (key: number) => {
-							// a log read from its saved position is read in arrival order, so a key bounds nothing it has read
-							if (savedCursors) return;
+							if (savedCursors && !replayEnded) return;
 							// live delivery finishes a transaction the bound split, so a resume must start below it
 							const open = replayRange.openTransactionFloor?.();
 							subscription.replayedThrough = open <= key ? positionBefore(open) : key;
@@ -10969,6 +10971,7 @@ export function makeTable(options): TableResourceClass {
 								}
 								let arrivedAfterSave = false;
 								if (savedCursors) {
+									if (!(highestReplayed >= auditRecord.txnLogKey)) highestReplayed = auditRecord.txnLogKey;
 									const logName = replayRange.lastLogName();
 									const readThrough = readBefore!.get(logName);
 									if (readThrough !== undefined) {
@@ -11063,6 +11066,7 @@ export function makeTable(options): TableResourceClass {
 									state.pendingRealTimeQueue.length = kept;
 								}
 							}
+							if (savedCursors) handledTxnLogKey = highestReplayed;
 							if (handledTxnLogKey !== undefined) recordCursor(handledTxnLogKey);
 							if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
 						} finally {

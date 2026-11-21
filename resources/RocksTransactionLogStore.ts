@@ -647,6 +647,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 				}
 				return result;
 			};
+			const predecessorKey = (log: TransactionLog, key: number) => this.predecessorKey(log, key);
 			/** Where a `peekAhead` range standing at the log's committed end is, as the key of a complete transaction. */
 			const anchor = (iterator: TrackedIterator, log: TransactionLog) => {
 				iterator.lastVersion = undefined;
@@ -723,7 +724,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								if (positionsTracked) {
 									if (iterator.needsPredecessor) {
 										iterator.needsPredecessor = false;
-										iterator.completedKey = this.predecessorKey(logs[earliestIndex], earliest.timestamp);
+										iterator.completedKey = predecessorKey(logs[earliestIndex], earliest.timestamp);
 									} else if (iterator.lastEndTxn === true) iterator.completedKey = iterator.lastVersion;
 									lastReturned = iterator;
 									lastReturnedLog = logs[earliestIndex];
