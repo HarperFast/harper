@@ -217,8 +217,8 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 			await waitFor(() => first.values().includes('local'));
 			let positions;
 			await waitFor(() => (positions = subscription.logCursors()));
-			// a saved start above every key the peer uses below
-			const position = base + 100;
+			// a saved start above everything written so far, and above every key the peer uses below
+			const position = Math.max(base, Date.now()) + 100;
 			subscription.end();
 			const logs = new Map();
 			for (const [log, key] of positions) logs.set(log, { cursor: key, readThrough: key });
