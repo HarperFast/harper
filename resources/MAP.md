@@ -51,6 +51,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - record TTL and eviction → `setTTLExpiration`, `_adoptCatalogExpiration`, `evict`, `scheduleCleanup` in Table.ts; `armTableCleanupScans` in databases.ts
 - cache miss to source → `getFromSource` in Table.ts
 - subscriptions and replay → `subscribe`, `eventFromAudit` in Table.ts; `addSubscription` in transactionBroadcast.ts; `ReplayReader` in historyReader.ts
+- resuming a subscription from a position in each log → `LOG_CURSORS` in subscriptionCheckpoint.ts; `logPositions` in transactionBroadcast.ts; `tailKey`, `predecessorKey` in RocksTransactionLogStore.ts
 - history listings and full audit replay → `getHistory`, `getHistoryOfRecord`, `eventFromAudit` in Table.ts; `HistoryReader`, `HistoryMemo` in historyReader.ts; `getRecordAtTime` in crdt.ts
 - replication apply loop → `sourcedFrom` in Table.ts
 - the per-request transaction → `txnForContext` in Table.ts; `transaction()` in transaction.ts

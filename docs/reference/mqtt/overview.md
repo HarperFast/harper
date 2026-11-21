@@ -89,11 +89,13 @@ Harper keeps a quiet topic's position current while the client is connected, and
 
 <VersionBadge type="changed" version="v5.5.0" />
 
-**Messages from other cluster nodes** — A saved position tracks what this node has delivered of its own writes. A message published on another node keeps that node's timestamp, so it can replicate in after the position was saved and still sort below it. When a client reconnects to the node that saved its session, Harper also replays each other node's history from the last point that node could still publish at, so a wildcard subscription with QoS 1 or 2 receives those messages. Earlier versions skipped them.
+**Messages from other cluster nodes** — A saved position tracks what this node has delivered of its own writes. A message published on another node keeps that node's timestamp, so it can replicate in after the position was saved and still sort below it. For a wildcard subscription with QoS 1 or 2, Harper also saves how far the session has read each node's history on this node. When the client reconnects to the node that saved its session, each node's history is read on from there, in the order it arrived, so these late messages are delivered. Earlier versions skipped them.
 
-- The replay needs a checkpoint saved with the subscription that covers the publishing node: a record of the point in each known node's history that the replay starts from. A new subscription has none, and Harper saves one only when it can vouch for such a point for every node the database knows of. Until a checkpoint covers the publishing node, its messages below the saved position can still be missed on reconnect, for example those of a node that recently joined the cluster, even though `CONNACK` reports `sessionPresent: true`.
-- Messages the client already acknowledged are not sent again, for up to 1,000 remembered acknowledgements per session (500 of them for QoS 1). Past that limit, or after Harper stops without saving the session, some acknowledged QoS 1 messages from other nodes can be delivered again.
-- When audit retention has removed that history, or Harper can no longer vouch for a node's history, the subscription resumes from its saved position alone. The session is not reset.
+- This works from the first save of a new subscription, including on a cluster whose nodes have just joined.
+- A late message that was delivered but not acknowledged before the disconnect is sent again on reconnect.
+- Messages the client already acknowledged are not sent again, for up to 1,000 remembered acknowledgements per session (500 of them for QoS 1). Past that limit, or after Harper stops without saving the session, some acknowledged QoS 1 messages can be delivered again.
+- When audit retention has removed the point a node's history was read to, Harper reads what is left of that history from its start, provided nothing newer than the saved position was removed. Otherwise the session is reset, as it is when the saved position itself is older than the audit retention.
+- A client that reconnects to a different node resumes from the session's checkpoint, as before. That node reads on from the saved point in a node's history only when both nodes received that history directly from the node that wrote it. Otherwise, and for a session with no checkpoint yet, late messages can still be missed after such a move.
 - A subscription to a single record does not replay these messages yet.
 
 This applies to RocksDB databases.
