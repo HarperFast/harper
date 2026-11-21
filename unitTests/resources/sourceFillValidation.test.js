@@ -226,6 +226,13 @@ describe('Source fill schema validation', function () {
 		assert.deepEqual([...(await settled(Embedded, 'embedded')).value.embedding], [0.5, 0.25]);
 	});
 
+	it('checks an @embed attribute the fill will not compute, without its source field', async () => {
+		responses.set('unembedded', {});
+		await rejectedFill(Embedded, 'unembedded', 'embedding');
+		responses.set('bad-vector', { embedding: 'not-a-vector' });
+		await rejectedFill(Embedded, 'bad-vector', 'embedding');
+	});
+
 	it('leaves the requested id on a BigInt key as it is, whatever key the source returns', async () => {
 		responses.set(12, { id: 'not-a-number', name: 'n' });
 		const record = await BigIntKeyed.get(12);

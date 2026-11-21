@@ -274,6 +274,7 @@ import {
 	createDefaultEmbedder,
 	type EmbedAttribute,
 	type Embedder,
+	sourceState,
 } from './models/embedHook.ts';
 import {
 	buildDecideBefore,
@@ -15166,7 +15167,7 @@ export function makeTable(options): TableResourceClass {
 						if (!reusedCachedRecord) {
 							// Harper's own values are not the source's to get right: the key and the times this node stamps
 							// (a put stamps them after validating), a Long created time the source supplies, which is its own
-							// Harper's fractional version, and the @embed vectors the fill derives after this check
+							// Harper's fractional version, and the @embed vectors the fill computes after this check
 							const createdTimeName = createdTimeProperty?.name;
 							const suppliedCreatedTime = createdTimeName && updatedRecord[createdTimeName];
 							const harperCreatedTime =
@@ -15179,7 +15180,13 @@ export function makeTable(options): TableResourceClass {
 								updatedTimeProperty?.name,
 								harperCreatedTime ? createdTimeName : undefined,
 							];
-							for (const attribute of TableResource.embedAttributes) harperOwned.push(attribute.name);
+							for (const attribute of TableResource.embedAttributes) {
+								if (
+									TableResource.userEmbedders[attribute.name] &&
+									sourceState(updatedRecord, attribute.embed?.source) === 'value'
+								)
+									harperOwned.push(attribute.name);
+							}
 							validateSourceRecord(updatedRecord, harperOwned);
 						}
 					}
