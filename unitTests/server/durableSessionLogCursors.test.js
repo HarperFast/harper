@@ -251,27 +251,30 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 		});
 	}
 
-	it('delivers a late entry on either side of a cursor an unacknowledged delivery holds', async () => {
-		const { T, clientId, peer, peerKey, first } = await savedSession(1, { disconnect: false });
-		// read in this order: `held` is never acknowledged, so the peer's cursor stays before it
-		await applyFromOrigin(T, peer, peerKey + 20, 'held');
-		await applyFromOrigin(T, peer, peerKey + 10, 'late-and-taken');
-		await waitFor(() => values(first.received).includes('late-and-taken'));
-		await first.session.acknowledge(delivery(first.received, 'late-and-taken').messageId);
-		await end(first);
-		const record = await stored(clientId);
-		const [origin, cursor, readThrough] = record.subscriptions[0].cursors[0];
-		assert.deepStrictEqual(
-			[cursor, readThrough],
-			[peerKey, peerKey + 10],
-			`${origin} is held before the unacknowledged one`
-		);
-		// after the save, another late one lands behind what the session had read
-		await applyFromOrigin(T, peer, peerKey + 5, 'late-after-save');
-		const second = await resumed(T, clientId);
-		assert.deepStrictEqual(values(second.received), ['held', 'late-after-save', 'after']);
-		await end(second);
-	});
+	for (const qos of [1, 2]) {
+		it(`QoS ${qos}: delivers a late entry on either side of a cursor an unacknowledged delivery holds`, async () => {
+			const { T, clientId, peer, peerKey, first } = await savedSession(qos, { disconnect: false });
+			// read in this order: `held` is never acknowledged, so the peer's cursor stays before it
+			await applyFromOrigin(T, peer, peerKey + 20, 'held');
+			await applyFromOrigin(T, peer, peerKey + 10, 'late-and-taken');
+			await waitFor(() => values(first.received).includes('late-and-taken'));
+			await take(first.session, [delivery(first.received, 'late-and-taken')], qos);
+			await end(first);
+			const record = await stored(clientId);
+			const [origin, cursor, readThrough] = record.subscriptions[0].cursors[0];
+			assert.deepStrictEqual(
+				[cursor, readThrough],
+				[peerKey, peerKey + 10],
+				`${origin} is held before the unacknowledged one`
+			);
+			assert.ok(record.subscriptions[0].takenThrough < peerKey + 20, 'what was sent below it was taken');
+			// after the save, another late one lands behind what the session had read
+			await applyFromOrigin(T, peer, peerKey + 5, 'late-after-save');
+			const second = await resumed(T, clientId);
+			assert.deepStrictEqual(values(second.received), ['held', 'late-after-save', 'after']);
+			await end(second);
+		});
+	}
 
 	it('QoS 2: records what is still queued at the save as never sent, and delivers it', async () => {
 		const { T, name, topic, clientId, peer, peerName, peerKey, first } = await savedSession(2, { disconnect: false });
