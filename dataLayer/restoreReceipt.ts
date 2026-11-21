@@ -10,9 +10,13 @@ export const RESTORE_RECEIPT_SUFFIX = '.intent';
 // receipt: databases under one root share the metadata directory but not a lock.
 const RESTORE_RECEIPT_TEMP_SUFFIX = '.intent-tmp';
 export const RESTORE_RECEIPT_VERSION = 1;
+// A receipt whose source is a staged archive. A Harper that reads only version 1 finds it unreadable, which
+// blocks the database, rather than mistaking the staging area for a backup repository.
+export const STAGED_RESTORE_RECEIPT_VERSION = 2;
 export const DEFAULT_RESTORE_MAX_ATTEMPTS = 3;
 
 export type RestoreRoute = 'online' | 'offline' | 'on_restart';
+export type RestoreSourceKind = 'staged_tree';
 /** `pending` and `terminal` belong to the restart route: scheduled for the next startup, and out of attempts. */
 export type RestoreReceiptState = 'pending' | 'applying' | 'committed' | 'terminal';
 
@@ -35,9 +39,22 @@ export interface RestoreReceipt {
 	database: string;
 	database_path: string;
 	source_database: string;
+	/** The target database's backup repository: where a rollback copy and the pins live, whatever the source. */
 	backup_dir: string;
-	backup_id: number;
+	backup_id?: number;
+	/** Absent for a managed backup. `staged_tree`: the source is the staged archive in `staging_dir`. */
+	source_kind?: RestoreSourceKind;
+	staging_dir?: string;
+	restored_from?: string;
+	archive_sha256?: string;
+	/** Staged archives of the receipts this one took over, which nothing can resume any longer; removed when it settles. */
+	superseded_staging_dirs?: string[];
 	job_id?: string;
+	/**
+	 * The job a resume with Harper stopped took this from. That job is unsettled until the next startup;
+	 * it is not `job_id`, which a commit settles.
+	 */
+	interrupted_job_id?: string;
 	/** The pin protecting `backup_id`; absent when the restore pinned nothing (`immutable_source`). */
 	source_pin_id?: string;
 	/** Pins of the interrupted attempts this one took over; retired only once this attempt's source has proved. */
@@ -98,10 +115,14 @@ export function readRestoreReceiptFile(receiptPath: string): RestoreReceiptRead 
 		return { kind: 'unreadable', reason: 'not valid JSON' };
 	}
 	if (!parsed || typeof parsed !== 'object') return { kind: 'unreadable', reason: 'not an object' };
-	if (parsed.version !== RESTORE_RECEIPT_VERSION) {
+	if (parsed.version !== RESTORE_RECEIPT_VERSION && parsed.version !== STAGED_RESTORE_RECEIPT_VERSION) {
 		// a newer Harper wrote it; reading it as this version could re-apply or drop a decision
-		return { kind: 'unreadable', reason: `receipt version ${parsed.version} is not ${RESTORE_RECEIPT_VERSION}` };
+		return {
+			kind: 'unreadable',
+			reason: `receipt version ${parsed.version} is not ${RESTORE_RECEIPT_VERSION} or ${STAGED_RESTORE_RECEIPT_VERSION}`,
+		};
 	}
+	const staged = parsed.version === STAGED_RESTORE_RECEIPT_VERSION;
 	if (
 		typeof parsed.operation_id !== 'string' ||
 		!STATES.has(parsed.state) ||
@@ -109,16 +130,39 @@ export function readRestoreReceiptFile(receiptPath: string): RestoreReceiptRead 
 		typeof parsed.database !== 'string' ||
 		typeof parsed.database_path !== 'string' ||
 		typeof parsed.backup_dir !== 'string' ||
-		!Number.isInteger(parsed.backup_id) ||
-		!Number.isInteger(parsed.attempts)
+		!Number.isInteger(parsed.attempts) ||
+		(parsed.superseded_staging_dirs !== undefined &&
+			(!Array.isArray(parsed.superseded_staging_dirs) ||
+				parsed.superseded_staging_dirs.some((dir: unknown) => typeof dir !== 'string'))) ||
+		(staged
+			? parsed.source_kind !== 'staged_tree' || typeof parsed.staging_dir !== 'string'
+			: parsed.source_kind !== undefined || !Number.isInteger(parsed.backup_id))
 	) {
 		return { kind: 'unreadable', reason: 'missing or malformed fields' };
 	}
 	return { kind: 'valid', receipt: parsed as RestoreReceipt };
 }
 
-export function describeRestoreSource(receipt: Pick<RestoreReceipt, 'backup_id'>): string {
+export function describeRestoreSource(
+	receipt: Pick<RestoreReceipt, 'backup_id' | 'source_kind' | 'restored_from'>
+): string {
+	if (receipt.source_kind === 'staged_tree')
+		return receipt.restored_from ? `archive ${receipt.restored_from}` : 'archive';
 	return `backup ${receipt.backup_id}`;
+}
+
+export function inheritedStagingDirs(earlier: RestoreReceipt | undefined): { superseded_staging_dirs?: string[] } {
+	const dirs = [...(earlier?.superseded_staging_dirs ?? []), ...(earlier?.staging_dir ? [earlier.staging_dir] : [])];
+	return dirs.length > 0 ? { superseded_staging_dirs: dirs } : {};
+}
+
+export function isStagedReceipt(receipt: Pick<RestoreReceipt, 'source_kind'> | undefined): boolean {
+	return receipt?.source_kind === 'staged_tree';
+}
+
+/** An online or offline archive restore that stopped after its claim: only `resume` or `cancel` moves it. */
+export function interruptedArchiveRestoreReceipt(receipt: RestoreReceipt): boolean {
+	return isStagedReceipt(receipt) && receipt.route !== 'on_restart' && receipt.state === 'applying';
 }
 
 /** A receipt that is not `committed` — or that cannot be read — keeps the target undiscoverable. */
@@ -133,7 +177,7 @@ export function newRestoreReceipt(
 ): RestoreReceipt {
 	const now = Date.now();
 	return {
-		version: RESTORE_RECEIPT_VERSION,
+		version: fields.source_kind === 'staged_tree' ? STAGED_RESTORE_RECEIPT_VERSION : RESTORE_RECEIPT_VERSION,
 		operation_id: randomUUID(),
 		attempts: 0,
 		requested_at: now,

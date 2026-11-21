@@ -125,6 +125,9 @@ export function parseMultipartRequest(
 		}
 		upload.file = fileStream;
 		upload.handedOut = true;
+		// the request's own length, set by the server rather than a field, for a handler sizing the upload up front
+		const contentLength = Number(request.headers['content-length']);
+		if (Number.isSafeInteger(contentLength)) (fileStream as any).requestContentLength = contentLength;
 		fileStream.once('close', () => {
 			if (upload.responded && !fileStream.readableEnded) discardUnreadUpload(upload);
 		});

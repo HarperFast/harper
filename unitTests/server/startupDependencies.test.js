@@ -15,6 +15,11 @@ const DEFERRED_PACKAGES = [
 	'systeminformation',
 	'moment',
 	'lodash (full build)',
+	// the archive restore's own modules, loaded by the request that carries an archive
+	'harper:dataLayer/archiveExtraction',
+	'harper:dataLayer/archiveExtractionLock',
+	'harper:dataLayer/archiveStaging',
+	'harper:dataLayer/restoreArchive',
 ];
 
 describe('startup dependencies', function () {

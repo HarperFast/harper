@@ -15,6 +15,8 @@ const {
 	restoreReceiptPath,
 	writeRestoreReceipt,
 	RESTORE_RECEIPT_VERSION,
+	STAGED_RESTORE_RECEIPT_VERSION,
+	describeRestoreSource,
 } = require('#src/dataLayer/restoreReceipt');
 
 describe('restoreReceipt', function () {
@@ -61,6 +63,29 @@ describe('restoreReceipt', function () {
 		);
 	});
 
+	it('writes a staged archive receipt as version 2, which names its staging and no backup', function () {
+		const stagingDir = join(tempDir, 'staging');
+		const written = writeRestoreReceipt(
+			lock,
+			receiptFor(dbPath, {
+				backup_id: undefined,
+				source_kind: 'staged_tree',
+				staging_dir: stagingDir,
+				restored_from: 'upload',
+				archive_sha256: 'a'.repeat(64),
+			})
+		);
+		assert.strictEqual(written.version, STAGED_RESTORE_RECEIPT_VERSION);
+		const read = readRestoreReceipt(dbPath);
+		assert.strictEqual(read.kind, 'valid');
+		assert.strictEqual(read.receipt.staging_dir, stagingDir);
+		assert.strictEqual(read.receipt.backup_id, undefined);
+		assert.strictEqual(describeRestoreSource(read.receipt), 'archive upload');
+		// a staged receipt without its staging is not one any reader can act on
+		writeFileSync(restoreReceiptPath(dbPath), JSON.stringify({ ...read.receipt, staging_dir: undefined }));
+		assert.strictEqual(readRestoreReceipt(dbPath).kind, 'unreadable');
+	});
+
 	it('reads a missing receipt as absent, which does not block discovery', function () {
 		const read = readRestoreReceipt(dbPath);
 		assert.deepStrictEqual(read, { kind: 'absent' });
@@ -80,8 +105,18 @@ describe('restoreReceipt', function () {
 			['a JSON non-object', () => '42', /not an object/],
 			[
 				'a newer version',
-				(text) => JSON.stringify({ ...JSON.parse(text), version: RESTORE_RECEIPT_VERSION + 1 }),
-				/version 2 is not 1/,
+				(text) => JSON.stringify({ ...JSON.parse(text), version: STAGED_RESTORE_RECEIPT_VERSION + 1 }),
+				/version 3 is not 1 or 2/,
+			],
+			[
+				'a version 2 receipt whose source is not a staged archive',
+				(text) => JSON.stringify({ ...JSON.parse(text), version: STAGED_RESTORE_RECEIPT_VERSION }),
+				/malformed/,
+			],
+			[
+				'a version 1 receipt that names a staged archive',
+				(text) => JSON.stringify({ ...JSON.parse(text), source_kind: 'staged_tree', staging_dir: '/x' }),
+				/malformed/,
 			],
 			['an unknown state', (text) => JSON.stringify({ ...JSON.parse(text), state: 'published' }), /malformed/],
 			[

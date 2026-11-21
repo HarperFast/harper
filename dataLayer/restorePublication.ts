@@ -9,8 +9,9 @@
  */
 import { existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { getEnvironmentData, setEnvironmentData } from 'node:worker_threads';
-import { ClientError } from '../utility/errors/hdbError.ts';
+import { getEnvironmentData, isMainThread, setEnvironmentData } from 'node:worker_threads';
+import { loadRuntimeModule } from '../utility/packageUtils.js';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { databaseRoots, resetDatabases } from '../resources/databases.ts';
@@ -31,6 +32,9 @@ import {
 import {
 	RESTORE_RECEIPT_SUFFIX,
 	describeRestoreSource,
+	inheritedStagingDirs,
+	interruptedArchiveRestoreReceipt,
+	isStagedReceipt,
 	newRestoreReceipt,
 	readRestoreReceipt,
 	readRestoreReceiptFile,
@@ -88,6 +92,18 @@ export interface PublishRestoreRequest {
 	jobId?: string;
 	requestedBy?: string;
 	online?: OnlineRestoreHooks;
+	/** A proven staged archive in place of a managed backup: no repository lock, no source pin. */
+	staged?: StagedRestoreSource;
+}
+
+export interface StagedRestoreSource {
+	stagingDir: string;
+	restoredFrom: string;
+	archiveSha256: string;
+	/** The database the archive's manifest names, when it has one. */
+	sourceDatabase?: string;
+	/** Finish the interrupted archive restore the target's receipt records, instead of starting one. */
+	resume?: boolean;
 }
 
 /**
@@ -109,7 +125,42 @@ async function settleCommittedRestore(lock: RestoreLock, receipt: RestoreReceipt
 	const again = readRestoreReceipt(lock.dbPath);
 	if (again.kind !== 'valid' || again.receipt.operation_id !== receipt.operation_id) return;
 	if (receipt.job_id) await settleRestoreJob(receipt, hdbTerms.JOB_STATUS_ENUM.COMPLETE);
+	// before the receipt, which is what owns the area: a crash in between leaves a receipt with nothing to finish
+	await removeReceiptStaging(receipt);
 	removeRestoreReceipt(lock, receipt.operation_id);
+}
+
+/**
+ * The staged archive a receipt owns, with the generation its swap replaced. A published restore removes
+ * it before it takes the lock to settle, since deleting a large replaced generation under the lock would
+ * hold off every open of the database meanwhile; the settle repeats it, which costs nothing once done.
+ */
+export async function removeReceiptStaging(receipt: RestoreReceipt): Promise<void> {
+	const stagingDirs = [
+		...(receipt.superseded_staging_dirs ?? []),
+		...(isStagedReceipt(receipt) && receipt.staging_dir ? [receipt.staging_dir] : []),
+	];
+	if (stagingDirs.length === 0) return;
+	try {
+		const { keepInstalledCharge, removeStagingArea, stagedAreasOfReceipt } = await import('./archiveStaging.ts');
+		for (const stagingDir of stagingDirs) {
+			// before the charge takes the record the areas are read from
+			const areas = stagedAreasOfReceipt({ ...receipt, staging_dir: stagingDir });
+			try {
+				await keepInstalledCharge(stagingDir);
+			} catch (error) {
+				// the record still in the area charges the quota; the startup sweep tries the move again before removing it
+				logger.warn(
+					`Could not keep the quota charge of the archive restored into '${receipt.database}'; its staging ${stagingDir} is left in place`,
+					error
+				);
+				continue;
+			}
+			await removeStagingArea(areas);
+		}
+	} catch (error) {
+		logger.warn(`Could not remove the staged archive of the restore of '${receipt.database}'`, error);
+	}
 }
 
 export function releaseReceiptPins(receipt: RestoreReceipt): void {
@@ -147,7 +198,9 @@ function restoreResult(receipt: RestoreReceipt): Record<string, unknown> {
 	const evidence = (receipt.evidence ?? {}) as Partial<RestoreEvidence> & { compatibility_waived?: string[] };
 	return {
 		database: receipt.database,
-		backup_id: receipt.backup_id,
+		...(receipt.backup_id !== undefined ? { backup_id: receipt.backup_id } : {}),
+		...(receipt.restored_from !== undefined ? { restored_from: receipt.restored_from } : {}),
+		...(receipt.archive_sha256 !== undefined ? { archive_sha256: receipt.archive_sha256 } : {}),
 		...(receipt.database !== receipt.source_database ? { source_database: receipt.source_database } : {}),
 		...(receipt.pre_restore_backup_id !== undefined ? { pre_restore_backup_id: receipt.pre_restore_backup_id } : {}),
 		...(receipt.route === 'on_restart' && receipt.retain_previous === false ? { retain_previous: false } : {}),
@@ -186,6 +239,7 @@ export async function finishOutstandingRestore(databaseDir: string, reload?: () 
 	} catch (error) {
 		logger.error(`Restore of '${published.database}' is published, but not every thread reloaded it`, error);
 	}
+	await removeReceiptStaging(published);
 	const settling = acquireRestoreLockFor(published.database, databaseDir);
 	try {
 		await settleCommittedRestore(settling, published);
@@ -217,6 +271,8 @@ function admitOverEarlierReceipt(
 			409
 		);
 	}
+	// its staging area may hold the only copy of what it began installing, so only it may finish or withdraw
+	if (isStagedReceipt(earlier) && earlier.state !== 'terminal') throw interruptedArchiveRestore(databaseName, earlier);
 	// a terminal restart restore is no longer scheduled, so any restore may take its target over
 	if (earlier.route === 'on_restart' && earlier.state !== 'terminal') {
 		const pending = `Database '${databaseName}' has a pending restart restore (job ${earlier.job_id ?? earlier.operation_id}, ${earlier.state})`;
@@ -230,6 +286,18 @@ function admitOverEarlierReceipt(
 	// A failed online or offline attempt: its marker (kept by the claim) blocks the target, and this
 	// claim takes it over exactly as a rerun took over the marker before receipts existed.
 	return earlier;
+}
+
+export function interruptedArchiveRestore(databaseName: string, earlier: RestoreReceipt): ClientError {
+	const job = `job ${earlier.job_id ?? earlier.interrupted_job_id ?? earlier.operation_id}`;
+	const what =
+		earlier.state === 'pending'
+			? `a restore from an archive scheduled for the next startup (${job})`
+			: `an interrupted restore from an archive (${job}, ${earlier.state})`;
+	return new ClientError(
+		`Database '${databaseName}' has ${what}; finish it with restore_backup resume=true or withdraw it with cancel=true`,
+		409
+	);
 }
 
 /** The backup a restore reads: the requested id, or the latest complete one, with its blob snapshot restorable here. */
@@ -273,7 +341,96 @@ async function drainedRestart(): Promise<() => void> {
 	return (await import('./restoreIntent.ts')).requestDrainedRestart;
 }
 
+interface ClaimedRestore {
+	lock: RestoreLock;
+	receipt: RestoreReceipt;
+	apply: Pick<ApplyOptions, 'manifest' | 'waived'>;
+	/** A source pin this claim minted, which a failure before destruction removes again. */
+	mintedPinId?: string;
+}
+
 async function publishUnderFence(request: PublishRestoreRequest): Promise<Record<string, unknown>> {
+	const claimed = request.staged ? await claimStagedSource(request) : await claimManagedSource(request);
+	return applyAndPublish(request, claimed);
+}
+
+/**
+ * The claim of a staged archive: the staged proof already ran, so only the receipt is new. The target's
+ * repository is still its `backup_dir`, where a rollback copy and an earlier attempt's pins live.
+ */
+async function claimStagedSource(request: PublishRestoreRequest): Promise<ClaimedRestore> {
+	const { databaseDir, targetDatabase, backupDir } = request;
+	const staged = request.staged!;
+	const { readStagedRecord } = await import('./archiveStaging.ts');
+	const record = readStagedRecord(staged.stagingDir, targetDatabase);
+	if (record.state !== 'proven') throw new Error('The staged archive has not been proven');
+	let receipt!: RestoreReceipt;
+	const lock = beginRestoreForDatabase(databaseDir, targetDatabase, staged.stagingDir, (preexisting, claimLock) => {
+		if (staged.resume) {
+			const read = readRestoreReceipt(databaseDir);
+			const earlier = read.kind === 'valid' ? read.receipt : undefined;
+			if (!earlier || !interruptedArchiveRestoreReceipt(earlier) || earlier.staging_dir !== staged.stagingDir) {
+				throw new ClientError(`Database '${targetDatabase}' has no interrupted archive restore to resume`, 404);
+			}
+			receipt = writeRestoreReceipt(claimLock, {
+				...earlier,
+				route: request.route,
+				job_id: request.jobId,
+				...(request.jobId === undefined && earlier.job_id ? { interrupted_job_id: earlier.job_id } : {}),
+				attempts: earlier.attempts + 1,
+				last_error: undefined,
+			});
+			return;
+		}
+		const earlier = admitOverEarlierReceipt(databaseDir, targetDatabase, request.route);
+		const inherited = new Set(
+			[
+				restorePinId(databaseDir),
+				earlier?.source_pin_id,
+				earlier?.pre_restore_pin_id,
+				...(earlier?.superseded_pin_ids ?? []),
+			].filter(Boolean)
+		);
+		// retired once this attempt commits, as a managed restore retires them
+		const supersededPinIds = preexisting
+			? readBackupPins(backupDir)
+					.filter((pin) => inherited.has(pin.pin_id))
+					.map((pin) => pin.pin_id)
+			: [];
+		receipt = writeRestoreReceipt(claimLock, {
+			...newRestoreReceipt({
+				route: request.route,
+				state: 'applying',
+				database: targetDatabase,
+				database_path: databaseDir,
+				source_database: record.manifest?.database ?? targetDatabase,
+				backup_dir: backupDir,
+				source_kind: 'staged_tree',
+				staging_dir: staged.stagingDir,
+				restored_from: staged.restoredFrom,
+				archive_sha256: staged.archiveSha256,
+				job_id: request.jobId,
+				requested_by: request.requestedBy,
+				options: {
+					accept_unverified_blobs: request.acceptUnverifiedBlobs,
+					accept_incompatible_backup: request.acceptIncompatible,
+				},
+			}),
+			...(earlier?.route === 'on_restart' || earlier?.superseded_from ? { superseded_from: earlier.operation_id } : {}),
+			...(supersededPinIds.length > 0 ? { superseded_pin_ids: supersededPinIds } : {}),
+			...inheritedStagingDirs(earlier),
+			attempts: 1,
+		});
+	});
+	if (record.waived.length > 0) {
+		logger.warn(
+			`Restoring database '${targetDatabase}' from ${describeRestoreSource(receipt)} with accept_incompatible_backup; waived: ${record.waived.join('; ')}`
+		);
+	}
+	return { lock, receipt, apply: { waived: record.waived } };
+}
+
+async function claimManagedSource(request: PublishRestoreRequest): Promise<ClaimedRestore> {
 	const { backupDir, databaseDir, targetDatabase, sourceDatabase } = request;
 	let pinId = request.immutableSource ? undefined : restorePinId(databaseDir);
 	let minted = false;
@@ -341,6 +498,7 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 						: {}),
 					...(pinId !== undefined ? { source_pin_id: pinId } : {}),
 					...(supersededPinIds.length > 0 ? { superseded_pin_ids: supersededPinIds } : {}),
+					...inheritedStagingDirs(earlier),
 					attempts: 1,
 				});
 			});
@@ -348,26 +506,43 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 		}
 	);
 	logCompatibilityWaived(targetDatabase, backupId, manifest, waived);
+	return { lock, receipt, apply: { manifest, waived }, mintedPinId: minted ? pinId : undefined };
+}
+
+async function applyAndPublish(
+	request: PublishRestoreRequest,
+	claimed: ClaimedRestore
+): Promise<Record<string, unknown>> {
+	const { databaseDir, targetDatabase } = request;
+	const { lock } = claimed;
+	let { receipt } = claimed;
 	let destructionStarted = false;
 	try {
 		await request.online?.close();
 		receipt = await applyProveAndCommit(lock, receipt, {
-			manifest,
+			...claimed.apply,
 			blobRoots: request.blobRoots,
 			probe: request.probeEngineLock,
 			acceptUnverifiedBlobs: request.acceptUnverifiedBlobs,
-			waived,
 			checkPeers: request.checkPeers,
 			onDestruction: () => {
 				destructionStarted = true;
 			},
 		});
 	} catch (error: any) {
-		await abandonOrRelease(lock, receipt, request, minted ? pinId : undefined, destructionStarted, error);
-		if (destructionStarted || lock.preexisting) {
+		// a resumed receipt was there before this attempt, so the attempt's failure leaves it to be resumed again
+		const kept = destructionStarted || lock.preexisting || request.staged?.resume === true;
+		await abandonOrRelease(lock, receipt, request, claimed.mintedPinId, { destructionStarted, kept }, error);
+		if (kept) {
+			// with no marker the kept claim lasts only until startup drops it (`dropAbandonedClaim`)
+			const recover = !isStagedReceipt(receipt)
+				? 'rerun restore_backup to recover'
+				: restoreMarkerPresent(databaseDir)
+					? 'restore_backup resume=true to recover'
+					: 'nothing was replaced; restore_backup resume=true tries again, and the next Harper startup withdraws it';
 			throw withRecoveryGuidance(
 				error,
-				`Restore of database '${targetDatabase}' from ${describeRestoreSource({ backup_id: backupId })} failed (rerun restore_backup to recover): ${error.message}`
+				`Restore of database '${targetDatabase}' from ${describeRestoreSource(receipt)} failed (${recover}): ${error.message}`
 			);
 		}
 		throw error;
@@ -399,6 +574,7 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 	} catch (error) {
 		logger.error(`Restore of '${targetDatabase}' is published, but not every thread reloaded it`, error);
 	}
+	await removeReceiptStaging(receipt);
 	try {
 		const settling = acquireRestoreLock(databaseDir);
 		try {
@@ -416,19 +592,23 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 	};
 }
 
-/** Adds recovery guidance without losing what a caller branches on: the client status and the phase. */
+/**
+ * Adds recovery guidance without losing what a caller branches on: the client status and the phase. It
+ * has a status either way, since the CLI prints an error without one as a stack trace of this wrapper.
+ */
 function withRecoveryGuidance(error: any, message: string): Error {
 	const wrapped: any =
 		error?.statusCode >= 400 && error.statusCode < 500
 			? new ClientError(message, error.statusCode)
-			: new Error(message);
+			: new ServerError(message, error?.statusCode);
 	wrapped.cause = error;
 	if (error?.phase !== undefined) wrapped.phase = error.phase;
 	return wrapped;
 }
 
 export interface ApplyOptions {
-	manifest: BackupManifest;
+	/** Absent for a staged archive, whose staged proof recorded what it holds. */
+	manifest?: BackupManifest;
 	blobRoots: string[];
 	probe: boolean;
 	acceptUnverifiedBlobs: boolean;
@@ -458,6 +638,8 @@ export async function applyProveAndCommit(
 			backupDir: receipt.backup_dir,
 			backupId: receipt.backup_id,
 			manifest: options.manifest,
+			sourceKind: receipt.source_kind,
+			stagingDir: receipt.staging_dir,
 			blobRoots: options.blobRoots,
 			probe: options.probe,
 			interrupted: lock.preexisting,
@@ -483,17 +665,24 @@ export async function applyProveAndCommit(
 /**
  * A failure before the publication boundary. After destruction began, or over a target an earlier
  * attempt had already marked, the marker, pin and receipt all stay: the target is blocked and the
- * rerun has its source. Otherwise nothing was touched, so the claim is released whole.
+ * rerun has its source. A resumed receipt stays too, still reserving a target nothing has touched, as
+ * it did before the resume. Otherwise the claim is this attempt's own, and it is released whole.
  */
 async function abandonOrRelease(
 	lock: RestoreLock,
 	receipt: RestoreReceipt,
 	request: PublishRestoreRequest,
 	pinId: string | undefined,
-	destructionStarted: boolean,
+	{ destructionStarted, kept }: { destructionStarted: boolean; kept: boolean },
 	error: any
 ): Promise<void> {
-	if (destructionStarted || lock.preexisting) {
+	if (kept) {
+		try {
+			// published by this attempt, whose child was never told to proceed: it marks nothing
+			if (!destructionStarted && !lock.preexisting) clearRestoringMarker(lock);
+		} catch (markerError) {
+			logger.error(`Could not clear the marker of the failed restore of '${request.targetDatabase}'`, markerError);
+		}
 		try {
 			// a pin minted for a backup that never touched the target protects nothing the rerun needs
 			if (!destructionStarted && pinId && receipt.source_pin_id === pinId) {
@@ -505,7 +694,7 @@ async function abandonOrRelease(
 			logger.error(`Could not record the failed restore of '${request.targetDatabase}'`, recordError);
 		}
 		releaseRestoreLock(lock);
-		await releaseFence(request, true);
+		await releaseFence(request, destructionStarted || lock.preexisting);
 		return;
 	}
 	try {
@@ -565,6 +754,26 @@ export function jobsOwnedByRestoreReceipts(scanned: ScannedReceipt[] = scanResto
 
 export function restoreReceiptOwnsJob(jobId: string): boolean {
 	return jobsOwnedByRestoreReceipts().has(jobId);
+}
+
+/**
+ * What to tell the job of an archive restore that stopped after its claim, by job id. Its receipt does
+ * not settle the job, but it outlives it and refuses the operation run again, so the job says what does
+ * move it.
+ */
+export function interruptedArchiveRestoreJobs(scanned: ScannedReceipt[] = scanRestoreReceipts()): Map<string, string> {
+	const guidance = new Map<string, string>();
+	for (const { read } of scanned) {
+		if (read.kind !== 'valid' || !interruptedArchiveRestoreReceipt(read.receipt)) continue;
+		const { database, database_path, job_id, interrupted_job_id } = read.receipt;
+		const actions = `finish it with restore_backup database=${database} resume=true, or withdraw it with cancel=true`;
+		// with no marker the claim lasts only until startup drops it (`dropAbandonedClaim`)
+		const message = restoreMarkerPresent(database_path)
+			? `Its restore of database '${database}' from an archive is unfinished: ${actions}.`
+			: `Its restore of database '${database}' from an archive stopped before replacing anything: ${actions}, as the next Harper startup also does.`;
+		for (const jobId of [job_id, interrupted_job_id]) if (jobId) guidance.set(jobId, message);
+	}
+	return guidance;
 }
 
 /**
@@ -709,9 +918,24 @@ async function recoverRestoresOnce(): Promise<Set<string>> {
 		HELD_AT_BOOT_KEY,
 		scanned.filter(({ read }) => receiptBlocksDiscovery(read)).map(({ file }) => resolve(file))
 	);
+	await sweepArchiveStaging();
 	// a receipt withdrawn while a later one recovered no longer owns its job
 	const stillOwned = jobsOwnedByRestoreReceipts(scanned);
 	return new Set([...owned].filter((jobId) => stillOwned.has(jobId)));
+}
+
+/** After recovery has settled every receipt it can: what archive restores of an earlier process left. */
+async function sweepArchiveStaging(): Promise<void> {
+	try {
+		const { releaseStaleExtractionLock, watchExtractionLockOwners } = await import('./archiveExtractionLock.ts');
+		await releaseStaleExtractionLock();
+		if (isMainThread) watchExtractionLockOwners(loadRuntimeModule('server/threads/manageThreads').onThreadExit);
+		const { sweepStagingAtStartup } = await import('./archiveStaging.ts');
+		const removed = sweepStagingAtStartup();
+		if (removed.length > 0) logger.info(`Removed ${removed.length} restore staging area(s) an earlier process left`);
+	} catch (error) {
+		logger.error('Could not sweep restore staging at startup', error);
+	}
 }
 
 function restartRestoreStillScheduled(receipt: RestoreReceipt): boolean {

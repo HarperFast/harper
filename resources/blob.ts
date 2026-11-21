@@ -2836,7 +2836,7 @@ export async function deleteBlobPaths(paths: Iterable<string>): Promise<void> {
  * recursively delete a directory and all of its contents, but do it one at a time, so that we don't run out of memory and hog resources
  * @param path
  */
-async function rimrafSteadily(path: string): Promise<unknown[]> {
+export async function rimrafSteadily(path: string): Promise<unknown[]> {
 	if (!existsSync(path)) return [];
 	const failures: unknown[] = [];
 	for (const entry of await readdir(path, { withFileTypes: true })) {

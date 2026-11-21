@@ -17,9 +17,9 @@ import {
 	resolveDatabasePath,
 	throwIfUnloadedDatabaseHeldByRestore,
 } from '../resources/databases.ts';
-import { publishRestore } from './restorePublication.ts';
+import { publishRestore, type StagedRestoreSource } from './restorePublication.ts';
 import { runRestoreChild } from './restoreChildRunner.ts';
-import { readRestoreReceipt } from './restoreReceipt.ts';
+import { interruptedArchiveRestoreReceipt, readRestoreReceipt } from './restoreReceipt.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -123,7 +123,7 @@ export class BackupInProgressError extends ClientError {
  * job operations (create/verify/restore) this runs in the request-context validator, before any job
  * record is created.
  */
-function requireSuperUser(request: any, operationName: string): void {
+export function requireSuperUser(request: any, operationName: string): void {
 	if (!request?.hdb_user?.role?.permission?.super_user) {
 		throw new ClientError(`Operation '${operationName}' is restricted to super_user roles`, 403);
 	}
@@ -193,7 +193,7 @@ export function resolveSingleRootStore(databaseName: string): any {
 	return rootStores.values().next().value;
 }
 
-function requireRocksRootStore(databaseName: string, operation: string): RocksDatabase {
+export function requireRocksRootStore(databaseName: string, operation: string): RocksDatabase {
 	const rootStore = resolveSingleRootStore(databaseName);
 	if (!(rootStore instanceof RocksDatabase)) {
 		throw new ClientError(
@@ -637,7 +637,15 @@ export async function verifyBackup(request: any) {
 
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
-	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readRestoreRequest(request);
+	// only restoreBackupRequest sets `staging_id`, after refusing any a client sent; it names staging, not a repository
+	const { databaseName, targetDatabase, acceptIncompatible, resume, cancel } = readRestoreRequest(request, {
+		archive: request.staging_id !== undefined,
+	});
+	if (request.staging_id !== undefined) {
+		const { assertStagedArchiveQueued } = await import('./restoreArchive.ts');
+		assertStagedArchiveQueued(databaseName, restoreTargetDir(databaseName, databaseName), request.staging_id);
+		return;
+	}
 	// they act on the restore record the target already has, which needs no backup to resolve
 	if (resume || cancel) {
 		const { assertRestartRestoreActionable } = await import('./restoreIntent.ts');
@@ -666,9 +674,17 @@ export async function validateRestoreBackup(request: any) {
 	}
 }
 
+/** A pin that checks nothing would read as a verified restore. */
+export function assertNoArchivePin(request: any): void {
+	if (request.sha256 === undefined) return;
+	throw new ClientError(
+		`'sha256' is checked against the archive a request uploads, and this request uploads none; omit it`
+	);
+}
+
 const RESTART_RESTORE_OPTIONS = ['allow_engine_only', 'accept_incompatible_backup', 'accept_unverified_blobs'];
 
-function readRestoreRequest(request: any, { offline = false } = {}) {
+export function readRestoreRequest(request: any, { offline = false, archive = false } = {}) {
 	const databaseName = getDatabaseName(request);
 	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	const acceptIncompatible = requireBooleanOption(request.accept_incompatible_backup, 'accept_incompatible_backup');
@@ -701,9 +717,10 @@ function readRestoreRequest(request: any, { offline = false } = {}) {
 	if (request.retain_previous !== undefined && !onRestart) refuse(`'retain_previous' applies only with 'on_restart'`);
 	if (request.target_database !== undefined && (onRestart || resume || cancel))
 		refuse(`'target_database' is never held by a component, so it restores online; omit 'on_restart'`);
+	if (!archive) assertNoArchivePin(request);
 	if (!offline && (databaseName === 'system' || targetDatabase === 'system')) {
 		throw new ClientError(
-			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system`
+			`The 'system' database cannot be restored while Harper is running; stop the server and run: harper restore_backup database=system${archive ? ' file=<archive>' : ''}`
 		);
 	}
 	return {
@@ -757,14 +774,66 @@ export async function restoreBackup(request: any) {
 		resume,
 		cancel,
 		retainPrevious,
-	} = readRestoreRequest(request);
+	} = readRestoreRequest(request, { archive: request.staging_id !== undefined });
 	const inPlace = targetDatabase === databaseName;
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
 	const databaseDir = restoreTargetDir(databaseName, targetDatabase);
+	const onlineOptions = {
+		databaseName,
+		targetDatabase,
+		inPlace,
+		databaseDir,
+		backupDir: backupDirForDatabase(databaseName),
+		requestedBackupId,
+		allowEngineOnly,
+		acceptIncompatible,
+		acceptUnverifiedBlobs,
+		immutableSource,
+	};
+	if (request.staging_id !== undefined) {
+		const { restoreStagedArchive } = await import('./restoreArchive.ts');
+		return restoreStagedArchive(
+			{ databaseName, databaseDir, stagingId: request.staging_id, acceptUnverifiedBlobs },
+			async (staged) => {
+				if (!onRestart) return restoreOnline(request, { ...onlineOptions, staged });
+				const intent = await import('./restoreIntent.ts');
+				return intent.requestRestartRestore({
+					databaseName,
+					databaseDir,
+					backupDir: backupDirForDatabase(databaseName),
+					allowEngineOnly: false,
+					acceptIncompatible,
+					acceptUnverifiedBlobs,
+					retainPrevious,
+					jobId: currentJobId(),
+					requestedBy: request.hdb_user?.username,
+					staged,
+				});
+			}
+		);
+	}
 	if (cancel || resume || onRestart) {
 		const intent = await import('./restoreIntent.ts');
 		if (cancel) return intent.cancelRestartRestore(databaseName, databaseDir);
-		if (resume) return intent.resumeRestartRestore(databaseName, databaseDir, currentJobId());
+		if (resume) {
+			const read = readRestoreReceipt(databaseDir);
+			if (read.kind === 'valid' && interruptedArchiveRestoreReceipt(read.receipt)) {
+				const earlier = read.receipt;
+				return restoreOnline(request, {
+					...onlineOptions,
+					backupDir: earlier.backup_dir,
+					acceptIncompatible: earlier.options.accept_incompatible_backup === true,
+					acceptUnverifiedBlobs: earlier.options.accept_unverified_blobs === true,
+					staged: {
+						stagingDir: earlier.staging_dir!,
+						restoredFrom: earlier.restored_from ?? 'archive',
+						archiveSha256: earlier.archive_sha256 ?? '',
+						resume: true,
+					},
+				});
+			}
+			return intent.resumeRestartRestore(databaseName, databaseDir, currentJobId());
+		}
 		return intent.requestRestartRestore({
 			databaseName,
 			databaseDir,
@@ -778,18 +847,7 @@ export async function restoreBackup(request: any) {
 			requestedBy: request.hdb_user?.username,
 		});
 	}
-	return restoreOnline(request, {
-		databaseName,
-		targetDatabase,
-		inPlace,
-		databaseDir,
-		backupDir: backupDirForDatabase(databaseName),
-		requestedBackupId,
-		allowEngineOnly,
-		acceptIncompatible,
-		acceptUnverifiedBlobs,
-		immutableSource,
-	});
+	return restoreOnline(request, onlineOptions);
 }
 
 function restoreOnline(
@@ -805,6 +863,7 @@ function restoreOnline(
 		acceptIncompatible: boolean;
 		acceptUnverifiedBlobs: boolean;
 		immutableSource: boolean;
+		staged?: StagedRestoreSource;
 	}
 ) {
 	const { databaseName, targetDatabase, inPlace, databaseDir, backupDir, requestedBackupId } = options;
@@ -827,6 +886,7 @@ function restoreOnline(
 		probeEngineLock: true,
 		jobId: currentJobId(),
 		requestedBy: request.hdb_user?.username,
+		staged: options.staged,
 		online: {
 			async close() {
 				// Block new blob saves, drain in-flight saves, and close the target across all worker threads.
@@ -840,7 +900,11 @@ function restoreOnline(
 				}
 				// A live component can hold its own handle on the database that Harper does not track and
 				// cannot close, so verify actual process-wide closure before anything destructive.
-				await verifyDatabaseClosed(databaseDir, targetDatabase);
+				await verifyDatabaseClosed(
+					databaseDir,
+					targetDatabase,
+					options.staged?.resume ? 'resume' : options.staged ? 'archive' : 'backup'
+				);
 			},
 			release: (generationReplaced) =>
 				signalling.signalSchemaChange(
@@ -905,7 +969,11 @@ const DATABASE_CLOSE_POLL_INTERVAL_MS = 250;
  * component is holding the database open (Harper can neither detect which component nor force its
  * handle closed), so an online in-place restore is not possible and the offline CLI is the path.
  */
-async function verifyDatabaseClosed(databaseDir: string, databaseName: string): Promise<void> {
+async function verifyDatabaseClosed(
+	databaseDir: string,
+	databaseName: string,
+	source: 'backup' | 'archive' | 'resume'
+): Promise<void> {
 	const targetPath = resolve(databaseDir);
 	const deadline = Date.now() + DATABASE_CLOSE_WAIT_MS;
 	for (;;) {
@@ -914,11 +982,15 @@ async function verifyDatabaseClosed(databaseDir: string, databaseName: string): 
 		);
 		if (!stillOpen) return;
 		if (Date.now() >= deadline) {
+			const offline = `stop the server and run: harper restore_backup database=${databaseName}`;
+			const from = source === 'archive' ? 'file=<archive>' : 'backup_id=<id>';
 			throw new BackupInProgressError(
 				`Cannot restore database '${databaseName}' while Harper is running: it is held open by a loaded component (or is the system database). ` +
-					(databaseName === 'system'
-						? `Restore it offline instead — stop the server and run: harper restore_backup database=system`
-						: `Pass on_restart=true to restore it at the next startup, before components load, or stop the server and run: harper restore_backup database=${databaseName} backup_id=<id>`)
+					(source === 'resume'
+						? `Finish it offline instead — ${offline} resume=true`
+						: databaseName === 'system'
+							? `Restore it offline instead — ${offline}${source === 'archive' ? ` ${from}` : ''}`
+							: `Pass on_restart=true to restore it at the next startup, before components load, or ${offline} ${from}`)
 			);
 		}
 		await delay(DATABASE_CLOSE_POLL_INTERVAL_MS);
