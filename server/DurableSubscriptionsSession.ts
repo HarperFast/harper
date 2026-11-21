@@ -1124,22 +1124,21 @@ type DurableEntry = {
 };
 /**
  * Positions in each origin's transaction log, as keys of that log: `readThrough` is the last complete transaction
- * the topic had read, and `cursor` the one before its earliest delivery not yet taken. A resume in `generation`
+ * before the topic's earliest delivery never sent, and `cursor` the one before its earliest not yet taken. A resume in `generation`
  * (the database generation that saved them) reads each log after its cursor in arrival order, so an entry that
  * arrived late, with a key below `startTime`, is delivered. Keyed by origin node name: the record replicates,
  * and this node's own log has another name on every other node.
  */
-type SavedCursors = { generation: string; node: string; logs: SavedCursor[] };
+type SavedCursors = { generation: string; logs: SavedCursor[] };
 /**
- * `originGeneration` is there when the saving node vouched for the origin: its log of it held every entry in the
- * origin's own order, so the position names the same entries on another node that vouches for the origin too.
+ * `originGeneration` is there when the saving node vouched for the origin: before the cursor its log of it held what
+ * the origin's own log holds before it, so the origin itself can resume from the position.
  */
 type SavedCursor = [origin: string, cursor: number, readThrough: number, originGeneration?: string];
 /** A record's `cursors`, by database name: the read-through its live topics share. */
 type SharedCursors = {
 	[database: string]: {
 		generation: string;
-		node: string;
 		logs: [origin: string, readThrough: number, originGeneration?: string][];
 	};
 };
@@ -1151,7 +1150,7 @@ function isLogKey(value: unknown): value is number {
 function loadCursors(
 	saved: unknown,
 	shared: SharedCursors[string] | undefined
-): { generation: string; node: string; logs: Map<string, LogCursor> } | undefined {
+): { generation: string; logs: Map<string, LogCursor> } | undefined {
 	const logs = new Map<string, LogCursor>();
 	const vouchedGeneration = (generation: unknown) => (typeof generation === 'string' ? generation : undefined);
 	let from: any;
@@ -1168,13 +1167,13 @@ function loadCursors(
 		from = saved;
 		held = from.logs;
 	}
-	if (typeof from?.generation !== 'string' || typeof from.node !== 'string' || !Array.isArray(held)) return;
+	if (typeof from?.generation !== 'string' || !Array.isArray(held)) return;
 	for (const log of held) {
 		if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1]) || !isLogKey(log[2])) return;
 		logs.set(log[0], { cursor: log[1], readThrough: log[2], generation: vouchedGeneration(log[3]) });
 	}
 	if (logs.size === 0 || logs.size > MAX_CURSOR_LOGS) return;
-	return { generation: from.generation, node: from.node, logs };
+	return { generation: from.generation, logs };
 }
 function sameCursors(a: Map<string, LogCursor> | undefined, b: Map<string, LogCursor>): boolean {
 	if (a?.size !== b.size) return false;
@@ -1239,7 +1238,6 @@ type TopicState = {
 	/** By origin node name: the topic's position in each transaction log, and the database generation they are of. */
 	cursors?: Map<string, LogCursor>;
 	cursorGeneration?: string;
-	cursorNode?: string;
 	/** The positions were read from this connection's subscription; otherwise they are the ones the record held. */
 	cursorsLive?: boolean;
 };
@@ -1495,13 +1493,14 @@ function resumesFromCheckpoint(entry: DurableEntry): boolean {
 
 /**
  * The topic's saved log positions for a resume from its checkpoint, in another database generation than the one
- * that saved them: each origin both nodes vouch for is read after its position instead of from its boundary.
+ * that saved them: this node's own log is read after its position instead of from its boundary, when the saving node
+ * vouched for it.
  */
 function movedCursors(state: TopicState): MovedCursors | undefined {
-	const { cursors, cursorGeneration: generation, cursorNode: node, entry } = state;
-	if (!cursors || generation === undefined || node === undefined) return;
+	const { cursors, entry } = state;
+	if (!cursors) return;
 	const takenThrough = entry.takenThrough < entry.startTime ? entry.takenThrough : entry.startTime;
-	return { node, generation, takenThrough, logs: cursors };
+	return { moved: true, takenThrough, logs: cursors };
 }
 
 /**
@@ -1590,7 +1589,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				if (cursors) {
 					state.cursors = cursors.logs;
 					state.cursorGeneration = cursors.generation;
-					state.cursorNode = cursors.node;
 					if (isLogKey(entry.takenThrough) && entry.takenThrough < startTime)
 						state.entry.takenThrough = entry.takenThrough;
 				}
@@ -1692,7 +1690,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			state = newTopicState({ ...state.entry, qos: subscription.qos });
 			state.cursors = replaced.cursors;
 			state.cursorGeneration = replaced.cursorGeneration;
-			state.cursorNode = replaced.cursorNode;
 			this.topics.set(subscription.topic, state);
 			if (subscription.qos === 2) {
 				state.received = replaced.received;
@@ -1800,10 +1797,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.reservedIds.delete(resend[3]);
 			return resend[3];
 		}
-		// a live transaction that commits below what was delivered before it is new, not a replay
-		// a key range says nothing of an entry that arrived after it was saved, whatever its key
-		if (key <= state.receivedThrough && !(key < state.highestKey) && !update[ARRIVED_AFTER_SAVE])
-			return ALREADY_RECEIVED;
+		// The key range covers what was sent before it was saved, and says nothing of an entry never sent, whatever
+		// its key. Read by key, a transaction below what was delivered before it committed late: new, not a replay.
+		const sentBeforeSave: boolean | undefined =
+			update[ARRIVED_AFTER_SAVE] === undefined ? undefined : !update[ARRIVED_AFTER_SAVE];
+		if (key <= state.receivedThrough && (sentBeforeSave ?? !(key < state.highestKey))) return ALREADY_RECEIVED;
 		if (state.ordinal < (state.receivedRuns?.get(key) ?? 0)) return ALREADY_RECEIVED;
 		if (state.received?.get(slot)?.[2] === id) return ALREADY_RECEIVED;
 	}
@@ -2254,10 +2252,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	/**
 	 * The topic's position in each transaction log as of now, by origin node name, with the lowest key among its
-	 * deliveries not yet taken. A log's cursor is its read-through, held just before the earliest delivery from it
-	 * that is unacknowledged or still queued; deliveries of one log arrive in that log's order, so the first found is
-	 * the earliest. Undefined for a topic that keeps none or whose replay has no verdict yet; null when they cannot
-	 * be read now.
+	 * deliveries not yet taken. A log's cursor is just before the earliest delivery from it that is unacknowledged or
+	 * still queued, and its `readThrough` just before the earliest still queued, so everything after that was never
+	 * sent; with none, both are what the subscription has read. Deliveries of one log arrive in that log's order, so
+	 * the first found is the earliest. Undefined for a topic that keeps none or whose replay has no verdict yet; null
+	 * when they cannot be read now.
 	 */
 	readCursors(state: TopicState): { logs: Map<string, LogCursor>; lowest: number } | null | undefined {
 		const subscription = state.subscription;
@@ -2277,26 +2276,35 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const held = new Set<string>();
 		let lowest = Infinity;
 		let unplaced = false;
-		const hold = (key: number, log: string | undefined, before: number | undefined) => {
+		const queued = new Set<string>();
+		const hold = (key: number, log: string | undefined, before: number | undefined, sent: boolean) => {
 			if (key < lowest) lowest = key;
 			const origin = log === 'local' ? thisNode : log;
 			const position = origin === undefined ? undefined : logs.get(origin);
-			if (!position) unplaced = true;
-			else if (!held.has(origin!)) {
+			if (!position || before === undefined) {
+				unplaced = true;
+				return;
+			}
+			if (!held.has(origin!)) {
 				held.add(origin!);
-				position.cursor = before ?? 0;
+				position.cursor = before;
+			}
+			if (!sent && !queued.has(origin!)) {
+				queued.add(origin!);
+				position.readThrough = before;
 			}
 		};
-		for (const sent of state.unacked.values()) hold(sent.key, sent.log, sent.before);
+		for (const sent of state.unacked.values()) hold(sent.key, sent.log, sent.before, true);
 		for (const event of subscription.queue ?? []) {
 			const key = event?.localTime;
-			if (typeof key === 'number' && !event.fromScan) hold(key, event[LOG_NAME], event[LOG_BEFORE]);
+			if (typeof key === 'number' && !event.fromScan) hold(key, event[LOG_NAME], event[LOG_BEFORE], false);
 		}
 		// a delivery with no log position holds every log where it was
 		if (unplaced) return null;
-		for (const [origin, generation] of subscription.vouchedOrigins?.() ?? []) {
+		for (const [origin, { generation, certifiedFrom }] of subscription.vouchedOrigins?.() ?? []) {
 			const position = logs.get(origin);
-			if (position) position.generation = generation;
+			// below that key this node's copy of the origin's log may be out of the origin's order
+			if (position && certifiedFrom <= position.cursor) position.generation = generation;
 		}
 		return { logs, lowest };
 	}
@@ -2312,7 +2320,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			!sameCursors(state.cursors, positions.logs);
 		state.cursors = positions.logs;
 		state.cursorGeneration = generation;
-		state.cursorNode = getThisNodeName();
 		state.cursorsLive = true;
 		entry.takenThrough = takenThrough;
 		return changed;
@@ -2460,7 +2467,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				} else {
 					const logs: SavedCursor[] = [];
 					for (const [origin, position] of state.cursors) logs.push(savedCursor(origin, position));
-					saved.cursors = { generation: state.cursorGeneration, node: state.cursorNode!, logs };
+					saved.cursors = { generation: state.cursorGeneration, logs };
 				}
 			}
 			if ((databaseGeneration ?? foreignGeneration) !== undefined)
@@ -2491,9 +2498,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const record: any = { id: this.sessionId, incarnation: this.incarnation, subscriptions };
 		if (sharedCursors) {
 			const cursors: SharedCursors = (record.cursors = {});
-			const node = getThisNodeName();
 			for (const [database, { generation, logs }] of sharedCursors) {
-				cursors[database] = { generation, node, logs: [] };
+				cursors[database] = { generation, logs: [] };
 				for (const [origin, { readThrough, generation: originGeneration }] of logs)
 					cursors[database].logs.push(
 						originGeneration === undefined ? [origin, readThrough] : [origin, readThrough, originGeneration]

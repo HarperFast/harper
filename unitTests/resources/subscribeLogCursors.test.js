@@ -81,6 +81,28 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 			assert.strictEqual(before(30), 60);
 		});
 
+		it('refuses to anchor past more entries than a scan may read, and the subscription then keeps no positions', async () => {
+			const { T, store, peer, log, base } = await peerLog([10]);
+			const context = { source: {}, sourceApply: true, timestamp: base + 20 };
+			await transaction(context, async () => {
+				const resource = await T.getResource('bulk', context);
+				for (let index = 0; index < 65_540; index++)
+					resource._writePublish('bulk', { value: index }, { isNotification: true, nodeId: peer, version: base + 20 });
+			});
+			assert.throws(() => store.tailKey(log), /too many/);
+			const listener = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				listener,
+				[LOG_CURSORS]: true,
+			});
+			assert.strictEqual(subscription.logCursors, undefined);
+			await T.put('live', { value: 'live' });
+			await waitFor(() => listener.values().includes('live'));
+			subscription.end();
+		});
+
 		it('says whether a log holds a transaction', async () => {
 			const { store, peerName, base } = await peerLog([10, 30, 20]);
 			assert.strictEqual(store.holdsTransaction(peerName, base + 20), true);
@@ -249,12 +271,16 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 		it('tags every event with its log and the position before it', async () => {
 			const { first, peerName, base } = await subscribedThrough([10, 20]);
 			const tags = first.events.map((event) => [event.value.value, event[LOG_NAME], event[LOG_BEFORE]]);
-			assert.deepStrictEqual(tags.slice(0, 2), [
-				['k10', peerName, 0],
-				['k20', peerName, base + 10],
-			]);
-			assert.strictEqual(tags[2][1], 'local');
-			assert.ok(tags[2][2] > 0, "after the seed in this node's own log");
+			// one pass can return this node's entry between the peer's
+			assert.deepStrictEqual(
+				tags.filter(([, log]) => log === peerName),
+				[
+					['k10', peerName, 0],
+					['k20', peerName, base + 10],
+				]
+			);
+			const local = tags.find(([, log]) => log === 'local');
+			assert.ok(local[2] > 0, "after the seed in this node's own log");
 		});
 
 		it('delivers what arrived after the saved positions, whatever its key, and nothing read before them', async () => {

@@ -165,8 +165,11 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
 		if (dbisDb && !databaseSubscriptions.sameThread && !databaseSubscriptions.originFloorTimer)
 			startOriginTracking(databaseSubscriptions, dbisDb);
-		if (options[LOG_CURSORS] !== undefined && !databaseSubscriptions.sameThread) {
-			trackLogPositions(databaseSubscriptions, table.auditStore.subscriptionLogRange);
+		if (
+			options[LOG_CURSORS] !== undefined &&
+			!databaseSubscriptions.sameThread &&
+			trackLogPositions(databaseSubscriptions, table.auditStore.subscriptionLogRange)
+		) {
 			databaseSubscriptions.cursorConsumers = (databaseSubscriptions.cursorConsumers || 0) + 1;
 			subscription.keepsCursors = true;
 		}
@@ -181,12 +184,22 @@ const POSITION_TRACKING_LINGER_MS = 60_000;
  * Turns on the broadcast range's per-log positions for subscriptions that keep cursors. The range is replaced
  * whenever the database's last subscription of any kind ends, and a new one starts untracked.
  */
-function trackLogPositions(databaseSubscriptions: any, range: any) {
+function trackLogPositions(databaseSubscriptions: any, range: any): boolean {
 	clearTimeout(databaseSubscriptions.positionLinger);
 	databaseSubscriptions.positionLinger = undefined;
-	if (databaseSubscriptions.trackedRange === range) return;
-	range.trackPositions(true);
+	if (databaseSubscriptions.trackedRange === range) return true;
+	// the subscription is registered either way, and resumes from its scalar position alone
+	if (databaseSubscriptions.positionsFailedAt > Date.now() - POSITION_TRACKING_LINGER_MS) return false;
+	try {
+		range.trackPositions(true);
+	} catch (error) {
+		databaseSubscriptions.positionsFailedAt = Date.now();
+		warn('Could not find the positions of the transaction logs, so subscriptions keep none', error);
+		return false;
+	}
 	databaseSubscriptions.trackedRange = range;
+	databaseSubscriptions.logPositions = undefined;
+	return true;
 }
 
 function releaseLogPositions(databaseSubscriptions: any) {
@@ -213,7 +226,8 @@ export function logPositions(subscription: any): Map<string, number> | undefined
 	if (!range || subscriptions.trackedRange !== range) return;
 	if (rangeFailures(range) > 0) stopProgress(subscriptions);
 	if (subscriptions.progressStopped) return;
-	return range.logPositions();
+	// the range moves only in a pass, so every subscription that asks between two passes shares one map
+	return (subscriptions.logPositions ??= range.logPositions());
 }
 
 let dispatchedLog: string | undefined;
@@ -816,6 +830,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		}
 	} finally {
 		subscriptions.dispatching = false;
+		subscriptions.logPositions = undefined;
 		dispatchedLog = dispatchedKeyBefore = undefined;
 		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
 		// must clear it here so a stuck flag doesn't permanently silence future commits.

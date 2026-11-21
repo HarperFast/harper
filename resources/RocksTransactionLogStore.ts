@@ -59,8 +59,13 @@ type TrackedIterator = IterableIterator<TransactionEntry> & {
 };
 type NamedTransactionEntry = TransactionEntry & { logName?: string };
 export type ExactStartFailure = 'missing' | 'incomplete' | 'duplicate';
-/** The most entries a predecessor scan reads before settling for the last complete transaction it reached. */
-const PREDECESSOR_SCAN_LIMIT = 65_536;
+/** The most entries a scan for a position in a log reads. */
+const POSITION_SCAN_LIMIT = 65_536;
+class PositionScanLimitError extends Error {
+	constructor(log: TransactionLog) {
+		super(`Transaction log ${log.name} holds too many out-of-order entries to find a position in it`);
+	}
+}
 
 export type TransactionLogIterable = Iterable<AuditRecord> & {
 	/** Corrupt frames that ended a log's iteration during this range. */
@@ -551,7 +556,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 							logs.push(log);
 							let queryOptions = options;
 							let expectedExactStart: number | undefined;
-							// where the log is read from, for its tracked position: an exact start, a key, or its first entry
 							let needsPredecessor = false;
 							if (options.startByLog) {
 								const keyStart = options.keyStartByLog?.get(log.name);
@@ -614,9 +618,13 @@ export class RocksTransactionLogStore extends EventEmitter {
 				const fail = (failure: ExactStartFailure): LogResult => {
 					iterator.exactPhase = 3;
 					exactStartFailures.set(log.name, failure);
-					const fallback = options.exactStartFallback?.(log.name, failure, expected);
-					if (fallback === undefined) return { value: undefined, done: true };
+					if (!options.exactStartFallback) return { value: undefined, done: true };
+					const fallback = options.exactStartFallback(log.name, failure, expected);
 					iterator.close();
+					if (fallback === undefined) {
+						failedIterators.add(iterator);
+						return { value: undefined, done: true };
+					}
 					let queryOptions: any = { ...options, start: fallback, exactStart: false, exclusiveStart: true };
 					if (options.until) queryOptions = { ...queryOptions, until: options.until.sourceOf(log) };
 					const replacement = trackCorruptFrames(log, queryOptions);
@@ -652,7 +660,16 @@ export class RocksTransactionLogStore extends EventEmitter {
 				}
 				return result;
 			};
-			const predecessorKey = (log: TransactionLog, key: number) => this.predecessorKey(log, key);
+			// a position that cannot be found fails the log, so none is reported for it
+			const predecessorKey = (log: TransactionLog, key: number) => {
+				try {
+					return this.predecessorKey(log, key);
+				} catch (error) {
+					failedLogs.add(log.name);
+					harperLogger.error('Could not find a position in a transaction log', error, { log: log.name });
+					return 0;
+				}
+			};
 			/** Where a `peekAhead` range standing at the log's committed end is, as the key of a complete transaction. */
 			const anchor = (iterator: TrackedIterator, log: TransactionLog) => {
 				iterator.lastVersion = undefined;
@@ -668,7 +685,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						return;
 					}
 				}
-				iterator.completedKey = this.predecessorKey(log, pending.value.timestamp);
+				iterator.completedKey = this.predecessorKey(log, pending.value.timestamp, true);
 			};
 			const updateIterators = () => {
 				syncLogs();
@@ -945,23 +962,29 @@ export class RocksTransactionLogStore extends EventEmitter {
 
 	/**
 	 * The key of the last complete transaction at the log's committed end, which an exact-start read resumes after
-	 * to read only what is appended from now on; 0 for a log with no committed entry.
+	 * to read only what is appended from now on; 0 for a log with no committed entry. Throws when more entries
+	 * follow the highest key than a scan may read.
 	 */
 	tailKey(log: TransactionLog): number {
 		const highest = this.highestKey(log);
 		if (highest === undefined) return 0;
 		let tail: number | undefined;
+		let scanned = 0;
 		// entries committed after the highest key have lower keys, and an exact start reads them all
-		for (const entry of log.query({ start: highest, exactStart: true })) if (entry.endTxn) tail = entry.timestamp;
-		return tail ?? this.predecessorKey(log, highest);
+		for (const entry of log.query({ start: highest, exactStart: true })) {
+			if (entry.endTxn) tail = entry.timestamp;
+			if (++scanned > POSITION_SCAN_LIMIT) throw new PositionScanLimitError(log);
+		}
+		return tail ?? this.predecessorKey(log, highest, true);
 	}
 
 	/**
 	 * The key of the last complete transaction before the first entry keyed `key`, in the log's physical order; 0
 	 * when that entry is the log's first. A scan that runs past its limit settles for the last one it reached, which
-	 * is still before the entry.
+	 * is still before the entry, or throws when the position must be `exact`: a reader that starts at an earlier one
+	 * is handed entries from before the position was asked for.
 	 */
-	predecessorKey(log: TransactionLog, key: number): number {
+	predecessorKey(log: TransactionLog, key: number, exact = false): number {
 		// the first entry at or above the key is at or before the entry; with another key it is strictly before it
 		let from = this.firstKeyFrom(log, key);
 		if (from === undefined || from === key) {
@@ -987,7 +1010,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 		let before = 0;
 		let scanned = 0;
 		for (const entry of log.query({ start: from, exactStart: true })) {
-			if (entry.timestamp === key || ++scanned > PREDECESSOR_SCAN_LIMIT) break;
+			if (entry.timestamp === key) break;
+			if (++scanned > POSITION_SCAN_LIMIT) {
+				if (exact) throw new PositionScanLimitError(log);
+				break;
+			}
 			if (entry.endTxn) before = entry.timestamp;
 		}
 		return before;

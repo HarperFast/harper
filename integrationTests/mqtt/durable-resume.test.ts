@@ -831,7 +831,7 @@ suite(
 			}
 
 			// first: a checkpoint is issued only while every node the database knows of has a certified route
-			test('a session resumed as another node saved it reads on from its position in each node’s history', async () => {
+			test('a session resumed as another node saved it reads this node’s history on from the saved position', async () => {
 				const node = `peer-${randomUUID().slice(0, 6)}`;
 				const clientId = `moved-${randomUUID().slice(0, 6)}`;
 				let { mqttClient } = await subscribed(clientId, 1);
@@ -876,7 +876,8 @@ suite(
 				try {
 					ok(await waitFor(() => second.received.includes(3) && second.received.includes(4)), `${second.received}`);
 					await sleep(300);
-					deepStrictEqual([...second.received].sort(), [3, 4], 'each once, and nothing acknowledged again');
+					// the other node's history is read from its checkpoint boundary, and no receipt came with the record
+					deepStrictEqual([...second.received].sort(), [1, 3, 4], 'nothing this node wrote is sent again');
 				} finally {
 					await end(second.mqttClient);
 				}
