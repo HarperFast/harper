@@ -1,15 +1,18 @@
 /**
- * Benchmark: what a durable MQTT session's reconnect to the node that saved it costs when another origin's
- * history is replayed from its checkpoint boundary (harper#3790), on one wildcard QoS 1 topic that every session
- * subscribes to. In process, through the real sessions, table subscription and transaction logs; the other origin's
- * writes are applied as replication applies them.
- * Run via: npm run build && npx mocha unitTests/server/mqttResumeOriginReplay.bench.js
+ * Benchmark: what a durable MQTT session's reconnect to the node that saved it costs when it resumes from its
+ * position in each transaction log (harper#3790), on one wildcard QoS 1 topic that every session subscribes to. In
+ * process, through the real sessions, table subscription and transaction logs; the other origin's writes are
+ * applied as replication applies them. The same run on an earlier build measures a resume by key, or one that
+ * replays the other origin from its checkpoint boundary.
+ * Run via: npm run build && npx mocha unitTests/server/mqttResumeLogCursors.bench.js
  * MQTT_RESUME_BENCH_SESSIONS (comma list), _WINDOW (comma list: the other origin's messages each session took
- * and acknowledged above that origin's boundary before it saved its position), _BACKLOG (its messages that arrive
- * below the position after the save), _OTHER (its writes to another table of the database in the same span, which
- * the replay reads and passes over), _AFTER (writes to that other table after the save, above the position, which
- * a resume read before this change too: what a longer absence costs; this node's, or with _AFTER_PEER=1 the other
- * origin's, whose log is then read twice).
+ * and acknowledged before it saved its position), _BACKLOG (its messages that arrive below the position after the
+ * save), _OTHER (its writes to another table of the database before the save, which a replay from a checkpoint
+ * boundary reads and passes over), _AFTER (writes to that other table after the save, which every resume reads:
+ * what a longer absence costs; this node's, or with _AFTER_PEER=1 the other origin's), _CHECKPOINT=0 (the other
+ * origin's route is not certified, so the sessions hold no checkpoint, as on a cluster that has just formed).
+ * MQTT_RESUME_BENCH_ENTRIES: the entries read in the second measurement, a log range with and without its
+ * positions tracked.
  */
 process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS ??= String(24 * 60 * 60 * 1000);
 const { setTimeout: sleep } = require('node:timers/promises');
@@ -33,6 +36,8 @@ const BACKLOG = Number(process.env.MQTT_RESUME_BENCH_BACKLOG ?? 50);
 const OTHER = Number(process.env.MQTT_RESUME_BENCH_OTHER ?? 20_000);
 const AFTER = Number(process.env.MQTT_RESUME_BENCH_AFTER ?? 0);
 const AFTER_PEER = process.env.MQTT_RESUME_BENCH_AFTER_PEER === '1';
+const CHECKPOINT = process.env.MQTT_RESUME_BENCH_CHECKPOINT !== '0';
+const ENTRIES = Number(process.env.MQTT_RESUME_BENCH_ENTRIES ?? 200_000);
 const SEQ = Symbol.for('seq');
 const user = { username: 'mqtt-resume-bench', role: { permission: { super_user: true } } };
 
@@ -91,24 +96,26 @@ async function run(sessionCount, window) {
 	const originFloor = Date.now();
 	const originName = `peer-${name}`;
 	const origin = getIdOfRemoteNode(originName, T.auditStore);
-	T.dbisDB.putSync([SEQ, origin], {
-		seqId: 1,
-		nodes: [
-			{
-				id: origin,
-				closedFloor: originFloor,
-				originGeneration: 'peer-generation',
-				fullCoverage: true,
-				certifiedFrom: 0,
-			},
-		],
-	});
+	if (CHECKPOINT) {
+		T.dbisDB.putSync([SEQ, origin], {
+			seqId: 1,
+			nodes: [
+				{
+					id: origin,
+					closedFloor: originFloor,
+					originGeneration: 'peer-generation',
+					fullCoverage: true,
+					certifiedFrom: 0,
+				},
+			],
+		});
+	}
 	const checkpointed = async () => {
 		await sleep(2);
 		certify(T);
 		await waitFor(() => {
 			for (const session of sessions) session.checkpoint();
-			return sessions.every((session) => session.topics.get(topic).entry.checkpoint !== undefined);
+			return !CHECKPOINT || sessions.every((session) => session.topics.get(topic).entry.checkpoint !== undefined);
 		}, 30_000);
 	};
 	await checkpointed();
@@ -161,6 +168,7 @@ async function run(sessionCount, window) {
 		'backlog': BACKLOG,
 		'other': OTHER,
 		'after': AFTER_PEER ? `${AFTER} (peer)` : AFTER,
+		'checkpoint': CHECKPOINT,
 		'replayed ms': Math.round(replayed),
 		'delivered ms': Math.round(elapsed),
 		'cpu ms': Math.round((cpu.user + cpu.system) / 1000),
@@ -176,7 +184,7 @@ async function run(sessionCount, window) {
 	return result;
 }
 
-describe('MQTT durable resume with another origin replayed from its boundary (benchmark)', function () {
+describe('MQTT durable resume from a position in each transaction log (benchmark)', function () {
 	this.timeout(0);
 	before(() => {
 		setupTestDBPath();
@@ -188,6 +196,41 @@ describe('MQTT durable resume with another origin replayed from its boundary (be
 		const results = [];
 		for (const sessionCount of SESSION_COUNTS) {
 			for (const window of WINDOWS) results.push(await run(sessionCount, window));
+		}
+		console.table(results);
+	});
+	it('measures reading a log range with and without its positions tracked', async function () {
+		const name = `RangeBench${++sequence}`;
+		const T = table({
+			table: name,
+			database: `resume_bench_${name}`,
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		if (typeof T.auditStore.getRange({ start: 1 }).logPositions !== 'function') this.skip();
+		for (let index = 0; index < ENTRIES; index++) await T.put(`r${index % 1000}`, { value: index });
+		const read = (trackPositions) => {
+			const range = T.auditStore.getRange({ start: 1, trackPositions });
+			const startedAt = performance.now();
+			let count = 0;
+			let checksum = 0;
+			for (const entry of range) {
+				count++;
+				// what the broadcast reads per entry while a subscription keeps positions
+				if (trackPositions) checksum += range.lastKeyBefore() + range.lastLogName().length;
+				else checksum += entry.txnLogKey;
+			}
+			return { count, ms: performance.now() - startedAt, checksum };
+		};
+		const results = [];
+		for (let round = 0; round < 5; round++) {
+			const untracked = read(false);
+			const tracked = read(true);
+			results.push({
+				'entries': untracked.count,
+				'untracked ns/entry': Math.round((untracked.ms * 1e6) / untracked.count),
+				'tracked ns/entry': Math.round((tracked.ms * 1e6) / tracked.count),
+			});
 		}
 		console.table(results);
 	});

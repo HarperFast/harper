@@ -50,6 +50,8 @@ type TrackedIterator = IterableIterator<TransactionEntry> & {
 	needsPredecessor?: boolean;
 	/** How far the exact-start transaction has been validated: within it, past it, done. */
 	exactPhase?: 1 | 2 | 3;
+	/** The log's name, read once: on the log itself it is a native accessor. */
+	logName?: string;
 	peek(): IteratorResult<TransactionEntry>;
 	close(): void;
 	/** The log's own iterator, the only thing rocksdb-js accepts as another reader's `until`. */
@@ -471,12 +473,15 @@ export class RocksTransactionLogStore extends EventEmitter {
 				report(error);
 			}) as TrackedIterator;
 			iterator.source = source;
+			iterator.logName = log.name;
 			// Set here, once, rather than left for the per-entry write sites below to add these fields
 			// on their first call: every TrackedIterator then reaches its final shape before any entry
 			// is consumed, so the hot per-entry writes hit an already-stable shape instead of each
 			// triggering its own transition on that iterator's first entry.
 			iterator.lastVersion = undefined;
 			iterator.lastEndTxn = undefined;
+			iterator.completedKey = undefined;
+			iterator.needsPredecessor = false;
 			return iterator;
 		};
 		let log: TransactionLog | undefined;
@@ -535,7 +540,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 			const observedExactStarts = new Set<string>();
 			let positionsTracked = options.trackPositions === true;
 			let lastReturned: TrackedIterator | undefined;
-			let lastReturnedLog: TransactionLog | undefined;
 			const syncLogs = () => {
 				if (latestUpdates !== this.updates || excludeLogsChanged) {
 					excludeLogsChanged = false;
@@ -728,7 +732,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 										iterator.completedKey = predecessorKey(logs[earliestIndex], earliest.timestamp);
 									} else if (iterator.lastEndTxn === true) iterator.completedKey = iterator.lastVersion;
 									lastReturned = iterator;
-									lastReturnedLog = logs[earliestIndex];
 								}
 								// before the refill, which is where a break surfaces and needs this entry's version
 								iterator.lastVersion = earliest.timestamp;
@@ -794,7 +797,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					}
 					positionsTracked = enable;
 					trackLastEntry = attributeCorruption || bounded || enable;
-					lastReturned = lastReturnedLog = undefined;
+					lastReturned = undefined;
 				},
 				logPositions: () => {
 					// a log this range has not opened yet is read from its start
@@ -809,7 +812,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					}
 					return positions;
 				},
-				lastLogName: () => lastReturnedLog?.name,
+				lastLogName: () => lastReturned?.logName,
 				lastKeyBefore: () => lastReturned?.completedKey,
 			};
 			iterable.iterate = () => aggregateIterator;
