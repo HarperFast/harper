@@ -14061,6 +14061,32 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 
+	/**
+	 * Holds a filled record, once its key and timestamps are stamped, to the schema a put of it must meet
+	 * (with the same coercions), so a cache fill cannot store and serve what the table rejects on write.
+	 * The source is at fault, not the reader, so any failure is a 502, which stale-if-error can answer with
+	 * the cached copy. Validation messages quote the source's values, which may be attributes the reader
+	 * cannot see, so only the failing attribute paths reach the error. The key is the requested id, which a
+	 * put does not validate either (it stamps the key after validating), so its issues do not count.
+	 */
+	function validateSourceRecord(record: any): void {
+		try {
+			TableResource.prototype.validate(record);
+		} catch (error) {
+			let paths = '';
+			if (error instanceof ValidationError) {
+				const issues = error.errors.filter((issue) => issue.path !== primaryKey);
+				if (issues.length === 0) return;
+				paths = issues.map((issue) => issue.path).join(', ');
+			}
+			throw new ServerError(
+				`Source for ${tableName} returned a record that does not match the schema` +
+					(paths ? ` (invalid: ${paths})` : ''),
+				502
+			);
+		}
+	}
+
 	function validateFullTextLeaf(
 		leaf: any,
 		mode: string,
@@ -15124,7 +15150,6 @@ export function makeTable(options): TableResourceClass {
 					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
-					resolved = true;
 					const resolvedVersion =
 						isRocksDB && updatedRecord && existingVersion != null
 							? Math.max(sourceVersion, existingVersion)
@@ -15138,7 +15163,9 @@ export function makeTable(options): TableResourceClass {
 							updatedRecord[createdTimeToAssign.name] =
 								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
+						if (!reusedCachedRecord) validateSourceRecord(updatedRecord);
 					}
+					resolved = true;
 					const resolvedEntry: Entry = {
 						key: id,
 						version: resolvedVersion,
