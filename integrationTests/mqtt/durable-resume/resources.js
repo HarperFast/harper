@@ -22,9 +22,7 @@ export class Gated extends tables.Readings {
 // Core has no replication transport, so this stands in for a peer's stream: it applies a publish as replication
 // does, in that node's own transaction log under the key the node gave it, whenever it arrives here.
 const core = process.env.DURABLE_RESUME_CORE;
-const coreModule = (path) => core && createRequire(import.meta.url)(join(core, path));
-const nodeIds = coreModule('resources/nodeIdMapping.js');
-const nodeName = coreModule('server/nodeName.js');
+const nodeIds = core && createRequire(import.meta.url)(join(core, 'resources/nodeIdMapping.js'));
 const SEQ = Symbol.for('seq');
 
 export class Peer extends Resource {
@@ -57,32 +55,23 @@ export class Peer extends Resource {
 	}
 }
 
-/**
- * Rewrites a saved session as another node would have saved it, that node vouching for this node's own log, and
- * without its receipts, as when it did not end cleanly there.
- */
+/** Rewrites a saved session as another node would have saved it: its positions are of that node's generation. */
 export class MovedSession extends Resource {
 	static loadAsInstance = false;
 	async post(_target, { clientId }) {
 		const Session = databases.system.hdb_durable_session;
 		const record = await Session.get(clientId);
-		const generation = tables.Readings.auditStore.databaseGeneration.id;
 		const shared = record.cursors.data;
 		const subscriptions = record.subscriptions.map((entry) => {
-			const logs = new Map(shared.logs.map(([origin, key, vouched]) => [origin, [origin, key, key, vouched]]));
+			const logs = new Map(shared.logs.map(([origin, key]) => [origin, [origin, key, key]]));
 			for (const held of entry.cursors) logs.set(held[0], held);
-			logs.get(nodeName.getThisNodeName())[3] = generation;
-			const { received: _received, receivedRuns: _runs, receivedThrough: _through, ...kept } = entry;
 			return {
-				...kept,
+				...entry,
 				databaseGeneration: 'another-generation',
-				cursors: {
-					generation: 'another-generation',
-					logs: [...logs.values()].map((log) => log.filter((part) => part !== undefined)),
-				},
+				cursors: { generation: 'another-generation', logs: [...logs.values()] },
 			};
 		});
 		await Session.put({ id: clientId, subscriptions });
-		return { vouched: subscriptions[0].cursors.logs.filter((log) => log[3] !== undefined).map((log) => log[0]) };
+		return { moved: subscriptions.length };
 	}
 }

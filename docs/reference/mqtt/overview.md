@@ -95,7 +95,7 @@ Harper keeps a quiet topic's position current while the client is connected, and
 - A late message that was delivered but not acknowledged before the disconnect is sent again on reconnect.
 - Messages the client already acknowledged are not sent again, for up to 1,000 remembered acknowledgements per session (500 of them for QoS 1). Past that limit, or after Harper stops without saving the session, some acknowledged QoS 1 messages can be delivered again.
 - When audit retention has removed the point a node's history was read to, Harper reads what is left of that history from its start, provided nothing newer than the saved position was removed. Otherwise the session is reset, as it is when the saved position itself is older than the audit retention.
-- A client that reconnects to a different node resumes from the session's checkpoint, as before. That node reads its own history on from the saved point when the node that saved the session had received that history directly from it. A late message older than the checkpoint, and any late message for a session with no checkpoint yet, can still be missed after such a move.
+- A client that reconnects to a different node resumes from the session's checkpoint, as before. A late message older than the checkpoint, and any late message for a session with no checkpoint yet, can still be missed after such a move.
 - A subscription to a single record does not replay these messages yet.
 
 This applies to RocksDB databases.

@@ -26,7 +26,6 @@ import {
 	positionBefore,
 	validateCheckpoint,
 	type LogCursor,
-	type MovedCursors,
 	type ResumeCursors,
 	type SubscriptionCheckpoint,
 } from '../resources/subscriptionCheckpoint.ts';
@@ -1130,16 +1129,12 @@ type DurableEntry = {
  * and this node's own log has another name on every other node.
  */
 type SavedCursors = { generation: string; logs: SavedCursor[] };
-/**
- * `originGeneration` is there when the saving node vouched for the origin: before the cursor its log of it held what
- * the origin's own log holds before it, so the origin itself can resume from the position.
- */
-type SavedCursor = [origin: string, cursor: number, readThrough: number, originGeneration?: string];
+type SavedCursor = [origin: string, cursor: number, readThrough: number];
 /** A record's `cursors`, by database name: the read-through its live topics share. */
 type SharedCursors = {
 	[database: string]: {
 		generation: string;
-		logs: [origin: string, readThrough: number, originGeneration?: string][];
+		logs: [origin: string, readThrough: number][];
 	};
 };
 const MAX_CURSOR_LOGS = 1024;
@@ -1152,7 +1147,6 @@ function loadCursors(
 	shared: SharedCursors[string] | undefined
 ): { generation: string; logs: Map<string, LogCursor> } | undefined {
 	const logs = new Map<string, LogCursor>();
-	const vouchedGeneration = (generation: unknown) => (typeof generation === 'string' ? generation : undefined);
 	let from: any;
 	let held: unknown;
 	if (Array.isArray(saved)) {
@@ -1160,7 +1154,7 @@ function loadCursors(
 		from = shared;
 		for (const log of shared.logs) {
 			if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1])) return;
-			logs.set(log[0], { cursor: log[1], readThrough: log[1], generation: vouchedGeneration(log[2]) });
+			logs.set(log[0], { cursor: log[1], readThrough: log[1] });
 		}
 		held = saved;
 	} else if (saved && typeof saved === 'object') {
@@ -1170,7 +1164,7 @@ function loadCursors(
 	if (typeof from?.generation !== 'string' || !Array.isArray(held)) return;
 	for (const log of held) {
 		if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1]) || !isLogKey(log[2])) return;
-		logs.set(log[0], { cursor: log[1], readThrough: log[2], generation: vouchedGeneration(log[3]) });
+		logs.set(log[0], { cursor: log[1], readThrough: log[2] });
 	}
 	if (logs.size === 0 || logs.size > MAX_CURSOR_LOGS) return;
 	return { generation: from.generation, logs };
@@ -1179,12 +1173,7 @@ function sameCursors(a: Map<string, LogCursor> | undefined, b: Map<string, LogCu
 	if (a?.size !== b.size) return false;
 	for (const [origin, position] of b) {
 		const other = a.get(origin);
-		if (
-			other?.cursor !== position.cursor ||
-			other.readThrough !== position.readThrough ||
-			other.generation !== position.generation
-		)
-			return false;
+		if (other?.cursor !== position.cursor || other.readThrough !== position.readThrough) return false;
 	}
 	return true;
 }
@@ -1414,8 +1403,7 @@ function sessionRecordResumable(record: any): boolean {
 		}
 		if (!/[+#]/.test(match?.relativeURL ?? '')) continue;
 		if (!boundToCurrentGeneration(entry)) continue;
-		const start = entry.takenThrough < entry.startTime ? entry.takenThrough : entry.startTime;
-		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, start)) return false;
+		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, entry.startTime)) return false;
 	}
 	return true;
 }
@@ -1492,18 +1480,6 @@ function resumesFromCheckpoint(entry: DurableEntry): boolean {
 }
 
 /**
- * The topic's saved log positions for a resume from its checkpoint, in another database generation than the one
- * that saved them: this node's own log is read after its position instead of from its boundary, when the saving node
- * vouched for it.
- */
-function movedCursors(state: TopicState): MovedCursors | undefined {
-	const { cursors, entry } = state;
-	if (!cursors) return;
-	const takenThrough = entry.takenThrough < entry.startTime ? entry.takenThrough : entry.startTime;
-	return { moved: true, takenThrough, logs: cursors };
-}
-
-/**
  * Resumes from the topic's scalar and, when its log positions were saved in this database generation, from them:
  * each log is then read after its cursor in arrival order, and the start is the key every earlier delivery at or
  * below which was taken. From here on the subscription keeps log positions either way.
@@ -1523,7 +1499,6 @@ function fromScalar(request: any, state: TopicState): any {
 	const logs = new Map<string, LogCursor>();
 	for (const [origin, position] of state.cursors) logs.set(origin === thisNode ? 'local' : origin, position);
 	const takenThrough = entry.takenThrough < entry.startTime ? entry.takenThrough : entry.startTime;
-	request.startTime = takenThrough;
 	request[LOG_CURSORS] = { takenThrough, logs } satisfies ResumeCursors;
 	return request;
 }
@@ -1639,7 +1614,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 								resume: checkpoint,
 								filterKey: topic,
 								reportProgress: true,
-								[LOG_CURSORS]: movedCursors(state) ?? true,
+								[LOG_CURSORS]: true,
 							},
 							durable
 						);
@@ -2076,7 +2051,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				this.advancePositions();
 				if (resumesFromCheckpoint(existing.entry)) {
 					request.resume = existing.entry.checkpoint;
-					request[LOG_CURSORS] = movedCursors(existing);
 				} else fromScalar(request, existing);
 			}
 			request[LOG_CURSORS] ??= true;
@@ -2301,11 +2275,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		// a delivery with no log position holds every log where it was
 		if (unplaced) return null;
-		for (const [origin, { generation, certifiedFrom }] of subscription.vouchedOrigins?.() ?? []) {
-			const position = logs.get(origin);
-			// below that key this node's copy of the origin's log may be out of the origin's order
-			if (position && certifiedFrom <= position.cursor) position.generation = generation;
-		}
 		return { logs, lowest };
 	}
 	setCursors(state: TopicState, positions: { logs: Map<string, LogCursor>; lowest: number }): boolean {
@@ -2448,25 +2417,19 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					shared = { generation: state.cursorGeneration, logs: state.cursors };
 					(sharedCursors ??= new Map()).set(database, shared);
 				}
-				const savedCursor = (origin: string, { cursor, readThrough, generation }: LogCursor): SavedCursor =>
-					generation === undefined ? [origin, cursor, readThrough] : [origin, cursor, readThrough, generation];
 				if (shared?.generation === state.cursorGeneration) {
 					// every log it differs in is written out whole, so it takes nothing else from the shared vector
 					const held: SavedCursor[] = [];
 					for (const [origin, position] of state.cursors) {
 						const through = shared.logs.get(origin);
-						if (
-							position.cursor !== through?.readThrough ||
-							position.readThrough !== through.readThrough ||
-							position.generation !== through.generation
-						)
-							held.push(savedCursor(origin, position));
+						if (position.cursor !== through?.readThrough || position.readThrough !== through.readThrough)
+							held.push([origin, position.cursor, position.readThrough]);
 					}
 					for (const origin of shared.logs.keys()) if (!state.cursors.has(origin)) held.push([origin, 0, 0]);
 					saved.cursors = held;
 				} else {
 					const logs: SavedCursor[] = [];
-					for (const [origin, position] of state.cursors) logs.push(savedCursor(origin, position));
+					for (const [origin, { cursor, readThrough }] of state.cursors) logs.push([origin, cursor, readThrough]);
 					saved.cursors = { generation: state.cursorGeneration, logs };
 				}
 			}
@@ -2500,10 +2463,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			const cursors: SharedCursors = (record.cursors = {});
 			for (const [database, { generation, logs }] of sharedCursors) {
 				cursors[database] = { generation, logs: [] };
-				for (const [origin, { readThrough, generation: originGeneration }] of logs)
-					cursors[database].logs.push(
-						originGeneration === undefined ? [origin, readThrough] : [origin, readThrough, originGeneration]
-					);
+				for (const [origin, { readThrough }] of logs) cursors[database].logs.push([origin, readThrough]);
 			}
 		}
 		const awaitingRelease = [];

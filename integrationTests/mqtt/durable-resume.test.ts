@@ -831,7 +831,7 @@ suite(
 			}
 
 			// first: a checkpoint is issued only while every node the database knows of has a certified route
-			test('a session resumed as another node saved it reads this node’s history on from the saved position', async () => {
+			test('a session resumed as another node saved it resumes from its checkpoint and receives a late message', async () => {
 				const node = `peer-${randomUUID().slice(0, 6)}`;
 				const clientId = `moved-${randomUUID().slice(0, 6)}`;
 				let { mqttClient } = await subscribed(clientId, 1);
@@ -857,10 +857,9 @@ suite(
 				ok(
 					await waitFor(async () => {
 						record = await storedSession(clientId);
-						const vouched = record.cursors?.data?.logs.find(([origin]: [string]) => origin === node)?.[2];
-						return record.subscriptions[0].startTime > key + 1 && vouched === `${node}-generation`;
+						return record.subscriptions[0].startTime > key + 1 && record.cursors?.data?.logs.length === 2;
 					}, 20_000),
-					`the peer's position is saved with the generation this node vouches for: ${JSON.stringify(record)}`
+					`the position passes the key the peer uses next: ${JSON.stringify(record)}`
 				);
 				await end(first.mqttClient);
 				const response = await fetch(`${ctx.harper.httpURL}/MovedSession/`, {
@@ -869,15 +868,13 @@ suite(
 					body: JSON.stringify({ clientId }),
 				});
 				ok(response.ok, `POST /MovedSession/: ${response.status}`);
-				ok((await response.json()).vouched.includes(node));
 				await publishFrom(node, 3, key + 1);
 				await put('Readings', `after-${randomUUID().slice(0, 6)}`, 4);
 				const second = await reconnected(clientId);
 				try {
 					ok(await waitFor(() => second.received.includes(3) && second.received.includes(4)), `${second.received}`);
 					await sleep(300);
-					// the other node's history is read from its checkpoint boundary, and no receipt came with the record
-					deepStrictEqual([...second.received].sort(), [1, 3, 4], 'nothing this node wrote is sent again');
+					deepStrictEqual([...second.received].sort(), [3, 4], 'each once, and nothing acknowledged again');
 				} finally {
 					await end(second.mqttClient);
 				}
