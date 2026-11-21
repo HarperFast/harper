@@ -14069,6 +14069,8 @@ export function makeTable(options): TableResourceClass {
 	 * too, so neither reaches the reader.
 	 */
 	function validateSourceRecord(record: any, frameworkOwned: readonly string[]): void {
+		if (Array.isArray(record) || ArrayBuffer.isView(record))
+			throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
 		try {
 			TableResource.prototype.validate(record, false, frameworkOwned);
 		} catch (error) {
@@ -15165,9 +15167,7 @@ export function makeTable(options): TableResourceClass {
 								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
 						if (!reusedCachedRecord) {
-							// Harper's own values are not the source's to get right: the key and the times this node stamps
-							// (a put stamps them after validating), a Long created time the source supplies, which is its own
-							// Harper's fractional version, and the @embed vectors the fill computes after this check
+							// a Long created time the source supplies is its own Harper's version, fractional milliseconds
 							const createdTimeName = createdTimeProperty?.name;
 							const suppliedCreatedTime = createdTimeName && updatedRecord[createdTimeName];
 							const harperCreatedTime =
@@ -15180,8 +15180,15 @@ export function makeTable(options): TableResourceClass {
 								updatedTimeProperty?.name,
 								harperCreatedTime ? createdTimeName : undefined,
 							];
+							const computesEmbeddings = !(
+								issuanceFailed ||
+								context?.noCacheStore ||
+								sourceContext.noCacheStore ||
+								droppingTable
+							);
 							for (const attribute of TableResource.embedAttributes) {
 								if (
+									computesEmbeddings &&
 									TableResource.userEmbedders[attribute.name] &&
 									sourceState(updatedRecord, attribute.embed?.source) === 'value'
 								)

@@ -7,7 +7,7 @@ const { waitFor } = require('../waitFor.js');
 
 describe('Source fill schema validation', function () {
 	this.timeout(10_000);
-	let Validated, Stamped, LongStamped, BigIntKeyed, Embedded, Sealed, responses, calls;
+	let Validated, Stamped, LongStamped, BigIntKeyed, Embedded, Loose, Sealed, responses, calls;
 
 	function sourceFor(Table) {
 		Table.sourcedFrom({
@@ -78,6 +78,14 @@ describe('Source fill schema validation', function () {
 			],
 		});
 		Embedded.setEmbedAttribute('embedding', async () => [0.5, 0.25]);
+		Loose = table({
+			database: 'test',
+			table: 'SourceFillValidatedLoose',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'name', type: 'String' },
+			],
+		});
 		Sealed = table({
 			database: 'test',
 			table: 'SourceFillValidatedSealed',
@@ -87,7 +95,7 @@ describe('Source fill schema validation', function () {
 				{ name: 'name', type: 'String' },
 			],
 		});
-		for (const Table of [Validated, Stamped, LongStamped, BigIntKeyed, Embedded, Sealed]) sourceFor(Table);
+		for (const Table of [Validated, Stamped, LongStamped, BigIntKeyed, Embedded, Loose, Sealed]) sourceFor(Table);
 	});
 
 	beforeEach(() => {
@@ -231,6 +239,18 @@ describe('Source fill schema validation', function () {
 		await rejectedFill(Embedded, 'unembedded', 'embedding');
 		responses.set('bad-vector', { embedding: 'not-a-vector' });
 		await rejectedFill(Embedded, 'bad-vector', 'embedding');
+		responses.set('uncached-vector', { text: 't', embedding: 'not-a-vector' });
+		await rejectedFill(Embedded, 'uncached-vector', 'embedding', { noCacheStore: true });
+	});
+
+	it('rejects a source that returns an array instead of a record', async () => {
+		responses.set('array', [{ name: 'n' }]);
+		await assert.rejects(Loose.get('array'), (error) => {
+			assert.equal(error.statusCode, 502);
+			assert.match(error.message, /^Source for SourceFillValidatedLoose returned a record that is not an object/);
+			return true;
+		});
+		assert.equal((await settled(Loose, 'array'))?.value ?? undefined, undefined);
 	});
 
 	it('leaves the requested id on a BigInt key as it is, whatever key the source returns', async () => {
