@@ -87,6 +87,19 @@ A position saved before the database was restored or copied, or saved on another
 
 Harper keeps a quiet topic's position current while the client is connected, and again when it disconnects, so a subscription that receives nothing is not reset merely because other tables' retention advanced. A position only moves past a message once that message, and every other message from the same transaction, has been acknowledged; an out-of-order acknowledgement can mean some messages are delivered again after a reconnect. A client that sends SUBSCRIBE again for a topic its session already holds, as many clients do on every connect, continues from the saved position, so resubscribing loses nothing. A new connection with the same client ID on the same Harper thread takes the session over, and the older connection is closed (MQTT v5 reason code `0x8E`); a clean-start connect closes it the same way. These checks apply to RocksDB databases; LMDB sessions catch up as before.
 
+<VersionBadge type="changed" version="v5.5.0" />
+
+**Messages from other cluster nodes** — A saved position tracks what this node has delivered of its own writes. A message published on another node keeps that node's timestamp, so it can replicate in after the position was saved and still sort below it. For a wildcard subscription with QoS 1 or 2, Harper also saves how far the session has read each node's history on this node. When the client reconnects to the node that saved its session, each node's history is read on from there, in the order it arrived, so these late messages are delivered. Earlier versions skipped them.
+
+- This works from the first save of a new subscription, including on a cluster whose nodes have just joined.
+- A late message that was delivered but not acknowledged before the disconnect is sent again on reconnect.
+- Messages the client already acknowledged are not sent again, for up to 1,000 remembered acknowledgements per session (500 of them for QoS 1). Past that limit, or after Harper stops without saving the session, some acknowledged QoS 1 messages can be delivered again.
+- When audit retention has removed the point a node's history was read to, Harper reads what is left of that history from its start, provided the session held no unacknowledged message from that node and nothing newer than the saved position was removed. Otherwise the session is reset, as it is when the saved position itself is older than the audit retention.
+- A client that reconnects to a different node resumes from the session's checkpoint, as before. A late message older than the checkpoint, and any late message for a session with no checkpoint yet, can still be missed after such a move.
+- A subscription to a single record does not replay these messages yet.
+
+This applies to RocksDB databases.
+
 <VersionBadge type="changed" version="v5.3.0" />
 
 Durable subscriptions with QoS 1 or 2 explicitly include superseded record versions during both live delivery and reconnect catch-up. This preserves delivery of intermediate retained publications (`retain: true`), even though ordinary table subscriptions now default to current-state delivery. Non-retained publications remain independent messages. Catch-up is limited by audit-log retention. See [Superseded record updates](../resources/resource-api.md#superseded-record-updates).

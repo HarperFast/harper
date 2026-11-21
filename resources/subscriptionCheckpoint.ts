@@ -25,6 +25,41 @@ export interface SubscriptionCheckpoint {
 
 /** The event-origin tag a progress-reporting subscription carries on each event: the origin's local node id. */
 export const ORIGIN_ID = Symbol.for('subscription-origin');
+/**
+ * On a subscribe request: the subscription keeps a position per transaction log (`subscription.logCursors()`), and
+ * each of its events carries its log's name (`LOG_NAME`) and that log's position just before the event's
+ * transaction (`LOG_BEFORE`). A `ResumeCursors` value resumes from saved positions. Internal to the durable session;
+ * RocksDB collections only.
+ */
+export const LOG_CURSORS = Symbol('log-cursors');
+export const LOG_NAME = Symbol('log-name');
+export const LOG_BEFORE = Symbol('log-before');
+/**
+ * On an event replayed from a saved position in its log: true when its entry is after the log's saved
+ * `readThrough`, so it was never sent; false when it had been sent before the save.
+ */
+export const ARRIVED_AFTER_SAVE = Symbol('arrived-after-save');
+
+/** One log's saved position: where its replay starts, and what the subscription had read when it was saved. */
+export interface LogCursor {
+	/** The key of the last complete transaction before the earliest delivery not yet taken; 0: the log's start. */
+	cursor: number;
+	/**
+	 * The key of the last complete transaction whose deliveries had all been sent to the consumer: at most what the
+	 * subscription had read. What the log holds after it was never sent.
+	 */
+	readThrough: number;
+}
+
+export interface ResumeCursors {
+	/**
+	 * Every delivery sent before the save with a key at or below this was taken: just below the lowest key among
+	 * the deliveries held at the save, or the subscription's position when none was.
+	 */
+	takenThrough: number;
+	/** By transaction-log name on this node. */
+	logs: Map<string, LogCursor>;
+}
 const SEQ_KEY = Symbol.for('seq');
 export const COPY_BOUND_KEY = Symbol.for('copyBound');
 const EPOCH_BUFFER = 'origin-state-epoch';
@@ -409,7 +444,7 @@ export function positionBefore(key: number): number {
 	return KEY_SCRATCH[0];
 }
 
-function positionAfter(key: number): number {
+export function positionAfter(key: number): number {
 	if (key === 0) return Number.MIN_VALUE;
 	KEY_SCRATCH[0] = key;
 	KEY_BITS[0] += 1n;
