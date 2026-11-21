@@ -7,7 +7,7 @@ const { waitFor } = require('../waitFor.js');
 
 describe('Source fill schema validation', function () {
 	this.timeout(10_000);
-	let Validated, Stamped, LongStamped, BigIntKeyed, Sealed, responses, calls;
+	let Validated, Stamped, LongStamped, BigIntKeyed, Embedded, Sealed, responses, calls;
 
 	function sourceFor(Table) {
 		Table.sourcedFrom({
@@ -62,6 +62,22 @@ describe('Source fill schema validation', function () {
 				{ name: 'name', type: 'String', nullable: false },
 			],
 		});
+		Embedded = table({
+			database: 'test',
+			table: 'SourceFillValidatedEmbed',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'text', type: 'String' },
+				{
+					name: 'embedding',
+					type: 'array',
+					elements: { type: 'Float' },
+					nullable: false,
+					embed: { source: 'text', model: 'default' },
+				},
+			],
+		});
+		Embedded.setEmbedAttribute('embedding', async () => [0.5, 0.25]);
 		Sealed = table({
 			database: 'test',
 			table: 'SourceFillValidatedSealed',
@@ -71,7 +87,7 @@ describe('Source fill schema validation', function () {
 				{ name: 'name', type: 'String' },
 			],
 		});
-		for (const Table of [Validated, Stamped, LongStamped, BigIntKeyed, Sealed]) sourceFor(Table);
+		for (const Table of [Validated, Stamped, LongStamped, BigIntKeyed, Embedded, Sealed]) sourceFor(Table);
 	});
 
 	beforeEach(() => {
@@ -192,6 +208,22 @@ describe('Source fill schema validation', function () {
 		responses.set('upstream-stamped', { name: 'n', createdAt });
 		assert.equal((await LongStamped.get('upstream-stamped')).createdAt, createdAt);
 		assert.equal((await settled(LongStamped, 'upstream-stamped')).value.createdAt, createdAt);
+	});
+
+	it('rejects a Long @createdTime the source supplies that is not a safe integer-range number', async () => {
+		for (const [id, createdAt] of [
+			['created-infinite', Infinity],
+			['created-huge', 1e20],
+		]) {
+			responses.set(id, { name: 'n', createdAt });
+			await rejectedFill(LongStamped, id, 'createdAt');
+		}
+	});
+
+	it('fills a required @embed attribute the source leaves for Harper to derive', async () => {
+		responses.set('embedded', { text: 't' });
+		await Embedded.get('embedded');
+		assert.deepEqual([...(await settled(Embedded, 'embedded')).value.embedding], [0.5, 0.25]);
 	});
 
 	it('leaves the requested id on a BigInt key as it is, whatever key the source returns', async () => {

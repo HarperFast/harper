@@ -15164,17 +15164,23 @@ export function makeTable(options): TableResourceClass {
 								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
 						if (!reusedCachedRecord) {
-							// the key and the times this node stamps are Harper's, as a put stamps them after validating; a
-							// number in a Long created time the source supplies is its own Harper's (fractional) version
+							// Harper's own values are not the source's to get right: the key and the times this node stamps
+							// (a put stamps them after validating), a Long created time the source supplies, which is its own
+							// Harper's fractional version, and the @embed vectors the fill derives after this check
 							const createdTimeName = createdTimeProperty?.name;
+							const suppliedCreatedTime = createdTimeName && updatedRecord[createdTimeName];
 							const harperCreatedTime =
 								createdTimeToAssign ||
-								(createdTimeProperty?.type === 'Long' && typeof updatedRecord[createdTimeName] === 'number');
-							validateSourceRecord(updatedRecord, [
+								(createdTimeProperty?.type === 'Long' &&
+									Number.isFinite(suppliedCreatedTime) &&
+									Math.abs(suppliedCreatedTime) <= Number.MAX_SAFE_INTEGER + 1);
+							const harperOwned = [
 								primaryKey,
 								updatedTimeProperty?.name,
 								harperCreatedTime ? createdTimeName : undefined,
-							]);
+							];
+							for (const attribute of TableResource.embedAttributes) harperOwned.push(attribute.name);
+							validateSourceRecord(updatedRecord, harperOwned);
 						}
 					}
 					resolved = true;
