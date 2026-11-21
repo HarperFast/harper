@@ -176,6 +176,17 @@ describe('Source fill schema validation', function () {
 		assert.equal((await settled(LongStamped, 'long-stamped')).value.createdAt, record.createdAt);
 	});
 
+	it('converts and checks a @createdTime the source supplies, as a put of it would', async () => {
+		const createdAt = '2026-01-02T03:04:05.000Z';
+		responses.set('created-string', { name: 'n', createdAt });
+		const record = await Stamped.get('created-string');
+		assert.ok(record.createdAt instanceof Date);
+		assert.equal(record.createdAt.toISOString(), createdAt);
+		assert.ok((await settled(Stamped, 'created-string')).value.createdAt instanceof Date);
+		responses.set('created-garbage', { name: 'n', createdAt: { bad: 1 } });
+		await rejectedFill(Stamped, 'created-garbage', 'createdAt');
+	});
+
 	it('fills a fractional Long @createdTime that an upstream Harper table stamped', async () => {
 		const createdAt = 1795291750105.197;
 		responses.set('upstream-stamped', { name: 'n', createdAt });
