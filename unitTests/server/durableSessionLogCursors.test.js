@@ -342,7 +342,7 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 	});
 
 	it('a replacing SUBSCRIBE sends a late delivery the replaced subscription left unacknowledged', async () => {
-		const { T, topic, clientId, peer, lateKey, first } = await savedSession(1, { disconnect: false });
+		const { T, topic, peer, lateKey, first } = await savedSession(1, { disconnect: false });
 		const requests = resumeRequests(first.session);
 		await applyFromOrigin(T, peer, lateKey, 'late');
 		await waitFor(() => values(first.received).includes('late'));

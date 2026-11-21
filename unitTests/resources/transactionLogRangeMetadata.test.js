@@ -1,4 +1,5 @@
 const assert = require('node:assert');
+const { TransactionLogUntilUnreachedError } = require('@harperfast/rocksdb-js');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { createAuditEntry, ENTRY_DATAVIEW } = require('#src/resources/auditStore');
 
@@ -186,6 +187,78 @@ describe('RocksTransactionLogStore range metadata', () => {
 			assert.deepStrictEqual([...iterable.exactStartFailures], [['local', reason]]);
 		});
 	}
+
+	it('resumes after the first of two transactions sharing the exact-start key when asked to', () => {
+		const iterable = makeStore([
+			makeLog('local', [entry(50, 'anchor'), entry(50, 'duplicate'), entry(60, 'next')]),
+		]).getRange({
+			startByLog: new Map([['local', 50]]),
+			exactStart: true,
+			resumeAfterExactStart: true,
+			resumeAfterDuplicateStart: true,
+		});
+		assert.deepStrictEqual(
+			[...iterable].map(({ recordId }) => recordId),
+			['duplicate', 'next']
+		);
+		assert.strictEqual(iterable.exactStartFailures.size, 0);
+	});
+
+	it('keeps its place in the exact-start transaction when a read stops short of the range it reads until', () => {
+		const entries = [{ ...entry(50, 'anchor-a'), endTxn: false }, entry(50, 'anchor-b'), entry(10, 'later')];
+		let index = 0;
+		let stopShort = true;
+		const log = {
+			name: 'local',
+			query: () => ({
+				next() {
+					// once, inside the anchor: the bound has not been reached, and the log keeps its place
+					if (index === 1 && stopShort) {
+						stopShort = false;
+						throw Object.create(TransactionLogUntilUnreachedError.prototype);
+					}
+					return index < entries.length ? { value: entries[index++], done: false } : { value: undefined, done: true };
+				},
+				[Symbol.iterator]() {
+					return this;
+				},
+			}),
+		};
+		const failures = [];
+		const iterable = makeStore([log]).getRange({
+			startByLog: new Map([['local', 50]]),
+			exactStart: true,
+			resumeAfterExactStart: true,
+			until: { sourceOf: () => undefined },
+			exactStartFallback: (logName, failure) => void failures.push(failure),
+		});
+		// the short read is met as the range opens, and the first pull reads on from where it stopped
+		assert.strictEqual(
+			iterable[Symbol.iterator]().next().value.recordId,
+			'later',
+			'the anchor was read on, not taken for missing'
+		);
+		assert.strictEqual(stopShort, false);
+		assert.deepStrictEqual(failures, []);
+		assert.strictEqual(iterable.exactStartFailures.size, 0);
+	});
+
+	it('reads a log named in keyStartByLog by key, beside logs resumed after an exact start', () => {
+		let peerOptions;
+		const local = makeLog('local', [entry(50, 'anchor'), entry(60, 'local-next')]);
+		const peer = makeLog('peer-a', [entry(40, 'peer-next')], (options) => (peerOptions = options));
+		const iterable = makeStore([local, peer]).getRange({
+			startByLog: new Map([['local', 50]]),
+			keyStartByLog: new Map([['peer-a', 30]]),
+			exactStart: true,
+			resumeAfterExactStart: true,
+		});
+		assert.deepStrictEqual(
+			[...iterable].map(({ recordId }) => recordId),
+			['peer-next', 'local-next']
+		);
+		assert.deepStrictEqual([peerOptions.start, peerOptions.exactStart, peerOptions.exclusiveStart], [30, false, true]);
+	});
 
 	it('starts a newly discovered log from its beginning without an exact anchor', () => {
 		let cursorOptions;

@@ -964,16 +964,14 @@ export class RocksTransactionLogStore extends EventEmitter {
 		if (from === undefined || from === key) {
 			// the entry raised the running maximum, so the highest key below it is the last such entry before it
 			from = undefined;
-			let high = key;
 			for (let step = 1, probes = 0; probes < 256 && from === undefined; step *= 4, probes++) {
 				const start = key - step;
 				const found = this.firstKeyFrom(log, start > 0 ? start : 0);
 				if (found !== undefined && found < key) from = found;
 				else if (!(start > 0)) return 0;
-				else high = start;
 			}
 			if (from === undefined) return 0;
-			high = key;
+			let high = key;
 			for (let probes = 0; probes < 256; probes++) {
 				let target = from + (high - from) / 2;
 				if (!(target > from)) target = positionAfter(from);
