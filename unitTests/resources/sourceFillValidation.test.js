@@ -250,6 +250,8 @@ describe('Source fill schema validation', function () {
 			['array', [{ name: 'n' }]],
 			['array-buffer', new ArrayBuffer(8)],
 			['buffer', Buffer.from('binary')],
+			['json-array', { toJSON: () => [{ name: 'n' }] }],
+			['json-primitive', { toJSON: () => 'n' }],
 		]) {
 			responses.set(id, response);
 			await assert.rejects(Loose.get(id), (error) => {

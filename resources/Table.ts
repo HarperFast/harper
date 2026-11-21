@@ -14068,6 +14068,17 @@ export function makeTable(options): TableResourceClass {
 	 * cached copy). Messages quote the source's values, and an undeclared property's name is the source's
 	 * too, so neither reaches the reader.
 	 */
+	function assertSourceRecordObject(record: any): void {
+		if (
+			typeof record !== 'object' ||
+			record === null ||
+			Array.isArray(record) ||
+			ArrayBuffer.isView(record) ||
+			record instanceof ArrayBuffer
+		)
+			throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
+	}
+
 	function validateSourceRecord(record: any, frameworkOwned: readonly string[]): void {
 		try {
 			TableResource.prototype.validate(record, false, frameworkOwned);
@@ -15111,15 +15122,12 @@ export function makeTable(options): TableResourceClass {
 								if (status !== 200) updatedRecord.status = status;
 							}
 						}
-						// before toJSON, which turns a Buffer into an object
-						if (
-							!reusedCachedRecord &&
-							(Array.isArray(updatedRecord) ||
-								ArrayBuffer.isView(updatedRecord) ||
-								updatedRecord instanceof ArrayBuffer)
-						)
-							throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
-						if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
+						// before toJSON too, which turns a Buffer into an object
+						if (!reusedCachedRecord) assertSourceRecordObject(updatedRecord);
+						if (typeof updatedRecord.toJSON === 'function') {
+							updatedRecord = updatedRecord.toJSON();
+							if (!reusedCachedRecord) assertSourceRecordObject(updatedRecord);
+						}
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
