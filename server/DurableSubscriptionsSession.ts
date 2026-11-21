@@ -17,11 +17,16 @@ import { getThisNodeName } from './nodeName.ts';
 import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import { isLocalPrincipal, localPrincipal, type UserProvenance } from '../security/user.ts';
 import {
-	ORIGIN_BOUNDARIES,
+	ARRIVED_AFTER_SAVE,
+	LOG_BEFORE,
+	LOG_CURSORS,
+	LOG_NAME,
 	ORIGIN_ID,
 	admitCheckpoint,
 	positionBefore,
 	validateCheckpoint,
+	type LogCursor,
+	type ResumeCursors,
 	type SubscriptionCheckpoint,
 } from '../resources/subscriptionCheckpoint.ts';
 
@@ -609,9 +614,9 @@ class SubscriptionsSession {
 			includeSuperseded: this instanceof DurableSubscriptionsSession && subscriptionRequest.qos > 0 ? true : undefined,
 			checkPermission: this.user?.role?.permission ?? {},
 		});
-		if (subscriptionRequest[ORIGIN_BOUNDARIES] !== undefined) {
-			request[ORIGIN_BOUNDARIES] = subscriptionRequest[ORIGIN_BOUNDARIES];
-		}
+		// log positions are kept for a wildcard topic only: a single record resumes by its own history
+		if (isCollection && subscriptionRequest[LOG_CURSORS] !== undefined)
+			request[LOG_CURSORS] = subscriptionRequest[LOG_CURSORS];
 		const resourcePath = entry.path;
 		const resource = entry.Resource;
 		const context = this.createContext();
@@ -1097,8 +1102,7 @@ type DurableEntry = {
 	/**
 	 * The per-origin checkpoint: what a resume from another database generation (another node's, or a restored
 	 * copy's) replays from, since the scalar names keys only within its own. It stops advancing while floors are
-	 * unavailable, and a resume it can no longer satisfy resets the session (410). A resume in the scalar's own
-	 * generation starts at the scalar and takes from it only where each other origin's log starts (`fromScalar`).
+	 * unavailable, and a resume it can no longer satisfy resets the session (410).
 	 */
 	checkpoint?: SubscriptionCheckpoint;
 	/**
@@ -1106,7 +1110,67 @@ type DurableEntry = {
 	 * as `databaseGeneration` until this node certifies a position of its own, so a reconnect still knows it is foreign.
 	 */
 	foreignGeneration?: string;
+	/**
+	 * Below `startTime`: every delivery the topic had read with a key at or below this was taken. A late entry of
+	 * another origin, delivered and not yet taken, sits below the scalar, which never moves back for it.
+	 */
+	takenThrough?: number;
+	/**
+	 * The topic's position in each origin's transaction log (see `SavedCursors`): the logs it differs in from its
+	 * database's shared vector, as `[origin, cursor, readThrough]`, or its whole vector with the generation that saved it.
+	 */
+	cursors?: [string, number, number][] | SavedCursors;
 };
+/**
+ * Positions in each origin's transaction log, as keys of that log: `readThrough` is the last complete transaction
+ * the topic had read, and `cursor` the one before its earliest delivery not yet taken. A resume in `generation`
+ * (the database generation that saved them) reads each log after its cursor in arrival order, so an entry that
+ * arrived late, with a key below `startTime`, is delivered. Keyed by origin node name: the record replicates,
+ * and this node's own log has another name on every other node.
+ */
+type SavedCursors = { generation: string; logs: [origin: string, cursor: number, readThrough: number][] };
+/** A record's `cursors`, by database name: the read-through its live topics share. */
+type SharedCursors = { [database: string]: { generation: string; logs: [origin: string, readThrough: number][] } };
+const MAX_CURSOR_LOGS = 1024;
+function isLogKey(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+/** A saved topic vector by origin name, or undefined when any part of it is not what a save writes. */
+function loadCursors(
+	saved: unknown,
+	shared: SharedCursors[string] | undefined
+): { generation: string; logs: Map<string, LogCursor> } | undefined {
+	const logs = new Map<string, LogCursor>();
+	let generation: unknown;
+	let held: unknown;
+	if (Array.isArray(saved)) {
+		if (!shared || !Array.isArray(shared.logs)) return;
+		generation = shared.generation;
+		for (const log of shared.logs) {
+			if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1])) return;
+			logs.set(log[0], { cursor: log[1], readThrough: log[1] });
+		}
+		held = saved;
+	} else if (saved && typeof saved === 'object') {
+		generation = (saved as any).generation;
+		held = (saved as any).logs;
+	}
+	if (typeof generation !== 'string' || !Array.isArray(held)) return;
+	for (const log of held) {
+		if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1]) || !isLogKey(log[2])) return;
+		logs.set(log[0], { cursor: log[1], readThrough: log[2] });
+	}
+	if (logs.size === 0 || logs.size > MAX_CURSOR_LOGS) return;
+	return { generation, logs };
+}
+function sameCursors(a: Map<string, LogCursor> | undefined, b: Map<string, LogCursor>): boolean {
+	if (a?.size !== b.size) return false;
+	for (const [origin, position] of b) {
+		const other = a.get(origin);
+		if (other?.cursor !== position.cursor || other.readThrough !== position.readThrough) return false;
+	}
+	return true;
+}
 function deliveryId(id: unknown) {
 	if (Array.isArray(id)) return keyArrayToString(id);
 	if (id instanceof Uint8Array) return Buffer.from(id).toString('base64');
@@ -1129,7 +1193,17 @@ type TopicState = {
 	 */
 	unacked: Map<
 		number,
-		{ key: number; ordinal: number; id: unknown; previousKey?: number; late?: boolean; origin?: number }
+		{
+			key: number;
+			ordinal: number;
+			id: unknown;
+			previousKey?: number;
+			late?: boolean;
+			origin?: number;
+			/** Its transaction log, and that log's position just before its transaction: what the log's cursor holds at. */
+			log?: string;
+			before?: number;
+		}
 	>;
 	received?: Map<string, DeliveryIdentity>;
 	receivedRuns?: Map<number, number>;
@@ -1144,6 +1218,11 @@ type TopicState = {
 	checkpointComputedAt?: number;
 	/** At or below this a receipt may be missing (pruned, never kept, or before the topic's start). */
 	prunedThrough?: number;
+	/** By origin node name: the topic's position in each transaction log, and the database generation they are of. */
+	cursors?: Map<string, LogCursor>;
+	cursorGeneration?: string;
+	/** The positions were read from this connection's subscription; otherwise they are the ones the record held. */
+	cursorsLive?: boolean;
 };
 /**
  * The empty Map or Set every idle topic or session shares, so it keeps none of its own. A write to one would reach every
@@ -1318,7 +1397,8 @@ function sessionRecordResumable(record: any): boolean {
 		}
 		if (!/[+#]/.test(match?.relativeURL ?? '')) continue;
 		if (!boundToCurrentGeneration(entry)) continue;
-		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, entry.startTime)) return false;
+		const start = entry.takenThrough < entry.startTime ? entry.takenThrough : entry.startTime;
+		if (!isResumablePosition(match.Resource.auditStore, entry.databaseGeneration, start)) return false;
 	}
 	return true;
 }
@@ -1359,6 +1439,10 @@ function auditStoreOf(topic: string): any {
 	return resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
 }
 
+function databaseOf(topic: string): string | undefined {
+	return resources.getMatch(topic.split('?')[0], 'mqtt')?.Resource?.databaseName;
+}
+
 function originNameOf(topic: string, origin: number | undefined): string | undefined {
 	if (origin === undefined) return;
 	if (origin === 0) return getThisNodeName();
@@ -1391,14 +1475,23 @@ function resumesFromCheckpoint(entry: DurableEntry): boolean {
 }
 
 /**
- * A scalar of this generation is this node's own watermark, which another origin can still commit below, so the
- * entry's checkpoint goes with it: the replay also reads each other origin's log from its boundary there, and the
- * receipts kept for that checkpoint skip what was taken.
+ * Resumes from the topic's scalar and, when its log positions were saved in this database generation, from them:
+ * each log is then read after its cursor in arrival order, and the start is the key every earlier delivery at or
+ * below which was taken. From here on the subscription keeps log positions either way.
  */
-function fromScalar(request: any, entry: DurableEntry): any {
+function fromScalar(request: any, state: TopicState): any {
+	const entry = state.entry;
 	request.startTime = entry.startTime;
-	if (boundToCurrentGeneration(entry)) request.databaseGeneration = entry.databaseGeneration;
-	request[ORIGIN_BOUNDARIES] = entry.checkpoint;
+	request[LOG_CURSORS] = true;
+	if (!boundToCurrentGeneration(entry)) return request;
+	request.databaseGeneration = entry.databaseGeneration;
+	if (!state.cursors || state.cursorGeneration !== entry.databaseGeneration) return request;
+	const thisNode = getThisNodeName();
+	const logs = new Map<string, LogCursor>();
+	for (const [origin, position] of state.cursors) logs.set(origin === thisNode ? 'local' : origin, position);
+	const takenThrough = entry.takenThrough < entry.startTime ? entry.takenThrough : entry.startTime;
+	request.startTime = takenThrough;
+	request[LOG_CURSORS] = { takenThrough, logs } satisfies ResumeCursors;
 	return request;
 }
 
@@ -1442,6 +1535,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		for (const messageId of record?.awaitingCompletion || []) {
 			(this.awaitingCompletion ??= new Map()).set(messageId, true);
 		}
+		const sharedCursors: SharedCursors | undefined =
+			record?.cursors && typeof record.cursors === 'object' ? record.cursors : undefined;
 		for (const entry of record?.subscriptions || []) {
 			const { qos, topic, startTime, databaseGeneration, checkpoint } = entry;
 			const state = newTopicState(
@@ -1456,6 +1551,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 						}
 					: { qos, topic }
 			);
+			if (qos > 0 && entry.cursors !== undefined) {
+				const cursors = loadCursors(entry.cursors, sharedCursors?.[databaseOf(topic)!]);
+				if (cursors) {
+					state.cursors = cursors.logs;
+					state.cursorGeneration = cursors.generation;
+					if (isLogKey(entry.takenThrough) && entry.takenThrough < startTime)
+						state.entry.takenThrough = entry.takenThrough;
+				}
+			}
 			// keys from another node's log, or from before a restore or copy, name nothing here; receipts kept with
 			// a checkpoint name origin keys, which are the same on every node
 			if (entry.receiptsGeneration === currentGeneration(topic) || checkpoint !== undefined) {
@@ -1489,13 +1593,13 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (this.topics.size > 0) this.startCheckpoints();
 		for (const state of [...this.topics.values()]) {
 			if (this.terminated) return;
-			const { qos, topic, startTime, databaseGeneration, checkpoint } = state.entry;
+			const { qos, topic, checkpoint } = state.entry;
 			const durable = qos > 0;
 			try {
 				if (durable && resumesFromCheckpoint(state.entry)) {
 					try {
 						await this.resumeSubscription(
-							{ topic, qos, rh: 2, resume: checkpoint, filterKey: topic, reportProgress: true },
+							{ topic, qos, rh: 2, resume: checkpoint, filterKey: topic, reportProgress: true, [LOG_CURSORS]: true },
 							durable
 						);
 						continue;
@@ -1512,16 +1616,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 				await this.resumeSubscription(
 					durable
-						? {
-								topic,
-								qos,
-								rh: 2,
-								startTime,
-								databaseGeneration,
-								reportProgress: true,
-								filterKey: topic,
-								[ORIGIN_BOUNDARIES]: state.entry.checkpoint,
-							}
+						? fromScalar({ topic, qos, rh: 2, reportProgress: true, filterKey: topic }, state)
 						: { topic, qos, rh: 2 },
 					durable
 				);
@@ -1552,6 +1647,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		} else {
 			const replaced = state;
 			state = newTopicState({ ...state.entry, qos: subscription.qos });
+			state.cursors = replaced.cursors;
+			state.cursorGeneration = replaced.cursorGeneration;
 			this.topics.set(subscription.topic, state);
 			if (subscription.qos === 2) {
 				state.received = replaced.received;
@@ -1582,6 +1679,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		}
 		state.subscription = subscription;
 		if (subscription.progress === undefined) state.keysPerEntry = logKeysPerEntry(subscription.topic);
+		// a new topic's first save names where it registered in each log
+		if (!subscription.resumeVerified) this.advanceCursors(state);
 		if (subscription.resumeVerified) {
 			state.verified = false;
 			subscription.resumeVerified
@@ -1658,7 +1757,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			return resend[3];
 		}
 		// a live transaction that commits below what was delivered before it is new, not a replay
-		if (key <= state.receivedThrough && !(key < state.highestKey)) return ALREADY_RECEIVED;
+		// a key range says nothing of an entry that arrived after it was saved, whatever its key
+		if (key <= state.receivedThrough && !(key < state.highestKey) && !update[ARRIVED_AFTER_SAVE])
+			return ALREADY_RECEIVED;
 		if (state.ordinal < (state.receivedRuns?.get(key) ?? 0)) return ALREADY_RECEIVED;
 		if (state.received?.get(slot)?.[2] === id) return ALREADY_RECEIVED;
 	}
@@ -1741,6 +1842,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				previousKey: state.keyBefore,
 				late,
 				origin: typeof update[ORIGIN_ID] === 'number' ? update[ORIGIN_ID] : undefined,
+				log: update[LOG_NAME],
+				before: update[LOG_BEFORE],
 			});
 		}
 		return messageId;
@@ -1789,10 +1892,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return this.qos1ReceiptsUnsaved && this.receivedCount > 0;
 	}
 	/**
-	 * At the QoS 1 share, receipts at or below a scalar this node saved give way to the ones above it: those are read
-	 * by a checkpoint replay on another node and, for another origin's deliveries, by a resume here, which then sends
-	 * them again; a resume here reads the ones above for every origin. Once per position pass, which is what can
-	 * free more.
+	 * At the QoS 1 share, receipts at or below a scalar this node saved, which only a checkpoint replay on another
+	 * node reads, give way to ones a replay here reads; once per position pass, which is what can free more.
 	 */
 	reclaimQoS1Receipts() {
 		this.receiptsReclaimedAt = this.advanceCount;
@@ -1932,8 +2033,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				// replacing a subscription must lose nothing, so the new one continues the topic's position
 				this.advancePositions();
 				if (resumesFromCheckpoint(existing.entry)) request.resume = existing.entry.checkpoint;
-				else fromScalar(request, existing.entry);
+				else fromScalar(request, existing);
 			}
+			request[LOG_CURSORS] ??= true;
 		}
 		let started;
 		try {
@@ -1950,7 +2052,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					this.dropForeignReceipts(existing);
 					if (this.hasEnded()) throw this.endedError();
 					delete request.resume;
-					started = await this.resumeSubscription(fromScalar(request, existing.entry), needsAck);
+					started = await this.resumeSubscription(fromScalar(request, existing), needsAck);
 				}
 			} else started = await this.resumeSubscription(request, needsAck);
 			if (durable) this.startCheckpoints();
@@ -2059,23 +2161,11 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (fresh) this.advanceCount++;
 		for (const state of this.topics.values()) {
 			if (!(state.entry.qos > 0)) continue;
-			const next = this.nextPosition(state);
-			if (next === undefined) continue;
-			const bound = state.entry.databaseGeneration !== undefined;
-			// an unbound start came from a clock, so a certified position replaces it rather than racing it
-			if (bound && !(next > state.entry.startTime)) continue;
-			if (!bound && next === state.entry.startTime) continue;
-			state.entry.startTime = next;
-			// a checkpoint replay revisits receipts below the scalar, so once one is certified only its floor prunes them
-			if ((this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined) {
-				this.pruneReceipts(state, next);
-				if (!(state.prunedThrough >= next)) state.prunedThrough = next;
-			}
-			// only a certified position may be checked on resume, and only that one replaces a foreign scalar
-			state.entry.databaseGeneration =
-				state.subscription.progress?.() === undefined ? undefined : state.subscription.databaseGeneration;
-			if (state.entry.databaseGeneration !== undefined) state.entry.foreignGeneration = undefined;
-			changed = true;
+			// the scalar and the log positions are saved as of one moment, so neither moves without the other
+			const positions = this.readCursors(state);
+			if (positions === null) continue;
+			if (this.advanceScalar(state)) changed = true;
+			if (positions && this.setCursors(state, positions)) changed = true;
 		}
 		for (const state of this.topics.values()) {
 			if (!(state.entry.qos > 0)) continue;
@@ -2087,9 +2177,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					if (!(checkpointFloor(checkpoint) > state.prunedThrough)) continue;
 				}
 				state.entry.checkpoint = checkpoint;
-				// a checkpoint replay starts at its floor, and a resume here at the scalar or, for another origin, its
-				// boundary if lower; an unacknowledged delivery can hold the scalar below a late one acknowledged
-				// under the floor
+				// a checkpoint replay starts at its floor, but a resume here starts at the scalar, which an
+				// unacknowledged delivery can hold below a late one acknowledged under the floor
 				let through = positionBefore(checkpointFloor(checkpoint));
 				if (state.entry.startTime < through) through = state.entry.startTime;
 				this.pruneReceipts(state, through);
@@ -2097,6 +2186,83 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			}
 		}
 		return changed;
+	}
+	advanceScalar(state: TopicState): boolean {
+		const next = this.nextPosition(state);
+		if (next === undefined) return false;
+		const bound = state.entry.databaseGeneration !== undefined;
+		// an unbound start came from a clock, so a certified position replaces it rather than racing it
+		if (bound && !(next > state.entry.startTime)) return false;
+		if (!bound && next === state.entry.startTime) return false;
+		state.entry.startTime = next;
+		// a checkpoint replay revisits receipts below the scalar, so once one is certified only its floor prunes them
+		if ((this.currentCheckpoint(state) ?? state.entry.checkpoint) === undefined) {
+			this.pruneReceipts(state, next);
+			if (!(state.prunedThrough >= next)) state.prunedThrough = next;
+		}
+		// only a certified position may be checked on resume, and only that one replaces a foreign scalar
+		state.entry.databaseGeneration =
+			state.subscription.progress?.() === undefined ? undefined : state.subscription.databaseGeneration;
+		if (state.entry.databaseGeneration !== undefined) state.entry.foreignGeneration = undefined;
+		return true;
+	}
+	/**
+	 * The topic's position in each transaction log as of now, by origin node name, with the lowest key among its
+	 * deliveries not yet taken. A log's cursor is its read-through, held just before the earliest delivery from it
+	 * that is unacknowledged or still queued; deliveries of one log arrive in that log's order, so the first found is
+	 * the earliest. Undefined for a topic that keeps none or whose replay has no verdict yet; null when they cannot
+	 * be read now.
+	 */
+	readCursors(state: TopicState): { logs: Map<string, LogCursor>; lowest: number } | null | undefined {
+		const subscription = state.subscription;
+		// only a pulled queue hands each message from the queue to `unacked` in one step
+		if (!state.verified || !subscription?.logCursors || !(subscription.consumer instanceof Delivery || isPullable(subscription)))
+			return;
+		const positions: Map<string, number> | undefined = subscription.logCursors();
+		if (!positions) return null;
+		const thisNode = getThisNodeName();
+		const logs = new Map<string, LogCursor>();
+		for (const [log, readThrough] of positions) logs.set(log === 'local' ? thisNode : log, { cursor: readThrough, readThrough });
+		const held = new Set<string>();
+		let lowest = Infinity;
+		let unplaced = false;
+		const hold = (key: number, log: string | undefined, before: number | undefined) => {
+			if (key < lowest) lowest = key;
+			const origin = log === 'local' ? thisNode : log;
+			const position = origin === undefined ? undefined : logs.get(origin);
+			if (!position) unplaced = true;
+			else if (!held.has(origin!)) {
+				held.add(origin!);
+				position.cursor = before ?? 0;
+			}
+		};
+		for (const sent of state.unacked.values()) hold(sent.key, sent.log, sent.before);
+		for (const event of subscription.queue ?? []) {
+			const key = event?.localTime;
+			if (typeof key === 'number' && !event.fromScan) hold(key, event[LOG_NAME], event[LOG_BEFORE]);
+		}
+		// a delivery with no log position holds every log where it was
+		return unplaced ? null : { logs, lowest };
+	}
+	setCursors(state: TopicState, positions: { logs: Map<string, LogCursor>; lowest: number }): boolean {
+		const entry = state.entry;
+		const taken = positions.lowest === Infinity ? undefined : positionBefore(positions.lowest);
+		const takenThrough = taken < entry.startTime ? taken : undefined;
+		const generation = state.subscription.databaseGeneration;
+		const changed =
+			!state.cursorsLive ||
+			state.cursorGeneration !== generation ||
+			entry.takenThrough !== takenThrough ||
+			!sameCursors(state.cursors, positions.logs);
+		state.cursors = positions.logs;
+		state.cursorGeneration = generation;
+		state.cursorsLive = true;
+		entry.takenThrough = takenThrough;
+		return changed;
+	}
+	advanceCursors(state: TopicState): boolean {
+		const positions = this.readCursors(state);
+		return Boolean(positions) && this.setCursors(state, positions!);
 	}
 	/** The checkpoint the topic's subscription certifies now, computed once per `advancePositions` pass. */
 	currentCheckpoint(state: TopicState): SubscriptionCheckpoint | undefined {
@@ -2204,15 +2370,40 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		const subscriptions = [];
 		this.inFlightChanged = false;
 		this.qos1ReceiptsUnsaved = false;
+		let sharedCursors: Map<string, { generation: string; logs: Map<string, number> }> | undefined;
 		for (const state of this.topics.values()) {
 			const { qos, topic, startTime, databaseGeneration, foreignGeneration } = state.entry;
 			const saved: DurableEntry = { qos, topic };
 			if (startTime !== undefined) saved.startTime = startTime;
+			if (qos > 0 && state.cursors && state.cursorGeneration !== undefined) {
+				if (state.entry.takenThrough !== undefined) saved.takenThrough = state.entry.takenThrough;
+				const database = state.cursorsLive ? databaseOf(topic) : undefined;
+				let shared = database === undefined ? undefined : sharedCursors?.get(database);
+				if (database !== undefined && !shared) {
+					// the database's live topics have read the same broadcast, so the first one's read-through is shared
+					shared = { generation: state.cursorGeneration, logs: new Map() };
+					for (const [origin, position] of state.cursors) shared.logs.set(origin, position.readThrough);
+					(sharedCursors ??= new Map()).set(database, shared);
+				}
+				if (shared?.generation === state.cursorGeneration) {
+					// every log it differs in is written out, with both keys, so it takes nothing else from the shared vector
+					const held: [string, number, number][] = [];
+					for (const [origin, { cursor, readThrough }] of state.cursors) {
+						const sharedThrough = shared.logs.get(origin);
+						if (cursor !== sharedThrough || readThrough !== sharedThrough) held.push([origin, cursor, readThrough]);
+					}
+					for (const origin of shared.logs.keys()) if (!state.cursors.has(origin)) held.push([origin, 0, 0]);
+					saved.cursors = held;
+				} else {
+					const logs: [string, number, number][] = [];
+					for (const [origin, { cursor, readThrough }] of state.cursors) logs.push([origin, cursor, readThrough]);
+					saved.cursors = { generation: state.cursorGeneration, logs };
+				}
+			}
 			if ((databaseGeneration ?? foreignGeneration) !== undefined)
 				saved.databaseGeneration = databaseGeneration ?? foreignGeneration;
-			// QoS 1 receipts at or below a scalar of this generation are read by a checkpoint replay on another node and,
-			// for another origin's deliveries, by a resume here; only the final save writes them, so after a crash those
-			// are sent again
+			// QoS 1 receipts at or below a scalar of this generation are read only by a checkpoint replay on another node,
+			// so only the final save writes them
 			const kept = qos === 1 && !this.terminated && foreignGeneration === undefined ? startTime : undefined;
 			for (const identity of state.received?.values() ?? []) {
 				if (!(identity[0] <= kept)) (saved.received ??= []).push(identity);
@@ -2235,6 +2426,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			subscriptions.push(saved);
 		}
 		const record: any = { id: this.sessionId, incarnation: this.incarnation, subscriptions };
+		if (sharedCursors) {
+			const cursors: SharedCursors = (record.cursors = {});
+			for (const [database, { generation, logs }] of sharedCursors) cursors[database] = { generation, logs: [...logs] };
+		}
 		const awaitingRelease = [];
 		for (const [messageId, exchange] of this.awaitingRelease ?? []) {
 			// one still publishing must publish again if retransmitted, and one being released is gone once saved

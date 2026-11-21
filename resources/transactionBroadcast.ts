@@ -4,6 +4,7 @@ import { DatabaseClosingError, DatabaseGenerationChangedError } from '../utility
 import { IterableEventQueue, CLOSES_WHEN_ENDED } from './IterableEventQueue.ts';
 import { ORIGIN_FLOOR_TICK_MS, localStartBound, threadStartBound } from './originClosedFloor.ts';
 import {
+	LOG_CURSORS,
 	captureCertifiedFloors,
 	positionBefore,
 	readOriginStateEpoch,
@@ -163,8 +164,66 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
 		const dbisDb = table.dbisDB ?? table.constructor?.dbisDB;
 		if (dbisDb && !databaseSubscriptions.sameThread && !databaseSubscriptions.originFloorTimer)
 			startOriginTracking(databaseSubscriptions, dbisDb);
+		if (options[LOG_CURSORS] !== undefined && !databaseSubscriptions.sameThread) {
+			trackLogPositions(databaseSubscriptions, table.auditStore.subscriptionLogRange);
+			databaseSubscriptions.cursorConsumers = (databaseSubscriptions.cursorConsumers || 0) + 1;
+			subscription.keepsCursors = true;
+		}
 	} else if (committedThrough !== undefined) subscription.localResumeStart = committedThrough;
 	return subscription;
+}
+
+/** How long position tracking outlives the last subscription that keeps cursors, so a reconnect does not re-anchor. */
+const POSITION_TRACKING_LINGER_MS = 60_000;
+
+/**
+ * Turns on the broadcast range's per-log positions for subscriptions that keep cursors. The range is replaced
+ * whenever the database's last subscription of any kind ends, and a new one starts untracked.
+ */
+function trackLogPositions(databaseSubscriptions: any, range: any) {
+	clearTimeout(databaseSubscriptions.positionLinger);
+	databaseSubscriptions.positionLinger = undefined;
+	if (databaseSubscriptions.trackedRange === range) return;
+	range.trackPositions(true);
+	databaseSubscriptions.trackedRange = range;
+}
+
+function releaseLogPositions(databaseSubscriptions: any) {
+	if (--databaseSubscriptions.cursorConsumers > 0 || databaseSubscriptions.positionLinger) return;
+	const range = databaseSubscriptions.trackedRange;
+	databaseSubscriptions.positionLinger = setTimeout(() => {
+		databaseSubscriptions.positionLinger = undefined;
+		if (databaseSubscriptions.cursorConsumers > 0 || databaseSubscriptions.trackedRange !== range) return;
+		databaseSubscriptions.trackedRange = undefined;
+		range.trackPositions(false);
+	}, POSITION_TRACKING_LINGER_MS);
+	databaseSubscriptions.positionLinger.unref?.();
+}
+
+/**
+ * By transaction-log name, the key of the last complete transaction the broadcast has dispatched from that log to
+ * every subscriber registered at the time (0: none, and the log is read from its start). Undefined while a pass is
+ * dispatching, and once a failed read has stopped progress.
+ */
+export function logPositions(subscription: any): Map<string, number> | undefined {
+	const subscriptions = subscription.subscriptions?.tables?.envs;
+	if (!subscription.keepsCursors || !subscriptions || subscriptions.dispatching) return;
+	const range = subscriptions.auditStore?.subscriptionLogRange;
+	if (!range || subscriptions.trackedRange !== range) return;
+	if (rangeFailures(range) > 0) stopProgress(subscriptions);
+	if (subscriptions.progressStopped) return;
+	return range.logPositions();
+}
+
+let dispatchedLog: string | undefined;
+let dispatchedKeyBefore: number | undefined;
+/** The transaction log the entry being dispatched came from, when the broadcast tracks log positions. */
+export function dispatchingLog(): string | undefined {
+	return dispatchedLog;
+}
+/** That log's position just before the transaction of the entry being dispatched. */
+export function dispatchingKeyBefore(): number | undefined {
+	return dispatchedKeyBefore;
 }
 
 /**
@@ -433,6 +492,8 @@ class Subscription extends IterableEventQueue {
 	// set only for a resumed, progress-reporting, checkpointed or transactional subscription, so not defined on every one
 	declare resumeVerified?: Promise<boolean>;
 	declare reportsProgress?: boolean;
+	/** The broadcast tracks log positions for it (`logPositions`), and its events carry their log and position. */
+	declare keepsCursors?: boolean;
 	declare registeredThrough?: number;
 	/**
 	 * With no `registeredThrough`: an exclusive start that skips no local key reserved (LMDB: committed) when it
@@ -470,6 +531,10 @@ class Subscription extends IterableEventQueue {
 				this.reportsProgress = false;
 				if (envSubscriptions?.progressConsumers > 0) envSubscriptions.progressConsumers--;
 				if (envSubscriptions && !envSubscriptions.progressConsumers) stopOriginTracking(envSubscriptions);
+			}
+			if (this.keepsCursors) {
+				this.keepsCursors = false;
+				if (envSubscriptions) releaseLogPositions(envSubscriptions);
 			}
 			// splicing would shift the next subscriber past a loop walking this array, which compacts it when it finishes
 			if (subscriptions.traversals > 0) subscriptions.hasEnded = true;
@@ -581,6 +646,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			const auditRecord = result.value;
 			const timestamp: number = auditRecord.txnLogKey;
 			subscriptions.lastTxnTime = timestamp;
+			// read per entry: a listener can register the first subscription that keeps cursors during the pass
+			if (subscriptions.trackedRange === auditLogIterable) {
+				dispatchedLog = auditLogIterable.lastLogName();
+				dispatchedKeyBefore = auditLogIterable.lastKeyBefore();
+			}
 			if (trackProgress && timestamp !== progressKey) {
 				// a transaction's records share its key and are appended together, so a new key completes the last one
 				if (progressKey !== undefined) trackProgress = advanceProgress(subscriptions, progressKey, auditLogIterable);
@@ -741,6 +811,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 		}
 	} finally {
 		subscriptions.dispatching = false;
+		dispatchedLog = dispatchedKeyBefore = undefined;
 		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
 		// must clear it here so a stuck flag doesn't permanently silence future commits.
 		if (allowYield && !yielded) subscriptions.notifyScheduled = false;

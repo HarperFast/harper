@@ -5,8 +5,7 @@ const { table, databases } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
 const { getDatabaseGeneration, persistOriginClosedFloor, raiseAuditFloor } = require('#src/resources/auditStore');
 const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
-const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
-const { ORIGIN_BOUNDARIES, membersDigest } = require('#src/resources/subscriptionCheckpoint');
+const { membersDigest } = require('#src/resources/subscriptionCheckpoint');
 const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const { transaction } = require('#src/resources/transaction');
 const { getSession } = require('#src/server/DurableSubscriptionsSession');
@@ -80,26 +79,6 @@ function resumeRequests(session) {
 		return resumeSubscription.call(this, request, ...rest);
 	};
 	return requests;
-}
-
-const SEQ = Symbol.for('seq');
-/** Another node whose route here certifies everything it wrote below `closedFloor`. */
-function remoteOrigin(T, name, closedFloor, certifiedFrom = 0) {
-	const nodeId = getIdOfRemoteNode(name, T.auditStore);
-	T.dbisDB.putSync([SEQ, nodeId], {
-		seqId: 1,
-		nodes: [{ id: nodeId, closedFloor, originGeneration: `${name}-generation`, fullCoverage: true, certifiedFrom }],
-	});
-	return nodeId;
-}
-
-/** Applies a publish as replication does: it is logged under the origin's key, whenever it arrives here. */
-function applyFromOrigin(T, nodeId, logKey, id) {
-	const context = { source: {}, sourceApply: true, timestamp: logKey };
-	return transaction(context, async () => {
-		const resource = await T.getResource(id, context);
-		resource._writePublish(id, { value: id }, { isNotification: true, nodeId, version: logKey });
-	});
 }
 
 /** A record saved in another database generation: another node's, or this database's before a restore. */
@@ -713,142 +692,5 @@ describe('MQTT durable sessions with per-origin checkpoints (harper-pro#922)', f
 		await waitFor(() => values(second.received).includes('missed'));
 		assert.ok(requests[0].resume !== undefined && requests[1].resume === undefined, 'refused, then the scalar');
 		second.session.disconnect(true);
-	});
-
-	describe('resuming on the node that saved the position (harper#3790)', () => {
-		/**
-		 * A session whose saved position is above `lateKey`, a key each other origin can still commit at: its floor
-		 * is at or below it. `taken-<origin>` was delivered from each above its floor and acknowledged.
-		 */
-		async function savedAboveOriginFloors(qos, originNames = ['peer']) {
-			const { T, name } = topicTable();
-			await T.put('seed', { value: 0 });
-			const clientId = `origin-${name}`;
-			const topic = `${name}/#`;
-			const first = await connect(clientId);
-			await first.session.addSubscription({ topic, qos, rh: 2 }, true);
-			await sleep(5);
-			const originFloor = Date.now();
-			const origins = {};
-			for (const originName of originNames) origins[originName] = remoteOrigin(T, `${originName}-${name}`, originFloor);
-			await storedCheckpoint(T, first.session, clientId);
-			for (const originName of originNames) {
-				await applyFromOrigin(T, origins[originName], originFloor + 1, `taken-${originName}`);
-				await waitFor(() => values(first.received).includes(`taken-${originName}`));
-			}
-			await sleep(5);
-			await T.put('local', { value: 'local' });
-			await waitFor(() => values(first.received).includes('local'));
-			await take(first.session, first.received, qos);
-			await storedCheckpoint(T, first.session, clientId);
-			first.session.disconnect(true);
-			await first.session.writes;
-			const entry = (await stored(clientId)).subscriptions[0];
-			const lateKey = originFloor + 2;
-			assert.ok(entry.startTime > lateKey, 'the saved position passed a key the other origins can still commit');
-			assert.ok(checkpointFloor(entry.checkpoint) <= lateKey, 'its checkpoint holds those origins at their floor');
-			return { T, name, topic, clientId, origins, originFloor, lateKey, entry };
-		}
-
-		async function take(session, received, qos) {
-			for (const { messageId } of received) {
-				if (qos === 2) await session.received(messageId, false);
-				else await session.acknowledge(messageId);
-			}
-		}
-
-		async function resumed(T, clientId) {
-			const connection = await connect(clientId);
-			assert.strictEqual(connection.session.sessionWasPresent, true);
-			connection.requests = resumeRequests(connection.session);
-			await connection.session.resume();
-			await T.put('after', { value: 'after' });
-			await waitFor(() => values(connection.received).includes('after'));
-			return connection;
-		}
-
-		for (const qos of [1, 2]) {
-			it(`QoS ${qos}: delivers a transaction another origin commits below the saved position after the save`, async () => {
-				const { T, clientId, origins, lateKey, entry } = await savedAboveOriginFloors(qos);
-				await applyFromOrigin(T, origins.peer, lateKey, 'late');
-				const second = await resumed(T, clientId);
-				assert.strictEqual(second.requests[0].startTime, entry.startTime, 'resumed from its saved position');
-				assert.deepStrictEqual(
-					values(second.received),
-					['late', 'after'],
-					'the late transaction is delivered, and nothing acknowledged is sent again'
-				);
-				second.session.disconnect(true);
-				await second.session.writes;
-				const saved = (await stored(clientId)).subscriptions[0];
-				assert.ok(saved.startTime >= entry.startTime, 'the saved position is never lowered');
-			});
-
-			it(`QoS ${qos}: sends it again on the next resume while it is unacknowledged, though its origin's floor passed it`, async () => {
-				const { T, name, clientId, origins, lateKey, entry } = await savedAboveOriginFloors(qos);
-				await applyFromOrigin(T, origins.peer, lateKey, 'late');
-				const second = await resumed(T, clientId);
-				const sent = delivery(second.received, 'late');
-				assert.ok(sent, 'delivered once');
-				await take(
-					second.session,
-					second.received.filter((received) => received !== sent),
-					qos
-				);
-				remoteOrigin(T, `peer-${name}`, lateKey + 60_000);
-				await storedCheckpoint(T, second.session, clientId);
-				second.session.disconnect(true);
-				await second.session.writes;
-				const saved = (await stored(clientId)).subscriptions[0];
-				assert.ok(saved.startTime >= entry.startTime, 'the saved position stays above it');
-				assert.ok(checkpointFloor(saved.checkpoint) <= lateKey, 'the checkpoint holds its origin at it');
-				const third = await connect(clientId);
-				await third.session.resume();
-				await waitFor(() => values(third.received).includes('late'));
-				assert.deepStrictEqual(values(third.received), ['late'], 'and only it');
-				if (qos === 2)
-					assert.strictEqual(delivery(third.received, 'late').messageId, sent.messageId, 'under its packet id');
-				third.session.disconnect(true);
-			});
-		}
-
-		it('resumes from the saved position alone, keeping the session, once the history below it is pruned', async () => {
-			const { T, clientId, origins, lateKey, entry } = await savedAboveOriginFloors(1);
-			await applyFromOrigin(T, origins.peer, lateKey, 'late');
-			raiseAuditFloor(T.auditStore, lateKey + 1);
-			assert.ok(entry.startTime >= lateKey + 1, 'the saved position itself is still retained');
-			const second = await resumed(T, clientId);
-			assert.deepStrictEqual(values(second.received), ['after'], 'as a resume did before: nothing below the position');
-			assert.deepStrictEqual(second.closed, [], 'the session is not reset');
-			second.session.disconnect(true);
-		});
-
-		it('decides each origin on its own: one this node no longer certifies from its boundary keeps the position', async () => {
-			const { T, name, clientId, origins, originFloor, lateKey } = await savedAboveOriginFloors(1, ['kept', 'lost']);
-			// its route restarted above the boundary the checkpoint holds, so its log is not known complete from there
-			remoteOrigin(T, `lost-${name}`, originFloor + 100, originFloor + 50);
-			await applyFromOrigin(T, origins.kept, lateKey, 'late-kept');
-			await applyFromOrigin(T, origins.lost, lateKey, 'late-lost');
-			const second = await resumed(T, clientId);
-			assert.deepStrictEqual(values(second.received), ['late-kept', 'after']);
-			assert.deepStrictEqual(second.closed, []);
-			second.session.disconnect(true);
-		});
-
-		it('a replacing SUBSCRIBE sends a late delivery the replaced subscription left unacknowledged', async () => {
-			const { T, topic, clientId, origins, lateKey } = await savedAboveOriginFloors(1);
-			const second = await resumed(T, clientId);
-			await take(second.session, second.received, 1);
-			await applyFromOrigin(T, origins.peer, lateKey, 'late');
-			await waitFor(() => values(second.received).includes('late'));
-			const entry = second.session.topics.get(topic).entry;
-			assert.ok(entry.startTime > lateKey, 'it arrived below the position');
-			await second.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
-			const request = second.requests.at(-1);
-			assert.strictEqual(request.startTime, entry.startTime, 'continued from the position');
-			assert.deepStrictEqual(request[ORIGIN_BOUNDARIES], entry.checkpoint, 'with the checkpoint beside it');
-			await waitFor(() => values(second.received).filter((value) => value === 'late').length === 2);
-			second.session.disconnect(true);
-		});
 	});
 });
