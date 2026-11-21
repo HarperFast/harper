@@ -1170,7 +1170,7 @@ interface TableResourceInstance<Record extends object = any> {
 	 */
 	publish(target: RequestTarget, message: Record, options?: any): void | Promise<void>;
 	_writePublish(id: Id, message: any, options?: any): void | Promise<void>;
-	validate(record: any, patch?: boolean): void;
+	validate(record: any, patch?: boolean, frameworkOwned?: readonly string[]): void;
 	getUpdatedTime(): number;
 	[ASSERT_TRACKED_WRITABLE](generation?: WriteGeneration): void;
 	[GET_TRACKED_WRITE_GENERATION](): WriteGeneration;
@@ -11526,7 +11526,7 @@ export function makeTable(options): TableResourceClass {
 			return lockCoordinator;
 		}
 		// #section: validation
-		validate(record: any, patch?: boolean) {
+		validate(record: any, patch?: boolean, frameworkOwned?: readonly string[]) {
 			if (fullTextFieldNames) assertFullTextWrite(record);
 			// Accumulate structured per-field issues so the 400 carries `{ path, code,
 			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
@@ -11684,6 +11684,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					continue;
 				}
+				if (frameworkOwned?.includes(attribute.name)) continue;
 				if (!patch || attribute.name in record) {
 					const name = attribute.name;
 					const value = record[name];
@@ -14062,26 +14063,25 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	/**
-	 * Holds a filled record, once its key and timestamps are stamped, to the schema a put of it must meet
-	 * (with the same coercions), so a cache fill cannot store and serve what the table rejects on write.
-	 * The source is at fault, not the reader, so any failure is a 502, which stale-if-error can answer with
-	 * the cached copy. Validation messages quote the source's values, which may be attributes the reader
-	 * cannot see, so only the failing attribute paths reach the error. The key is the requested id, which a
-	 * put does not validate either (it stamps the key after validating), so its issues do not count.
+	 * The source is at fault, not the reader, so a failure is a 502 (which stale-if-error answers with the
+	 * cached copy). Messages quote the source's values, and an undeclared property's name is the source's
+	 * too, so neither reaches the reader.
 	 */
-	function validateSourceRecord(record: any): void {
+	function validateSourceRecord(record: any, frameworkOwned: readonly string[]): void {
 		try {
-			TableResource.prototype.validate(record);
+			TableResource.prototype.validate(record, false, frameworkOwned);
 		} catch (error) {
-			let paths = '';
+			let detail = '';
 			if (error instanceof ValidationError) {
-				const issues = error.errors.filter((issue) => issue.path !== primaryKey);
-				if (issues.length === 0) return;
-				paths = issues.map((issue) => issue.path).join(', ');
+				const declared = error.errors.filter((issue) => issue.code !== 'unknown_property');
+				const undeclared = error.errors.length - declared.length;
+				detail = declared.map((issue) => issue.path).join(', ');
+				if (undeclared > 0)
+					detail += `${detail ? '; ' : ''}${undeclared} undeclared propert${undeclared === 1 ? 'y' : 'ies'}`;
 			}
 			throw new ServerError(
 				`Source for ${tableName} returned a record that does not match the schema` +
-					(paths ? ` (invalid: ${paths})` : ''),
+					(detail ? ` (invalid: ${detail})` : ''),
 				502
 			);
 		}
@@ -15163,7 +15163,9 @@ export function makeTable(options): TableResourceClass {
 							updatedRecord[createdTimeToAssign.name] =
 								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
-						if (!reusedCachedRecord) validateSourceRecord(updatedRecord);
+						// the key and stamped times are this node's, not the source's, as a put stamps them after validating
+						if (!reusedCachedRecord)
+							validateSourceRecord(updatedRecord, [primaryKey, updatedTimeProperty?.name, createdTimeToAssign?.name]);
 					}
 					resolved = true;
 					const resolvedEntry: Entry = {

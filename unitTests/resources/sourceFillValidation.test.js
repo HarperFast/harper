@@ -5,10 +5,9 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
 
-// A cache fill is held to the schema a put of the same record must meet (harper#2733).
 describe('Source fill schema validation', function () {
 	this.timeout(10_000);
-	let Validated, Stamped, Sealed, responses, calls;
+	let Validated, Stamped, LongStamped, BigIntKeyed, Sealed, responses, calls;
 
 	function sourceFor(Table) {
 		Table.sourcedFrom({
@@ -45,6 +44,24 @@ describe('Source fill schema validation', function () {
 				{ name: 'updatedAt', type: 'Date', nullable: false, assignUpdatedTime: true },
 			],
 		});
+		LongStamped = table({
+			database: 'test',
+			table: 'SourceFillValidatedLongStamps',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'name', type: 'String', nullable: false },
+				{ name: 'createdAt', type: 'Long', assignCreatedTime: true },
+				{ name: 'updatedAt', type: 'Long', assignUpdatedTime: true },
+			],
+		});
+		BigIntKeyed = table({
+			database: 'test',
+			table: 'SourceFillValidatedBigIntKey',
+			attributes: [
+				{ name: 'id', type: 'BigInt', isPrimaryKey: true },
+				{ name: 'name', type: 'String', nullable: false },
+			],
+		});
 		Sealed = table({
 			database: 'test',
 			table: 'SourceFillValidatedSealed',
@@ -54,7 +71,7 @@ describe('Source fill schema validation', function () {
 				{ name: 'name', type: 'String' },
 			],
 		});
-		for (const Table of [Validated, Stamped, Sealed]) sourceFor(Table);
+		for (const Table of [Validated, Stamped, LongStamped, BigIntKeyed, Sealed]) sourceFor(Table);
 	});
 
 	beforeEach(() => {
@@ -88,7 +105,6 @@ describe('Source fill schema validation', function () {
 		await assert.rejects(async () => Validated.put('missing-name', record), { statusCode: 400 });
 		responses.set('missing-name', record);
 		await rejectedFill(Validated, 'missing-name', 'name');
-		// nothing was cached, so the next read asks the source again, and a corrected record fills
 		await rejectedFill(Validated, 'missing-name', 'name');
 		responses.set('missing-name', { ...record, name: 'fixed' });
 		assert.equal((await Validated.get('missing-name')).name, 'fixed');
@@ -112,7 +128,7 @@ describe('Source fill schema validation', function () {
 
 	it('rejects a source record with an attribute a sealed table does not declare', async () => {
 		responses.set('extra', { id: 'extra', name: 'n', extra: true });
-		await rejectedFill(Sealed, 'extra', 'extra');
+		await rejectedFill(Sealed, 'extra', '1 undeclared property');
 	});
 
 	it('rejects an invalid record read with noCacheStore', async () => {
@@ -151,6 +167,20 @@ describe('Source fill schema validation', function () {
 		assert.ok(record.createdAt instanceof Date);
 		assert.ok(record.updatedAt instanceof Date);
 		assert.equal((await settled(Stamped, 'stamped')).value.name, 'n');
+	});
+
+	it('fills a source record on a table whose @createdTime and @updatedTime are Long', async () => {
+		responses.set('long-stamped', { name: 'n' });
+		const record = await LongStamped.get('long-stamped');
+		assert.equal(typeof record.updatedAt, 'number');
+		assert.equal((await settled(LongStamped, 'long-stamped')).value.createdAt, record.createdAt);
+	});
+
+	it('leaves the requested id on a BigInt key as it is, whatever key the source returns', async () => {
+		responses.set(12, { id: 'not-a-number', name: 'n' });
+		const record = await BigIntKeyed.get(12);
+		assert.strictEqual(record.id, 12);
+		assert.strictEqual((await settled(BigIntKeyed, 12)).value.id, 12);
 	});
 
 	it('every reader waiting on an invalid fill settles, and none caches it', async () => {

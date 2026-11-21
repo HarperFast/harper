@@ -35,7 +35,7 @@ suite('sourcedFrom fills are held to the schema over REST', (ctx: ContextWithHar
 		try {
 			await teardownHarper(ctx);
 		} finally {
-			await new Promise((closed) => origin.close(closed));
+			if (origin) await new Promise((closed) => origin.close(closed));
 		}
 	});
 
