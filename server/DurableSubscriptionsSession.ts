@@ -1150,7 +1150,7 @@ function loadCursors(
 	let from: any;
 	let held: unknown;
 	if (Array.isArray(saved)) {
-		if (!shared || !Array.isArray(shared.logs)) return;
+		if (!shared || !Array.isArray(shared.logs) || shared.logs.length > MAX_CURSOR_LOGS) return;
 		from = shared;
 		for (const log of shared.logs) {
 			if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1])) return;
@@ -1161,7 +1161,7 @@ function loadCursors(
 		from = saved;
 		held = from.logs;
 	}
-	if (typeof from?.generation !== 'string' || !Array.isArray(held)) return;
+	if (typeof from?.generation !== 'string' || !Array.isArray(held) || held.length > MAX_CURSOR_LOGS) return;
 	for (const log of held) {
 		if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1]) || !isLogKey(log[2])) return;
 		logs.set(log[0], { cursor: log[1], readThrough: log[2] });
@@ -2182,7 +2182,14 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			// the scalar and the log positions are saved as of one moment, so neither moves without the other
 			const positions = this.readCursors(state);
 			if (positions === null) continue;
-			if (this.advanceScalar(state)) changed = true;
+			if (this.advanceScalar(state)) {
+				changed = true;
+				// positions saved for an earlier scalar would replay, as never sent, what has been taken since
+				if (!positions && state.cursors) {
+					state.cursors = state.cursorGeneration = state.entry.takenThrough = undefined;
+					state.cursorsLive = false;
+				}
+			}
 			if (positions && this.setCursors(state, positions)) changed = true;
 		}
 		for (const state of this.topics.values()) {
