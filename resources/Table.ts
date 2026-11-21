@@ -140,13 +140,16 @@ import {
 	bumpOriginStateEpoch,
 	checkpointScope,
 	encodeCheckpoint,
+	movedCursorStarts,
 	positionBefore,
 	readOriginStateEpoch,
 	resumeBoundary,
 	validateCheckpoint,
+	vouchedOrigins,
 	withReplacedGeneration,
 	type CertifiedFloors,
 	type MemberBoundary,
+	type MovedCursors,
 	type ResumeCursors,
 	type ResumePlan,
 	type SubscriptionCheckpoint,
@@ -2328,6 +2331,18 @@ function resumableCursors(request: any, auditStore: any): ResumeCursors | undefi
 		logs.set(logName, position);
 	}
 	return { takenThrough: saved.takenThrough, logs };
+}
+
+/** The positions another node saved, when the request carries a whole vector of them. */
+function movedCursors(request: any): MovedCursors | undefined {
+	const saved = request[LOG_CURSORS];
+	if (
+		saved?.logs instanceof Map &&
+		typeof saved.node === 'string' &&
+		typeof saved.generation === 'string' &&
+		typeof saved.takenThrough === 'number'
+	)
+		return saved;
 }
 
 /**
@@ -10767,6 +10782,7 @@ export function makeTable(options): TableResourceClass {
 					// that passes the lowest certified start may have deleted one, whatever has been read so far
 					let lowestStart = Infinity;
 					for (const start of plan.startByLog.values()) if (start > 0 && start < lowestStart) lowestStart = start;
+					let movedEpoch = admittedEpoch;
 					// admission facts are mutable: a revocation, hole or generation change bumps the epoch
 					const recheck = (range: any): boolean => {
 						const unreadable = unreadableLogRefusal(range);
@@ -10789,20 +10805,83 @@ export function makeTable(options): TableResourceClass {
 						}
 						return true;
 					};
-					const replayRange = auditStore.getRange({
-						startByLog: plan.startByLog,
-						exclusiveStart: false,
-						exactStart: false,
-						includeLogName: true,
-						snapshot: false, // the live tail appended during the replay is read by it
-					});
+					// The positions another node saved replace the boundary of each origin both nodes vouch for: its log is
+					// read after the saved cursor, in arrival order. Any other origin, and one whose cursor is not here,
+					// starts at its boundary.
+					const moved: MovedCursors | undefined = state.keepsCursors ? movedCursors(request) : undefined;
+					const movedStarts = moved && movedCursorStarts(auditStore, TableResource.dbisDB, moved);
+					let readBefore: Map<string, number> | undefined;
+					let readByKey: Set<string> | undefined;
+					let replayRange: any;
+					if (movedStarts) {
+						const startByLog = new Map<string, number>();
+						const keyStartByLog = new Map<string, number>();
+						readBefore = new Map();
+						for (const [logName, { cursor, readThrough }] of movedStarts) {
+							startByLog.set(logName, cursor);
+							if (readThrough !== cursor && auditStore.holdsTransaction(logName, readThrough))
+								readBefore.set(logName, readThrough);
+						}
+						for (const [logName, boundary] of plan.startByLog) {
+							if (boundary > 0 && !startByLog.has(logName)) keyStartByLog.set(logName, positionBefore(boundary));
+							else if (!startByLog.has(logName)) (readByKey ??= new Set()).add(logName);
+						}
+						for (const logName of keyStartByLog.keys()) (readByKey ??= new Set()).add(logName);
+						replayRange = auditStore.getRange({
+							startByLog,
+							keyStartByLog,
+							exactStart: true,
+							resumeAfterExactStart: true,
+							resumeAfterDuplicateStart: true,
+							trackPositions: true,
+							snapshot: false,
+							exactStartFallback: (logName: string) => {
+								readBefore!.delete(logName);
+								(readByKey ??= new Set()).add(logName);
+								const boundary = plan!.startByLog.get(logName);
+								return boundary > 0 ? positionBefore(boundary) : 0;
+							},
+						});
+					} else {
+						replayRange = auditStore.getRange({
+							startByLog: plan.startByLog,
+							exclusiveStart: false,
+							exactStart: false,
+							includeLogName: true,
+							snapshot: false, // the live tail appended during the replay is read by it
+							trackPositions: state.keepsCursors,
+						});
+					}
+					// a position is used only while both nodes vouch for its origin; the client reconnects to its boundary
+					const recheckMoved = (): boolean => {
+						if (!movedStarts || admittedEpoch === movedEpoch) return true;
+						movedEpoch = admittedEpoch;
+						const vouched = movedCursorStarts(auditStore, TableResource.dbisDB, moved!);
+						for (const logName of movedStarts.keys()) {
+							if (readByKey?.has(logName) || vouched?.has(logName)) continue;
+							return refuse(
+								new ServerError('The state of an origin changed while its history was replayed; reconnect to retry', 503)
+							);
+						}
+						return true;
+					};
 					try {
 						for (const auditRecord of replayRange) {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
 								await rest();
 								if (!isActive()) return;
-								if (!recheck(replayRange)) return;
+								if (!recheck(replayRange) || !recheckMoved()) return;
+							}
+							let arrivedAfterSave = false;
+							if (movedStarts) {
+								const logName = replayRange.lastLogName();
+								const readThrough = readBefore!.get(logName);
+								if (readThrough !== undefined) {
+									if (auditRecord.txnLogKey === readThrough && auditRecord.endTxn) readBefore!.delete(logName);
+									// read before the save with a key at or below what was taken
+									if (auditRecord.txnLogKey <= moved!.takenThrough) continue;
+								} else arrivedAfterSave = !readByKey?.has(logName);
 							}
 							if (auditRecord.type === undefined) {
 								refuse(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
@@ -10833,13 +10912,18 @@ export function makeTable(options): TableResourceClass {
 							);
 							if (!event) continue;
 							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+							if (state.keepsCursors) {
+								event[LOG_NAME] = replayRange.lastLogName();
+								event[LOG_BEFORE] = replayRange.lastKeyBefore();
+								if (arrivedAfterSave) event[ARRIVED_AFTER_SAVE] = true;
+							}
 							if (!send(event)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-								if (!recheck(replayRange)) return;
+								if (!recheck(replayRange) || !recheckMoved()) return;
 								if ((await subscription.waitForDrain()) === false) return;
 							}
 						}
-						if (!recheck(replayRange)) return;
+						if (!recheck(replayRange) || !recheckMoved()) return;
 					} finally {
 						state.dropDuringReplay = false;
 					}
@@ -13305,12 +13389,15 @@ export function makeTable(options): TableResourceClass {
 			lateHead: 0,
 			highestSent: -Infinity,
 			queueSend: subscription.send,
-			// before any await: the broadcast has dispatched nothing to it yet
-			registeredCursors: resuming || plan ? undefined : logPositions(subscription),
+			// before any await: the broadcast has dispatched nothing to it yet. A replay reads from below where it registered.
+			registeredCursors: resuming || plan || request.startTime ? undefined : logPositions(subscription),
 		};
 		subscription.progressState = progress;
 		subscription.unresumableThrough = progress.unresumableThrough;
-		if (subscription.keepsCursors) subscription.logCursors = () => subscriptionLogCursors(subscription);
+		if (subscription.keepsCursors) {
+			subscription.logCursors = () => subscriptionLogCursors(subscription);
+			subscription.vouchedOrigins = () => vouchedOrigins(certifiedFloors(subscription));
+		}
 		subscription.sentCount = 0;
 		subscription.send = sendTrackingLate;
 		subscription.lowestLateUnconsumed = (consumed: number) => lowestLateUnconsumed(subscription, consumed);
