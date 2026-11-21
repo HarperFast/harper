@@ -38,6 +38,16 @@ function applyFromOrigin(T, nodeId, logKey, id) {
 	});
 }
 
+/** Ends the peer's log with one transaction of more entries than a scan for a position may read. */
+async function unanchorableTail(Other, peer, key) {
+	const context = { source: {}, sourceApply: true, timestamp: key };
+	await transaction(context, async () => {
+		const resource = await Other.getResource('bulk', context);
+		for (let index = 0; index < 65_540; index++)
+			resource._writePublish('bulk', { value: index }, { isNotification: true, nodeId: peer, version: key });
+	});
+}
+
 /** A table with a peer whose log holds `keys`, appended in that order, each entry valued by its key's offset. */
 async function peerLog(offsets) {
 	const T = tableInOwnDatabase();
@@ -83,12 +93,7 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 
 		it('refuses to anchor past more entries than a scan may read, and the subscription then keeps no positions', async () => {
 			const { T, store, peer, log, base } = await peerLog([10]);
-			const context = { source: {}, sourceApply: true, timestamp: base + 20 };
-			await transaction(context, async () => {
-				const resource = await T.getResource('bulk', context);
-				for (let index = 0; index < 65_540; index++)
-					resource._writePublish('bulk', { value: index }, { isNotification: true, nodeId: peer, version: base + 20 });
-			});
+			await unanchorableTail(T, peer, base + 20);
 			assert.throws(() => store.tailKey(log), /too many/);
 			const listener = collector();
 			const subscription = await T.subscribe({
@@ -361,6 +366,35 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 			} finally {
 				restore();
 			}
+		});
+
+		it('refuses the resume when the purged log held a delivery not yet taken', async () => {
+			const { T, peerName, base, logs, resume } = await subscribedThrough([10, 40]);
+			logs.set(peerName, { cursor: base + 5, readThrough: base + 10 });
+			const restore = purged(T, peerName, base + 5);
+			try {
+				const subscription = await resume({ takenThrough: base + 30, logs }, { listener: collector() });
+				assert.strictEqual(await subscription.resumeVerified, false);
+				assert.strictEqual(subscription.closedWith?.statusCode, 410);
+			} finally {
+				restore();
+			}
+		});
+
+		it('replays from the saved positions when the broadcast cannot track positions from here on', async () => {
+			const { T, peer, base, position, logs, resume } = await subscribedThrough([10, 30]);
+			await applyFromOrigin(T, peer, base + 20, 'k20');
+			const Other = table({
+				table: `Other${sequence}`,
+				database: `log_cursors_LogCursors${sequence}`,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			await unanchorableTail(Other, peer, base + 40);
+			const { verified, values, subscription } = await replayed(T, resume, { takenThrough: position, logs });
+			assert.strictEqual(verified, true);
+			assert.deepStrictEqual(values, ['k20', 'live']);
+			assert.strictEqual(subscription.logCursors, undefined, 'and it keeps none of its own');
 		});
 
 		it('ignores positions that leave out this node’s own log, or that are malformed', async () => {

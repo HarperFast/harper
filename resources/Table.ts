@@ -147,6 +147,7 @@ import {
 	withReplacedGeneration,
 	type CertifiedFloors,
 	type MemberBoundary,
+	type LogCursor,
 	type ResumeCursors,
 	type ResumePlan,
 	type SubscriptionCheckpoint,
@@ -2336,15 +2337,21 @@ function resumableCursors(request: any, auditStore: any): ResumeCursors | undefi
 /**
  * For a saved log position whose entry is gone: 0 when the log can be read from its first retained entry with
  * nothing lost, a refusal when what was purged may include an entry the resume needs, undefined when the entry was
- * not purged. Purges remove whole files, oldest first, so everything retained is after the position; a file written
- * after the save is removed only once retention has passed the save, which the start (at or below it) is checked for.
+ * not purged. Purges remove whole files, oldest first, so everything retained is after the position. A delivery
+ * of this log that was held at the save may have gone with it. A file written after the save is removed only once
+ * retention has passed the save, and `start`, the subscription's own position, is at or below the save.
  */
-function purgedCursorStart(auditStore: any, logName: string, cursor: number, start: number): 0 | Error | undefined {
+function purgedCursorStart(auditStore: any, logName: string, saved: LogCursor, start: number): 0 | Error | undefined {
 	const log = auditStore.logByName.get(logName);
 	const watermark = log?.getPurgeWatermark?.();
-	if (!watermark?.known || !(cursor <= watermark.purgedThrough)) return;
+	if (!watermark?.known || !(saved.cursor <= watermark.purgedThrough)) return;
 	const horizon = nativePurgeHorizon(auditStore, Date.now());
-	if (horizon === undefined || watermark.purgedThrough > start || start < horizon) {
+	if (
+		saved.cursor !== saved.readThrough ||
+		horizon === undefined ||
+		start < horizon ||
+		watermark.purgedThrough > start
+	) {
 		return new ResumeHistoryUnavailableError(
 			'The history after a transaction log position is no longer retained; resubscribe to resynchronize'
 		);
@@ -10872,8 +10879,9 @@ export function makeTable(options): TableResourceClass {
 						}
 						// Saved log positions resume each log where the subscription had read it, in the order it was
 						// appended, so an entry that arrived since with a key below the start is replayed too.
+						// they are read whether or not the broadcast can track positions from here on
 						const savedCursors: ResumeCursors | undefined =
-							resuming && liveRange && state.keepsCursors ? resumableCursors(request, auditStore) : undefined;
+							resuming && liveRange ? resumableCursors(request, auditStore) : undefined;
 						let cursorRefusal: Error | undefined;
 						// A late delivery not yet taken can have a key older than the retained history while its entry is
 						// recent, so retention is checked on the start, and this key only where a log is read by it.
@@ -10898,9 +10906,9 @@ export function makeTable(options): TableResourceClass {
 								trackPositions: true,
 								snapshot: false,
 								until: liveRange,
-								exactStartFallback: (logName: string, failure: string, cursor: number) => {
+								exactStartFallback: (logName: string, failure: string) => {
 									if (failure === 'missing') {
-										const purged = purgedCursorStart(auditStore, logName, cursor, takenThrough!);
+										const purged = purgedCursorStart(auditStore, logName, savedCursors.logs.get(logName)!, startTime);
 										if (purged === 0) return 0;
 										if (purged) {
 											cursorRefusal = purged;
@@ -11045,8 +11053,8 @@ export function makeTable(options): TableResourceClass {
 										if (state.keepsCursors && liveRange) {
 											event[LOG_NAME] = replayRange.lastLogName();
 											event[LOG_BEFORE] = replayRange.lastKeyBefore();
-											if (arrivedAfterSave !== undefined) event[ARRIVED_AFTER_SAVE] = arrivedAfterSave;
 										}
+										if (arrivedAfterSave !== undefined) event[ARRIVED_AFTER_SAVE] = arrivedAfterSave;
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 											// a prune while the consumer drains may reach what was read before the wait
@@ -13417,14 +13425,14 @@ export function makeTable(options): TableResourceClass {
 		const progress: ProgressState = subscription.progressState;
 		// events held back until it is live are in no queue a consumer can see, so its position stays where it registered
 		if (!progress.live) return progress.registeredCursors;
-		const positions = logPositions(subscription);
 		// a checkpoint replay reads to each log's end, which can be past the broadcast: its events' positions are
 		// behind the broadcast's only once the broadcast has returned every entry
-		if (positions && progress.plan && !progress.broadcastPassedReplay) {
-			if (broadcastRange(subscription).hasUnreturnedEntry()) return;
+		if (progress.plan && !progress.broadcastPassedReplay) {
+			if (isDispatching(subscription) || broadcastRange(subscription)?.hasUnreturnedEntry() !== false) return;
 			progress.broadcastPassedReplay = true;
 		}
-		return positions;
+		// read after the peek, so a peek that failed withholds them
+		return logPositions(subscription);
 	}
 	function beforeLive(subscription: any): number | undefined {
 		const progress: ProgressState = subscription.progressState;

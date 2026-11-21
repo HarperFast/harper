@@ -927,6 +927,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 		try {
 			const result = iterator.next();
 			return !result.done && result.value.timestamp === key;
+		} catch {
+			// a read from that position fails the same way, and reports it
+			return false;
 		} finally {
 			iterator.close();
 		}
@@ -965,9 +968,14 @@ export class RocksTransactionLogStore extends EventEmitter {
 		let tail: number | undefined;
 		let scanned = 0;
 		// entries committed after the highest key have lower keys, and an exact start reads them all
-		for (const entry of log.query({ start: highest, exactStart: true })) {
-			if (entry.endTxn) tail = entry.timestamp;
-			if (++scanned > POSITION_SCAN_LIMIT) throw new PositionScanLimitError(log);
+		const iterator = log.query({ start: highest, exactStart: true });
+		try {
+			for (const entry of iterator) {
+				if (entry.endTxn) tail = entry.timestamp;
+				if (++scanned > POSITION_SCAN_LIMIT) throw new PositionScanLimitError(log);
+			}
+		} finally {
+			iterator.close();
 		}
 		return tail ?? this.predecessorKey(log, highest, true);
 	}
@@ -1003,13 +1011,18 @@ export class RocksTransactionLogStore extends EventEmitter {
 		}
 		let before = 0;
 		let scanned = 0;
-		for (const entry of log.query({ start: from, exactStart: true })) {
-			if (entry.timestamp === key) break;
-			if (++scanned > POSITION_SCAN_LIMIT) {
-				if (exact) throw new PositionScanLimitError(log);
-				break;
+		const iterator = log.query({ start: from, exactStart: true });
+		try {
+			for (const entry of iterator) {
+				if (entry.timestamp === key) break;
+				if (++scanned > POSITION_SCAN_LIMIT) {
+					if (exact) throw new PositionScanLimitError(log);
+					break;
+				}
+				if (entry.endTxn) before = entry.timestamp;
 			}
-			if (entry.endTxn) before = entry.timestamp;
+		} finally {
+			iterator.close();
 		}
 		return before;
 	}

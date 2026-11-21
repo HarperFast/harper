@@ -313,6 +313,33 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 		await end(connection);
 	});
 
+	it('drops its saved positions once its position moves while the subscription keeps none', async () => {
+		const { T, name, clientId, peer, lateKey, record } = await savedSession(1);
+		await applyFromOrigin(T, peer, lateKey, 'late');
+		// one transaction too long to find the end of the peer's log after: positions cannot be tracked
+		const { T: Other } = topicTable(`cursor_${name}`);
+		const context = { source: {}, sourceApply: true, timestamp: Date.now() };
+		await transaction(context, async () => {
+			const resource = await Other.getResource('bulk', context);
+			for (let index = 0; index < 65_540; index++)
+				resource._writePublish(
+					'bulk',
+					{ value: index },
+					{ isNotification: true, nodeId: peer, version: context.timestamp }
+				);
+		});
+		const second = await resumed(T, clientId);
+		assert.deepStrictEqual(values(second.received), ['late', 'after'], 'the saved positions are still replayed');
+		await take(second.session, second.received, 1);
+		let saved;
+		await waitFor(async () => {
+			saved = (await save(second.session, clientId)).subscriptions[0];
+			return saved.startTime > record.subscriptions[0].startTime;
+		}, 10_000);
+		assert.strictEqual(saved.cursors, undefined, 'positions as of an earlier save would send again what was taken');
+		await end(second);
+	});
+
 	it('reads a log created after the save from its start', async () => {
 		const { T, name, clientId, lateKey } = await savedSession(1);
 		const joined = getIdOfRemoteNode(`joined-${name}`, T.auditStore);
