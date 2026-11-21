@@ -22,7 +22,9 @@ export class Gated extends tables.Readings {
 // Core has no replication transport, so this stands in for a peer's stream: it applies a publish as replication
 // does, in that node's own transaction log under the key the node gave it, whenever it arrives here.
 const core = process.env.DURABLE_RESUME_CORE;
-const nodeIds = core && createRequire(import.meta.url)(join(core, 'resources/nodeIdMapping.js'));
+const coreModule = (path) => core && createRequire(import.meta.url)(join(core, path));
+const nodeIds = coreModule('resources/nodeIdMapping.js');
+const nodeName = coreModule('server/nodeName.js');
 const SEQ = Symbol.for('seq');
 
 export class Peer extends Resource {
@@ -55,7 +57,10 @@ export class Peer extends Resource {
 	}
 }
 
-/** Rewrites a saved session as another node would have saved it, that node vouching for this node's own log. */
+/**
+ * Rewrites a saved session as another node would have saved it, that node vouching for this node's own log, and
+ * without its receipts, as when it did not end cleanly there.
+ */
 export class MovedSession extends Resource {
 	static loadAsInstance = false;
 	async post(_target, { clientId }) {
@@ -66,13 +71,13 @@ export class MovedSession extends Resource {
 		const subscriptions = record.subscriptions.map((entry) => {
 			const logs = new Map(shared.logs.map(([origin, key, vouched]) => [origin, [origin, key, key, vouched]]));
 			for (const held of entry.cursors) logs.set(held[0], held);
-			logs.get(shared.node)[3] = generation;
+			logs.get(nodeName.getThisNodeName())[3] = generation;
+			const { received: _received, receivedRuns: _runs, receivedThrough: _through, ...kept } = entry;
 			return {
-				...entry,
+				...kept,
 				databaseGeneration: 'another-generation',
 				cursors: {
 					generation: 'another-generation',
-					node: 'elsewhere',
 					logs: [...logs.values()].map((log) => log.filter((part) => part !== undefined)),
 				},
 			};

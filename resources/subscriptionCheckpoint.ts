@@ -34,26 +34,31 @@ export const ORIGIN_ID = Symbol.for('subscription-origin');
 export const LOG_CURSORS = Symbol('log-cursors');
 export const LOG_NAME = Symbol('log-name');
 export const LOG_BEFORE = Symbol('log-before');
-/** On a replayed event: its entry was appended after the resumed positions were saved, so it was never delivered. */
+/**
+ * On an event replayed from a saved position in its log: true when its entry is after the log's saved
+ * `readThrough`, so it was never sent; false when it had been sent before the save.
+ */
 export const ARRIVED_AFTER_SAVE = Symbol('arrived-after-save');
 
 /** One log's saved position: where its replay starts, and what the subscription had read when it was saved. */
 export interface LogCursor {
 	/** The key of the last complete transaction before the earliest delivery not yet taken; 0: the log's start. */
 	cursor: number;
-	/** The key of the last complete transaction the subscription had read. */
+	/**
+	 * The key of the last complete transaction whose deliveries had all been sent to the consumer: at most what the
+	 * subscription had read. What the log holds after it was never sent.
+	 */
 	readThrough: number;
 	/**
 	 * By origin name only: the origin's database generation, when the node that saved the position vouched that its
-	 * log of the origin held every entry in the origin's order (`vouchedOrigins`).
+	 * log of the origin held, before the cursor, what the origin's own log holds before it (`vouchedOrigins`).
 	 */
 	generation?: string;
 }
 
-/** Positions another node saved, by origin node name, with that node's name and database generation. */
+/** Positions another node saved, by origin node name. */
 export interface MovedCursors {
-	node: string;
-	generation: string;
+	moved: true;
 	takenThrough: number;
 	logs: Map<string, LogCursor>;
 }
@@ -411,29 +416,33 @@ function qualifies(state: OriginState): boolean {
 	);
 }
 
-/** Whether this node's log of another origin holds each of the origin's entries, in the origin's own order. */
-function vouchesFor(state: OriginState): boolean {
-	return state.nodeId !== 0 && state.onlyDirect === true && qualifies(state);
+/** An origin this node vouches for, and the origin key its route has been complete and in order from. */
+export interface VouchedOrigin {
+	generation: string;
+	certifiedFrom: number;
 }
 
 /**
- * By origin name, the generation of each other origin whose log here is a complete image of the origin's own, in its
- * order: a position in it names the same prefix on any node that vouches for the origin too.
+ * By origin name, each other origin whose only route here is its certified direct one: from `certifiedFrom` on,
+ * every entry of the origin reached this node's log of it in the origin's own order, with none missing. So before a
+ * position at or above that key, this log holds what the origin's own log holds before the same entry.
  */
-export function vouchedOrigins(floors: CertifiedFloors | undefined): Map<string, string> | undefined {
+export function vouchedOrigins(floors: CertifiedFloors | undefined): Map<string, VouchedOrigin> | undefined {
 	if (!floors) return;
-	let vouched: Map<string, string> | undefined;
+	let vouched: Map<string, VouchedOrigin> | undefined;
 	for (const state of floors.origins.values()) {
-		if (vouchesFor(state)) (vouched ??= new Map()).set(state.name, state.generation!);
+		if (state.nodeId !== 0 && state.onlyDirect === true && qualifies(state))
+			(vouched ??= new Map()).set(state.name, { generation: state.generation!, certifiedFrom: state.certifiedFrom! });
 	}
 	return vouched;
 }
 
 /**
- * The saved positions of another node that this node can resume from, by transaction-log name here: an origin both
- * nodes vouch for, in the same generation, whose position this node's route has been complete from and whose entry
- * it holds. Every other origin keeps its checkpoint boundary. This node's own log is the origin itself; the saving
- * node's own log is one it vouches for by being its origin.
+ * The position another node saved in this node's own log, by log name, when this node can resume from it: the
+ * saving node vouched for this origin in the generation it still has, no copy has restored an entry at or above the
+ * position, and its entry is still here. This log is the origin itself, so what precedes the entry here is what
+ * the saving node had read. For any other origin a route row cannot show that this node's copy is in the origin's
+ * order (an entry relayed ahead of the direct route lands early), so it keeps its checkpoint boundary.
  */
 export function movedCursorStarts(
 	auditStore: any,
@@ -441,22 +450,14 @@ export function movedCursorStarts(
 	saved: MovedCursors
 ): Map<string, LogCursor> | undefined {
 	if (typeof auditStore.holdsTransaction !== 'function') return;
-	const states = readOriginStates(auditStore, dbisDb);
+	const position = saved.logs.get(getThisNodeName());
+	// a log's start is wherever retention left it on each node, so only a key is a position on both
+	if (!position || !(position.cursor > 0) || typeof position.generation !== 'string') return;
+	const own = readOriginStates(auditStore, dbisDb).get(0)!;
+	if (own.generation !== position.generation || !(own.certifiedFrom! <= position.cursor)) return;
 	auditStore.loadLogs?.();
-	const thisNode = getThisNodeName();
-	let starts: Map<string, LogCursor> | undefined;
-	for (const state of states.values()) {
-		const position = saved.logs.get(state.name);
-		const generation = state.name === saved.node ? saved.generation : position?.generation;
-		// a log's start is wherever retention left it on each node, so only a key is a position on both
-		if (!position || !(position.cursor > 0) || generation !== state.generation) continue;
-		if (state.nodeId !== 0 && !vouchesFor(state)) continue;
-		if (!(state.certifiedFrom! <= position.cursor)) continue;
-		const logName = state.name === thisNode ? 'local' : state.name;
-		if (!auditStore.holdsTransaction(logName, position.cursor)) continue;
-		(starts ??= new Map()).set(logName, position);
-	}
-	return starts;
+	if (!auditStore.holdsTransaction('local', position.cursor)) return;
+	return new Map([['local', position]]);
 }
 
 /** The logs the audit store holds, by name; each is an origin this node has history of. */

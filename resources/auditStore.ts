@@ -1382,7 +1382,7 @@ function nativeLogRetention(auditStore: any): number | undefined {
 }
 
 /** Where rocksdb-js's own retention may have purged up to: 0 when it purges nothing, undefined when unreadable. */
-function nativePurgeHorizon(auditStore: any, now: number): number | undefined {
+export function nativePurgeHorizon(auditStore: any, now: number): number | undefined {
 	const retention = nativeLogRetention(auditStore);
 	if (retention === undefined) return undefined;
 	return retention > 0 ? now - retention : 0;

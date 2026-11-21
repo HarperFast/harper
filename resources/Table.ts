@@ -257,6 +257,7 @@ import {
 	isResumablePosition,
 	getDatabaseGeneration,
 	auditHistoryAbortMarked,
+	nativePurgeHorizon,
 	type AuditRecord,
 } from './auditStore.ts';
 import { abortMarkersEnabled } from './transactionLogAbortMarkers.ts';
@@ -2061,6 +2062,8 @@ type ProgressState = {
 	replayLeftEntriesToLive: boolean;
 	/** The log positions a subscription that replays nothing registered at, which it reports until it is live. */
 	registeredCursors: Map<string, number> | undefined;
+	/** A checkpoint replay ended at or before where the broadcast is, so the broadcast's log positions are its own. */
+	broadcastPassedReplay?: boolean;
 	/**
 	 * [ordinal, key] pairs in send order, for events sent below a key sent before them: one can wait in the
 	 * queue behind deliveries of higher keys. A sliding-window minimum: an entry a later, lower one follows is
@@ -2158,13 +2161,7 @@ function resumableCursors(request: any, auditStore: any): ResumeCursors | undefi
 /** The positions another node saved, when the request carries a whole vector of them. */
 function movedCursors(request: any): MovedCursors | undefined {
 	const saved = request[LOG_CURSORS];
-	if (
-		saved?.logs instanceof Map &&
-		typeof saved.node === 'string' &&
-		typeof saved.generation === 'string' &&
-		typeof saved.takenThrough === 'number'
-	)
-		return saved;
+	if (saved?.logs instanceof Map && saved.moved === true && typeof saved.takenThrough === 'number') return saved;
 }
 
 /**
@@ -2177,8 +2174,8 @@ function purgedCursorStart(auditStore: any, logName: string, cursor: number, sta
 	const log = auditStore.logByName.get(logName);
 	const watermark = log?.getPurgeWatermark?.();
 	if (!watermark?.known || !(cursor <= watermark.purgedThrough)) return;
-	const nativeRetention = log.getStats().config?.retentionMs;
-	if (watermark.purgedThrough > start || start < Date.now() - nativeRetention) {
+	const horizon = nativePurgeHorizon(auditStore, Date.now());
+	if (horizon === undefined || watermark.purgedThrough > start || start < horizon) {
 		return new ResumeHistoryUnavailableError(
 			'The history after a transaction log position is no longer retained; resubscribe to resynchronize'
 		);
@@ -10629,9 +10626,7 @@ export function makeTable(options): TableResourceClass {
 						}
 						return true;
 					};
-					// The positions another node saved replace the boundary of each origin both nodes vouch for: its log is
-					// read after the saved cursor, in arrival order. Any other origin, and one whose cursor is not here,
-					// starts at its boundary.
+					// the position another node saved in this node's own log replaces that log's boundary
 					const moved: MovedCursors | undefined = state.keepsCursors ? movedCursors(request) : undefined;
 					const movedStarts = moved && movedCursorStarts(auditStore, TableResource.dbisDB, moved);
 					let readBefore: Map<string, number> | undefined;
@@ -10676,7 +10671,7 @@ export function makeTable(options): TableResourceClass {
 							trackPositions: state.keepsCursors,
 						});
 					}
-					// a position is used only while both nodes vouch for its origin; the client reconnects to its boundary
+					// a position is used only while this node's log still answers for it; the client reconnects to its boundary
 					const recheckMoved = (): boolean => {
 						if (!movedStarts || admittedEpoch === movedEpoch) return true;
 						movedEpoch = admittedEpoch;
@@ -10700,7 +10695,7 @@ export function makeTable(options): TableResourceClass {
 								if (!isActive()) return;
 								if (!recheck(replayRange) || !recheckMoved()) return;
 							}
-							let arrivedAfterSave = false;
+							let arrivedAfterSave: boolean | undefined;
 							if (movedStarts) {
 								const logName = replayRange.lastLogName();
 								const readThrough = readBefore!.get(logName);
@@ -10708,7 +10703,8 @@ export function makeTable(options): TableResourceClass {
 									if (auditRecord.txnLogKey === readThrough && auditRecord.endTxn) readBefore!.delete(logName);
 									// read before the save with a key at or below what was taken
 									if (auditRecord.txnLogKey <= moved!.takenThrough) continue;
-								} else arrivedAfterSave = !readByKey?.has(logName);
+									arrivedAfterSave = false;
+								} else if (!readByKey?.has(logName)) arrivedAfterSave = true;
 							}
 							if (auditRecord.type === undefined) {
 								refuse(new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL));
@@ -10742,7 +10738,7 @@ export function makeTable(options): TableResourceClass {
 							if (state.keepsCursors) {
 								event[LOG_NAME] = replayRange.lastLogName();
 								event[LOG_BEFORE] = replayRange.lastKeyBefore();
-								if (arrivedAfterSave) event[ARRIVED_AFTER_SAVE] = true;
+								if (arrivedAfterSave !== undefined) event[ARRIVED_AFTER_SAVE] = arrivedAfterSave;
 							}
 							if (!send(event)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
@@ -10807,7 +10803,6 @@ export function makeTable(options): TableResourceClass {
 											return;
 										}
 									}
-									// the log keeps today's rule: its entries above the start, by key
 									readBefore!.delete(logName);
 									(readByKey ??= new Set()).add(logName);
 									logger.warn?.(
@@ -10880,7 +10875,7 @@ export function makeTable(options): TableResourceClass {
 										if (!savedCursors) resumeCheckedThrough = auditRecord.txnLogKey;
 									}
 								}
-								let arrivedAfterSave = false;
+								let arrivedAfterSave: boolean | undefined;
 								if (savedCursors) {
 									if (!(highestReplayed >= auditRecord.txnLogKey)) highestReplayed = auditRecord.txnLogKey;
 									const logName = replayRange.lastLogName();
@@ -10889,7 +10884,8 @@ export function makeTable(options): TableResourceClass {
 										if (auditRecord.txnLogKey === readThrough && auditRecord.endTxn) readBefore!.delete(logName);
 										// read before the save with a key at or below the start: it was taken
 										if (auditRecord.txnLogKey <= startTime) continue;
-									} else arrivedAfterSave = !readByKey?.has(logName);
+										arrivedAfterSave = false;
+									} else if (!readByKey?.has(logName)) arrivedAfterSave = true;
 								}
 								// an entry that failed to decode names no table, so a checked replay cannot rule it out
 								if (checkResume && auditRecord.type === undefined) {
@@ -10938,7 +10934,7 @@ export function makeTable(options): TableResourceClass {
 										if (state.keepsCursors && liveRange) {
 											event[LOG_NAME] = replayRange.lastLogName();
 											event[LOG_BEFORE] = replayRange.lastKeyBefore();
-											if (arrivedAfterSave) event[ARRIVED_AFTER_SAVE] = true;
+											if (arrivedAfterSave !== undefined) event[ARRIVED_AFTER_SAVE] = arrivedAfterSave;
 										}
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
@@ -13284,7 +13280,15 @@ export function makeTable(options): TableResourceClass {
 		if (!isSubscriptionActive(subscription)) return;
 		const progress: ProgressState = subscription.progressState;
 		// events held back until it is live are in no queue a consumer can see, so its position stays where it registered
-		return progress.live ? logPositions(subscription) : progress.registeredCursors;
+		if (!progress.live) return progress.registeredCursors;
+		const positions = logPositions(subscription);
+		// a checkpoint replay reads to each log's end, which can be past the broadcast: its events' positions are
+		// behind the broadcast's only once the broadcast has returned every entry
+		if (positions && progress.plan && !progress.broadcastPassedReplay) {
+			if (broadcastRange(subscription).hasUnreturnedEntry()) return;
+			progress.broadcastPassedReplay = true;
+		}
+		return positions;
 	}
 	function beforeLive(subscription: any): number | undefined {
 		const progress: ProgressState = subscription.progressState;
