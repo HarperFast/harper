@@ -368,8 +368,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 		includeLogName?: boolean;
 		/** Validate and consume one complete exact-start transaction per entry in `startByLog`. */
 		resumeAfterExactStart?: boolean;
-		/** With `startByLog`: logs read by key instead, from this exclusive start. */
-		keyStartByLog?: Map<string, number>;
 		/**
 		 * With `resumeAfterExactStart`: called when a log's exact start is missing or incomplete. A number continues
 		 * that log by key from it, exclusive (0: from the log's first retained entry); undefined ends the log.
@@ -558,7 +556,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 							let expectedExactStart: number | undefined;
 							let needsPredecessor = false;
 							if (options.startByLog) {
-								const keyStart = options.keyStartByLog?.get(log.name);
 								if (options.startByLog.has(log.name)) {
 									expectedExactStart = options.startByLog.get(log.name)!;
 									queryOptions = {
@@ -566,9 +563,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 										start: expectedExactStart,
 										exclusiveStart: options.resumeAfterExactStart ? false : options.exclusiveStart,
 									};
-								} else if (keyStart !== undefined) {
-									queryOptions = { ...options, start: keyStart, exactStart: false, exclusiveStart: true };
-									needsPredecessor = true;
 								} else {
 									queryOptions = { ...options, start: 0, exactStart: false, exclusiveStart: false };
 								}

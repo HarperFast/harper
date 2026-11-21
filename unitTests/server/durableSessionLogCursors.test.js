@@ -121,21 +121,17 @@ async function savedSession(qos, { disconnect = true } = {}) {
 }
 
 const SEQ = Symbol.for('seq');
-/**
- * The peer's direct route here certifies everything it wrote from `certifiedFrom` to below `closedFloor`; `via` adds
- * a relayed route too.
- */
-function certifyRoute(T, peerName, closedFloor, via, certifiedFrom = 0) {
+/** The peer's direct route here certifies everything it wrote below `closedFloor`. */
+function certifyRoute(T, peerName, closedFloor) {
 	const nodeId = getIdOfRemoteNode(peerName, T.auditStore);
 	const node = {
 		id: nodeId,
 		closedFloor,
 		originGeneration: `${peerName}-generation`,
 		fullCoverage: true,
-		certifiedFrom,
+		certifiedFrom: 0,
 	};
 	T.dbisDB.putSync([SEQ, nodeId], { seqId: 1, nodes: [node] });
-	if (via) T.dbisDB.putSync([SEQ, getIdOfRemoteNode(via, T.auditStore)], { seqId: 1, nodes: [node] });
 	return nodeId;
 }
 
@@ -167,27 +163,17 @@ async function storedCheckpoint(T, session, clientId) {
 
 /**
  * Rewrites the record as another node would have saved it: bound to another database generation, with its whole
- * vector of log positions, that node vouching for this node's own log unless `vouched` is false. `own` maps the
- * position it saved in this node's log.
+ * vector of log positions.
  */
-async function asSavedElsewhere(T, record, database, { vouched = true, own: mapOwn } = {}) {
-	const thisNode = getThisNodeName();
+async function asSavedElsewhere(record, database) {
 	const shared = record.cursors[database];
 	const subscriptions = record.subscriptions.map((entry) => {
-		const logs = new Map(
-			shared.logs.map(([origin, readThrough, generation]) => [origin, [origin, readThrough, readThrough, generation]])
-		);
+		const logs = new Map(shared.logs.map(([origin, readThrough]) => [origin, [origin, readThrough, readThrough]]));
 		for (const held of entry.cursors) logs.set(held[0], held);
-		const own = logs.get(thisNode);
-		if (vouched) own[3] = getDatabaseGeneration(T.auditStore).id;
-		if (mapOwn) own[1] = own[2] = mapOwn(own[1]);
 		return {
 			...entry,
 			databaseGeneration: 'another-generation',
-			cursors: {
-				generation: 'another-generation',
-				logs: [...logs.values()].map((log) => log.filter((part) => part !== undefined)),
-			},
+			cursors: { generation: 'another-generation', logs: [...logs.values()] },
 		};
 	});
 	await databases.system.hdb_durable_session.put({ id: record.id, subscriptions });
@@ -309,6 +295,24 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 		await end(second);
 	});
 
+	it('keeps the session when an unacknowledged late delivery has a key older than the retained history', async () => {
+		const { T, clientId, peer, first } = await savedSession(1, { disconnect: false });
+		const oldKey = Date.now() - 365 * 24 * 60 * 60 * 1000;
+		await applyFromOrigin(T, peer, oldKey, 'old');
+		await waitFor(() => values(first.received).includes('old'));
+		await end(first);
+		const entry = (await stored(clientId)).subscriptions[0];
+		assert.ok(entry.takenThrough < oldKey);
+		const connection = await connect(clientId);
+		assert.strictEqual(connection.session.sessionWasPresent, true, 'its position is checked, not the old key');
+		connection.requests = resumeRequests(connection.session);
+		await connection.session.resume();
+		assert.strictEqual(connection.requests[0].startTime, entry.startTime);
+		await waitFor(() => values(connection.received).includes('old'));
+		assert.deepStrictEqual(connection.closed, []);
+		await end(connection);
+	});
+
 	it('reads a log created after the save from its start', async () => {
 		const { T, name, clientId, lateKey } = await savedSession(1);
 		const joined = getIdOfRemoteNode(`joined-${name}`, T.auditStore);
@@ -375,7 +379,7 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 		assert.ok(first.session.topics.get(topic).entry.startTime > lateKey, 'it arrived below the position');
 		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
 		assert.ok(requests.at(-1)[LOG_CURSORS].logs instanceof Map, 'continued from its log positions');
-		assert.ok(requests.at(-1).startTime < lateKey, 'and from below the delivery not yet taken');
+		assert.ok(requests.at(-1)[LOG_CURSORS].takenThrough < lateKey, 'and from below the delivery not yet taken');
 		await waitFor(() => values(first.received).filter((value) => value === 'late').length === 2);
 		await end(first);
 	});
@@ -396,13 +400,30 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 		}
 	});
 
+	it('an older copy of the record sends again what was taken since, and skips nothing', async () => {
+		const { T, clientId, peer, peerKey, first, record: older } = await savedSession(1, { disconnect: false });
+		const taken = first.received.length;
+		await applyFromOrigin(T, peer, peerKey + 2, 'taken-later');
+		await T.put('local-later', { value: 'local-later' });
+		await waitFor(
+			() => values(first.received).includes('local-later') && values(first.received).includes('taken-later')
+		);
+		await take(first.session, first.received.slice(taken), 1);
+		await save(first.session, clientId);
+		first.session.supersede();
+		await databases.system.hdb_durable_session.put(older);
+		const second = await resumed(T, clientId);
+		assert.deepStrictEqual(values(second.received).sort(), ['after', 'local-later', 'taken-later']);
+		await end(second);
+	});
+
 	describe('on a node the session moved to', () => {
 		/**
 		 * A QoS 1 session with a checkpoint, a peer whose route here is certified, `taken` delivered from the peer and
-		 * acknowledged, and its record rewritten as another node's. Receipts at or below the position are written
-		 * only by a final save, so the record of a session that did not end cleanly has none for `taken`.
+		 * `local` from this node, both acknowledged, and its record rewritten as another node's. Receipts at or below
+		 * the position are written only by a final save, so the record of a session that did not end cleanly has none.
 		 */
-		async function movedSession({ via } = {}) {
+		async function movedSession() {
 			const { T, name } = topicTable();
 			await T.put('seed', { value: 0 });
 			const clientId = `moved-${name}`;
@@ -411,7 +432,7 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 			await first.session.addSubscription({ topic: `${name}/#`, qos: 1, rh: 2 }, true);
 			await sleep(5);
 			const peerFloor = Date.now();
-			const peer = certifyRoute(T, peerName, peerFloor, via);
+			const peer = certifyRoute(T, peerName, peerFloor);
 			// the first checkpoint is adopted only while nothing above its floor lacks a receipt
 			await storedCheckpoint(T, first.session, clientId);
 			await applyFromOrigin(T, peer, peerFloor + 1, 'taken');
@@ -425,77 +446,29 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 				record = await storedCheckpoint(T, first.session, clientId);
 				return record.subscriptions[0].startTime > peerFloor + 1;
 			}, 10_000);
-			return { T, name, clientId, peer, peerName, peerFloor, first, record, database: `cursor_${name}` };
+			first.session.supersede();
+			const database = `cursor_${name}`;
+			await asSavedElsewhere(record, database);
+			return { T, name, clientId, database, second: await resumed(T, clientId) };
 		}
 
-		it('records the generation of an origin whose only route here is its certified direct one', async () => {
-			const { peerName, record, database, first } = await movedSession();
-			const logs = new Map(record.cursors[database].logs.map(([origin, , generation]) => [origin, generation]));
-			assert.strictEqual(logs.get(peerName), `${peerName}-generation`);
-			assert.strictEqual(logs.get(getThisNodeName()), undefined, 'its own log needs none');
-			await end(first);
-		});
-
-		it('records none for an origin that also arrives through another node', async () => {
-			const { peerName, record, database, first } = await movedSession({ via: 'relay' });
-			assert.strictEqual(
-				new Map(record.cursors[database].logs.map(([origin, , g]) => [origin, g])).get(peerName),
-				undefined
-			);
-			await end(first);
-		});
-
-		it('records none once the position is below the key the route has been complete from', async () => {
-			const { T, clientId, peerName, peerFloor, database, first } = await movedSession();
-			certifyRoute(T, peerName, peerFloor + 10, undefined, peerFloor + 5);
-			await waitFor(async () => {
-				const record = await save(first.session, clientId);
-				return record.cursors[database].logs.every(([origin, , generation]) => origin !== peerName || !generation);
-			}, 10_000);
-			await end(first);
-		});
-
-		it("reads this node's own log after the position the saving node vouched for, and every other origin from its checkpoint boundary", async () => {
-			const { T, clientId, record, database, first } = await movedSession();
-			first.session.supersede();
-			await asSavedElsewhere(T, record, database);
-			const second = await resumed(T, clientId);
+		it('resumes from its checkpoint as before, whatever positions came with the record, and saves its own from then on', async () => {
+			const { T, clientId, database, second } = await movedSession();
 			assert.ok(second.requests[0].resume, 'resumed from the checkpoint');
-			assert.strictEqual(second.requests[0][LOG_CURSORS].moved, true);
-			assert.deepStrictEqual(
-				values(second.received).sort(),
-				['after', 'taken'],
-				"what was taken from this node's log is not read again; the peer's boundary replay sends its own again"
-			);
-			assert.deepStrictEqual(second.closed, []);
-			await end(second);
-		});
-
-		it("reads this node's own log from its checkpoint boundary when the saving node did not vouch for it", async () => {
-			const { T, clientId, record, database, first } = await movedSession();
-			first.session.supersede();
-			await asSavedElsewhere(T, record, database, { vouched: false });
-			const second = await resumed(T, clientId);
+			assert.strictEqual(second.requests[0][LOG_CURSORS], true, "another node's positions name nothing here");
 			assert.deepStrictEqual(values(second.received).sort(), ['after', 'local', 'taken']);
 			assert.deepStrictEqual(second.closed, []);
-			await end(second);
-		});
-
-		it('falls back to the checkpoint boundary, with no reset, when the saved position is not in the log here', async () => {
-			const { T, clientId, record, database, first } = await movedSession();
-			first.session.supersede();
-			await asSavedElsewhere(T, record, database, { own: (key) => key + 0.5 });
-			const second = await resumed(T, clientId);
-			assert.deepStrictEqual(values(second.received).sort(), ['after', 'local', 'taken']);
-			assert.deepStrictEqual(second.closed, []);
+			await take(second.session, second.received, 1);
+			let record;
+			await waitFor(async () => {
+				record = await save(second.session, clientId);
+				return record.cursors?.[database]?.generation === getDatabaseGeneration(T.auditStore).id;
+			}, 10_000);
 			await end(second);
 		});
 
 		it('keeps no positions after a checkpoint replay until the broadcast has returned every entry', async () => {
-			const { T, name, clientId, record, database, first } = await movedSession();
-			first.session.supersede();
-			await asSavedElsewhere(T, record, database);
-			const second = await resumed(T, clientId);
+			const { T, name, second } = await movedSession();
 			const subscription = second.session.topics.get(`${name}/#`).subscription;
 			const range = T.auditStore.subscriptionLogRange;
 			const hasUnreturnedEntry = range.hasUnreturnedEntry;
@@ -511,22 +484,6 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 			} finally {
 				range.hasUnreturnedEntry = hasUnreturnedEntry;
 			}
-			await end(second);
-		});
-
-		it('an older copy of the record sends again what was taken since, and skips nothing', async () => {
-			const { T, clientId, peer, peerFloor, record: older, database, first } = await movedSession();
-			await applyFromOrigin(T, peer, peerFloor + 2, 'taken-later');
-			await T.put('local-later', { value: 'local-later' });
-			await waitFor(
-				() => values(first.received).includes('local-later') && values(first.received).includes('taken-later')
-			);
-			await take(first.session, first.received.slice(2), 1);
-			await storedCheckpoint(T, first.session, clientId);
-			first.session.supersede();
-			await asSavedElsewhere(T, older, database);
-			const second = await resumed(T, clientId);
-			assert.deepStrictEqual(values(second.received).sort(), ['after', 'local-later', 'taken', 'taken-later']);
 			await end(second);
 		});
 	});

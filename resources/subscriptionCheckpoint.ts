@@ -49,18 +49,6 @@ export interface LogCursor {
 	 * subscription had read. What the log holds after it was never sent.
 	 */
 	readThrough: number;
-	/**
-	 * By origin name only: the origin's database generation, when the node that saved the position vouched that its
-	 * log of the origin held, before the cursor, what the origin's own log holds before it (`vouchedOrigins`).
-	 */
-	generation?: string;
-}
-
-/** Positions another node saved, by origin node name. */
-export interface MovedCursors {
-	moved: true;
-	takenThrough: number;
-	logs: Map<string, LogCursor>;
 }
 
 export interface ResumeCursors {
@@ -114,11 +102,6 @@ export interface OriginState {
 	partialHistory?: boolean;
 	hole?: boolean;
 	floorRevoked?: boolean;
-	/**
-	 * Every seq row that names the origin is its direct route's, so each of its entries arrived here from the origin
-	 * itself, in the origin's own log order.
-	 */
-	onlyDirect?: boolean;
 }
 
 export interface MemberBoundary {
@@ -339,7 +322,6 @@ function readOriginStates(auditStore: any, dbisDb: any): Map<number, OriginState
 	}
 	for (const [nodeId, originEntries] of entries) {
 		const state = states.get(nodeId)!;
-		state.onlyDirect = originEntries.every(({ routeId }) => routeId === nodeId);
 		state.generation = currentGeneration(nodeId, originEntries);
 		if (state.generation === undefined) continue;
 		// only rows of the current generation speak for the origin, a route at level 1 since included
@@ -414,50 +396,6 @@ function qualifies(state: OriginState): boolean {
 		typeof state.certifiedFrom === 'number' &&
 		!(state.certifiedFrom > state.floor!)
 	);
-}
-
-/** An origin this node vouches for, and the origin key its route has been complete and in order from. */
-export interface VouchedOrigin {
-	generation: string;
-	certifiedFrom: number;
-}
-
-/**
- * By origin name, each other origin whose only route here is its certified direct one: from `certifiedFrom` on,
- * every entry of the origin reached this node's log of it in the origin's own order, with none missing. So before a
- * position at or above that key, this log holds what the origin's own log holds before the same entry.
- */
-export function vouchedOrigins(floors: CertifiedFloors | undefined): Map<string, VouchedOrigin> | undefined {
-	if (!floors) return;
-	let vouched: Map<string, VouchedOrigin> | undefined;
-	for (const state of floors.origins.values()) {
-		if (state.nodeId !== 0 && state.onlyDirect === true && qualifies(state))
-			(vouched ??= new Map()).set(state.name, { generation: state.generation!, certifiedFrom: state.certifiedFrom! });
-	}
-	return vouched;
-}
-
-/**
- * The position another node saved in this node's own log, by log name, when this node can resume from it: the
- * saving node vouched for this origin in the generation it still has, no copy has restored an entry at or above the
- * position, and its entry is still here. This log is the origin itself, so what precedes the entry here is what
- * the saving node had read. For any other origin a route row cannot show that this node's copy is in the origin's
- * order (an entry relayed ahead of the direct route lands early), so it keeps its checkpoint boundary.
- */
-export function movedCursorStarts(
-	auditStore: any,
-	dbisDb: any,
-	saved: MovedCursors
-): Map<string, LogCursor> | undefined {
-	if (typeof auditStore.holdsTransaction !== 'function') return;
-	const position = saved.logs.get(getThisNodeName());
-	// a log's start is wherever retention left it on each node, so only a key is a position on both
-	if (!position || !(position.cursor > 0) || typeof position.generation !== 'string') return;
-	const own = readOriginStates(auditStore, dbisDb).get(0)!;
-	if (own.generation !== position.generation || !(own.certifiedFrom! <= position.cursor)) return;
-	auditStore.loadLogs?.();
-	if (!auditStore.holdsTransaction('local', position.cursor)) return;
-	return new Map([['local', position]]);
 }
 
 /** The logs the audit store holds, by name; each is an origin this node has history of. */

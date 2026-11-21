@@ -243,23 +243,6 @@ describe('RocksTransactionLogStore range metadata', () => {
 		assert.strictEqual(iterable.exactStartFailures.size, 0);
 	});
 
-	it('reads a log named in keyStartByLog by key, beside logs resumed after an exact start', () => {
-		let peerOptions;
-		const local = makeLog('local', [entry(50, 'anchor'), entry(60, 'local-next')]);
-		const peer = makeLog('peer-a', [entry(40, 'peer-next')], (options) => (peerOptions = options));
-		const iterable = makeStore([local, peer]).getRange({
-			startByLog: new Map([['local', 50]]),
-			keyStartByLog: new Map([['peer-a', 30]]),
-			exactStart: true,
-			resumeAfterExactStart: true,
-		});
-		assert.deepStrictEqual(
-			[...iterable].map(({ recordId }) => recordId),
-			['peer-next', 'local-next']
-		);
-		assert.deepStrictEqual([peerOptions.start, peerOptions.exactStart, peerOptions.exclusiveStart], [30, false, true]);
-	});
-
 	it('starts a newly discovered log from its beginning without an exact anchor', () => {
 		let cursorOptions;
 		let newLogOptions;
