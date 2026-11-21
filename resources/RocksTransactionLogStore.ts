@@ -923,15 +923,16 @@ export class RocksTransactionLogStore extends EventEmitter {
 	holdsTransaction(logName: string, key: number): boolean {
 		const log = this.logByName.get(logName);
 		if (!log || !(key > 0)) return false;
-		const iterator = log.query({ start: key, exactStart: true });
+		let iterator: ReturnType<TransactionLog['query']> | undefined;
 		try {
+			iterator = log.query({ start: key, exactStart: true });
 			const result = iterator.next();
 			return !result.done && result.value.timestamp === key;
 		} catch {
 			// a read from that position fails the same way, and reports it
 			return false;
 		} finally {
-			iterator.close();
+			iterator?.close();
 		}
 	}
 

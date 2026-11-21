@@ -1772,11 +1772,12 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			this.reservedIds.delete(resend[3]);
 			return resend[3];
 		}
-		// The key range covers what was sent before it was saved, and says nothing of an entry never sent, whatever
-		// its key. Read by key, a transaction below what was delivered before it committed late: new, not a replay.
-		const sentBeforeSave: boolean | undefined =
-			update[ARRIVED_AFTER_SAVE] === undefined ? undefined : !update[ARRIVED_AFTER_SAVE];
-		if (key <= state.receivedThrough && (sentBeforeSave ?? !(key < state.highestKey))) return ALREADY_RECEIVED;
+		// A key range is consulted only for a log read by key, where a transaction below what was delivered before
+		// it committed late: new, not a replay. An event replayed from a saved position is either one never sent,
+		// or one sent after the delivery its log's cursor is held before, and no range compacted since then reaches
+		// past that delivery: exact receipts alone say whether it was taken.
+		if (key <= state.receivedThrough && update[ARRIVED_AFTER_SAVE] === undefined && !(key < state.highestKey))
+			return ALREADY_RECEIVED;
 		if (state.ordinal < (state.receivedRuns?.get(key) ?? 0)) return ALREADY_RECEIVED;
 		if (state.received?.get(slot)?.[2] === id) return ALREADY_RECEIVED;
 	}

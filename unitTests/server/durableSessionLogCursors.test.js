@@ -340,6 +340,20 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 		await end(second);
 	});
 
+	it('sends again an unacknowledged late delivery that a received key range saved with it covers', async () => {
+		const { T, topic, clientId, peer, lateKey, first } = await savedSession(1, { disconnect: false });
+		// as left by acknowledgements compacted above the position before the late delivery held it there
+		first.session.topics.get(topic).receivedThrough = lateKey + 0.5;
+		await applyFromOrigin(T, peer, lateKey, 'late');
+		await waitFor(() => values(first.received).includes('late'));
+		await end(first);
+		const entry = (await stored(clientId)).subscriptions[0];
+		assert.ok(entry.receivedThrough > lateKey && entry.takenThrough < lateKey);
+		const second = await resumed(T, clientId);
+		assert.deepStrictEqual(values(second.received), ['late', 'after']);
+		await end(second);
+	});
+
 	it('reads a log created after the save from its start', async () => {
 		const { T, name, clientId, lateKey } = await savedSession(1);
 		const joined = getIdOfRemoteNode(`joined-${name}`, T.auditStore);
