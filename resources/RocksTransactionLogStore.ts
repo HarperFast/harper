@@ -5,6 +5,7 @@ import {
 	type TransactionEntry,
 } from '@harperfast/rocksdb-js';
 import { isReservedForLocalAppend } from './originClosedFloor.ts';
+import { positionAfter } from './subscriptionCheckpoint.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { exportIdMapping, getIdOfRemoteNode, getNodeNameForId } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, type AuditRecord, createAuditEntry } from './auditStore.ts';
@@ -32,6 +33,10 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	sourceOf(log: TransactionLog): IterableIterator<TransactionEntry> | undefined;
 	openTransactionFloor(): number | undefined;
 	hasUnreturnedEntry(): boolean;
+	trackPositions(enable: boolean): void;
+	logPositions(): Map<string, number>;
+	lastLogName(): string | undefined;
+	lastKeyBefore(): number | undefined;
 };
 /** A log that stopped short of the range it reads `until`: not done, and not failed. */
 type LogResult = IteratorResult<TransactionEntry> & { unreached?: TransactionLogUntilUnreachedError };
@@ -39,6 +44,12 @@ type LogResult = IteratorResult<TransactionEntry> & { unreached?: TransactionLog
 type TrackedIterator = IterableIterator<TransactionEntry> & {
 	lastVersion?: number;
 	lastEndTxn?: boolean;
+	/** With positions tracked: the key of the last complete transaction returned before the one in hand; 0 for none. */
+	completedKey?: number;
+	/** `completedKey` is still to be found, as the predecessor of the first entry this iterator returns. */
+	needsPredecessor?: boolean;
+	/** How far the exact-start transaction has been validated: within it, past it, done. */
+	exactPhase?: 1 | 2 | 3;
 	peek(): IteratorResult<TransactionEntry>;
 	close(): void;
 	/** The log's own iterator, the only thing rocksdb-js accepts as another reader's `until`. */
@@ -46,6 +57,8 @@ type TrackedIterator = IterableIterator<TransactionEntry> & {
 };
 type NamedTransactionEntry = TransactionEntry & { logName?: string };
 export type ExactStartFailure = 'missing' | 'incomplete' | 'duplicate';
+/** The most entries a predecessor scan reads before settling for the last complete transaction it reached. */
+const PREDECESSOR_SCAN_LIMIT = 65_536;
 
 export type TransactionLogIterable = Iterable<AuditRecord> & {
 	/** Corrupt frames that ended a log's iteration during this range. */
@@ -66,6 +79,20 @@ export type TransactionLogIterable = Iterable<AuditRecord> & {
 	openTransactionFloor?(): number | undefined;
 	/** On a `peekAhead` range: whether any log has an entry this range has not returned yet, as of now. */
 	hasUnreturnedEntry?(): boolean;
+	/**
+	 * On a range over every log: start or stop tracking each log's read position. Starting on a `peekAhead` range that
+	 * stands at the logs' committed end gives each log the key of its last complete transaction there.
+	 */
+	trackPositions?(enable: boolean): void;
+	/**
+	 * With positions tracked: by log name, the key of the last complete transaction this range has returned from the
+	 * log, which an exact-start read resumes after; 0 when it has returned none and the log is read from its start.
+	 */
+	logPositions?(): Map<string, number>;
+	/** With positions tracked: the log the entry returned last came from. */
+	lastLogName?(): string | undefined;
+	/** With positions tracked: the position of that log just before the transaction of the entry returned last. */
+	lastKeyBefore?(): number | undefined;
 };
 
 const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
@@ -334,6 +361,17 @@ export class RocksTransactionLogStore extends EventEmitter {
 		includeLogName?: boolean;
 		/** Validate and consume one complete exact-start transaction per entry in `startByLog`. */
 		resumeAfterExactStart?: boolean;
+		/** With `startByLog`: logs read by key instead, from this exclusive start. */
+		keyStartByLog?: Map<string, number>;
+		/**
+		 * With `resumeAfterExactStart`: called when a log's exact start is missing or incomplete. A number continues
+		 * that log by key from it, exclusive (0: from the log's first retained entry); undefined ends the log.
+		 */
+		exactStartFallback?: (logName: string, failure: ExactStartFailure, expected: number) => number | undefined;
+		/** With `resumeAfterExactStart`: resume after the first of two adjacent transactions sharing the exact-start key. */
+		resumeAfterDuplicateStart?: boolean;
+		/** Track each log's read position from the start (`logPositions`, `lastKeyBefore`); only on a range over every log. */
+		trackPositions?: boolean;
 		/**
 		 * Track which version a break truncated, in `corruptFrameStop.truncatedVersions`. Costs two
 		 * property stores per yielded entry (see below), so it defaults off: only boot replay reads
@@ -349,8 +387,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		/**
 		 * A `peekAhead` range. Each log stops at the entry that range returns next and resumes as it advances, so
 		 * a pull that reports done found every log caught up with it in that same turn. A log that cannot be read up
-		 * to its bound throws `TransactionLogUntilUnreachedError` out of the pull, and every log keeps its place. A
-		 * single-log range (`log`) is bounded the same way, by that range's read of the log.
+		 * to its bound throws `TransactionLogUntilUnreachedError` out of the pull, and every log keeps its place.
 		 */
 		until?: TransactionLogIterable;
 	}): TransactionLogIterable {
@@ -455,49 +492,32 @@ export class RocksTransactionLogStore extends EventEmitter {
 		if (log) {
 			const resumeAfterExactStart =
 				options.resumeAfterExactStart === true && options.exactStart === true && options.start !== undefined;
-			let queryOptions = resumeAfterExactStart ? { ...options, exclusiveStart: false } : options;
-			if (options.until) queryOptions = { ...queryOptions, until: options.until.sourceOf(log) } as any;
+			const queryOptions = resumeAfterExactStart ? { ...options, exclusiveStart: false } : options;
 			const queryIterator = trackCorruptFrames(log, queryOptions);
 			singleLogIterator = queryIterator;
 			let exactStartObserved = !resumeAfterExactStart;
 			iterable.iterate =
-				bounded && !resumeAfterExactStart
+				options.includeLogName || resumeAfterExactStart
 					? () => ({
-							// As the aggregate reads a bounded log: a failed read ends it quietly (`failedLogs`), and a read
-							// short of the bound throws with the log keeping its place. So there is no `return` here, with
-							// which a caller's cleanup after that throw would end the log.
 							next: () => {
-								const result = safeNext(queryIterator, log);
-								if (result.unreached) throw result.unreached;
+								let result = safeNext(queryIterator, log);
+								if (!exactStartObserved) {
+									exactStartObserved = true;
+									if (resumeAfterExactStart) result = resumePastExactStart(result, queryIterator, log, options.start);
+								}
 								if (!result.done && options.includeLogName) (result.value as NamedTransactionEntry).logName = log.name;
 								return result;
 							},
 							[Symbol.iterator]() {
 								return this;
 							},
+							return: (value?: any) => queryIterator.return?.(value) ?? { value, done: true },
+							throw: (error?: any) => {
+								if (queryIterator.throw) return queryIterator.throw(error);
+								throw error;
+							},
 						})
-					: options.includeLogName || resumeAfterExactStart
-						? () => ({
-								next: () => {
-									let result = safeNext(queryIterator, log);
-									if (!exactStartObserved) {
-										exactStartObserved = true;
-										if (resumeAfterExactStart) result = resumePastExactStart(result, queryIterator, log, options.start);
-									}
-									if (!result.done && options.includeLogName)
-										(result.value as NamedTransactionEntry).logName = log.name;
-									return result;
-								},
-								[Symbol.iterator]() {
-									return this;
-								},
-								return: (value?: any) => queryIterator.return?.(value) ?? { value, done: true },
-								throw: (error?: any) => {
-									if (queryIterator.throw) return queryIterator.throw(error);
-									throw error;
-								},
-							})
-						: () => queryIterator;
+					: () => queryIterator;
 		} else if (typeof options.log === 'number') {
 			// A node id is a key into the id→log map, never a log name (useLog would create one): a named
 			// node with no log yet has no entries here.
@@ -513,6 +533,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 			const iterators: TrackedIterator[] = [];
 			const expectedExactStarts: Array<number | undefined> = [];
 			const observedExactStarts = new Set<string>();
+			let positionsTracked = options.trackPositions === true;
+			let lastReturned: TrackedIterator | undefined;
+			let lastReturnedLog: TransactionLog | undefined;
 			const syncLogs = () => {
 				if (latestUpdates !== this.updates || excludeLogsChanged) {
 					excludeLogsChanged = false;
@@ -524,7 +547,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 							logs.push(log);
 							let queryOptions = options;
 							let expectedExactStart: number | undefined;
+							// where the log is read from, for its tracked position: an exact start, a key, or its first entry
+							let needsPredecessor = false;
 							if (options.startByLog) {
+								const keyStart = options.keyStartByLog?.get(log.name);
 								if (options.startByLog.has(log.name)) {
 									expectedExactStart = options.startByLog.get(log.name)!;
 									queryOptions = {
@@ -532,6 +558,9 @@ export class RocksTransactionLogStore extends EventEmitter {
 										start: expectedExactStart,
 										exclusiveStart: options.resumeAfterExactStart ? false : options.exclusiveStart,
 									};
+								} else if (keyStart !== undefined) {
+									queryOptions = { ...options, start: keyStart, exactStart: false, exclusiveStart: true };
+									needsPredecessor = true;
 								} else {
 									queryOptions = { ...options, start: 0, exactStart: false, exclusiveStart: false };
 								}
@@ -540,11 +569,16 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// that means we are taking all future requests, so we need to start at zero so we don't introduce a race
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
-							}
+							} else needsPredecessor = true;
 							if (options.until) {
 								queryOptions = { ...queryOptions, until: options.until.sourceOf(log) } as any;
 							}
-							iterators.push(trackCorruptFrames(log, queryOptions));
+							const iterator = trackCorruptFrames(log, queryOptions);
+							if (positionsTracked) {
+								iterator.completedKey = expectedExactStart ?? 0;
+								iterator.needsPredecessor = needsPredecessor;
+							}
+							iterators.push(iterator);
 							expectedExactStarts.push(expectedExactStart);
 						}
 					}
@@ -564,17 +598,71 @@ export class RocksTransactionLogStore extends EventEmitter {
 				}
 			};
 			const read = peekAhead ? safePeek : safeNext;
-			const trackLastEntry = attributeCorruption || bounded;
+			let trackLastEntry = attributeCorruption || bounded || positionsTracked;
+			/**
+			 * Reads the exact-start transaction to its end, so the log continues after it. A read short of the range's
+			 * bound returns as it is and the next pull continues where this one stopped.
+			 */
+			const resumeAfterStart = (i: number, expected: number): LogResult => {
+				const log = logs[i];
+				const iterator = iterators[i];
+				const fail = (failure: ExactStartFailure): LogResult => {
+					iterator.exactPhase = 3;
+					exactStartFailures.set(log.name, failure);
+					const fallback = options.exactStartFallback?.(log.name, failure, expected);
+					if (fallback === undefined) return { value: undefined, done: true };
+					iterator.close();
+					let queryOptions: any = { ...options, start: fallback, exactStart: false, exclusiveStart: true };
+					if (options.until) queryOptions = { ...queryOptions, until: options.until.sourceOf(log) };
+					const replacement = trackCorruptFrames(log, queryOptions);
+					replacement.exactPhase = 3;
+					if (positionsTracked) {
+						replacement.completedKey = 0;
+						replacement.needsPredecessor = fallback > 0;
+					}
+					iterators[i] = replacement;
+					return read(replacement, log);
+				};
+				for (;;) {
+					const result = safeNext(iterator, log);
+					if (result.unreached) return result;
+					const inStart = !result.done && result.value.timestamp === expected;
+					if (iterator.exactPhase === 2) {
+						iterator.exactPhase = 3;
+						return inStart && !options.resumeAfterDuplicateStart ? fail('duplicate') : result;
+					}
+					if (!inStart) return fail(iterator.exactPhase === 1 ? 'incomplete' : 'missing');
+					iterator.exactPhase = result.value.endTxn ? 2 : 1;
+				}
+			};
 			const pull = (i: number) => {
 				const iterator = iterators[i];
-				const result = read(iterator, logs[i]);
 				const expected = expectedExactStarts[i];
-				if (expected !== undefined && !observedExactStarts.has(logs[i].name)) {
+				if (expected !== undefined && options.resumeAfterExactStart && iterator.exactPhase !== 3)
+					return resumeAfterStart(i, expected);
+				const result = read(iterator, logs[i]);
+				if (expected !== undefined && !options.resumeAfterExactStart && !observedExactStarts.has(logs[i].name)) {
 					observedExactStarts.add(logs[i].name);
-					if (options.resumeAfterExactStart) return resumePastExactStart(result, iterator, logs[i], expected);
 					if (result.done || result.value.timestamp !== expected) exactStartFailures.set(logs[i].name, 'missing');
 				}
 				return result;
+			};
+			/** Where a `peekAhead` range standing at the log's committed end is, as the key of a complete transaction. */
+			const anchor = (iterator: TrackedIterator, log: TransactionLog) => {
+				iterator.lastVersion = undefined;
+				iterator.lastEndTxn = undefined;
+				iterator.needsPredecessor = false;
+				let pending = safePeek(iterator, log);
+				if (pending.done) {
+					const tail = this.tailKey(log);
+					// nothing unreturned after the read: every entry it saw was returned, so the tail is behind this range
+					pending = safePeek(iterator, log);
+					if (pending.done) {
+						iterator.completedKey = tail;
+						return;
+					}
+				}
+				iterator.completedKey = this.predecessorKey(log, pending.value.timestamp);
 			};
 			const updateIterators = () => {
 				syncLogs();
@@ -631,9 +719,18 @@ export class RocksTransactionLogStore extends EventEmitter {
 						if (earliestIndex >= 0) {
 							if (options.includeLogName) (earliest as NamedTransactionEntry).logName = logs[earliestIndex].name;
 							if (trackLastEntry) {
+								const iterator = iterators[earliestIndex];
+								if (positionsTracked) {
+									if (iterator.needsPredecessor) {
+										iterator.needsPredecessor = false;
+										iterator.completedKey = this.predecessorKey(logs[earliestIndex], earliest.timestamp);
+									} else if (iterator.lastEndTxn === true) iterator.completedKey = iterator.lastVersion;
+									lastReturned = iterator;
+									lastReturnedLog = logs[earliestIndex];
+								}
 								// before the refill, which is where a break surfaces and needs this entry's version
-								iterators[earliestIndex].lastVersion = earliest.timestamp;
-								iterators[earliestIndex].lastEndTxn = earliest.endTxn;
+								iterator.lastVersion = earliest.timestamp;
+								iterator.lastEndTxn = earliest.endTxn;
 							}
 							if (peekAhead) {
 								// consumed only once returned, so the log's iterator stands at the first entry not returned
@@ -687,6 +784,31 @@ export class RocksTransactionLogStore extends EventEmitter {
 					syncLogs();
 					return iterators.some((iterator, i) => !safePeek(iterator, logs[i]).done);
 				},
+				trackPositions: (enable: boolean) => {
+					if (enable === positionsTracked) return;
+					if (enable) {
+						syncLogs();
+						for (let i = 0; i < iterators.length; i++) anchor(iterators[i], logs[i]);
+					}
+					positionsTracked = enable;
+					trackLastEntry = attributeCorruption || bounded || enable;
+					lastReturned = lastReturnedLog = undefined;
+				},
+				logPositions: () => {
+					// a log this range has not opened yet is read from its start
+					syncLogs();
+					const positions = new Map<string, number>();
+					for (let i = 0; i < iterators.length; i++) {
+						const iterator = iterators[i];
+						positions.set(
+							logs[i].name,
+							(iterator.lastEndTxn === true ? iterator.lastVersion : iterator.completedKey) ?? 0
+						);
+					}
+					return positions;
+				},
+				lastLogName: () => lastReturnedLog?.name,
+				lastKeyBefore: () => lastReturned?.completedKey,
 			};
 			iterable.iterate = () => aggregateIterator;
 		}
@@ -757,12 +879,117 @@ export class RocksTransactionLogStore extends EventEmitter {
 			mappedAggregateIterable.sourceOf = aggregateIterator.sourceOf;
 			mappedAggregateIterable.openTransactionFloor = aggregateIterator.openTransactionFloor;
 			mappedAggregateIterable.hasUnreturnedEntry = aggregateIterator.hasUnreturnedEntry;
+			mappedAggregateIterable.trackPositions = aggregateIterator.trackPositions;
+			mappedAggregateIterable.logPositions = aggregateIterator.logPositions;
+			mappedAggregateIterable.lastLogName = aggregateIterator.lastLogName;
+			mappedAggregateIterable.lastKeyBefore = aggregateIterator.lastKeyBefore;
 		}
 		mappedAggregateIterable.corruptFrameStop = corruptFrameStop;
 		mappedAggregateIterable.failedLogs = failedLogs;
 		mappedAggregateIterable.exactStartFailures = exactStartFailures;
 		return mappedAggregateIterable as TransactionLogIterable;
 	}
+	/**
+	 * The key of the first committed entry at or above `start`, in the log's physical order: the entry at which the
+	 * log's running maximum reaches `start`. Every entry before it has a lower key.
+	 */
+	firstKeyFrom(log: TransactionLog, start: number): number | undefined {
+		const iterator = log.query({ start });
+		try {
+			const result = iterator.next();
+			return result.done ? undefined : result.value.timestamp;
+		} finally {
+			iterator.close();
+		}
+	}
+
+	/** Whether the named log, one this store already holds, has a committed transaction keyed `key`. */
+	holdsTransaction(logName: string, key: number): boolean {
+		const log = this.logByName.get(logName);
+		if (!log || !(key > 0)) return false;
+		const iterator = log.query({ start: key, exactStart: true });
+		try {
+			const result = iterator.next();
+			return !result.done && result.value.timestamp === key;
+		} finally {
+			iterator.close();
+		}
+	}
+
+	/** The highest key among the log's committed entries, found on its running-maximum index. */
+	highestKey(log: TransactionLog): number | undefined {
+		const now = Date.now();
+		// recent first: a start of 0 maps the log's oldest file
+		let low =
+			this.firstKeyFrom(log, now - 1_000) ?? this.firstKeyFrom(log, now - 3_600_000) ?? this.firstKeyFrom(log, 0);
+		if (low === undefined) return;
+		// `low` is a key the log holds and it holds none at or above `high`: gallop until a probe is empty, then bisect
+		let high: number | undefined;
+		let step = 1;
+		for (let probes = 0; probes < 256; probes++) {
+			let target = high === undefined ? low + step : low + (high - low) / 2;
+			if (!(target > low)) target = positionAfter(low);
+			if (high !== undefined && !(target < high)) break;
+			step *= 4;
+			const found = this.firstKeyFrom(log, target);
+			if (found === undefined) high = target;
+			else low = found;
+		}
+		return low;
+	}
+
+	/**
+	 * The key of the last complete transaction at the log's committed end, which an exact-start read resumes after
+	 * to read only what is appended from now on; 0 for a log with no committed entry.
+	 */
+	tailKey(log: TransactionLog): number {
+		const highest = this.highestKey(log);
+		if (highest === undefined) return 0;
+		let tail: number | undefined;
+		// entries committed after the highest key have lower keys, and an exact start reads them all
+		for (const entry of log.query({ start: highest, exactStart: true })) if (entry.endTxn) tail = entry.timestamp;
+		return tail ?? this.predecessorKey(log, highest);
+	}
+
+	/**
+	 * The key of the last complete transaction before the first entry keyed `key`, in the log's physical order; 0
+	 * when that entry is the log's first. A scan that runs past its limit settles for the last one it reached, which
+	 * is still before the entry.
+	 */
+	predecessorKey(log: TransactionLog, key: number): number {
+		// the first entry at or above the key is at or before the entry; with another key it is strictly before it
+		let from = this.firstKeyFrom(log, key);
+		if (from === undefined || from === key) {
+			// the entry raised the running maximum, so the highest key below it is the last such entry before it
+			from = undefined;
+			let high = key;
+			for (let step = 1, probes = 0; probes < 256 && from === undefined; step *= 4, probes++) {
+				const start = key - step;
+				const found = this.firstKeyFrom(log, start > 0 ? start : 0);
+				if (found !== undefined && found < key) from = found;
+				else if (!(start > 0)) return 0;
+				else high = start;
+			}
+			if (from === undefined) return 0;
+			high = key;
+			for (let probes = 0; probes < 256; probes++) {
+				let target = from + (high - from) / 2;
+				if (!(target > from)) target = positionAfter(from);
+				if (!(target < high)) break;
+				const found = this.firstKeyFrom(log, target);
+				if (found !== undefined && found < key) from = found;
+				else high = target;
+			}
+		}
+		let before = 0;
+		let scanned = 0;
+		for (const entry of log.query({ start: from, exactStart: true })) {
+			if (entry.timestamp === key || ++scanned > PREDECESSOR_SCAN_LIMIT) break;
+			if (entry.endTxn) before = entry.timestamp;
+		}
+		return before;
+	}
+
 	getKeys(_options?: any) {
 		return []; // TODO: implement this
 		// options.onlyKeys = true;

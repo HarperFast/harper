@@ -124,18 +124,22 @@ import {
 	certifiedFloors,
 	certifiedThrough,
 	completedReplayThrough,
+	dispatchingKeyBefore,
+	dispatchingLog,
 	isDispatching,
+	logPositions,
 } from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
-	ORIGIN_BOUNDARIES,
+	ARRIVED_AFTER_SAVE,
+	LOG_BEFORE,
+	LOG_CURSORS,
+	LOG_NAME,
 	ORIGIN_ID,
 	admitCheckpoint,
 	bumpOriginStateEpoch,
 	checkpointScope,
 	encodeCheckpoint,
-	originReplayStarts,
-	positionAfter,
 	positionBefore,
 	readOriginStateEpoch,
 	resumeBoundary,
@@ -143,6 +147,7 @@ import {
 	withReplacedGeneration,
 	type CertifiedFloors,
 	type MemberBoundary,
+	type ResumeCursors,
 	type ResumePlan,
 	type SubscriptionCheckpoint,
 } from './subscriptionCheckpoint.ts';
@@ -2193,6 +2198,8 @@ type SubscriberState = {
 	 * uses dropDuringReplay instead — its snapshot:false cursor picks up the live tail directly.
 	 */
 	pendingRealTimeQueue: any[] | null;
+	/** Its events carry their transaction log and that log's position before them (`LOG_CURSORS`). */
+	keepsCursors: boolean;
 	/**
 	 * Set during the startTime audit-log replay. The cursor iterates the audit log forward with
 	 * snapshot:false, which catches any commits that land during yield points; dropping in the
@@ -2225,6 +2232,8 @@ type ProgressState = {
 	floor: number | undefined;
 	/** A resumed replay left committed entries to live delivery, so its floor stays at the requested start. */
 	replayLeftEntriesToLive: boolean;
+	/** The log positions a subscription that replays nothing registered at, which it reports until it is live. */
+	registeredCursors: Map<string, number> | undefined;
 	/**
 	 * [ordinal, key] pairs in send order, for events sent below a key sent before them: one can wait in the
 	 * queue behind deliveries of higher keys. A sliding-window minimum: an entry a later, lower one follows is
@@ -2300,6 +2309,44 @@ function unreadableLogRefusal(range: any): Error | undefined {
 	if (range.failedLogs?.size || range.corruptFrameStop?.breaks) {
 		return new ResumeHistoryUnavailableError(UNREADABLE_LOG_REFUSAL);
 	}
+}
+
+/**
+ * The saved log positions a resume reads from, by log name: only logs this node holds, and only when the request
+ * carries a usable vector. A log the vector does not name was created since and is read from its start, so a vector
+ * that leaves out this node's own log is not one to trust.
+ */
+function resumableCursors(request: any, auditStore: any): ResumeCursors | undefined {
+	const saved = request[LOG_CURSORS];
+	if (!(saved?.logs instanceof Map) || typeof saved.takenThrough !== 'number') return;
+	auditStore.loadLogs?.();
+	if (!saved.logs.has('local') || typeof auditStore.holdsTransaction !== 'function') return;
+	const logs = new Map<string, { cursor: number; readThrough: number }>();
+	for (const [logName, position] of saved.logs) {
+		if (!auditStore.logByName.has(logName)) continue;
+		if (!(position?.cursor >= 0 && position.readThrough >= 0)) return;
+		logs.set(logName, position);
+	}
+	return { takenThrough: saved.takenThrough, logs };
+}
+
+/**
+ * For a saved log position whose entry is gone: 0 when the log can be read from its first retained entry with
+ * nothing lost, a refusal when what was purged may include an entry the resume needs, undefined when the entry was
+ * not purged. Purges remove whole files, oldest first, so everything retained is after the position; a file written
+ * after the save is removed only once retention has passed the save, which the start (at or below it) is checked for.
+ */
+function purgedCursorStart(auditStore: any, logName: string, cursor: number, start: number): 0 | Error | undefined {
+	const log = auditStore.logByName.get(logName);
+	const watermark = log?.getPurgeWatermark?.();
+	if (!watermark?.known || !(cursor <= watermark.purgedThrough)) return;
+	const nativeRetention = log.getStats().config?.retentionMs;
+	if (watermark.purgedThrough > start || start < Date.now() - nativeRetention) {
+		return new ResumeHistoryUnavailableError(
+			'The history after a transaction log position is no longer retained; resubscribe to resynchronize'
+		);
+	}
+	return 0;
 }
 
 function resumeRefusal(auditStore: any, generationId: string | undefined, cursor: number): Error | undefined {
@@ -10617,6 +10664,7 @@ export function makeTable(options): TableResourceClass {
 				includeSuperseded: request.includeSuperseded ?? request.rawEvents ?? false,
 				allowsEvent: null,
 				pendingRealTimeQueue: [],
+				keepsCursors: false,
 				dropDuringReplay: false,
 				reloadResnapshotRunning: false,
 				reloadResnapshotPending: false,
@@ -10644,6 +10692,7 @@ export function makeTable(options): TableResourceClass {
 				request
 			));
 			subscription.state = state;
+			state.keepsCursors = subscription.keepsCursors === true;
 			if (plan) subscription.ungated = true;
 			// Every delivery (live, replay, history, current record, reload re-snapshot) passes send; a path that
 			// bypassed it would deliver attributes the role cannot read. Installed before the progress hooks, which
@@ -10813,13 +10862,62 @@ export function makeTable(options): TableResourceClass {
 							await rest();
 							if (!isActive()) return;
 						}
-						const replayRange = auditStore.getRange({
-							start: startTime,
-							exclusiveStart: true,
-							snapshot: false, // no need for a snapshot, audits don't change
-							until: liveRange,
-						});
+						// Saved log positions resume each log where the subscription had read it, in the order it was
+						// appended, so an entry that arrived since with a key below the start is replayed too.
+						const savedCursors: ResumeCursors | undefined =
+							resuming && liveRange && state.keepsCursors ? resumableCursors(request, auditStore) : undefined;
+						let cursorRefusal: Error | undefined;
+						// by log: the saved read-through its replay has yet to pass; up to it the log was read before the save
+						let readBefore: Map<string, number> | undefined;
+						let readByKey: Set<string> | undefined;
+						let replayRange: any;
+						if (savedCursors) {
+							const startByLog = new Map<string, number>();
+							readBefore = new Map();
+							for (const [logName, { cursor, readThrough }] of savedCursors.logs) {
+								if (cursor > 0) startByLog.set(logName, cursor);
+								if (readThrough !== cursor && auditStore.holdsTransaction(logName, readThrough))
+									readBefore.set(logName, readThrough);
+							}
+							replayRange = auditStore.getRange({
+								startByLog,
+								exactStart: true,
+								resumeAfterExactStart: true,
+								resumeAfterDuplicateStart: true,
+								trackPositions: true,
+								snapshot: false,
+								until: liveRange,
+								exactStartFallback: (logName: string, failure: string, cursor: number) => {
+									if (failure === 'missing') {
+										const purged = purgedCursorStart(auditStore, logName, cursor, startTime);
+										if (purged === 0) return 0;
+										if (purged) {
+											cursorRefusal = purged;
+											return;
+										}
+									}
+									// the log keeps today's rule: its entries above the start, by key
+									readBefore!.delete(logName);
+									(readByKey ??= new Set()).add(logName);
+									logger.warn?.(
+										`Subscription replay on ${tableName} reads transaction log ${logName} by key: its saved position is ${failure}`
+									);
+									return startTime;
+								},
+							});
+						} else {
+							replayRange = auditStore.getRange({
+								start: startTime,
+								exclusiveStart: true,
+								snapshot: false, // no need for a snapshot, audits don't change
+								until: liveRange,
+								trackPositions: state.keepsCursors && Boolean(liveRange),
+							});
+						}
+						const inScope = request.onlyChildren ? replayScope(thisId, true, true) : undefined;
 						const recordCursor = (key: number) => {
+							// a log read from its saved position is read in arrival order, so a key bounds nothing it has read
+							if (savedCursors) return;
 							// live delivery finishes a transaction the bound split, so a resume must start below it
 							const open = replayRange.openTransactionFloor?.();
 							subscription.replayedThrough = open <= key ? positionBefore(open) : key;
@@ -10829,119 +10927,6 @@ export function makeTable(options): TableResourceClass {
 						let replayIterator = replayRange[Symbol.iterator]();
 						let replayEnded = false;
 						let unreachedSince: number | undefined;
-						// The position is this node's own watermark, which another origin can still commit below. Each such
-						// origin's log is read from its boundary up to the position by a reader of its own, apart from the
-						// replay above: what it reads moves no cursor and passes no check, and a failure ends it alone.
-						const originBoundaries = (request as any)[ORIGIN_BOUNDARIES];
-						let originWindows:
-							{ log: string; range: any; iterator?: Iterator<any>; unreachedSince?: number }[] | undefined;
-						let drainOriginWindows:
-							((windows: NonNullable<typeof originWindows>) => true | Promise<boolean>) | undefined;
-						let positionChecked = false;
-						if (resuming && isRocksDB && originBoundaries !== undefined) {
-							let originEpoch = 0;
-							const admitOriginWindows = () => {
-								// read before the admission, so a change that lands during it is seen at the next pull
-								originEpoch = readOriginStateEpoch(auditStore.rootStore);
-								try {
-									return originReplayStarts(auditStore, TableResource.dbisDB, originBoundaries, scope(), startTime);
-								} catch (error) {
-									logger.warn?.(
-										`Subscription replay on ${tableName} could not read the origin boundaries of its position`,
-										error
-									);
-								}
-							};
-							for (const [log, start] of admitOriginWindows() ?? []) {
-								try {
-									// `end` is exclusive, and the key at the position is another origin's to commit too
-									const range = auditStore.getRange({
-										log,
-										start,
-										exclusiveStart: true,
-										end: positionAfter(startTime),
-										until: liveRange,
-									});
-									(originWindows ??= []).push({ log, range });
-								} catch (error) {
-									logger.debug?.(`Subscription replay on ${tableName} could not read ${log} below its position`, error);
-								}
-							}
-							// True once every window is caught up with live delivery without the turn having been yielded, else
-							// the wait, resolving whether the subscription is still active.
-							drainOriginWindows = (windows) => {
-								let shortOfBound = false;
-								for (let index = 0; index < windows.length;) {
-									if (readOriginStateEpoch(auditStore.rootStore) !== originEpoch) {
-										const admitted = admitOriginWindows();
-										for (let other = windows.length; other-- > 0;) {
-											if (!admitted?.has(windows[other].log)) {
-												windows.splice(other, 1);
-												if (other < index) index--;
-											}
-										}
-										continue;
-									}
-									const window = windows[index];
-									let next: IteratorResult<any>;
-									try {
-										next = (window.iterator ??= window.range[Symbol.iterator]()).next();
-									} catch (error) {
-										window.iterator = undefined;
-										if (
-											error instanceof TransactionLogUntilUnreachedError &&
-											performance.now() - (window.unreachedSince ??= performance.now()) <= UNREACHED_LOG_LIMIT_MS
-										) {
-											// the other windows are read meanwhile, so their limits run together
-											shortOfBound = true;
-											index++;
-											continue;
-										}
-										logger.debug?.(
-											`Subscription replay on ${tableName} stopped reading ${window.log} below its position`,
-											error
-										);
-										windows.splice(index, 1);
-										continue;
-									}
-									window.unreachedSince = undefined;
-									if (next.done) {
-										window.iterator = undefined;
-										if (window.range.failedLogs?.size || window.range.corruptFrameStop?.breaks)
-											windows.splice(index, 1);
-										else index++;
-										continue;
-									}
-									const auditRecord = next.value;
-									const id = auditRecord.recordId;
-									const type = auditRecord.type;
-									const event =
-										auditRecord.tableId === tableId &&
-										id !== undefined &&
-										type !== undefined &&
-										type !== 'evict' &&
-										type !== 'reload' &&
-										!isLockControlType(type) &&
-										inScope!(id)
-											? eventFromAudit(state, id, auditRecord, auditRecord.txnLogKey, undefined, true, replayReader)
-											: undefined;
-									if (event) {
-										if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
-										if (!send(event) || !isActive()) return Promise.resolve(false);
-										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
-											return subscription.waitForDrain().then((drained: boolean) => drained !== false && isActive());
-										}
-									}
-									if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
-										recordsSinceYield = 0;
-										return rest().then(isActive);
-									}
-								}
-								return shortOfBound ? sleep(UNREACHED_LOG_POLL_MS).then(isActive) : true;
-							};
-						}
-						const inScope =
-							request.onlyChildren || originWindows ? replayScope(thisId, true, request.onlyChildren) : undefined;
 						try {
 							for (;;) {
 								let next: IteratorResult<any>;
@@ -10966,24 +10951,8 @@ export function makeTable(options): TableResourceClass {
 									replayIterator = replayRange[Symbol.iterator]();
 									continue;
 								}
+								if (cursorRefusal) return void refuseReplay(subscription, tableName, cursorRefusal);
 								if (next.done) {
-									if (originWindows?.length) {
-										// The windows can wait while retention moves on, so what the position needs is checked now, and
-										// the check moves to the registration sample: every key the logs held below it has been read.
-										if (!positionChecked) {
-											if (checkResume && !checkResume(unreadableLogRefusal(replayRange))) return;
-											positionChecked = true;
-											if (subscription.localResumeStart > resumeCheckedThrough)
-												resumeCheckedThrough = subscription.localResumeStart;
-										}
-										// they hand off with the replay: both are caught up in the turn that ends it
-										const drained = drainOriginWindows!(originWindows);
-										if (drained !== true) {
-											if (!(await drained) || !isActive()) return;
-											replayIterator = replayRange[Symbol.iterator]();
-											continue;
-										}
-									}
 									replayEnded = true;
 									break;
 								}
@@ -10995,8 +10964,18 @@ export function makeTable(options): TableResourceClass {
 									if (checkResume) {
 										if (!checkResume(unreadableLogRefusal(replayRange))) return;
 										// every key below the record in hand has been read
-										resumeCheckedThrough = auditRecord.txnLogKey;
+										if (!savedCursors) resumeCheckedThrough = auditRecord.txnLogKey;
 									}
+								}
+								let arrivedAfterSave = false;
+								if (savedCursors) {
+									const logName = replayRange.lastLogName();
+									const readThrough = readBefore!.get(logName);
+									if (readThrough !== undefined) {
+										if (auditRecord.txnLogKey === readThrough && auditRecord.endTxn) readBefore!.delete(logName);
+										// read before the save with a key at or below the start: it was taken
+										if (auditRecord.txnLogKey <= startTime) continue;
+									} else arrivedAfterSave = !readByKey?.has(logName);
 								}
 								// an entry that failed to decode names no table, so a checked replay cannot rule it out
 								if (checkResume && auditRecord.type === undefined) {
@@ -11029,10 +11008,7 @@ export function makeTable(options): TableResourceClass {
 								}
 								// a marker is table-wide, as the live broadcast delivers it
 								if (resnapshots) state.reloadPending = true;
-								else if (
-									isReload ||
-									(request.onlyChildren ? inScope!(id) : thisId == null || isDescendantId(thisId, id))
-								) {
+								else if (isReload || (inScope ? inScope(id) : thisId == null || isDescendantId(thisId, id))) {
 									// as live delivery converts it: a live entry dropped during the replay is delivered only here
 									const event = eventFromAudit(
 										state,
@@ -11045,12 +11021,17 @@ export function makeTable(options): TableResourceClass {
 									);
 									if (event) {
 										if (state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+										if (state.keepsCursors && liveRange) {
+											event[LOG_NAME] = replayRange.lastLogName();
+											event[LOG_BEFORE] = replayRange.lastKeyBefore();
+											if (arrivedAfterSave) event[ARRIVED_AFTER_SAVE] = true;
+										}
 										if (!send(event)) return;
 										if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 											// a prune while the consumer drains may reach what was read before the wait
 											if (checkResume) {
 												if (!checkResume(unreadableLogRefusal(replayRange))) return;
-												resumeCheckedThrough = auditRecord.txnLogKey;
+												if (!savedCursors) resumeCheckedThrough = auditRecord.txnLogKey;
 											}
 											if ((await subscription.waitForDrain()) === false) return;
 										}
@@ -13320,9 +13301,12 @@ export function makeTable(options): TableResourceClass {
 			lateHead: 0,
 			highestSent: -Infinity,
 			queueSend: subscription.send,
+			// before any await: the broadcast has dispatched nothing to it yet
+			registeredCursors: resuming || plan ? undefined : logPositions(subscription),
 		};
 		subscription.progressState = progress;
 		subscription.unresumableThrough = progress.unresumableThrough;
+		if (subscription.keepsCursors) subscription.logCursors = () => subscriptionLogCursors(subscription);
 		subscription.sentCount = 0;
 		subscription.send = sendTrackingLate;
 		subscription.lowestLateUnconsumed = (consumed: number) => lowestLateUnconsumed(subscription, consumed);
@@ -13398,6 +13382,17 @@ export function makeTable(options): TableResourceClass {
 		const progress: ProgressState = subscription.progressState;
 		pruneLate(progress, consumed);
 		return progress.lateHead < progress.lateSends.length ? progress.lateSends[progress.lateHead + 1] : undefined;
+	}
+	/**
+	 * By transaction-log name, the key of the last complete transaction the subscription has read from the log: an
+	 * exact-start read after it returns what the subscription has not been sent. Undefined when that is not known
+	 * now (a resumed replay still running, a pass dispatching, a log that could not be read).
+	 */
+	function subscriptionLogCursors(subscription: any): Map<string, number> | undefined {
+		if (!isSubscriptionActive(subscription)) return;
+		const progress: ProgressState = subscription.progressState;
+		// events held back until it is live are in no queue a consumer can see, so its position stays where it registered
+		return progress.live ? logPositions(subscription) : progress.registeredCursors;
 	}
 	function beforeLive(subscription: any): number | undefined {
 		const progress: ProgressState = subscription.progressState;
@@ -13518,7 +13513,13 @@ export function makeTable(options): TableResourceClass {
 	}
 	function liveEventFor(state: SubscriberState, id: Id, auditRecord: any, localTime: number, beginTxn: any) {
 		const event = eventFromAudit(state, id, auditRecord, localTime, beginTxn, true);
-		if (event && state.reportingProgress) event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+		if (event && state.reportingProgress) {
+			event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
+			if (state.keepsCursors) {
+				event[LOG_NAME] = dispatchingLog();
+				event[LOG_BEFORE] = dispatchingKeyBefore();
+			}
+		}
 		return event;
 	}
 	/**
@@ -13536,7 +13537,8 @@ export function makeTable(options): TableResourceClass {
 			(state.getFullRecord ? 1 : 0) |
 			(state.includeSuperseded ? 2 : 0) |
 			(state.reportingProgress ? 4 : 0) |
-			(beginTxn ? 8 : 0);
+			(beginTxn ? 8 : 0) |
+			(state.keepsCursors ? 16 : 0);
 		const first: SharedLiveEvent | undefined = auditRecord[SHARED_LIVE_EVENTS];
 		for (let shared = first; shared; shared = shared.next) {
 			if (
