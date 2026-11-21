@@ -1111,8 +1111,9 @@ type DurableEntry = {
 	 */
 	foreignGeneration?: string;
 	/**
-	 * Below `startTime`: every delivery the topic had read with a key at or below this was taken. A late entry of
-	 * another origin, delivered and not yet taken, sits below the scalar, which never moves back for it.
+	 * While the topic holds a delivery not yet taken: just below the lowest key among them, so every delivery sent
+	 * with a key at or below this was taken. A late entry of another origin can sit below the scalar, which never
+	 * moves back for it.
 	 */
 	takenThrough?: number;
 	/**
@@ -1498,8 +1499,7 @@ function fromScalar(request: any, state: TopicState): any {
 	const thisNode = getThisNodeName();
 	const logs = new Map<string, LogCursor>();
 	for (const [origin, position] of state.cursors) logs.set(origin === thisNode ? 'local' : origin, position);
-	const takenThrough = entry.takenThrough < entry.startTime ? entry.takenThrough : entry.startTime;
-	request[LOG_CURSORS] = { takenThrough, logs } satisfies ResumeCursors;
+	request[LOG_CURSORS] = { takenThrough: entry.takenThrough ?? entry.startTime, logs } satisfies ResumeCursors;
 	return request;
 }
 
@@ -1564,8 +1564,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				if (cursors) {
 					state.cursors = cursors.logs;
 					state.cursorGeneration = cursors.generation;
-					if (isLogKey(entry.takenThrough) && entry.takenThrough < startTime)
-						state.entry.takenThrough = entry.takenThrough;
+					if (isLogKey(entry.takenThrough)) state.entry.takenThrough = entry.takenThrough;
 				}
 			}
 			// keys from another node's log, or from before a restore or copy, name nothing here; receipts kept with
@@ -1773,9 +1772,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			return resend[3];
 		}
 		// A key range is consulted only for a log read by key, where a transaction below what was delivered before
-		// it committed late: new, not a replay. An event replayed from a saved position is either one never sent,
-		// or one sent after the delivery its log's cursor is held before, and no range compacted since then reaches
-		// past that delivery: exact receipts alone say whether it was taken.
+		// it committed late: new, not a replay. An event replayed from a saved position was either never sent, or
+		// has a key at or above the lowest held delivery's (`takenThrough`), where a range compacted before that
+		// delivery arrived can cover one never taken: exact receipts alone say whether it was.
 		if (key <= state.receivedThrough && update[ARRIVED_AFTER_SAVE] === undefined && !(key < state.highestKey))
 			return ALREADY_RECEIVED;
 		if (state.ordinal < (state.receivedRuns?.get(key) ?? 0)) return ALREADY_RECEIVED;
@@ -2287,8 +2286,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	setCursors(state: TopicState, positions: { logs: Map<string, LogCursor>; lowest: number }): boolean {
 		const entry = state.entry;
-		const taken = positions.lowest === Infinity ? undefined : positionBefore(positions.lowest);
-		const takenThrough = taken < entry.startTime ? taken : undefined;
+		// whatever was sent with a key below the lowest held one is not among the held, so it was taken
+		const takenThrough = positions.lowest === Infinity ? undefined : positionBefore(positions.lowest);
 		const generation = state.subscription.databaseGeneration;
 		const changed =
 			!state.cursorsLive ||

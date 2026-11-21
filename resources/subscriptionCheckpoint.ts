@@ -52,7 +52,10 @@ export interface LogCursor {
 }
 
 export interface ResumeCursors {
-	/** Every delivery read before the save with a key at or below this was taken. */
+	/**
+	 * Every delivery sent before the save with a key at or below this was taken: just below the lowest key among
+	 * the deliveries held at the save, or the subscription's position when none was.
+	 */
 	takenThrough: number;
 	/** By transaction-log name on this node. */
 	logs: Map<string, LogCursor>;

@@ -10709,7 +10709,7 @@ export function makeTable(options): TableResourceClass {
 						let cursorRefusal: Error | undefined;
 						// A late delivery not yet taken can have a key older than the retained history while its entry is
 						// recent, so retention is checked on the start, and this key only where a log is read by it.
-						const takenThrough = savedCursors && Math.min(savedCursors.takenThrough, startTime);
+						const keyStart = savedCursors && Math.min(savedCursors.takenThrough, startTime);
 						// by log: the saved read-through its replay has yet to pass; up to it the log was read before the save
 						let readBefore: Map<string, number> | undefined;
 						let readByKey: Set<string> | undefined;
@@ -10741,7 +10741,7 @@ export function makeTable(options): TableResourceClass {
 									}
 									// by key the read is complete only from a key the retained history still reaches
 									const unretained =
-										takenThrough! < startTime ? resumeRefusal(auditStore, resumeGeneration, takenThrough!) : undefined;
+										keyStart! < startTime ? resumeRefusal(auditStore, resumeGeneration, keyStart!) : undefined;
 									if (unretained) {
 										cursorRefusal = unretained;
 										return;
@@ -10751,7 +10751,7 @@ export function makeTable(options): TableResourceClass {
 									logger.warn?.(
 										`Subscription replay on ${tableName} reads transaction log ${logName} by key: its saved position is ${failure}`
 									);
-									return takenThrough!;
+									return keyStart!;
 								},
 							});
 						} else {
@@ -10825,8 +10825,8 @@ export function makeTable(options): TableResourceClass {
 									const readThrough = readBefore!.get(logName);
 									if (readThrough !== undefined) {
 										if (auditRecord.txnLogKey === readThrough && auditRecord.endTxn) readBefore!.delete(logName);
-										// read before the save with a key at or below the start: it was taken
-										if (auditRecord.txnLogKey <= takenThrough!) continue;
+										// sent before the save with a key below every held delivery's: it was taken
+										if (auditRecord.txnLogKey <= savedCursors.takenThrough) continue;
 										arrivedAfterSave = false;
 									} else if (!readByKey?.has(logName)) arrivedAfterSave = true;
 								}
