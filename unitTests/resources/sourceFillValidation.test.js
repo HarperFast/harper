@@ -239,18 +239,26 @@ describe('Source fill schema validation', function () {
 		await rejectedFill(Embedded, 'unembedded', 'embedding');
 		responses.set('bad-vector', { embedding: 'not-a-vector' });
 		await rejectedFill(Embedded, 'bad-vector', 'embedding');
-		responses.set('uncached-vector', { text: 't', embedding: 'not-a-vector' });
+		responses.set('supplied-vector', { text: 't', embedding: 'not-a-vector' });
+		await rejectedFill(Embedded, 'supplied-vector', 'embedding');
+		responses.set('uncached-vector', { text: 't' });
 		await rejectedFill(Embedded, 'uncached-vector', 'embedding', { noCacheStore: true });
 	});
 
-	it('rejects a source that returns an array instead of a record', async () => {
-		responses.set('array', [{ name: 'n' }]);
-		await assert.rejects(Loose.get('array'), (error) => {
-			assert.equal(error.statusCode, 502);
-			assert.match(error.message, /^Source for SourceFillValidatedLoose returned a record that is not an object/);
-			return true;
-		});
-		assert.equal((await settled(Loose, 'array'))?.value ?? undefined, undefined);
+	it('rejects a source that returns an array or binary data instead of a record', async () => {
+		for (const [id, response] of [
+			['array', [{ name: 'n' }]],
+			['array-buffer', new ArrayBuffer(8)],
+			['buffer', Buffer.from('binary')],
+		]) {
+			responses.set(id, response);
+			await assert.rejects(Loose.get(id), (error) => {
+				assert.equal(error.statusCode, 502);
+				assert.match(error.message, /^Source for SourceFillValidatedLoose returned a record that is not an object/);
+				return true;
+			});
+			assert.equal((await settled(Loose, id))?.value ?? undefined, undefined);
+		}
 	});
 
 	it('leaves the requested id on a BigInt key as it is, whatever key the source returns', async () => {

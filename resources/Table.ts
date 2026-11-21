@@ -14069,8 +14069,6 @@ export function makeTable(options): TableResourceClass {
 	 * too, so neither reaches the reader.
 	 */
 	function validateSourceRecord(record: any, frameworkOwned: readonly string[]): void {
-		if (Array.isArray(record) || ArrayBuffer.isView(record))
-			throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
 		try {
 			TableResource.prototype.validate(record, false, frameworkOwned);
 		} catch (error) {
@@ -15113,6 +15111,14 @@ export function makeTable(options): TableResourceClass {
 								if (status !== 200) updatedRecord.status = status;
 							}
 						}
+						// before toJSON, which turns a Buffer into an object
+						if (
+							!reusedCachedRecord &&
+							(Array.isArray(updatedRecord) ||
+								ArrayBuffer.isView(updatedRecord) ||
+								updatedRecord instanceof ArrayBuffer)
+						)
+							throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
 						if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
@@ -15189,6 +15195,7 @@ export function makeTable(options): TableResourceClass {
 							for (const attribute of TableResource.embedAttributes) {
 								if (
 									computesEmbeddings &&
+									updatedRecord[attribute.name] == null &&
 									TableResource.userEmbedders[attribute.name] &&
 									sourceState(updatedRecord, attribute.embed?.source) === 'value'
 								)
