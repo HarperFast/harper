@@ -301,7 +301,10 @@ describe('Resuming a subscription in a database generation', function () {
 
 		for (const [name, damage] of [
 			['an entry that fails to decode', () => corruptEntry()],
-			['an entry whose record id fails to decode', (entry) => Object.create(entry, { recordId: { value: undefined } })],
+			[
+				'an entry whose record id fails to decode',
+				(entry) => Object.defineProperty(entry, 'recordId', { value: undefined }),
+			],
 		]) {
 			it(`refuses a replay across ${name}`, async () => {
 				const T = tableInOwnDatabase();
