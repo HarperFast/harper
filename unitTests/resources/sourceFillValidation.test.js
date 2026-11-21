@@ -176,6 +176,13 @@ describe('Source fill schema validation', function () {
 		assert.equal((await settled(LongStamped, 'long-stamped')).value.createdAt, record.createdAt);
 	});
 
+	it('fills a fractional Long @createdTime that an upstream Harper table stamped', async () => {
+		const createdAt = 1795291750105.197;
+		responses.set('upstream-stamped', { name: 'n', createdAt });
+		assert.equal((await LongStamped.get('upstream-stamped')).createdAt, createdAt);
+		assert.equal((await settled(LongStamped, 'upstream-stamped')).value.createdAt, createdAt);
+	});
+
 	it('leaves the requested id on a BigInt key as it is, whatever key the source returns', async () => {
 		responses.set(12, { id: 'not-a-number', name: 'n' });
 		const record = await BigIntKeyed.get(12);
