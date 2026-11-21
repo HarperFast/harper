@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795245769628,
+  "lastUpdate": 1795245772511,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -22966,6 +22966,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 229.32,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b17192dc564ffcf0ac7b8aedfc0fb56435b7fced",
+          "message": "Test the certified floor tick and two-origin checkpoints on the real engine (#4511)\n\n* Deliver commits a certifying subscription's replay used to drop, without redelivering what it read\n\nA reportProgress subscription that starts from a scalar position and then issues checkpoints\ndropped, before goLive, an entry appended after it registered whose key was at or below the live\nkey gate: a collection replay's key filter skipped it and the listener dropped it, and a\nsingle-record walk raised the gate to the head. Floors then certified past it (harper#3356 deferred\nfinding 95e3957b). At goLive the gate was switched off, so a write a single-record walk had read was\ndelivered again when the broadcast reached it (2cef88f7).\n\nSuch a subscription is now ungated from the start of its replay, and the replay drops only what it\ndelivers itself: a collection replay by key (an entry at or below the start is the listener's), a\nsingle-record walk by entry identity, kept on the listener only while the broadcast is behind the\nlog and released once a pass has drained.\n\nA checkpoint replay's retention recheck compared the floor with its lowest start for the whole\nreplay, refusing with 410 after a prune of history it had already read (56ed4b88). It now compares\nthe floor with the key the replay had reached at the previous check, as a scalar replay does.\n\nTests also cover the store's own floor tick (persist, syncWal, publish) and a two-origin checkpoint\n(8ab283c1).\n\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\nDispatch-Task: harper-3356-deferred-findings\n\n* Release a walk's dedupe set by the certified watermark, and count filtered entries as replayed\n\nA notify pass reports the log drained while a transaction that is still committing hides the\nentries appended after it, which a single-record walk reads all the same. A drained-pass counter\ntherefore released the walk's dedupe set too early, and an empty peek skipped keeping it. The set is\nnow kept while the broadcast has an unreturned entry or a local write is still committing, holds\nonly keys above the certified watermark (every local key at or below it was dispatched), and is\nreleased once that watermark reaches its highest key, also when a durable session polls progress().\ntransactionBroadcast.ts is unchanged again.\n\nAn entry the subscription's filter refused during the walk counts as replayed, so the broadcast's\ncopy of it cannot consume the count of another entry of its transaction. An entry a collection\nreplay leaves to the listener carries no transaction delimiter, as the replay's own events do not,\nand the pass's end_txn stays dropped. The checkpoint replay's last retention check uses the last\nrecord read.\n\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\nDispatch-Task: harper-3356-deferred-findings\n\n* Count only delivered entries as replayed, and pin the retention check against a real segment purge\n\nA filter-refused entry no longer counts as replayed: with a previousCount cap it could take the\nclaim of a same-transaction message the walk had not delivered, and a duplicate is the safe side.\nThe identity includes the record id. What a walk kept is also released when a consumer polls\ncheckpoint(), and the handoff is one helper, handOffWalk.\n\nThe retention recheck of a checkpoint replay keeps comparing the floor with the key the replay\nreached. A test with a real purge shows why the floor is the only signal: when a purge removes every\nlater segment of a log, its reader ends quietly at the end of the segment it has open.\n\nThe single-record tests now prove, through a second subscription on the same broadcast, that the\nlate commit was dispatched while the walk was still running.\n\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\nDispatch-Task: harper-3356-deferred-findings\n\n* Check retention per log, and install no claim for the transaction the broadcast is on\n\nA checkpoint replay compared the floor with one key across all its logs, so the last key read from a\nbusy log could stand in for another log whose unread tail a purge removed, which its reader does not\nreport. The replay now keeps the last key read per log and is refused once the floor passes any of\nthem.\n\nA single-record walk reads only the first entry of a transaction for its record. When the broadcast\nwas partway through that transaction as the walk began, the walk's claim on the entry it read could\ndrop a later entry of the same transaction that nothing had delivered. No claim is installed for\nthe key the broadcast had last returned; a duplicate there is the safe outcome.\n\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\nDispatch-Task: harper-3356-deferred-findings\n\n* Bound a checkpoint replay's retention check by its own log's keys only\n\nA peer log's keys are on the peer's clock, while a purge selects segments by when this node last\nwrote them, so a high key read from a peer log says nothing about what a purge may have removed\nafter it. The moving bound now applies to this node's own log, whose keys it mints no later than it\nappends them, and is the highest key read from it, so a late lower key cannot lower it. A peer log\nis held to its start, as before.\n\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\nDispatch-Task: harper-3356-deferred-findings\n\n* Narrow to the checkpoint replay retention check and its tests\n\nPer the owner's decision on the task, this branch ships only findings 4\nand 5 of harper#3356. The replay-to-live handoff changes for findings 1\nand 2 are removed and move to a follow-up issue, to be designed against\nharper#4386 and harper#4512.\n\nThe retention check no longer trusts the floor alone once the floor has\npassed this node's own start. A local key can be minted ahead of the\nclock, so a purge can remove unread segments whose keys are above the\nfloor. The replay is now accepted past its own start only while the\nlog's purge bound (getLogPurgeBound) is below the highest key read from\nthat log: a purge takes a prefix of segments, so one that removed an\nunread entry also removed every entry read.\n\nDispatch-Task: harper-3356-deferred-findings\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Prove a relaxed checkpoint replay by each log's native purge watermark\n\nThe relaxed retention check read getLogPurgeBound, which estimates a\nbound from the prune cutoff for a log without a native watermark and\nreads statistics for every segment. It now reads the log's purge\nwatermark alone (getLogPurgeWatermark) and refuses without one. Past\nthis node's own start, a peer's log must also show a watermark at or\nbelow its start: its keys follow its clock, so a purge can remove\nunread peer history that sits above the floor.\n\nDispatch-Task: harper-3356-deferred-findings\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Check a checkpoint replay's purge watermarks whatever the floor says\n\nThe watermark proof ran only once the floor had passed this node's\nstart. A checkpoint issued while keys are ahead of the clock has a\nstart above the floor, so a purge of unread segments was still\naccepted, as it is on main. Every recheck now requires each\npositive-start log's watermark below the highest key read (own log) or\nbelow its start (a peer's). A log with no watermark keeps the floor\nrule alone, and is refused once the floor passes this node's start.\n\nDispatch-Task: harper-3356-deferred-findings\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Prove the start of a checkpoint replay, and its logs read from 0\n\nA reader that opens after a purge starts past the gap without a sign,\nso the first entry read from this node's own log now requires that\nlog's purge watermark below the start. Once the floor has passed this\nnode's start, a log read from its beginning must show that no purge\nhas taken anything from it: an emptied log read as retained.\n\nThe watermarks are read at the first own-log entry and at the end of\nthe replay only, not at every yield. The tests age segment files\ninstead of raising the process clock.\n\nDispatch-Task: harper-3356-deferred-findings\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Ship the tests for finding 5 alone and take the retention check out\n\nThe relaxed checkpoint replay retention check (finding 4 of\nharper#3356) needed a purge-watermark proof for each kind of log, and\nits first adjudicated review still found a way to accept an incomplete\nreplay. Per the owner's rule for that outcome, production code returns\nto main and the retention work moves to a follow-up issue. Its last\nstate is commit 74f08c37e8.\n\nWhat remains is tests on the real engine: the store's own floor tick\nwith a gated syncWal, two-origin checkpoints, and the cases where main\nrefuses a checkpoint replay after a purge or a floor raise.\n\nDispatch-Task: harper-3356-deferred-findings\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Keep only the floor tick and two-origin checkpoint tests\n\nThe purge fixtures refused through the same floor guard on main, so\nthey tested nothing more than the floor-only cases and move to the\nfollow-up issue with the retention check they were written for. The\nfloor tick fixture now holds only a sync whose persisted floor covers\nthe write, since an earlier tick can sample its floor before it.\n\nDispatch-Task: harper-3356-deferred-findings\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Make the checkpoint test preconditions hold whatever the floor tick does\n\nThe store's own tick can certify a higher local floor than the test\ndid, so the peer write that must lie between the two boundaries is\nkeyed half an overlap above the local floor. The floor tick test waits\nseveral capture intervals before asserting that nothing carries the\nunsynced floor, and the refusal test bounds the raised floor by the\npeer's replay start.\n\nDispatch-Task: harper-3356-deferred-findings\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.2 <noreply@anthropic.com>",
+          "timestamp": "2026-11-20T23:03:38Z",
+          "url": "https://github.com/HarperFast/harper/commit/b17192dc564ffcf0ac7b8aedfc0fb56435b7fced"
+        },
+        "date": 1795245771876,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 15,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.57,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.22,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 20.54,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.34,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 21.36,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 40.13,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.15,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.84,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 43.21,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 225.9,
             "unit": "ms"
           }
         ]
