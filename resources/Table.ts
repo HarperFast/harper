@@ -14617,12 +14617,27 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	// unlike txnForContext, never opens a link
-	function heldTransactionClock(context: Context): number | undefined {
+	function heldLink(context: Context): any {
 		for (let txn: any = context?.transaction; txn && !isReleasedTransaction(txn); txn = txn.next) {
 			if (txn.db?.path !== primaryStore.path) continue;
-			if (txn.open !== TRANSACTION_STATE.OPEN) return undefined;
-			return txn.timestamp || txn.transaction?.getTimestamp();
+			return txn.open === TRANSACTION_STATE.OPEN ? txn : undefined;
 		}
+	}
+
+	function heldTransactionClock(context: Context): number | undefined {
+		const link = heldLink(context);
+		return link && (link.timestamp || link.transaction?.getTimestamp());
+	}
+
+	// A waiter is handed another request's fill from outside its snapshot, possibly versioned above its clock; a
+	// clock no write has reserved yet moves past it, so the waiter's own later write still supersedes the fill.
+	function advanceClockPast(context: Context, version: number): void {
+		if (!isRocksDB || context?.timestamp || !(version > 0)) return;
+		const link = heldLink(context);
+		const handle = link?.transaction;
+		if (!handle || link.timestamp || reservedLocalKey(handle) !== undefined || handle.getTimestamp() > version) return;
+		const key = freshLocalKey(tableRootStore);
+		if (key > version) handle.setTimestamp(key);
 	}
 
 	function txnForContext(context: Context) {
@@ -15281,6 +15296,7 @@ export function makeTable(options): TableResourceClass {
 					(outcome.value == null || (heldFill.sharable ??= isSharableRecord(outcome.value)))
 				) {
 					setLoadedFromSource(target, false);
+					advanceClockPast(context, outcome.version);
 					return outcome;
 				}
 				if (heldFill?.source === source && heldFill.failure) throw heldFill.failure;
@@ -15289,6 +15305,7 @@ export function makeTable(options): TableResourceClass {
 			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
+				advanceClockPast(context, entry.version);
 				return entry;
 			}
 		}

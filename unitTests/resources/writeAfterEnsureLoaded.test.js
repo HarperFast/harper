@@ -12,7 +12,7 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 
 describe('Write after ensureLoaded() on a caching table', function () {
-	let Target, sourceGets, reportLastModified;
+	let Target, sourceGets, reportLastModified, sourceGate, sourceStarted;
 	before(function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -26,9 +26,13 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		});
 		Target.sourcedFrom(
 			class extends Resource {
-				get() {
+				async get() {
 					sourceGets++;
 					if (reportLastModified) this.getContext().lastModified = Date.now() + 5;
+					if (sourceGate) {
+						sourceStarted();
+						await sourceGate;
+					}
 					return { id: this.getId(), value: 7 };
 				}
 				put() {}
@@ -39,6 +43,7 @@ describe('Write after ensureLoaded() on a caching table', function () {
 	beforeEach(function () {
 		sourceGets = 0;
 		reportLastModified = false;
+		sourceGate = undefined;
 	});
 
 	// the fill holds the record lock until its background commit settles
@@ -47,10 +52,10 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		return Target.primaryStore.getEntry(id).value.value;
 	}
 
-	function writerAfterLoad(beforeWrite) {
+	function writerAfterLoad(beforeWrite, load = (resource) => resource.ensureLoaded()) {
 		return class extends Target {
 			async put(data, target) {
-				await this.ensureLoaded();
+				await load(this);
 				if (beforeWrite) await beforeWrite(this.getId());
 				return super.put(data, target);
 			}
@@ -97,6 +102,27 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		});
 		assert.equal(await settledValue('later'), 8);
 		assert.equal(await settledValue('earlier'), 1);
+	});
+
+	it("keeps a write made after waiting on another request's fill", async function () {
+		await Target.get('warm');
+		await settledValue('warm');
+		let releaseSource, otherRequest;
+		sourceGate = new Promise((resolve) => (releaseSource = resolve));
+		const fetching = new Promise((resolve) => (sourceStarted = resolve));
+		// this transaction's clock is fixed by its first read, before the other request starts fetching
+		await writerAfterLoad(undefined, async (resource) => {
+			await Target.get('warm', resource.getContext());
+			const other = {};
+			otherRequest = transaction(other, () => Target.get('waited', other));
+			await fetching;
+			const waiting = resource.ensureLoaded();
+			releaseSource();
+			await waiting;
+		}).put('waited', { value: 8 });
+		await otherRequest;
+		assert.equal(sourceGets, 2);
+		assert.equal(await settledValue('waited'), 8);
 	});
 
 	it('still caches a fill made by a plain read', async function () {
