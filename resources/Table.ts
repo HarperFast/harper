@@ -8289,7 +8289,7 @@ export function makeTable(options): TableResourceClass {
 							write.residencyId = residencyId;
 						// blobs this write saved are referenced by its audit entry (if it wrote one), which then owns
 						// their lifetime, even when the entry is audit-only: a retry that skips this write leaves
-						// the entry in the committed batch (harper#3376)
+						// the entry in the committed batch
 						write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the

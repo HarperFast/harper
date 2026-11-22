@@ -806,7 +806,6 @@ for (const markers of [true, false])
 			await T.put('other', { count: 0 });
 			const blobs = [createBlob(Buffer.alloc(20000, 'a')), createBlob(Buffer.alloc(20000, 'b'))];
 			for (const blob of blobs) await decodeFromDatabase(() => saveBlob(blob).saving, T.primaryStore.rootStore);
-			// a newer patch overwrites every field of the older one, so the older one stages only its audit entry
 			await apply({ count: 2, blob: blobs[1] }, { version: version + 10 });
 			setDeletionDelay(0);
 			let native, write;
@@ -825,7 +824,6 @@ for (const markers of [true, false])
 					await txn.save(txn.writes.find((write) => write.key === 'other'));
 					native = txn.transaction;
 					await transaction({}, () => T.put('other', { count: 2 }));
-					// the retry's walk reaches this put and skips the older patch
 					await apply({ id: 'counter', count: 3 }, { version: version + 20, fullUpdate: true });
 				});
 				assert.ok(native.retries > 0, 'the other key must cause a real native conflict');
