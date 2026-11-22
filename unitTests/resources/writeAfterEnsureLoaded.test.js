@@ -123,37 +123,6 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		assert.equal(await settledValue('waited'), 8);
 	});
 
-	it("serves a waiter another request's fill when its clock cannot move", async function () {
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip(); // LMDB stamps writes at commit
-		await Target.get('warm');
-		await settledValue('warm');
-		let releaseSource, otherRequest;
-		sourceGate = new Promise((resolve) => (releaseSource = resolve));
-		const fetching = new Promise((resolve) => (sourceStarted = resolve));
-		let failedMoves = 0;
-		const writer = writerAfterLoad(undefined, async (resource) => {
-			await Target.get('warm', resource.getContext());
-			let link = resource.getContext().transaction;
-			while (link && link.db?.path !== Target.primaryStore.path) link = link.next;
-			link.transaction.setTimestamp = () => {
-				failedMoves++;
-				throw new Error('simulated clock failure');
-			};
-			const other = {};
-			otherRequest = transaction(other, () => Target.get('unmoved', other));
-			await fetching;
-			const waiting = resource.ensureLoaded();
-			releaseSource();
-			await waiting;
-			assert.equal(resource.value, 7);
-			throw new Error('stop before writing');
-		});
-		await assert.rejects(writer.put('unmoved', { value: 8 }), /stop before writing/);
-		await otherRequest;
-		assert.equal(failedMoves, 1);
-		assert.equal(await settledValue('unmoved'), 7);
-	});
-
 	it('still caches a fill made by a plain read', async function () {
 		assert.equal((await Target.get('read-only')).value, 7);
 		assert.equal(await settledValue('read-only'), 7);

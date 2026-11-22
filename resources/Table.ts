@@ -14630,23 +14630,15 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	// A fill handed to a transaction from outside its snapshot can be versioned above its clock; a clock no write has
-	// reserved yet moves past it, so the transaction's own later write still supersedes the fill.
+	// reserved yet moves past it, so the transaction's own later write still supersedes the fill. Like the record-lock
+	// floor, it takes the native clock and leaves issuing the key to the write's reservation.
 	function advanceClockPast(context: Context, version: number): void {
 		if (!isRocksDB || context?.timestamp || !(version > 0)) return;
 		const link = heldLink(context);
 		const handle = link?.transaction;
 		if (!handle || link.timestamp || reservedLocalKey(handle) !== undefined || handle.getTimestamp() > version) return;
-		try {
-			const key = freshLocalKey(tableRootStore);
-			if (key > version) handle.setTimestamp(key);
-		} catch (error) {
-			// the read is still served; a later write meets the same failure when it reserves its key
-			const now = performance.now();
-			if (now - lastIssuanceFailureWarn >= 60_000) {
-				lastIssuanceFailureWarn = now;
-				logger.warn?.(`Failed to advance a transaction clock past a source fill on ${tableName}`, error);
-			}
-		}
+		const clock = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+		if (clock > version) handle.setTimestamp(clock);
 	}
 
 	function txnForContext(context: Context) {
@@ -15525,8 +15517,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (!issuanceFailed && !sourceContext.noCacheStore) {
 						sharedEntry = resolvedEntry;
-						// a no-op unless the cap could not order this fill below the requester's clock
-						advanceClockPast(context, resolvedVersion);
+						if (!(resolvedVersion <= versionCap)) advanceClockPast(context, resolvedVersion);
 					}
 					resolve(resolvedEntry);
 				} catch (error) {
