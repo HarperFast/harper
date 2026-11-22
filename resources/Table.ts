@@ -14629,15 +14629,24 @@ export function makeTable(options): TableResourceClass {
 		return link && (link.timestamp || link.transaction?.getTimestamp());
 	}
 
-	// A waiter is handed another request's fill from outside its snapshot, possibly versioned above its clock; a
-	// clock no write has reserved yet moves past it, so the waiter's own later write still supersedes the fill.
+	// A fill handed to a transaction from outside its snapshot can be versioned above its clock; a clock no write has
+	// reserved yet moves past it, so the transaction's own later write still supersedes the fill.
 	function advanceClockPast(context: Context, version: number): void {
 		if (!isRocksDB || context?.timestamp || !(version > 0)) return;
 		const link = heldLink(context);
 		const handle = link?.transaction;
 		if (!handle || link.timestamp || reservedLocalKey(handle) !== undefined || handle.getTimestamp() > version) return;
-		const key = freshLocalKey(tableRootStore);
-		if (key > version) handle.setTimestamp(key);
+		try {
+			const key = freshLocalKey(tableRootStore);
+			if (key > version) handle.setTimestamp(key);
+		} catch (error) {
+			// the read is still served; a later write meets the same failure when it reserves its key
+			const now = performance.now();
+			if (now - lastIssuanceFailureWarn >= 60_000) {
+				lastIssuanceFailureWarn = now;
+				logger.warn?.(`Failed to advance a transaction clock past a source fill on ${tableName}`, error);
+			}
+		}
 	}
 
 	function txnForContext(context: Context) {
@@ -15514,7 +15523,11 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					if (!issuanceFailed && !sourceContext.noCacheStore) sharedEntry = resolvedEntry;
+					if (!issuanceFailed && !sourceContext.noCacheStore) {
+						sharedEntry = resolvedEntry;
+						// a no-op unless the cap could not order this fill below the requester's clock
+						advanceClockPast(context, resolvedVersion);
+					}
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
