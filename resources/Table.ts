@@ -15321,6 +15321,8 @@ export function makeTable(options): TableResourceClass {
 								Boolean(invalidated),
 								auditRecord
 							);
+							// the audit entry owns the fill's blobs, even if a retry then skips the fill
+							sourceWrite.blobsAuditReferenced = Boolean(writeAudit);
 							// arm the eviction scanner, mirroring the .put() path
 							if (sourceContext.expiresAt) scheduleCleanup();
 						} else if (existingEntry) {
