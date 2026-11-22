@@ -14063,11 +14063,6 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 
-	/**
-	 * The source is at fault, not the reader, so a failure is a 502 (which stale-if-error answers with the
-	 * cached copy). Messages quote the source's values, and an undeclared property's name is the source's
-	 * too, so neither reaches the reader.
-	 */
 	function assertSourceRecordObject(record: any): void {
 		if (
 			typeof record !== 'object' ||
@@ -14079,6 +14074,11 @@ export function makeTable(options): TableResourceClass {
 			throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
 	}
 
+	/**
+	 * The source is at fault, not the reader, so a failure is a 502 (which stale-if-error answers with the
+	 * cached copy). Messages quote the source's values, and an undeclared property's name is the source's
+	 * too, so neither reaches the reader.
+	 */
 	function validateSourceRecord(record: any, frameworkOwned: readonly string[]): void {
 		try {
 			TableResource.prototype.validate(record, false, frameworkOwned);
