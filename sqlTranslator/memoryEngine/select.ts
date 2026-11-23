@@ -246,7 +246,6 @@ function compileFrom(select: any, query: any) {
 	query.defaultTableid = query.sources[0].alias;
 }
 
-/** The rows of a derived table (`FROM (SELECT ...)`, `JOIN (SELECT ...)`), as AlaSQL's `subqueryDatafn` read them. */
 function subqueryDatafn(select: any): (params: any, outer: any) => any {
 	const subquery = compileSelect(select);
 	if (subquery.query.modifier === undefined) subquery.query.modifier = 'RECORDSET';

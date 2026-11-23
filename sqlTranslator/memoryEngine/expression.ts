@@ -223,7 +223,6 @@ export function compileColumn(node: any, cc: CompileContext): Evaluator {
 	return lookup(literalName(tableid));
 }
 
-/** The key the group object holds an aggregate under. */
 function aggregateKey(node: any): string {
 	const colas = node.aggrNick || node.nick;
 	return unescapeq(colas === undefined ? escapeq(node.toString()) : colas);
@@ -438,7 +437,7 @@ function compileOp(node: any, cc: CompileContext): Evaluator {
 	};
 }
 
-/** A binary operator over two operands, one closure per operator so each comparison is inlined. */
+// One closure per operator, so each comparison is inlined.
 function plainBinary(op: string, left: Evaluator, right: Evaluator): Evaluator {
 	const both =
 		(apply: (a: any, b: any) => any): Evaluator =>
