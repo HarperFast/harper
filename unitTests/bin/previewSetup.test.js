@@ -181,7 +181,10 @@ describe('harper preview setup (harper#3609)', () => {
 			);
 			assert.ok(text.includes(ACTIONS_POLICY_DOCS));
 			assert.ok(text.indexOf('is public') < text.indexOf('can deploy previews of shop'));
-			assert.ok((await fs.readFile(path.join(directory, WORKFLOW), 'utf8')).includes(ACTIONS_POLICY_DOCS));
+			assert.match(
+				await fs.readFile(path.join(directory, WORKFLOW), 'utf8'),
+				/^# In a public repository, pull_request_target runs only if an Actions event policy targeting this repository and this file allows it\. https:\/\/docs\.github\.com\/actions\/how-tos\/administer\/control-workflow-execution$/m
+			);
 		});
 
 		it('names a workflow that was already there', async () => {

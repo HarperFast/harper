@@ -73,7 +73,7 @@ export function starterPreviewWorkflow({
 	];
 	return [
 		'# Written by `harper preview setup`.',
-		`# In a public repository, an Actions event policy must allow pull_request_target for this file: ${ACTIONS_POLICY_DOCS}`,
+		`# In a public repository, pull_request_target runs only if an Actions event policy targeting this repository and this file allows it. ${ACTIONS_POLICY_DOCS}`,
 		'name: Preview',
 		'on:',
 		'  pull_request_target:',

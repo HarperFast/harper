@@ -363,7 +363,7 @@ In a public repository, allow the event for the preview workflow alone. In the r
 
 An organization can set the same policy in its own **Settings > Actions > Policies**; target the repository as well as the workflow file, or it applies to every repository with a file at that path. An organization or enterprise policy can still block the event; **Policy insights**, under **Policies** in the sidebar, shows what a policy blocked, and the owner of a blocking policy has to allow the event for this repository and workflow. See [Governing execution of GitHub Actions workflows](https://docs.github.com/actions/how-tos/administer/control-workflow-execution). Setup does not check or create the policy, and `get_preview_policy` does not report it: GitHub's API reads it only with a GitHub token for the repository, which the cluster does not have for a public one.
 
-The starter workflow carries a comment that says the same. Setup does not change a workflow that is already there.
+The starter workflow carries a comment that points here. Setup does not change a workflow that is already there.
 
 ##### What setup checks in the workflow
 
