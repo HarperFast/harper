@@ -24,6 +24,8 @@ import {
 	derivePreviewNames,
 } from '../utility/previewIdentity.ts';
 
+export const ACTIONS_POLICY_DOCS = 'https://docs.github.com/actions/how-tos/administer/control-workflow-execution';
+
 function usageError(message: string): Error {
 	return Object.assign(new Error(message), { statusCode: 400 });
 }
@@ -71,6 +73,7 @@ export function starterPreviewWorkflow({
 	];
 	return [
 		'# Written by `harper preview setup`.',
+		`# In a public repository, an Actions event policy must allow pull_request_target for this file: ${ACTIONS_POLICY_DOCS}`,
 		'name: Preview',
 		'on:',
 		'  pull_request_target:',
@@ -129,6 +132,19 @@ export function starterPreviewWorkflow({
 		'          exit 1',
 		'',
 	].join('\n');
+}
+
+function pullRequestTargetPolicyWarning(repository: string, isPrivate: boolean | undefined, workflow: string) {
+	if (isPrivate === true) return undefined;
+	return (
+		`${isPrivate === false ? `${repository} is public:` : `If ${repository} is public:`} from December 2, 2026, ` +
+		`GitHub Actions blocks pull_request_target in public repositories unless an Actions event policy allows it, ` +
+		`and previews stop.\n` +
+		`  In Settings > Actions > Policies, the repository's or its organization's, add an Active policy that targets only ${workflow}, ` +
+		`with Restrict events allowing pull_request_target and any other event that workflow runs on. ` +
+		`An organization or enterprise policy can still block it.\n` +
+		`  ${ACTIONS_POLICY_DOCS}`
+	);
 }
 
 function previewApp(args: Record<string, any>): string {
@@ -267,6 +283,8 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 				`  To remove it all, previews included: harper preview teardown app=${app}`
 		)
 	);
+	const policyWarning = pullRequestTargetPolicyWarning(repository.fullName, repository.private, workflow);
+	if (policyWarning) console.log(chalk.yellow(`! ${policyWarning}`));
 
 	if (secretsKey) {
 		const { secretName } = await sealDeployCredential(

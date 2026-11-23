@@ -327,7 +327,7 @@ It checks everything it can before it changes anything, so a refusal before step
 3. For a private repository, offers to seal a credential for the cluster to fetch each PR with (`credential=true`).
 4. Reads the repository's `HARPER_PREVIEW_TARGET` variable. One that names another cluster stops setup. One it cannot read, such as when `gh` is not installed, stops it unless you pass `allow_unverified=true`, and you then set the variable yourself afterward.
 5. With `credential=true`, asks for the token and checks that the cluster can hold a sealed secret.
-6. Calls [`enable_previews`](../operations-api/operations.md#enable_previews), which creates the role, the user and the two trust policies, and stores the application's preview limits.
+6. Calls [`enable_previews`](../operations-api/operations.md#enable_previews), which creates the role, the user and the two trust policies, and stores the application's preview limits. For a public repository, or one whose visibility it could not look up, it then prints the Actions event policy GitHub requires: see [Public repositories: allow `pull_request_target`](#public-repositories-allow-pull_request_target).
 7. With `credential=true`, seals the token on your machine and grants it to every preview of the application, as the secret `deploy.<app>-pr-_.git.github.com`.
 8. Writes the starter workflow, if step 2 said to. Commit it to the default branch: GitHub runs `pull_request_target` workflows from there.
 9. Sets `HARPER_PREVIEW_TARGET` to the cluster's URL with `gh`, if the repository doesn't have it.
@@ -350,6 +350,20 @@ It checks everything it can before it changes anything, so a refusal before step
 | `credential=true`           | asked, for a private repository              | Seal a GitHub token for the cluster to fetch each PR's commit with.                                                                                                                                                                     |
 | `write_workflow=true`       | asked                                        | Write the starter workflow when the file doesn't exist.                                                                                                                                                                                 |
 | `allow_unverified=true`     | `false`                                      | Go on when setup cannot check the workflow or the repository variable, or when the workflow has a step it cannot verify. Check the workflow yourself first: it is what keeps forks and PR code from the token.                          |
+
+##### Public repositories: allow `pull_request_target`
+
+From December 2, 2026, GitHub Actions blocks `pull_request_target` in public repositories unless an Actions event policy allows it, so the preview workflow no longer runs and previews stop: PRs get no preview, and closed PRs keep theirs until they expire. Private and internal repositories are not affected. See [GitHub's announcement](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2).
+
+In a public repository, allow the event for the preview workflow alone. In **Settings > Actions > Policies**, the repository's or its organization's, create a policy:
+
+1. Set its enforcement status to **Active**.
+2. Under its target workflows, add the workflow file, `.github/workflows/preview.yaml` or the `workflow=` you passed.
+3. Turn on **Restrict events**, and allow `pull_request_target`, plus any other event that workflow runs on.
+
+An organization or enterprise policy can still block the event; **Policy insights**, under **Policies** in the sidebar, shows what a policy blocked. See [Governing execution of GitHub Actions workflows](https://docs.github.com/actions/how-tos/administer/control-workflow-execution). Setup does not check or create the policy, and `get_preview_policy` does not report it: GitHub's API reads it only with a GitHub token for the repository, which the cluster does not have for a public one.
+
+The starter workflow carries a comment that says the same.
 
 ##### What setup checks in the workflow
 
