@@ -820,9 +820,10 @@ function compileGroup(select: any, query: any): (env: Env) => void {
 
 	const reduceStart = query.aggrKeys.length;
 	const aggregates = query.selectGroup.map((col: any) => compileAggregate(col, query, cc));
-	// AlaSQL recorded a named aggregate once per grouping set, so it was finished once per set.
+	// AlaSQL recorded a named aggregate once per grouping set, so it was finished once per set, or never with none.
 	const reduced = query.aggrKeys.slice(reduceStart);
-	for (let i = 1; i < allgroup.length; i++) query.aggrKeys.push(...reduced);
+	query.aggrKeys.length = reduceStart;
+	for (let i = 0; i < allgroup.length; i++) query.aggrKeys.push(...reduced);
 	const sets = allgroup.map((agroup, setIdx) => {
 		const keyParts: Evaluator[] = [];
 		for (const [nick, evaluate] of agroup) {

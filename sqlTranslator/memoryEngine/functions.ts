@@ -61,13 +61,13 @@ function nullPrototype<T>(entries: Record<string, T>): Record<string, T> {
 
 // #section: utilities AlaSQL's generated code calls
 
-/** `n2u`: a NaN result becomes `undefined`. AlaSQL wraps each projected column in it. */
+/** AlaSQL wrapped each projected column in this. */
 export function nanToUndefined(value: any): any {
 	// eslint-disable-next-line no-self-compare
 	return value === value ? value : undefined;
 }
 
-/** `und`: `undefined` stays `undefined` (null does not), anything else goes through `then`. */
+/** Only `undefined` skips `then`; `null` goes through it. */
 export function undefinedOrValue(value: any, then: (value: any) => any): any {
 	return value === undefined ? undefined : then(value);
 }
@@ -81,7 +81,6 @@ export function setOwn(target: any, key: string, value: any): void {
 	}
 }
 
-/** `utils.cloneDeep`. */
 export function cloneDeep(obj: any): any {
 	if (obj === null || typeof obj !== 'object') return obj;
 	if (obj instanceof Date) return new Date(obj);
