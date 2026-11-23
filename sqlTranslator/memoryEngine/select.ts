@@ -1704,7 +1704,6 @@ function doJoin(query: any, env: Env, h: number) {
 	scope[tableid] = undefined;
 }
 
-/** The `$$$<n>` sort keys of a statement with a set operation, read from the result columns. */
 function addSetOrderColumns(query: any) {
 	if (!query.orderColumns) return;
 	query.data.forEach((r: any, i: number) => {
@@ -1905,7 +1904,7 @@ function modify(query: any, res: any): any {
 			const valIndex = columns && columns.length > 1 ? columns[1].columnid : Object.keys(res[0])[1];
 			const index: any = {};
 			for (const row of res) {
-				// The object literal it replaces converted the key as a property name, so `__proto__` stays own.
+				// Converted as a property key, so a key that reads as `__proto__` stays own.
 				const key = row[keyIndex];
 				setOwn(index, typeof key === 'symbol' ? key : String(key), row[valIndex]);
 			}

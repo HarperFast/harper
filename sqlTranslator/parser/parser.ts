@@ -1730,7 +1730,6 @@ function andNode(left: any, right: any): any {
 	return new ast.Op({ left, op: 'AND', right });
 }
 
-/** A string literal's value: a backslash-quote and a doubled quote both decode to a quote. */
 function unquote(body: string): string {
 	return body.replace(/(\\')/g, "'").replace(/('')/g, "'");
 }

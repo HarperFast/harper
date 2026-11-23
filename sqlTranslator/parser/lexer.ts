@@ -140,7 +140,6 @@ function quotedPart(input: string, at: number, quote: string): number {
 	return lastTaken < 0 ? -1 : lastTaken + 1;
 }
 
-/** A quoted string rule: the length matched at `at`, or -1. `prefix` is an `N` or `X` before the quote. */
 const quotedRule =
 	(quote: string, prefix?: string) =>
 	(input: string, at: number): number => {

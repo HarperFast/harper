@@ -3,9 +3,8 @@
  * results, quirks included, because legacy SQL users depend on them: `UPPER(NULL)` is `'NULL'`, `LEN(5)` is
  * undefined, `NULLIF` compares with `==`, a call to an unknown function fails only when a row reaches it, and so on.
  *
- * Nothing here evaluates text as JavaScript. AlaSQL's `__ala__` (the whole AlaSQL instance, so `__ala__('…')` ran
- * arbitrary AlaSQL, JavaScript blocks included) and `OBJECT_ID` (a lookup in AlaSQL's own database registry) are
- * not provided, so a call to either fails like a call to any unknown function.
+ * Nothing here evaluates text as JavaScript, so `__ala__` and `OBJECT_ID` are not provided: a call to either fails like
+ * a call to any unknown function.
  */
 import { randomUUID } from 'node:crypto';
 import * as alasqlExtension from '../../utility/functions/sql/alaSQLExtension.ts';
@@ -14,7 +13,6 @@ import * as geo from '../../utility/functions/geo.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** The engine's row context; opaque here, only passed through to argument evaluators. */
 interface EvalContext {
 	[key: string]: any;
 }
@@ -115,10 +113,6 @@ export class Recordset {
 	}
 }
 
-/**
- * `utils.flatArray`: for a `Recordset`, each row's value of the first column, unwrapped by
- * `getValueOf`; for an array, each row's value of the first row's first key.
- */
 export function flatArray(rows: any): any[] {
 	if (!rows || rows.length === 0) return [];
 	if (typeof rows === 'object' && rows instanceof Recordset) {
