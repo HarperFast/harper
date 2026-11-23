@@ -106,15 +106,14 @@ The response also includes the table's ordinary schema and storage metadata. The
 
 #### Replicas
 
-<VersionBadge version="v5.4.0" />
+<VersionBadge version="v5.4.0" /> <VersionBadge type="changed" version="v5.5.0" />
 
-A table that has kept [local replicas](../database/schema.md#replicaexpiration-and-replicarefreshfraction) on this node reports how much of it is cache. The fields are absent on a table that never kept one, on LMDB, and when the request sets `skip_record_count`.
+An indexed RocksDB table whose sharding policy admits [local replicas](../database/schema.md#replicaexpiration-and-replicarefreshfraction) reports the last completed cleanup pass’s tally. Until its first full pass after startup the node omits both fields. Later admissions and demotions can make the tally stale. Set `exact_count: true` to walk every primary row on this node and obtain the current count, including zero for an empty table. Set `skip_record_count` to omit the record and replica counts and their scans.
 
-| Field                     | Description                                                                                                                                                                                                                                    |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `replica_count`           | Replicas this node holds of the table's records, counted from their deadlines, so one whose row was lost in a crash can count until its deadline passes. Estimated on large tables, like `record_count`; `"exact_count": true` counts them all |
-| `estimated_replica_range` | The range of an estimated `replica_count`; absent when the count is exact                                                                                                                                                                      |
-| `replica_size_estimate`   | Estimated bytes of those replicas: the average size of up to 100 of their rows, blobs included, times the count. A rough figure, since the rows sampled are the first by key                                                                   |
+| Field                   | Description                                                                                                                        |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `replica_count`         | Number of primary rows carrying the replica flag on this node, from the last complete cleanup pass or the requested exact scan.    |
+| `replica_size_estimate` | Average stored size of the first 100 replicas by key (or all replicas if fewer), including blobs, multiplied by the replica count. |
 
 See [Local replicas under storage pressure](../database/storage-tuning.md#local-replicas-under-storage-pressure).
 

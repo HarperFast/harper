@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { databases, openReplicaDeadlineStore } = require('#src/resources/databases');
+const { databases } = require('#src/resources/databases');
 const { INVALIDATED, REPLICA, setMinReplicaScanIntervalForTesting } = require('#src/resources/Table');
 const { transaction } = require('#src/resources/transaction');
 const { replicationConfirmation } = require('#src/resources/DatabaseTransaction');
@@ -213,7 +213,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 		await waitFor(() => Rows.primaryStore.getEntry('row').metadataFlags & INVALIDATED, { timeout: 3000 });
 		assert.equal(Rows.primaryStore.getEntry('row').value.body, undefined);
 		assert.equal(count(), before);
-		assert.equal(openReplicaDeadlineStore(Rows.primaryStore.rootStore, Rows.tableName).getSync('row'), undefined);
+		assert.equal(Rows.primaryStore.getEntry('row')?.replicaDeadline, undefined);
 	});
 	it('a newer remote projection replaces the writer replica and its deadline', async function () {
 		if (isLMDB) return this.skip();
@@ -224,7 +224,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 		const entry = Rows.primaryStore.getEntry('row');
 		assert.ok(entry.metadataFlags & INVALIDATED);
 		assert.equal(entry.value.body, undefined);
-		assert.equal(openReplicaDeadlineStore(Rows.primaryStore.rootStore, Rows.tableName).getSync('row'), undefined);
+		assert.equal(Rows.primaryStore.getEntry('row')?.replicaDeadline, undefined);
 	});
 	it('keeps staged patches complete and still requires a real new-owner confirmation', async function () {
 		if (isLMDB) return this.skip();
@@ -268,7 +268,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 			/rollback/
 		);
 		assert.equal(Rows.primaryStore.getEntry('aborted'), undefined);
-		assert.equal(openReplicaDeadlineStore(Rows.primaryStore.rootStore, Rows.tableName).getSync('aborted'), undefined);
+		assert.equal(Rows.primaryStore.getEntry('aborted')?.replicaDeadline, undefined);
 	});
 	it('keeps the full audit blob after a replica expires or a newer projection replaces it', async function () {
 		if (isLMDB) return this.skip();

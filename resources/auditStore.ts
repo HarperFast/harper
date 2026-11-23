@@ -9,6 +9,7 @@ import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageTh
 import { convertToMS } from '../utility/common_utils.ts';
 import {
 	LAST_TIMESTAMP_PLACEHOLDER,
+	HAS_REPLICA_DEADLINE,
 	HAS_STRUCTURE_UPDATE,
 	PENDING_LOCAL_TIME,
 	RECEIVED_IDENTITY_REF,
@@ -2298,7 +2299,6 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		user,
 		type,
 		encodedRecord,
-		extendedType,
 		residencyId,
 		previousResidencyId,
 		residencySlot,
@@ -2307,6 +2307,8 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		originatingOperation,
 		previousAdditionalAuditRefs,
 	} = auditRecord;
+	// Full-copy senders may pass the primary row's flags. Replica lifetime is local to its holder.
+	const extendedType = auditRecord.extendedType & ~HAS_REPLICA_DEADLINE;
 	let action = EVENT_TYPES[type];
 	if (!action) {
 		throw new Error(`Invalid audit entry type ${type}`);
@@ -2449,11 +2451,179 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	}
 }
 
+class AuditEntry {
+	#buffer: Uint8Array;
+	#start: number;
+	#end: number | undefined;
+	#entryStart: number;
+	#recordIdStart: number;
+	#recordIdEnd: number;
+	#usernameStart: number;
+	#usernameEnd: number;
+	#value: any;
+	#action: number;
+	declare residencySlot?: number;
+	declare previousResidencySlot?: number;
+	declare type: string;
+	declare logName: string | undefined;
+	declare tableId: number;
+	declare nodeId: number;
+	declare version: number;
+	declare previousVersion: number | undefined;
+	declare extendedType: number;
+	declare residencyId: number | undefined;
+	declare previousResidencyId: number | undefined;
+	declare expiresAt: number | undefined;
+	declare originatingOperation: string | undefined;
+	declare previousAdditionalAuditRefs: Array<{ version?: number; nodeId: number }> | undefined;
+	declare txnLogKey: number | undefined;
+	declare endTxn: boolean | undefined;
+	declare structureVersion: number | undefined;
+	constructor(
+		buffer: Uint8Array,
+		start: number,
+		end: number | undefined,
+		entryStart: number,
+		action: number,
+		nodeId: number,
+		tableId: number,
+		recordIdStart: number,
+		recordIdEnd: number,
+		version: number,
+		previousVersion: number | undefined,
+		residencyId: number | undefined,
+		previousResidencyId: number | undefined,
+		expiresAt: number | undefined,
+		originatingOperation: string | undefined,
+		previousAdditionalAuditRefs: Array<{ version?: number; nodeId: number }> | undefined,
+		usernameStart: number,
+		usernameEnd: number
+	) {
+		// The entry type is the low nibble of the action byte (1–7 record actions, 8 reload, 9 eviction, 10–15
+		// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
+		// identical to the historical `& 7` for every pre-reload entry (bit 3 was always clear).
+		this.type = EVENT_TYPES[action & 0xf];
+		this.logName = undefined;
+		this.tableId = tableId;
+		this.nodeId = nodeId;
+		this.version = version;
+		this.previousVersion = previousVersion;
+		this.extendedType = action;
+		this.residencyId = residencyId;
+		this.previousResidencyId = previousResidencyId;
+		this.expiresAt = expiresAt;
+		this.originatingOperation = originatingOperation;
+		this.previousAdditionalAuditRefs = previousAdditionalAuditRefs;
+		// the log reader assigns these three; declaring them here keeps that from changing the object's shape
+		this.txnLogKey = undefined;
+		this.endTxn = undefined;
+		this.structureVersion = undefined;
+		this.#buffer = buffer;
+		this.#action = action;
+		this.#start = start;
+		this.#end = end;
+		this.#entryStart = entryStart;
+		this.#recordIdStart = recordIdStart;
+		this.#recordIdEnd = recordIdEnd;
+		this.#usernameStart = usernameStart;
+		this.#usernameEnd = usernameEnd;
+	}
+	get recordId() {
+		// The recordId is decoded lazily and lives outside readAuditEntry's try/catch,
+		// so a corrupt recordId region would otherwise escape as an uncaught RangeError
+		// on property access. Catch and return undefined; callers already treat missing
+		// recordId as a skip-eligible entry.
+		const buffer = this.#buffer;
+		const recordIdStart = this.#recordIdStart;
+		const recordIdEnd = this.#recordIdEnd;
+		try {
+			// use a subarray to protect against the underlying buffer being modified
+			return readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd);
+		} catch (error) {
+			harperLogger.warn('Failed to decode audit recordId; treating as corrupt', error);
+			return undefined;
+		}
+	}
+	getBinaryRecordId() {
+		return this.#buffer.subarray(this.#recordIdStart, this.#recordIdEnd);
+	}
+	get user() {
+		const buffer = this.#buffer;
+		const usernameStart = this.#usernameStart;
+		const usernameEnd = this.#usernameEnd;
+		try {
+			return usernameEnd > usernameStart
+				? readKey(buffer.subarray(0, usernameEnd), usernameStart, usernameEnd)
+				: undefined;
+		} catch (error) {
+			harperLogger.warn('Failed to decode audit username; treating as corrupt', error);
+			return undefined;
+		}
+	}
+	get encoded() {
+		// On a recovered entry this drops the unannounced prefix, so a replication sender —
+		// which strips by the same leading-0x42 test and frames by encoded.length — forwards a
+		// clean entry instead of passing the same misparse to the next hop.
+		return this.#entryStart ? this.#buffer.subarray(this.#entryStart, this.#end) : this.#buffer;
+	}
+	get size() {
+		// only the recovered prefix is discounted; every other case keeps its existing basis
+		return (
+			(this.#end !== undefined ? this.#end - this.#start : this.#buffer.byteLength) - (this.#entryStart - this.#start)
+		);
+	}
+	getValue(store, fullRecord?, auditTime?, historyMemo?) {
+		const action = this.#action;
+		if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
+			if (this.#value) return this.#value;
+			const buffer = this.#buffer;
+			const end = this.#end;
+			const valueStart = this.#usernameEnd;
+			if (valueStart >= (end ?? buffer.byteLength)) {
+				const tableId = this.tableId;
+				// Entry advertises a record but has no body (minted before #2153): nothing to decode, and
+				// return undefined rather than falling through — this branch means the caller asked for the
+				// entry's own content (full-record consumers with an auditTime never enter it for partials
+				// and still reconstruct below). Warn latched per table: this getter runs inside range scans.
+				if (!warnedBodylessTables.has(tableId)) {
+					warnedBodylessTables.add(tableId);
+					harperLogger.warn(
+						`Audit entry (${EVENT_TYPES[action & 0xf]}) for table ${tableId} advertises a record but has no body; treating as having no record`
+					);
+				}
+				return;
+			}
+			return (this.#value = decodeFromDatabase(
+				// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
+				// its own time), so skip the prefix heuristic — otherwise a classic record whose
+				// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
+				() => store.decoder.decode(buffer.subarray(valueStart, end), { noMetadata: true }),
+				store.rootStore
+			));
+		}
+		if (action & HAS_PARTIAL_RECORD && auditTime) {
+			const recordId = this.recordId;
+			return getRecordAtTime(
+				store.getEntry(recordId),
+				auditTime,
+				store,
+				this.tableId,
+				recordId,
+				this.nodeId,
+				historyMemo
+			);
+		} // TODO: If we store a partial and full record, may need to read both sequentially
+	}
+	getBinaryValue() {
+		return this.#buffer.subarray(this.#usernameEnd, this.#end);
+	}
+}
+
 /**
- * Reads a audit entry from binary data
- * @param buffer
- * @param start
- * @param end
+ * Reads an audit entry from binary data. On an entry that decodes, the record's `recordId`, `user`, `encoded`,
+ * `size`, `getValue`, `getBinaryValue` and `getBinaryRecordId` are on its prototype and need the record itself as
+ * their receiver: a spread or `Object.keys` carries the data fields only, and a detached method or an
+ * `Object.create` copy throws.
  */
 export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): AuditRecord {
 	try {
@@ -2554,94 +2724,26 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		}
 		const usernameStart = decoder.position;
 		const usernameEnd = (decoder.position += length);
-		let value: any;
-		const entry = {
-			// The entry type is the low nibble of the action byte (1–7 record actions, 8 reload, 9 eviction, 10–15
-			// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
-			// identical to the historical `& 7` for every pre-reload entry (bit 3 was always clear).
-			type: EVENT_TYPES[action & 0xf],
-			logName: undefined,
-			tableId,
+		const entry = new AuditEntry(
+			buffer,
+			start,
+			end,
+			entryStart,
+			action,
 			nodeId,
-			get recordId() {
-				// The recordId is decoded lazily and lives outside readAuditEntry's try/catch,
-				// so a corrupt recordId region would otherwise escape as an uncaught RangeError
-				// on property access. Catch and return undefined; callers already treat missing
-				// recordId as a skip-eligible entry.
-				try {
-					// use a subarray to protect against the underlying buffer being modified
-					return readKey(buffer.subarray(0, recordIdEnd), recordIdStart, recordIdEnd);
-				} catch (error) {
-					harperLogger.warn('Failed to decode audit recordId; treating as corrupt', error);
-					return undefined;
-				}
-			},
-			getBinaryRecordId() {
-				return buffer.subarray(recordIdStart, recordIdEnd);
-			},
+			tableId,
+			recordIdStart,
+			recordIdEnd,
 			version,
 			previousVersion,
-			get user() {
-				try {
-					return usernameEnd > usernameStart
-						? readKey(buffer.subarray(0, usernameEnd), usernameStart, usernameEnd)
-						: undefined;
-				} catch (error) {
-					harperLogger.warn('Failed to decode audit username; treating as corrupt', error);
-					return undefined;
-				}
-			},
-			get encoded() {
-				// On a recovered entry this drops the unannounced prefix, so a replication sender —
-				// which strips by the same leading-0x42 test and frames by encoded.length — forwards a
-				// clean entry instead of passing the same misparse to the next hop.
-				return entryStart ? buffer.subarray(entryStart, end) : buffer;
-			},
-			get size() {
-				// only the recovered prefix is discounted; every other case keeps its existing basis
-				return (end !== undefined ? end - start : buffer.byteLength) - (entryStart - start);
-			},
-			getValue(store, fullRecord?, auditTime?, historyMemo?) {
-				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
-					if (decoder.position >= (end ?? buffer.byteLength)) {
-						// Entry advertises a record but has no body (minted before #2153): nothing to decode, and
-						// return undefined rather than falling through — this branch means the caller asked for the
-						// entry's own content (full-record consumers with an auditTime never enter it for partials
-						// and still reconstruct below). Warn latched per table: this getter runs inside range scans.
-						if (!warnedBodylessTables.has(tableId)) {
-							warnedBodylessTables.add(tableId);
-							harperLogger.warn(
-								`Audit entry (${EVENT_TYPES[action & 0xf]}) for table ${tableId} advertises a record but has no body; treating as having no record`
-							);
-						}
-						return;
-					}
-					if (!value) {
-						value = decodeFromDatabase(
-							// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
-							// its own time), so skip the prefix heuristic — otherwise a classic record whose
-							// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
-							() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
-							store.rootStore
-						);
-					}
-					return value;
-				}
-				if (action & HAS_PARTIAL_RECORD && auditTime) {
-					const recordId = this.recordId;
-					return getRecordAtTime(store.getEntry(recordId), auditTime, store, tableId, recordId, nodeId, historyMemo);
-				} // TODO: If we store a partial and full record, may need to read both sequentially
-			},
-			getBinaryValue() {
-				return buffer.subarray(decoder.position, end);
-			},
-			extendedType: action,
 			residencyId,
 			previousResidencyId,
 			expiresAt,
 			originatingOperation,
 			previousAdditionalAuditRefs,
-		} as any;
+			usernameStart,
+			usernameEnd
+		) as any;
 		if (residencySlot !== undefined) entry.residencySlot = residencySlot;
 		if (previousResidencySlot !== undefined) entry.previousResidencySlot = previousResidencySlot;
 		return entry;

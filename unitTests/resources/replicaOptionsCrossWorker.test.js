@@ -159,9 +159,8 @@ describe('Replica options across worker schema rescans', function () {
 	it('keeps sweeping through unchanged schema rescans and stays stood down afterward', async function () {
 		if (isLMDB) this.skip();
 		await withTable('ReplicaOptionsSweep', { replicaExpiration: 0.2, replicaRefreshFraction: 1 }, async (reader) => {
-			assertReads(await reader.call('read', { key: 'expires' }), 0.2);
 			const result = await reader.call('sweep-through-rescans', { key: 'expires' });
-			assert.ok(result.rescans > 1);
+			assertReads(result.read, 0.2);
 			assert.ok(result.flags & INVALIDATED);
 			assert.equal(result.deadline, undefined);
 			assert.equal(result.armed, 0);

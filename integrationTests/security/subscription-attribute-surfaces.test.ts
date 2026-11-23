@@ -404,7 +404,21 @@ suite(
 			ok(await waitFor(() => r.msgs.length >= 1 && opens.every((o) => o.msgs.length >= 1)), 'current record delivered');
 			// control: a JSON object message reaches every subscriber
 			strictEqual(await publish(pub.client, 'Ticket68/msg-1', JSON.stringify({ title: 'opq-control' })), 0);
-			const controlAll = await waitFor(() => opens.every((o) => o.msgs.some((m) => m.text.includes('opq-control'))));
+			const sawControl = (msgs: Msg[]) => msgs.some((m) => m.text.includes('opq-control'));
+			const controlAll = await waitFor(() => opens.every((o) => sawControl(o.msgs)));
+			if (!controlAll) for (const o of opens) obs(`C2 opaque open ${o.label}`, o.msgs);
+			ok(
+				controlAll,
+				`the JSON-object control message did not reach every open subscriber (inconclusive): missed ${opens
+					.filter((o) => !sawControl(o.msgs))
+					.map((o) => o.label)
+					.join(',')}`
+			);
+			// the restricted subscriber may sit on a worker thread no open subscriber shares
+			ok(
+				await waitFor(() => sawControl(r.msgs)),
+				`the JSON-object control message did not reach the restricted subscriber:\n  ${dump(r.msgs) || '(none)'}`
+			);
 			// payloads the socket's default deserializer does not parse as a JSON object (first byte not `{`)
 			const opaque: Array<[string, Buffer, any]> = [
 				['text/plain', Buffer.from('SECRET-msg-plain'), { properties: { contentType: 'text/plain' } }],
@@ -419,7 +433,11 @@ suite(
 				await waitFor(() => opens.every((o) => o.msgs.some((m) => m.text.includes(marker))), 4000);
 				await waitFor(() => r.msgs.length > rBefore, 4000);
 				const rNew = r.msgs.slice(rBefore);
-				strictEqual(rNew.length, 1, `${label}: restricted subscriber received ${rNew.length} frame(s), expected one`);
+				strictEqual(
+					rNew.length,
+					1,
+					`${label}: restricted subscriber received ${rNew.length} frame(s), expected one:\n  ${dump(rNew) || '(none)'}`
+				);
 				deepStrictEqual(rNew[0].value, {}, `${label}: restricted projection is not {}: ${rNew[0].text}`);
 				const got = opens.filter((o) => o.msgs.some((m) => m.text.includes(marker))).map((o) => o.label);
 				delivered[label] = {
@@ -431,7 +449,6 @@ suite(
 			obs('C2 opaque restricted', r.msgs);
 			for (const o of opens) obs(`C2 opaque open ${o.label}`, o.msgs);
 			console.log(`OBS [C2] opaque payload delivery (threads=${THREADS}): ${JSON.stringify(delivered)}`);
-			ok(controlAll, 'the JSON-object control message did not reach every open subscriber (inconclusive)');
 			assertNoLeak('C2 opaque restricted', r.msgs, 1);
 			for (const [label] of opaque)
 				strictEqual(

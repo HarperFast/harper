@@ -108,7 +108,7 @@ describe('Replica storage engine support', function () {
 		const state = new Int32Array(
 			Records.primaryStore.getUserSharedBuffer(`replica-sweep:${Records.tableId}`, new ArrayBuffer(8))
 		);
-		Records.dbisDB.putSync(`${Records.tableName}/@replicas`, { auxiliary: '@replicas', tableId: Records.tableId });
+
 		Records.setTTLExpiration({ replicaExpiration: 0.001 });
 		await broadcast(
 			{ type: 'replica-eviction-armed', storePath: Records.primaryStore.path, tableId: Records.tableId },
@@ -121,21 +121,24 @@ describe('Replica storage engine support', function () {
 		await waitFor(() => Atomics.load(state, 1) === (isLMDB ? 0 : 1));
 	});
 
-	it('arms a table loaded with replica metadata only on RocksDB', async () => {
+	it('leaves a plain indexed table unarmed on catalog load without any residency', async () => {
 		const databaseName = 'replicaEngineReload';
-		const Created = table({
+		table({
 			database: databaseName,
 			table: 'Reloaded',
-			attributes: [{ name: 'id', isPrimaryKey: true }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+			],
 			replicaExpiration: 60,
 		});
-		Created.dbisDB.putSync(`${Created.tableName}/@replicas`, { auxiliary: '@replicas', tableId: Created.tableId });
+
 		await closeDatabase(databaseName);
 		const Reloaded = resetDatabases()[databaseName].Reloaded;
 		const state = new Int32Array(
 			Reloaded.primaryStore.getUserSharedBuffer(`replica-sweep:${Reloaded.tableId}`, new ArrayBuffer(8))
 		);
-		await waitFor(() => Atomics.load(state, 1) === (isLMDB ? 0 : 1));
+		assert.equal(Atomics.load(state, 1), 0);
 		await Reloaded.closeMaintenance();
 	});
 
@@ -178,20 +181,6 @@ describe('Replica storage engine support', function () {
 			setMainIsWorker(true);
 			await Reloaded?.closeMaintenance();
 		}
-	});
-
-	it('drops a table with replica catalog metadata on either engine', async () => {
-		const Dropped = table({
-			database: 'test',
-			table: 'ReplicaEngineDropped',
-			attributes: [{ name: 'id', isPrimaryKey: true }],
-		});
-		const catalog = Dropped.dbisDB;
-		const name = Dropped.tableName;
-		catalog.putSync(`${name}/@replicas`, { auxiliary: '@replicas', tableId: Dropped.tableId });
-		await Dropped.dropTable();
-		assert.equal(catalog.getSync(`${name}/@replicas`), undefined);
-		assert.equal(catalog.getSync(`${name}/`), undefined);
 	});
 
 	it('rejects a replicaRefreshFraction outside (0, 1]', () => {

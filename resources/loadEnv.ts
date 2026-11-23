@@ -4,6 +4,7 @@ import { Scope } from '../components/Scope.ts';
 import { isEncryptedEnvValue } from '../utility/envFile.ts';
 import { deferEncryptedEnvValue, getSecretDecryptor } from './secretDecryptor.ts';
 import { CONFIG_SHAPING_ENV_VARS } from '../config/componentEnvPrepass.ts';
+import { releaseMaterializedEnvKey } from '../components/componentSecrets.ts';
 
 export function handleApplication(scope: Scope) {
 	const override = (scope.options.getAll() as { override?: boolean }).override ?? false;
@@ -59,6 +60,7 @@ export function handleApplication(scope: Scope) {
 				logger.warn(`Environment variable conflict: ${key} from ${entry.absolutePath} is already set on process.env`);
 				if (override) {
 					logger.debug(`override option enabled. overriding environment variable: ${key}`);
+					releaseMaterializedEnvKey(key);
 				} else {
 					continue;
 				}

@@ -265,6 +265,109 @@ describe('REST multipart form decoding', function () {
 		await assert.rejects(body.next(), /Multipart request aborted/);
 	});
 
+	it('takes a request as its cancellation source, reading the signal once when called', async function () {
+		const controller = new AbortController();
+		let reads = 0;
+		const source = {
+			get signal() {
+				reads++;
+				return controller.signal;
+			},
+		};
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input, source);
+		assert.equal(reads, 1);
+		controller.abort();
+		input.end();
+		await assert.rejects(body.next(), /Multipart request aborted/);
+		assert.equal(reads, 1);
+	});
+
+	it('forwards a compatible signal that is not an AbortSignal', async function () {
+		const compatible = Object.assign(new EventTarget(), { aborted: false });
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input, compatible);
+		compatible.aborted = true;
+		compatible.dispatchEvent(new Event('abort'));
+		input.end();
+		await assert.rejects(body.next(), /Multipart request aborted/);
+	});
+
+	it('reads .signal from an event-capable wrapper rather than treating it as the signal', async function () {
+		const controller = new AbortController();
+		const wrapper = Object.assign(new EventTarget(), { signal: controller.signal });
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input, wrapper);
+		controller.abort();
+		input.end();
+		await assert.rejects(body.next(), /Multipart request aborted/);
+	});
+
+	it('keeps a real AbortSignal as the signal even when it carries a signal property', async function () {
+		const controller = new AbortController();
+		const decorated = Object.assign(controller.signal, { signal: new AbortController().signal });
+		const input = new PassThrough();
+		const body = getDeserializer(contentType, true, true)(input, decorated);
+		controller.abort();
+		input.end();
+		await assert.rejects(body.next(), /Multipart request aborted/);
+	});
+
+	it('decodes with a source that has no signal', async function () {
+		for (const source of [undefined, {}]) {
+			const body = getDeserializer(
+				contentType,
+				true,
+				true
+			)(Readable.from([encodeForm([{ name: 'title', value: 'plain' }])]), source);
+			assert.deepStrictEqual((await body.next()).value, { name: 'title', value: 'plain' });
+			assert.equal((await body.next()).done, true);
+		}
+	});
+
+	it('never reads the source for a decoder that does not cancel on it', async function () {
+		let reads = 0;
+		const source = {
+			get signal() {
+				reads++;
+				return undefined;
+			},
+		};
+		const form = encodeForm([{ name: 'title', value: 'x' }]);
+		assert.deepStrictEqual(
+			await getDeserializer('application/json', true, true)(Readable.from([Buffer.from('{"a":1}')]), source),
+			{
+				a: 1,
+			}
+		);
+		assert.ok(await getDeserializer(contentType, true, false)(Readable.from([form]), source));
+		assert.deepStrictEqual(await getDeserializer('', true, true)(Readable.from([Buffer.from('{"a":2}')]), source), {
+			a: 2,
+		});
+		contentTypes.set('application/x-custom-signal', { deserialize: (data) => data.toString() });
+		const original = contentTypes.get('multipart/form-data');
+		contentTypes.set('multipart/form-data', { deserialize: (data) => data.toString() });
+		try {
+			assert.equal(
+				await getDeserializer(
+					'application/x-custom-signal',
+					true,
+					true
+				)(Readable.from([Buffer.from('custom')]), source),
+				'custom'
+			);
+			assert.equal(
+				await getDeserializer(contentType, true, true)(Readable.from([Buffer.from('custom form')]), source),
+				'custom form'
+			);
+		} finally {
+			contentTypes.delete('application/x-custom-signal');
+			if (original === undefined) contentTypes.delete('multipart/form-data');
+			else contentTypes.set('multipart/form-data', original);
+		}
+		assert.equal(reads, 0);
+	});
+
 	it('does not deliver a buffered part after the request aborts', async function () {
 		const controller = new AbortController();
 		const input = new PassThrough();
@@ -572,7 +675,7 @@ describe('REST multipart form decoding', function () {
 		const input = new PassThrough();
 		Object.assign(input, { method: 'POST', url: '/', headers: {}, socket: new EventEmitter() });
 		const request = new Request(input);
-		const body = getDeserializer(contentType, true, true)(request.body, request.signal);
+		const body = getDeserializer(contentType, true, true)(request.body, request);
 		assert.equal(await completeMultipartBody(body, 'ignored'), 'ignored');
 		await waitFor(() => input.destroyed, { timeout: 3000 });
 	});
