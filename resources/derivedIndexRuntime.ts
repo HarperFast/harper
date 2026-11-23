@@ -153,8 +153,11 @@ export interface DerivedIndexBackend {
 	/** Receives the epoch fence and readiness reader before any delivery. */
 	attach(host: DerivedIndexBackendHost): void;
 	getDurableCursor(): DerivedIndexCursor | undefined;
-	/** Persist coverage only after its offered cursor is durable; reset must remove it with the cursor. */
-	publishCoverage?(positions: DerivedIndexPositions, ownerEpoch: bigint): void;
+	/**
+	 * Persist coverage only after its offered cursor is durable; reset must remove it with the cursor.
+	 * `false` declines this capture, and the runtime offers the next one without waiting out the flush age.
+	 */
+	publishCoverage?(positions: DerivedIndexPositions, ownerEpoch: bigint): boolean | void;
 	/**
 	 * Opts the backend into idle admission: a fingerprint of the durable state, readable without the lock and
 	 * without side effects, or `undefined` when there is none. An idle release's positions bind to it, so a
@@ -1936,8 +1939,8 @@ class DerivedIndexRunner {
 			Number(capture.time - this.#lastPersistedCoverageTime) / 1e6 >= this.#options.maxFlushAgeMilliseconds
 		) {
 			try {
-				this.#registration.backend.publishCoverage!(capture.positions, this.#ownerEpoch!);
-				this.#lastPersistedCoverageTime = capture.time;
+				if (this.#registration.backend.publishCoverage!(capture.positions, this.#ownerEpoch!) !== false)
+					this.#lastPersistedCoverageTime = capture.time;
 			} catch (error) {
 				logger.warn?.(`Derived index '${this.id}' could not persist query coverage`, error);
 				return;
