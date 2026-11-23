@@ -392,8 +392,8 @@ const loggedMessagesByTransaction = new WeakMap<object, Map<string, Set<string> 
 const messageIdentity = (tableId: number, id: Id, version: number) =>
 	`${tableId}:${version}:${toBufferKey(id).toString('latin1')}`;
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
-// what BigInt() accepts, so a check-only pass can report a value it would throw on without building one
-const BIGINT_LITERAL = /^\s*([+-]?\d*|0[xX][\da-fA-F]+|0[oO][0-7]+|0[bB][01]+)\s*$/;
+// what BigInt() accepts once trimmed, so a check-only pass can report a value it would throw on without building one
+const BIGINT_LITERAL = /^(?:[+-]?\d+|0[xX][\da-fA-F]+|0[oO][0-7]+|0[bB][01]+)?$/;
 // declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
 const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
@@ -11637,7 +11637,7 @@ export function makeTable(options): TableResourceClass {
 									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
 									if (typeof value === 'string' || typeof value === 'number') {
 										if (convert) return BigInt(value);
-										if (typeof value === 'number' ? !Number.isInteger(value) : !BIGINT_LITERAL.test(value))
+										if (typeof value === 'number' ? !Number.isInteger(value) : !BIGINT_LITERAL.test(value.trim()))
 											addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
 										return;
 									}

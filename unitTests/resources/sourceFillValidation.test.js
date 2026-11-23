@@ -181,9 +181,18 @@ describe('Source fill schema mismatches', function () {
 	});
 
 	it('reports a BigInt the source sent that cannot be converted', async () => {
-		responses.set('bad-bigint', { id: 'bad-bigint', name: 'n', big: 'n/a' });
-		assert.equal((await Validated.get('bad-bigint')).big, 'n/a');
-		assert.match(mismatchesFor(Validated, 'bad-bigint')[0], /\(invalid: big\)/);
+		for (const [id, big] of [
+			['bad-bigint', 'n/a'],
+			['sign-only-bigint', ' - '],
+			['padded-bigint', ' '.repeat(100_000) + 'x'],
+		]) {
+			responses.set(id, { id, name: 'n', big });
+			assert.equal((await Validated.get(id)).big, big);
+			assert.match(mismatchesFor(Validated, id)[0], /\(invalid: big\)/);
+		}
+		responses.set('good-bigint', { id: 'good-bigint', name: 'n', big: ' -12 ' });
+		await Validated.get('good-bigint');
+		assert.deepEqual(mismatchesFor(Validated, 'good-bigint'), []);
 	});
 
 	it('neither converts nor writes any value the source returned', async () => {
