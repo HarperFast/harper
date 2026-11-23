@@ -3453,11 +3453,21 @@ function incompleteDatabaseClosePaths(databaseName: string): string[] {
 	return [...rootPaths];
 }
 
+/** False while a wrapper on one of the record's roots is retained after a failed close, or is still being closed. */
+function recordedWrappersSettled(incompleteClose: IncompleteDatabaseClose): boolean {
+	for (const rootStore of incompleteClose.rootStores) {
+		if (ownedRocksStores.has(rootStore.path) || drainingOwnedStores.has(rootStore.path)) return false;
+	}
+	return true;
+}
+
 async function retryIncompleteDatabaseClose(rootPath: string): Promise<void> {
 	const incompleteClose = incompleteDatabaseCloses.get(resolve(rootPath));
 	if (!incompleteClose) return;
 	if (!incompleteClose.task) {
 		const operation = incompleteClose.retry().then(() => {
+			if (!recordedWrappersSettled(incompleteClose))
+				throw new DatabaseClosingError([...incompleteClose.databaseNames][0]);
 			for (const path of incompleteClose.rootPaths) {
 				if (incompleteDatabaseCloses.get(path) === incompleteClose) incompleteDatabaseCloses.delete(path);
 			}
@@ -3989,12 +3999,8 @@ async function closeDatabaseGraph(
 				const record = incompleteDatabaseCloses.get(rootPath);
 				if (
 					record &&
-					[...record.rootStores].every(
-						(rootStore) =>
-							rootStores.has(rootStore) &&
-							!ownedRocksStores.has(rootStore.path) &&
-							!drainingOwnedStores.has(rootStore.path)
-					)
+					[...record.rootStores].every((rootStore) => rootStores.has(rootStore)) &&
+					recordedWrappersSettled(record)
 				)
 					incompleteDatabaseCloses.delete(rootPath);
 			}
