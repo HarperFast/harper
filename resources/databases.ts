@@ -663,6 +663,10 @@ const closingDatabaseNames = new Map<string, number>();
 function databaseRootClosing(rootPath: string): boolean {
 	return closingDatabaseRoots.size > 0 && closingDatabaseRoots.has(resolve(rootPath));
 }
+// an alias's computed path is not its root's, so a name awaiting incomplete-close recovery is refused by name
+function incompleteCloseNamed(databaseName: string): boolean {
+	return incompleteDatabaseCloses.size > 0 && incompleteDatabaseClosePaths(databaseName).length > 0;
+}
 
 function countClosing(counts: Map<string, number>, keys: Iterable<string>): void {
 	for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -1390,6 +1394,11 @@ export function getDatabases(): Databases {
 function loadDatabaseCatalogs(): Databases {
 	const previousDefinedDatabases = definedDatabases;
 	definedDatabases = new Map();
+	// set first, so a scan that throws partway still keeps them; the scan skips closing roots and names
+	for (const dbName of closingDatabaseNames.keys()) {
+		const defined = previousDefinedDatabases?.get(dbName);
+		if (defined) definedDatabases.set(dbName, defined);
+	}
 	relationshipsToHydrate = [];
 	const hdbBasePath = getHdbBasePath();
 	let databasePath = hdbBasePath && join(hdbBasePath, DATABASES_DIR_NAME);
@@ -1549,11 +1558,6 @@ function loadDatabaseCatalogs(): Databases {
 		else entry.replay();
 	}
 	deferredResidencyReplays = blockedReplays.length ? blockedReplays : undefined;
-	// the scan skipped a closing database, which keeps its root mapping until its close unregisters it
-	for (const dbName of closingDatabaseNames.keys()) {
-		const defined = previousDefinedDatabases?.get(dbName);
-		if (defined && !definedDatabases.has(dbName)) definedDatabases.set(dbName, defined);
-	}
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
 		if (closingDatabaseNames.has(dbName) || databaseUsesPreparedRoot(dbName)) continue;
@@ -3162,7 +3166,8 @@ function openDatabaseRoot(
 ) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	// by name too, so the drop bypass below cannot reach a closing graph either
-	if (closingDatabaseNames.has(databaseName)) throw new DatabaseClosingError(databaseName);
+	if (closingDatabaseNames.has(databaseName) || (!allowPreparedDrop && incompleteCloseNamed(databaseName)))
+		throw new DatabaseClosingError(databaseName);
 	getDatabases();
 	if (!allowPreparedDrop) assertDatabaseResidencyAvailable(databaseName);
 	let definedDatabase = definedDatabases.get(databaseName);
@@ -3279,7 +3284,7 @@ function openDatabaseRoot(
  */
 function openUnlessBlocked(rootPath: string, dbName: string, load: () => void): void {
 	// a sibling root the closing graph never loaded is skipped by name
-	if (databaseRootClosing(rootPath) || (closingDatabaseNames.size > 0 && closingDatabaseNames.has(dbName))) return;
+	if (databaseRootClosing(rootPath) || closingDatabaseNames.has(dbName) || incompleteCloseNamed(dbName)) return;
 	// A root already in the engine map needs no exclusion: `load` then only re-runs `initStores` and
 	// never opens the directory, and a restore has to close the live handle first anyway (its close
 	// broadcast and `verifyDatabaseClosed` own that). Taking the lock here would make every rescan on
@@ -3972,17 +3977,19 @@ async function closeDatabaseGraph(
 		databaseClosed = true;
 		return true;
 	} finally {
-		// a close that threw partway keeps its roots unavailable through the incomplete-close record
-		if (handleCloseStarted && !databaseClosed && !closeHandedOff) handOffIncompleteClose();
-		releaseClosing();
-		if (handleCloseStarted && !databaseClosed) {
-			permanentlySuspendDatabaseCommits(rootStores);
-			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
-		} else if (!databaseClosed && !handleCloseStarted) {
-			resumeTableMaintenance(dbTables);
-			for (const table of Object.values(dbTables)) refreshDerivedIndexes(table);
+		try {
+			if (handleCloseStarted && !databaseClosed && !closeHandedOff) handOffIncompleteClose();
+		} finally {
+			releaseClosing();
+			if (handleCloseStarted && !databaseClosed) {
+				permanentlySuspendDatabaseCommits(rootStores);
+				for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+			} else if (!databaseClosed && !handleCloseStarted) {
+				resumeTableMaintenance(dbTables);
+				for (const table of Object.values(dbTables)) refreshDerivedIndexes(table);
+			}
+			releaseDerivedIndexActivation();
 		}
-		releaseDerivedIndexActivation();
 	}
 }
 

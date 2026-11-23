@@ -2,10 +2,14 @@
 
 require('../testUtils');
 const assert = require('node:assert');
+const { join } = require('node:path');
+const { mkdirSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { closeDatabase, database, databases, resetDatabases, table } = require('#src/resources/databases');
 const { DatabaseClosingError } = require('#src/utility/errors/hdbError');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
 
 const definition = (databaseName) => ({
 	database: databaseName,
@@ -17,7 +21,10 @@ const definition = (databaseName) => ({
 });
 
 describe('A database root while its close is in flight', function () {
-	before(() => setupTestDBPath());
+	let testRoot;
+	before(() => {
+		testRoot = setupTestDBPath();
+	});
 
 	it('is skipped by a rescan and refused to an open until the close completes', async () => {
 		const databaseName = 'closingRootRescan';
@@ -86,16 +93,19 @@ describe('A database root while its close is in flight', function () {
 		const rootStore = database({ database: databaseName });
 		const stopAuditCleanup = rootStore.auditStore.stopAuditCleanup;
 		let overlapping;
+		let refusedMeanwhile;
 		rootStore.auditStore.stopAuditCleanup = function (...args) {
 			rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
 			resetDatabases();
 			overlapping = closeDatabase(databaseName, { requireClosed: true }).then(() => rootStore.status);
+			refusedMeanwhile = catchError(() => database({ database: databaseName })) instanceof DatabaseClosingError;
 			return stopAuditCleanup.apply(this, args);
 		};
 
 		await closeDatabase(databaseName);
 
 		assert.ok(overlapping, 'precondition: the overlapping close started during the first');
+		assert.ok(refusedMeanwhile, 'an open is refused while the closes overlap');
 		assert.strictEqual(await overlapping, 'closed', 'the overlapping close resolves only once the root is closed');
 	});
 
@@ -117,6 +127,40 @@ describe('A database root while its close is in flight', function () {
 		await Recreated.put({ id: 2, name: 'two' });
 		assert.ok((await Recreated.get(1)) == null, 'the drop removed the old record');
 		assert.strictEqual((await Recreated.get(2)).name, 'two');
+	});
+
+	it('refuses an alias of a database whose failed close awaits recovery', async () => {
+		const storageRoot = join(testRoot, 'closing-alias');
+		mkdirSync(storageRoot, { recursive: true });
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storageRoot);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+		resetDatabases();
+		try {
+			const Physical = table(definition('closing_physical'));
+			await Physical.put({ id: 1, name: 'one' });
+			await closeDatabase('closing_physical');
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, { closing_alias: { path: storageRoot } });
+			const loaded = resetDatabases();
+			assert.ok(loaded.closing_alias?.Items, 'precondition: the alias loads the physical root');
+			const Items = loaded.closing_physical.Items;
+			const cleanup = Items.cleanup;
+			Items.cleanup = function () {
+				Items.cleanup = cleanup;
+				throw new Error('cleanup failed');
+			};
+
+			await assert.rejects(closeDatabase('closing_physical'), /cleanup failed/);
+
+			const opened = catchError(() => database({ database: 'closing_alias' }));
+			assert.ok(
+				opened instanceof DatabaseClosingError,
+				`alias open during recovery: ${opened?.message ?? opened?.path}`
+			);
+		} finally {
+			await new ResourceBridge().dropSchema({ schema: 'closing_physical' });
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+			setupTestDBPath();
+		}
 	});
 });
 
