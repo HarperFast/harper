@@ -5682,7 +5682,7 @@ export function makeTable(options): TableResourceClass {
 						residencyId: residencyPolicy ? undefined : options?.residencyId,
 						residencySlot,
 					};
-					write.blobsAuditReferenced = !isCopyApply && Boolean(audit);
+					if (audit && !isCopyApply) write.blobsAuditReferenced = true;
 					if (priorStagedOp) priorStagedOp.superseded = true;
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
@@ -8287,7 +8287,6 @@ export function makeTable(options): TableResourceClass {
 						}
 						if ((residencyId || write.residencyId) && audit && !isCopyApply && !transaction?.isRetry)
 							write.residencyId = residencyId;
-						// set-only: see TransactionWrite.blobsAuditReferenced
 						if (audit && !isCopyApply) write.blobsAuditReferenced = true;
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
@@ -15319,7 +15318,6 @@ export function makeTable(options): TableResourceClass {
 								Boolean(invalidated),
 								auditRecord
 							);
-							// set-only: see TransactionWrite.blobsAuditReferenced
 							if (writeAudit) sourceWrite.blobsAuditReferenced = true;
 							// arm the eviction scanner, mirroring the .put() path
 							if (sourceContext.expiresAt) scheduleCleanup();
