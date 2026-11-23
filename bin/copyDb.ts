@@ -373,13 +373,6 @@ async function copyDbEnvironment(
 	const tombstoneCutoff = Date.now() - auditRetention;
 	// we use a single transaction to get a snapshot, also we can't use snapshot: false on dupsort dbs
 	const transaction = sourceDbisDb.useReadTransaction();
-	const catalogWrites: Promise<unknown>[] = [];
-	// observed when issued, so a failed commit rejects the join below instead of surfacing as unhandled
-	const writeCatalogRow = (key: any, value: unknown) => {
-		const write = targetDbisDb.put(key, value);
-		write.catch(() => {});
-		catalogWrites.push(write);
-	};
 	// written after the data and audit log they describe, so an interrupted copy claims none of it
 	const symbolKeyedRows: { key: any; value: unknown }[] = [];
 	try {
@@ -403,7 +396,8 @@ async function copyDbEnvironment(
 					newCompression = null;
 				}
 			}
-			writeCatalogRow(key, attribute);
+			// putSync: an async put's failed commit also rejects a second promise no caller can observe
+			targetDbisDb.putSync(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
 			// we want to directly copy bytes so we don't have the overhead of
@@ -428,8 +422,7 @@ async function copyDbEnvironment(
 			await copyDbi(useRawBytes(sourceAuditDbi), useRawBytes(targetAuditStore), false, transaction);
 		}
 		await written;
-		for (const { key, value } of symbolKeyedRows) writeCatalogRow(key, value);
-		await Promise.all(catalogWrites);
+		for (const { key, value } of symbolKeyedRows) targetDbisDb.putSync(key, value);
 
 		/**
 		 * A primary DBI's shared-structures dictionary is the whole table's decodability: without it
@@ -939,7 +932,6 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				// also lead with 0x42 (structure ref id 2). Failing here keeps the migration
 				// incomplete (LMDB source intact, migrateOnStart flag retained) instead of
 				// shipping a database whose records silently lost versions and record prototypes.
-				await firstVersioned.written;
 				await written;
 				const roundTrip = targetDbi.getBinarySync(firstVersioned.key);
 				const roundTripVersion = roundTrip && roundTrip.length >= 8 ? roundTrip.readDoubleBE(0) : undefined;
@@ -1063,6 +1055,13 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		const MAX_RETRIES = 1000;
 		let retries = MAX_RETRIES;
 		let start = null;
+		let resumed = false;
+		// the entry a resumed read starts at was already written; re-putting it would save its blobs again
+		const isResumedEntry = (key) => {
+			if (!resumed) return false;
+			resumed = false;
+			return key === start || (typeof key === 'object' && JSON.stringify(key) === JSON.stringify(start));
+		};
 		while (retries-- > 0) {
 			try {
 				if (isPrimary) {
@@ -1081,6 +1080,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 						copiedDeleteBoundary: entryCopiedDeleteBoundary,
 					} of sourceDbi.getRange({ start, transaction, versions: true })) {
 						try {
+							if (isResumedEntry(key)) continue;
 							start = key;
 							if (typeof key === 'symbol') {
 								skippedRecord++;
@@ -1127,7 +1127,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								typeof key === 'number' ? key : recordsCopied,
 								sourceRootStore
 							);
-							if (version) firstVersioned ??= { key, version, written };
+							if (version) firstVersioned ??= { key, version };
 							// Feed only the record's SHAPE to the observer so it accumulates the canonical
 							// classic structure (key list) for this shape; the encoded output is discarded.
 							// A classic/named structure depends only on the keys, so we stub every leaf value
@@ -1163,6 +1163,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				} else {
 					for (const { key, value } of sourceDbi.getRange({ start, transaction })) {
 						try {
+							if (isResumedEntry(key)) continue;
 							start = key;
 							if (typeof key === 'symbol') {
 								continue;
@@ -1192,6 +1193,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			} catch (err) {
 				// Resume from the last key read, as copyDbi does: re-copying it is idempotent, while stepping past
 				// it, or stopping, would publish a copy missing whatever the iterator had not reached
+				resumed = start !== null;
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
 					err
