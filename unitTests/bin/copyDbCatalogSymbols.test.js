@@ -1,7 +1,4 @@
-// The catalog's Symbol-keyed rows sort below lmdb-js's default range start, so both catalog walks
-// skipped them. A compaction keeps every one; a migration to RocksDB keeps the rows that hold without
-// the transaction log it leaves behind. Both are read back through the runtime catalog codec, which
-// reads a bare fixint of 32-63 as a struct header.
+// Read back through the runtime catalog codec, which reads a bare fixint of 32-63 as a struct header.
 const fs = require('fs-extra');
 const assert = require('node:assert');
 const path = require('node:path');

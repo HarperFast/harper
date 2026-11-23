@@ -373,12 +373,15 @@ async function copyDbEnvironment(
 	const tombstoneCutoff = Date.now() - auditRetention;
 	// we use a single transaction to get a snapshot, also we can't use snapshot: false on dupsort dbs
 	const transaction = sourceDbisDb.useReadTransaction();
+	const catalogWrites: Promise<unknown>[] = [];
+	// written after the data and audit log they describe, so an interrupted copy claims none of it
+	const symbolKeyedRows: { key: any; value: unknown }[] = [];
 	try {
-		// start: null, since lmdb-js's default start skips the Symbol-keyed rows
+		// lmdb-js's default start skips Symbol keys
 		for (const { key, value: attribute } of sourceDbisDb.getRange({ start: null, transaction })) {
 			if (catalogSymbolName(key) !== undefined) {
 				// the target's encoder keeps its own structures dictionary
-				if (key !== STRUCTURES_KEY) targetDbisDb.put(key, attribute);
+				if (key !== STRUCTURES_KEY) symbolKeyedRows.push({ key, value: attribute });
 				continue;
 			}
 			const isPrimary = isPrimaryCatalogRow(key, attribute);
@@ -394,7 +397,7 @@ async function copyDbEnvironment(
 					newCompression = null;
 				}
 			}
-			targetDbisDb.put(key, attribute);
+			catalogWrites.push(targetDbisDb.put(key, attribute));
 			if (!(isPrimary || attribute.indexed)) continue;
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
 			// we want to directly copy bytes so we don't have the overhead of
@@ -418,6 +421,8 @@ async function copyDbEnvironment(
 			console.log('copying audit log for', sourceDatabase, 'to', targetDatabasePath);
 			await copyDbi(useRawBytes(sourceAuditDbi), useRawBytes(targetAuditStore), false, transaction);
 		}
+		for (const { key, value } of symbolKeyedRows) catalogWrites.push(targetDbisDb.put(key, value));
+		await Promise.all(catalogWrites);
 
 		/**
 		 * A primary DBI's shared-structures dictionary is the whole table's decodability: without it
@@ -838,11 +843,9 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	let transaction;
 	try {
 		transaction = sourceDbisDb.useReadTransaction();
-		// start: null, since lmdb-js's default start skips the Symbol-keyed rows
 		for (const { key, value: attribute } of sourceDbisDb.getRange({ start: null, transaction })) {
 			const symbolName = catalogSymbolName(key);
 			if (symbolName !== undefined) {
-				// the structures dictionary was copied by copyStructures above
 				if (LOG_INDEPENDENT_CATALOG_KEYS.has(symbolName)) targetDbisDb.putSync(key, attribute);
 				continue;
 			}
@@ -919,7 +922,6 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
 			const copied = await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
-			// a migration missing records must not be published over its LMDB source
 			if (copied?.failedRecords > 0)
 				throw new Error(`Migration of ${sourceDatabase}/${key} failed to write ${copied.failedRecords} record(s)`);
 			if (copied?.firstVersioned !== undefined) {
@@ -1111,8 +1113,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								clearNextEncoding();
 								versionlessKeys.add(typeof key === 'object' ? JSON.stringify(key) : key);
 							}
-							// putSync: put is an async wrapper over the same synchronous write, so an encode failure would
-							// become a rejection this record's catch never sees, and the record would be lost unreported
+							// rocksdb-js's put is an async wrapper over putSync, so a failed encode would be a rejection
+							// this catch never sees
 							written = encodeBlobsWithFilePath(
 								() => targetDbi.putSync(key, value, version),
 								typeof key === 'number' ? key : recordsCopied,
@@ -1169,6 +1171,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								outstandingWrites = 0;
 							}
 						} catch (error) {
+							failedRecords++;
 							console.error(
 								'Error migrating index record',
 								typeof key === 'symbol' ? 'symbol' : key,
@@ -1189,13 +1192,13 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				if (typeof start === 'string') {
 					if (start === 'z') {
 						console.error('Reached end of dbi', start, 'for', sourceDatabase);
-						return;
+						return { failedRecords };
 					}
 					start = start.slice(0, -2) + 'z';
 				} else if (typeof start === 'number') start++;
 				else {
 					console.error('Unknown key type', start, 'for', sourceDatabase);
-					return;
+					return { failedRecords };
 				}
 			}
 		}

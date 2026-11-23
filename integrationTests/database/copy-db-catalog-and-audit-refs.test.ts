@@ -1,10 +1,5 @@
 /**
- * compactOnStart and migrateOnStart must carry a database across whole: every record of an
- * unaudited table patched with `add` operations (whose header holds audit refs), its secondary index,
- * and the Symbol-keyed catalog rows (residency mappings, the table-id watermark).
- *
- * Seeds on LMDB, compacts on restart, then migrates to RocksDB on the next restart, reading
- * everything back after each boot.
+ * LMDB seed, then compactOnStart, then migrateOnStart, reading everything back after each boot.
  *
  *   npm run test:integration -- "integrationTests/database/copy-db-catalog-and-audit-refs.test.ts"
  */
