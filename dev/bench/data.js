@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795338370752,
+  "lastUpdate": 1795418619247,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -9857,6 +9857,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1917.8,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bf042750f1fe0fc4803bf49829114e0395ab826d",
+          "message": "Retry backpressured seed batches in native-plane coverage (#4472)\n\nDispatch-Task: harper-native-plane-coverage-seed-503\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-11-23T03:51:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/bf042750f1fe0fc4803bf49829114e0395ab826d"
+        },
+        "date": 1795418615568,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6210.02,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 9186.71,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 9010.46,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6799.33,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4867.67,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8931.1,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 947.05,
             "unit": "ops/sec"
           }
         ]
