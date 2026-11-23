@@ -6,9 +6,10 @@
  * suite pins that the permission at reconnect decides.
  *
  * A refused resume may end the connection as not authorized (today) or go on to deliver what the role can still
- * read (one of #2943's options). B and D2 accept both and assert the denied table's absence either way. After B
- * restores read, whether the DurableFeed writes made while read was denied arrive is reported, not asserted:
- * #2943 decides whether the session keeps a topic it can no longer subscribe to.
+ * read (one of #2943's options). B and D2 accept both and assert the denied table's absence either way. B then
+ * restores read and pins today's outcome, that the session still holds the topic: a DurableFeed write made after
+ * the restore arrives. Whether the writes made while read was denied arrive too is reported, not asserted. #2943's
+ * other option, dropping a topic the session can no longer subscribe to, would change both.
  *
  * Env: DURABLE_RESUME_THREADS (worker count, default 1). With more than one worker a role change is taken as
  * visible after 8 reads per worker in a row on fresh connections. Connections are hashed to workers, so that makes
@@ -249,11 +250,12 @@ suite(
 				15_000
 			);
 			ok(settled, `the resume neither refused nor delivered what the role can read: ${describe(conn)}`);
-			// the refusal is read before the transport closes, and a frame sent in between still counts
+			if (!conn.events.includes(NOT_AUTHORIZED)) await sleep(SETTLE_MS);
+			// a refusal, before or during the settle, is read before the transport closes: a frame sent in between counts
 			if (conn.events.includes(NOT_AUTHORIZED)) {
 				const closed = await waitFor(() => conn.events.includes('close'));
 				ok(closed, `the refused connection never closed: ${describe(conn)}`);
-			} else await sleep(SETTLE_MS);
+			}
 			return conn;
 		}
 		async function openDurable(arm: string, principal: Principal, topics: string[]) {
@@ -483,7 +485,6 @@ suite(
 			const sentAgain = await waitFor(() => ids(resumed, 'DurableOther').includes('d1-unacked'));
 			strictEqual(resumed.connectError, undefined, describe(resumed));
 			ok(sentAgain, `the unacknowledged delivery was not sent again, so the arm proves nothing: ${describe(resumed)}`);
-			// as in C, with the later write told apart by its title
 			await put('DurableOther', 'd1-unacked', 'd1-secret-after-resume', 'after-resume');
 			const sentAfter = await waitFor(() => resumed.frames.some((frame) => frame.json?.title === 'after-resume'));
 			await sleep(SETTLE_MS);
