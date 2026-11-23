@@ -14559,8 +14559,12 @@ export function makeTable(options): TableResourceClass {
 		else if (context?.noCache || context?.mustRevalidate) allowed = false;
 		else if (typeof source?.allowStaleWhileRevalidate === 'function')
 			allowed = source.allowStaleWhileRevalidate(entry, id);
-		else if (typeof source === 'function' && sourceDefinesInstanceHook(source))
-			allowed = new source(id, context).allowStaleWhileRevalidate(entry, id);
+		else if (typeof source === 'function' && sourceDefinesInstanceHook(source)) {
+			const sourceInstance = new source(id, context);
+			// an instance field can shadow an inherited hook
+			if (typeof sourceInstance.allowStaleWhileRevalidate === 'function')
+				allowed = sourceInstance.allowStaleWhileRevalidate(entry, id);
+		}
 		if (typeof allowed?.then === 'function') {
 			allowed.then(undefined, (error) => logger.warn?.(error));
 			allowed = false;
@@ -14574,7 +14578,7 @@ export function makeTable(options): TableResourceClass {
 		if (allowed && entry.expiresAt != undefined && !evictionMs && !staleWithoutEvictionWarned) {
 			staleWithoutEvictionWarned = true;
 			logger.warn?.(
-				`Table "${tableName}" allows stale-while-revalidate but has no eviction time, so its cleanup scan removes expired records soon after they expire and later reads wait for the source. Set an eviction time (@table(eviction: ...) or the sourcedFrom eviction option) to keep serving stale records.`
+				`Table "${tableName}" allows stale-while-revalidate but has no eviction time, so its next cleanup scan removes expired records and later reads wait for the source. Set an eviction time (@table(eviction: ...) or the sourcedFrom eviction option) to keep serving stale records.`
 			);
 		}
 		return Boolean(allowed);

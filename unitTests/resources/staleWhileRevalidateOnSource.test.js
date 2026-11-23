@@ -22,6 +22,7 @@ describe('Stale-while-revalidate hook on the source', function () {
 	let SubclassAllows;
 	let HooklessClass;
 	let AsyncHooked;
+	let Shadowed;
 	let sourceCalls;
 	let pendingCalls;
 	let hookCalls;
@@ -48,6 +49,7 @@ describe('Stale-while-revalidate hook on the source', function () {
 		Evicting = table({ table: 'SwrOnSourceEvicting', database: 'swrOnSource', attributes });
 		const Hookless = table({ table: 'SwrOnSourceHookless', database: 'swrOnSource', attributes });
 		HooklessClass = table({ table: 'SwrOnSourceHooklessClass', database: 'swrOnSource', attributes });
+		Shadowed = table({ table: 'SwrOnSourceShadowed', database: 'swrOnSource', attributes });
 		AsyncHooked = table({ table: 'SwrOnSourceAsync', database: 'swrOnSource', attributes });
 		getDatabases();
 		class StalePolicy extends Resource {
@@ -62,6 +64,11 @@ describe('Stale-while-revalidate hook on the source', function () {
 			}
 		}
 		ClassSourced.sourcedFrom(Origin);
+		Shadowed.sourcedFrom(
+			class OptedOut extends Origin {
+				allowStaleWhileRevalidate = undefined;
+			}
+		);
 		QuerySourced.sourcedFrom(Origin);
 		Warned.sourcedFrom(Origin);
 		Evicting.sourcedFrom(Origin, { eviction: 60 });
@@ -225,6 +232,15 @@ describe('Stale-while-revalidate hook on the source', function () {
 		await expire(SubclassAllows, 'table-no-cache');
 		assert.equal((await SubclassAllows.get('table-no-cache', { noCache: true })).name, 'stale table-no-cache');
 		assert.equal(sourceCalls, 1);
+	});
+
+	it('waits for the source when an instance field shadows an inherited source hook', async function () {
+		await expire(Shadowed, 'shadowed');
+		const reading = Shadowed.get('shadowed');
+		await waitFor(() => sourceCalls === 1);
+		pendingCalls[0].resolve({ id: 'shadowed', name: 'fresh shadowed' });
+		assert.equal((await reading).name, 'fresh shadowed');
+		assert.deepEqual(hookCalls, []);
 	});
 
 	it('waits for the source when neither the table nor the source class has a hook', async function () {
