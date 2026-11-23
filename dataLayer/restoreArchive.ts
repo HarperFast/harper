@@ -197,7 +197,6 @@ export async function stageArchive(
 				throw new ClientError('The archive holds no Harper database (it has no RocksDB CURRENT file)');
 			}
 			const engineOnly = isEngineOnly({ manifest });
-			// the blob roots stay as they are, so only the engine part is installed, and only its area kept
 			const parts = engineOnly ? plan.parts.filter((part) => part.kind === 'engine') : plan.parts;
 			if (engineOnly) await removeStagingArea(plan.areas.filter((area) => area !== plan.stagingDir));
 			const record: StagedRecord = {

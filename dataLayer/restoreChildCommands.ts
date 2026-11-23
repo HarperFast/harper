@@ -283,6 +283,31 @@ async function prove(args: ApplyAndProveArgs, options: ProveOptions = {}): Promi
 	return evidence;
 }
 
+/**
+ * An engine-only archive, proven with its references checked by stat against `liveRoots`. It is opened
+ * over placeholder roots that do not exist, so nothing the proof runs can write or remove a live blob.
+ */
+function proveAgainstLiveBlobs(
+	args: ApplyAndProveArgs,
+	stagingDir: string,
+	liveRoots: string[],
+	scanEveryStore: boolean
+): Promise<RestoreEvidence> {
+	const blobRoots = liveRoots.map((_, index) => join(stagingDir, 'no-blobs', String(index)));
+	return prove(
+		{ ...args, blobRoots },
+		{ blobRoots, scanEveryStore, source: 'archive', engineOnly: true, checkBlobsIn: liveRoots }
+	);
+}
+
+function proveStagedBlobs(args: ApplyAndProveArgs, record: StagedRecord): Promise<RestoreEvidence> {
+	const blobRoots = record.parts
+		.filter((part) => part.kind === 'blobs')
+		.sort((a, b) => a.index! - b.index!)
+		.map((part) => part.staged);
+	return prove({ ...args, blobRoots }, { blobRoots, scanEveryStore: true });
+}
+
 /** `path`, under the root at an index of `from`, moved under the root at the same index of `to`. */
 function inRootsOf(path: string, from: string[], to: string[]): string {
 	for (const [index, root] of from.entries()) {
@@ -387,8 +412,8 @@ interface ProveStagedArgs {
  * Proves a staged archive where it sits, with the target still serving: the restore proof, run against
  * the staged parts and never the live roots, and then every store read to its end. What it proved is
  * recorded in `staged.json`, which a later swap checks before it destroys anything. An engine-only
- * archive is replayed over placeholder roots, and its references are checked against the live roots by
- * stat alone: one missing now fails before the database closes, and the swap repeats the check.
+ * archive's references are checked against the live roots now, and again by the swap once the database
+ * is closed.
  */
 async function proveStaged(args: ProveStagedArgs): Promise<Pick<StagedRecord, 'generation' | 'evidence'>> {
 	const { isEngineOnly, readStagedRecord, writeStagedRecord, withIdentities } = await import('./archiveStaging.ts');
@@ -400,28 +425,19 @@ async function proveStaged(args: ProveStagedArgs): Promise<Pick<StagedRecord, 'g
 	}
 	await validateTransactionLogs(databasePath);
 	const generation = await stampDatabaseDirectory(databasePath, { carriesLog: true });
-	const engineOnly = isEngineOnly(record);
-	// an engine-only archive's references are checked against the live roots, read through placeholders
-	const liveRoots = engineOnly ? getBlobPathsForDatabaseName(args.databaseName) : undefined;
-	const blobRoots = liveRoots
-		? liveRoots.map((_, index) => join(args.stagingDir, 'no-blobs', String(index)))
-		: record.parts
-				.filter((part) => part.kind === 'blobs')
-				.sort((a, b) => a.index! - b.index!)
-				.map((part) => part.staged);
-	const evidence = await prove(
-		{
-			databaseName: args.databaseName,
-			sourceDatabase: args.databaseName,
-			databasePath,
-			backupDir: '',
-			blobRoots,
-			probe: false,
-			interrupted: false,
-			acceptUnverifiedBlobs: args.acceptUnverifiedBlobs,
-		},
-		{ blobRoots, scanEveryStore: true, engineOnly, checkBlobsIn: liveRoots }
-	);
+	const proveArgs: ApplyAndProveArgs = {
+		databaseName: args.databaseName,
+		sourceDatabase: args.databaseName,
+		databasePath,
+		backupDir: '',
+		blobRoots: [],
+		probe: false,
+		interrupted: false,
+		acceptUnverifiedBlobs: args.acceptUnverifiedBlobs,
+	};
+	const evidence = isEngineOnly(record)
+		? await proveAgainstLiveBlobs(proveArgs, args.stagingDir, getBlobPathsForDatabaseName(args.databaseName), true)
+		: await proveStagedBlobs(proveArgs, record);
 	for (const part of record.parts) {
 		// through the reserved directory's parent, whose entry for it may be as new as this restore
 		const through = reservedDirectoryParent(part.staged);
@@ -444,13 +460,24 @@ async function proveStaged(args: ProveStagedArgs): Promise<Pick<StagedRecord, 'g
  * The staged branch of apply-and-prove: verify that the proven parts are still staged or already
  * installed and still belong where configuration puts them, rename each into place, then check that
  * what opens at the destination is the generation the staged proof stamped. An engine-only archive
- * installs its engine part alone and is then proven in full against the blob roots already here.
+ * installs its engine part alone, after its references are checked again against the blob roots here.
  */
 async function applyStagedAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 	const { isEngineOnly, readStagedRecord, verifyStagedSwap, applyStagedSwap } = await import('./archiveStaging.ts');
+	let rechecked: RestoreEvidence | undefined;
 	const record = await inPhase('verify', async () => {
 		const read = readStagedRecord(args.stagingDir!, args.databaseName);
 		verifyStagedSwap(read, args.databasePath, args.blobRoots);
+		// the database is closed and its blob work fenced, so a reference found here is still there after the swap
+		const engine = read.parts[0].staged;
+		if (isEngineOnly(read) && existsSync(engine)) {
+			rechecked = await proveAgainstLiveBlobs(
+				{ ...args, databasePath: engine },
+				args.stagingDir!,
+				args.blobRoots,
+				false
+			);
+		}
 		return read;
 	});
 	if (args.probe) await inPhase('probe', () => probeEngineLock(args.databaseName, args.databasePath));
@@ -477,12 +504,15 @@ async function applyStagedAndProve(args: ApplyAndProveArgs): Promise<RestoreEvid
 			throw new AggregateError(failures, `The restored ${args.databaseName} database did not close cleanly`);
 		}
 		const staged = record.evidence as unknown as RestoreEvidence;
-		if (!isEngineOnly(record)) {
-			return { ...staged, durability: directoryFsyncSupported(args.databasePath) ? 'full' : 'no-directory-fsync' };
+		if (isEngineOnly(record) && !rechecked) {
+			// a resume after the engine part was installed: the check runs where it now is
+			rechecked = await prove(args, { source: 'archive', engineOnly: true });
 		}
-		// the live roots, checked again now that the database is closed and its blob work fenced
-		const proven = await prove(args, { source: 'archive', engineOnly: true });
-		return { ...proven, ...(staged.stores_read ? { stores_read: staged.stores_read } : {}) };
+		return {
+			...staged,
+			...(rechecked ? { blobs: rechecked.blobs } : {}),
+			durability: directoryFsyncSupported(args.databasePath) ? 'full' : 'no-directory-fsync',
+		};
 	});
 }
 

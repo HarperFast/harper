@@ -12,6 +12,7 @@ const {
 	classifyRestoredBlobFile,
 	createCaptureMarker,
 	getFilePathForBlob,
+	readBlobFileIdFloor,
 } = require('#src/resources/blob');
 const { waitFor } = require('../waitFor.js');
 
@@ -180,6 +181,31 @@ describe('restored blob assessment', function () {
 			});
 			const lenient = [...Table.primaryStore.getRange({ snapshot: false })].map(({ key }) => key);
 			assert.deepStrictEqual(lenient, [1, 2, 3], 'other reads still decode leniently after the scan fails');
+		});
+	});
+
+	describe('readBlobFileIdFloor', function () {
+		const floorOf = (value) => readBlobFileIdFloor({ getBinary: () => value });
+
+		it('reads an absent floor as none and a written one as its id', function () {
+			assert.strictEqual(floorOf(undefined), 0);
+			const bytes = Buffer.alloc(8);
+			bytes.writeDoubleLE(0x1234, 0);
+			assert.strictEqual(floorOf(new Uint8Array(bytes)), 0x1234);
+		});
+
+		it('throws on a floor it cannot read, rather than seed the counter below restored ids', function () {
+			assert.throws(() => floorOf(new Uint8Array(3)), /blob file id floor .* not valid/);
+			assert.throws(() => floorOf(new Uint8Array(8).fill(0xff)), /not valid/);
+			assert.throws(
+				() =>
+					readBlobFileIdFloor({
+						getBinary() {
+							throw new Error('read failed');
+						},
+					}),
+				/read failed/
+			);
 		});
 	});
 });

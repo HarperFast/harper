@@ -2912,16 +2912,15 @@ const idIncrementers = new Map<RootDatabase, BigInt64Array>();
  */
 const BLOB_FILE_ID_FLOOR_KEY = Symbol.for('blob-file-id-floor');
 
+/** Throws rather than read an unreadable floor as none, which would hand out ids restored records reference. */
 export function readBlobFileIdFloor(auditStore: any): number {
-	let stored: any;
-	try {
-		stored = auditStore?.getBinary?.(BLOB_FILE_ID_FLOOR_KEY);
-	} catch {
-		return 0;
+	const stored: any = auditStore?.getBinary?.(BLOB_FILE_ID_FLOOR_KEY);
+	if (stored == null) return 0;
+	const floor = stored.byteLength === 8 ? Buffer.from(stored.buffer, stored.byteOffset, 8).readDoubleLE(0) : NaN;
+	if (!Number.isSafeInteger(floor) || floor <= 0) {
+		throw new Error(`The blob file id floor in the audit metadata is not valid (${stored.byteLength} bytes)`);
 	}
-	if (stored?.byteLength !== 8) return 0;
-	const floor = Buffer.from(stored.buffer, stored.byteOffset, 8).readDoubleLE(0);
-	return Number.isSafeInteger(floor) && floor > 0 ? floor : 0;
+	return floor;
 }
 
 /** Raises the floor to `fileId`, never lowers it; durable once the caller flushes the store. */

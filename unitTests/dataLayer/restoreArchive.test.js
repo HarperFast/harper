@@ -898,10 +898,10 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			);
 		});
 
-		it('checks the blob files again once the database is closed, leaving it blocked until resume finds them', async function () {
+		it('checks the blob files again once the database is closed, and refuses before anything is replaced', async function () {
 			const fixture = await engineOnlyDatabase();
 			const [[blobPath, blobBytes]] = blobFilesOf(fixture.name);
-			// passes the check before the close, and is gone by the one after it
+			// passes the check while the database serves, and is gone by the one after the close
 			const restoreRunner = replaceExport(
 				restoreChildRunnerModule,
 				'runRestoreChild',
@@ -918,15 +918,11 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			} finally {
 				restoreRunner();
 			}
-			assert.strictEqual(restoreMarkerPresent(fixture.dir), true, 'destruction began, so the database is blocked');
-			assert.strictEqual(receiptOf(fixture.dir).options.allow_engine_only, true);
-
-			writeFileSync(blobPath, Buffer.from(blobBytes, 'base64'));
-			const { result } = await requestRestore(fixture.name, { resume: true });
-			assert.strictEqual(result.blob_integrity, 'verified');
-			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
-			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false, 'nothing was replaced, so nothing is blocked');
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(stagingLeft(fixture.name), []);
+			writeFileSync(blobPath, Buffer.from(blobBytes, 'base64'));
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live);
 		});
 
 		it('with on_restart=true, is swapped in and proven by the next startup', async function () {
@@ -965,7 +961,7 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 		 * the renames would leave it: the marker is published, the old generation is moved aside, the engine
 		 * part is installed, and the blob root is still staged.
 		 */
-		async function interruptAfterEnginePart(fixture) {
+		async function interruptAfterEnginePart(fixture, options = {}) {
 			const restoreRunner = replaceExport(
 				restoreChildRunnerModule,
 				'runRestoreChild',
@@ -980,7 +976,7 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			);
 			try {
 				await assert.rejects(
-					uploadAndRun(fixture.name, fixture.archive),
+					uploadAndRun(fixture.name, fixture.archive, options),
 					// a status, so the CLI prints the guidance alone and not a stack trace of its wrapper
 					(error) => error.statusCode === 500 && /resume=true/.test(error.message)
 				);
@@ -1016,6 +1012,26 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			assert.strictEqual(result.restored_from, 'upload');
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.deepStrictEqual(stagingLeft(fixture.name), []);
+		});
+
+		it('checks an engine-only archive’s blob files where its engine part was installed, when resumed after it was', async function () {
+			const fixture = await engineOnlyDatabase();
+			const [[blobPath, blobBytes]] = blobFilesOf(fixture.name);
+			await interruptAfterEnginePart(fixture, { allow_engine_only: true });
+			rmSync(blobPath);
+
+			await assert.rejects(
+				requestRestore(fixture.name, { resume: true }),
+				/references blob files that are not in this instance's blob paths/
+			);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), true, 'the half-swapped database stays blocked');
+
+			writeFileSync(blobPath, Buffer.from(blobBytes, 'base64'));
+			const { result } = await requestRestore(fixture.name, { resume: true });
+			assert.strictEqual(result.blob_integrity, 'verified');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
 			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
 			assert.deepStrictEqual(stagingLeft(fixture.name), []);
 		});

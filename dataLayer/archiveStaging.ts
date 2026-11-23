@@ -637,7 +637,6 @@ function partAction(part: StagedPart): PartAction {
 export function verifyStagedSwap(record: StagedRecord, databaseDir: string, blobRoots: string[]): void {
 	if (record.state !== 'proven') throw new Error('The staged archive has not been proven');
 	const blobParts = record.parts.filter((part) => part.kind === 'blobs');
-	// an engine-only archive replaces the database directory alone; its blob roots stay as they are
 	const expected = [databaseDir, ...(isEngineOnly(record) ? [] : blobRoots)].map((path) => resolve(path));
 	const recorded = [record.parts[0].destination, ...blobParts.map((part) => part.destination)].map((path) =>
 		resolve(path)

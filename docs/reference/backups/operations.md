@@ -326,7 +326,8 @@ harper restore_backup database=data file=./data-noblobs.tar.gz allow_engine_only
 ```
 
 - **Before the database is closed**, the job proves the archive as above, checking each blob reference against the blob files already on this instance. A reference whose file is missing fails the job with the database as it was, unless `accept_unverified_blobs: true`.
-- **With the database closed**, every reference is checked again. The database stays closed for this as well as for the swap, so the outage is longer than for an archive that carries its blobs. A blob file removed between the two checks fails the restore after it began replacing the database, which leaves the database blocked: put the file back and run `resume: true`, or withdraw the restore with `cancel: true` and send the archive again with `accept_unverified_blobs: true`.
+- **With the database closed**, every reference is checked again before anything is replaced. The database stays closed for this as well as for the swap, so the outage is longer than for an archive that carries its blobs. A blob file removed between the two checks fails the job with the database as it was, and it reopens.
+- **A restore interrupted after it replaced the database** checks the references when it is resumed. If a blob file went missing meanwhile, the resume fails and the database stays blocked: put the file back and run `resume: true` again, or withdraw the restore with `cancel: true` and send the archive again with `accept_unverified_blobs: true`.
 - **A restored record can read a blob that is no longer its own** if the blob file it referenced was replaced since the archive was made, as with a managed backup made with `exclude_blobs`.
 - **A blob written after the restore gets a new file**, never one a restored record references, even where those files are missing.
 
