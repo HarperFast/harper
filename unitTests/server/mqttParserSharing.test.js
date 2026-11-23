@@ -346,8 +346,7 @@ describe('MQTT packet parsing across connections', function () {
 		return new WeakRef(watchParsers(read).parsing.at(-1));
 	}
 
-	// Each holds its socket to the end, as whatever outlives a close (the WebSocket library's references, a store an
-	// async context left on a promise) does: the socket's message listener keeps the connection's scope.
+	// each holds its socket to the end, as whatever outlives a close would
 	it('gives up the parser of a connection closed mid-packet', async function () {
 		if (typeof global.gc !== 'function') this.skip();
 		const connection = await connected('closed-mid-packet');
@@ -359,6 +358,8 @@ describe('MQTT packet parsing across connections', function () {
 	});
 
 	// uWS runs the close handler inside close(), so the read that parses a DISCONNECT ends after its connection has.
+	// Collected because a closed connection's parser is dropped, not pooled; pooling a clean one (harper#4543) would
+	// make this check the pool instead.
 	it('gives up the parser of a connection that closes while its read parses', async function () {
 		if (typeof global.gc !== 'function') this.skip();
 		const connection = await connected('closed-while-parsing');

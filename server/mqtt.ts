@@ -507,8 +507,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		addAnalyticsListener(reportConnections);
 	}
 	// What a connection keeps lives in this scope for as long as it is open, so helpers that need nothing of it are
-	// module functions (closures made here share one context), and what only some connections need (a stall timer's
-	// callback) is built when they do.
+	// module functions, and what only some connections need (a stall timer's callback) is built when they do.
 	let disconnected;
 	// set by a failed delivery, so sibling subscriptions stop writing before the aborted socket's 'close' arrives
 	let aborted = false;
@@ -584,7 +583,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		// The parser consumes a packet's fixed header before its body arrives, so holding no bytes does not
 		// mean it is between packets; its state counter returns to 0 only once a packet is complete.
 		midPacket = !(remaining === 0 && reading._stateCounter === 0 && !reading.error);
-		// a connection that ended during this parse (its DISCONNECT, or a close uWS runs inside parse()) keeps none
+		// uWS runs the close handler inside parse() when a DISCONNECT closes the socket
 		if (midPacket || lastReadStraddled) parser = disconnected ? undefined : reading;
 		else {
 			releaseParser(reading);
@@ -593,8 +592,7 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		lastReadStraddled = midPacket;
 	}
 	function onClose() {
-		// Whatever still references the socket keeps this scope through its message listener, and a parser held
-		// mid-packet holds that packet's bytes. Not given back: its partial packet would corrupt the next connection's.
+		// not pooled: one held mid-packet has that packet's bytes, which a socket outliving its close would also keep
 		parser = undefined;
 		numberOfConnections--;
 		liveConnections.delete(connection);
