@@ -925,6 +925,22 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.live);
 		});
 
+		it('restores records that reference no blob files, with nothing to check after the close', async function () {
+			const name = `restore_archive_${process.pid}_${++sequence}`;
+			databases.push(name);
+			const Items = table(definition(name));
+			await Items.put({ id: 'only-in-archive', label: 'archived' });
+			const archived = await snapshot(Items);
+			const archive = await archiveOf(Items, name, { excludeBlobs: true });
+			await Items.put({ id: 'only-live', label: 'live' });
+			await Items.primaryStore.rootStore.flush();
+
+			const { result } = await uploadAndRun(name, archive, { allow_engine_only: true });
+			assert.strictEqual(result.blob_integrity, 'verified');
+			assert.deepStrictEqual(await snapshot(loadedItems(name)), archived);
+			assert.deepStrictEqual(stagingLeft(name), []);
+		});
+
 		it('with on_restart=true, is swapped in and proven by the next startup', async function () {
 			const fixture = await engineOnlyDatabase();
 			const blobsBefore = blobFilesOf(fixture.name);

@@ -225,7 +225,7 @@ interface ProveOptions {
 	/** The source carries no blob files, so its references resolve against the blob paths already here. */
 	engineOnly?: boolean;
 	/**
-	 * Blob roots whose files the references are checked against, by stat alone, while `blobRoots` (the
+	 * Blob roots whose files the references are checked against, read only, while `blobRoots` (the
 	 * roots the generation is opened with) are placeholders that do not exist, so nothing the child runs
 	 * can write or remove a file here.
 	 */
@@ -284,7 +284,7 @@ async function prove(args: ApplyAndProveArgs, options: ProveOptions = {}): Promi
 }
 
 /**
- * An engine-only archive, proven with its references checked by stat against `liveRoots`. It is opened
+ * An engine-only archive, proven with its references checked, read only, against `liveRoots`. It is opened
  * over placeholder roots that do not exist, so nothing the proof runs can write or remove a live blob.
  */
 function proveAgainstLiveBlobs(
@@ -460,17 +460,20 @@ async function proveStaged(args: ProveStagedArgs): Promise<Pick<StagedRecord, 'g
  * The staged branch of apply-and-prove: verify that the proven parts are still staged or already
  * installed and still belong where configuration puts them, rename each into place, then check that
  * what opens at the destination is the generation the staged proof stamped. An engine-only archive
- * installs its engine part alone, after its references are checked again against the blob roots here.
+ * installs its engine part alone, after its references are checked again against the blob roots here,
+ * unless its staged proof found none: the staged engine part cannot gain one.
  */
 async function applyStagedAndProve(args: ApplyAndProveArgs): Promise<RestoreEvidence> {
 	const { isEngineOnly, readStagedRecord, verifyStagedSwap, applyStagedSwap } = await import('./archiveStaging.ts');
+	const checksLiveBlobs = (record: StagedRecord) =>
+		isEngineOnly(record) && (record.evidence as any)?.blobs?.references !== 0;
 	let rechecked: RestoreEvidence | undefined;
 	const record = await inPhase('verify', async () => {
 		const read = readStagedRecord(args.stagingDir!, args.databaseName);
 		verifyStagedSwap(read, args.databasePath, args.blobRoots);
-		// the database is closed and its blob work fenced, so a reference found here is still there after the swap
+		// closed and fenced, nothing removes a blob file this finds before the swap
 		const engine = read.parts[0].staged;
-		if (isEngineOnly(read) && existsSync(engine)) {
+		if (checksLiveBlobs(read) && existsSync(engine)) {
 			rechecked = await proveAgainstLiveBlobs(
 				{ ...args, databasePath: engine },
 				args.stagingDir!,
@@ -504,8 +507,8 @@ async function applyStagedAndProve(args: ApplyAndProveArgs): Promise<RestoreEvid
 			throw new AggregateError(failures, `The restored ${args.databaseName} database did not close cleanly`);
 		}
 		const staged = record.evidence as unknown as RestoreEvidence;
-		if (isEngineOnly(record) && !rechecked) {
-			// a resume after the engine part was installed: the check runs where it now is
+		if (checksLiveBlobs(record) && !rechecked) {
+			// resumed after the engine part was installed
 			rechecked = await prove(args, { source: 'archive', engineOnly: true });
 		}
 		return {
