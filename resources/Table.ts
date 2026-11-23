@@ -14094,7 +14094,7 @@ export function makeTable(options): TableResourceClass {
 	 */
 	function reportSourceSchemaMismatch(id: Id, record: any, skipping: readonly string[]): void {
 		// a drifted source mismatches on every fill
-		if (!logger.trace && performance.now() - lastSourceSchemaMismatchWarn < 60_000) return;
+		if (!logger.trace && (!logger.warn || performance.now() - lastSourceSchemaMismatchWarn < 60_000)) return;
 		let detail: string;
 		try {
 			TableResource.prototype.validate(record, false, skipping);
