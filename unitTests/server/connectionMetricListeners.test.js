@@ -11,7 +11,6 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 
 let freshImports = 0;
-/** Another instance of a module, whose module state (what its first connection registers) starts empty. */
 async function freshModule(specifier) {
 	const path = require.resolve(specifier);
 	// source runs load it as an ES module, which a distinct URL instantiates again
@@ -21,7 +20,8 @@ async function freshModule(specifier) {
 	try {
 		return require(path);
 	} finally {
-		require.cache[path] = loaded;
+		if (loaded) require.cache[path] = loaded;
+		else delete require.cache[path];
 	}
 }
 
