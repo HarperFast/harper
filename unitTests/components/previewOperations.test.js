@@ -18,7 +18,7 @@ const { deployComponent, getComponents } = require('#js/components/operations');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { resetRestartNeeded } = require('#src/components/requestRestart');
 const { addRole, alterRole, getRoleByName } = require('#src/security/role');
-const { addUser, alterUser, getUserWithRole } = require('#src/security/user');
+const { addUser, alterUser, dropUser, getUserWithRole } = require('#src/security/user');
 const { addOidcTrust, dropOidcTrust, listOidcTrust } = require('#src/security/authn/oidc/trustPolicyOperations');
 const { databases } = require('#src/resources/databases');
 const { server } = require('#js/server/Server');
@@ -1179,7 +1179,8 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 				try {
 					await assert.rejects(enablePreviews(enableRequest('opsedit', { maxTtlDays: 5 })), {
 						statusCode: 409,
-						message: /role "opsedit-ci-preview" changed while its revoked identity generation was being fenced/,
+						message:
+							/changed while the revoked identity generation of role "opsedit-ci-preview" was being fenced[\s\S]*Role "opsedit-ci-preview" already exists and its component_deploy grant/,
 					});
 				} finally {
 					replications.restore();
@@ -1188,6 +1189,79 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 				const kept = (await getRoleByName('opsedit-ci-preview')).permission.component_deploy.constraints;
 				assert.strictEqual(kept.maxTtlDays, 1);
 				assert.strictEqual(kept.generation, revoked);
+			});
+
+			// A node that answers the census only after an administrator changed the identity's records.
+			const fenceAfter = async (change, run) => {
+				const replications = countReplications();
+				replications.install(async () => {
+					await change();
+					return { replicated: [{ node: 'node-b', components: [], fenced: true }] };
+				});
+				const savedNodes = server.nodes;
+				server.nodes = [{ name: 'node-b' }];
+				try {
+					await run();
+				} finally {
+					replications.restore();
+					server.nodes = savedNodes;
+				}
+				assert.strictEqual(replications.state.calls, 1);
+			};
+
+			it('gives no trust to a user an administrator moved to another role while the nodes were fencing', async () => {
+				await enablePreviews(enableRequest('opsmove'));
+				const revoked = await generationOf('opsmove');
+				await fencePreviewGeneration('opsmove', revoked);
+				await dropOidcTrust({ operation: 'drop_oidc_trust', id: 'github-actions-opsmove-preview', hdb_user: SU });
+				await addRole({ role: 'opsmoveother', permission: { super_user: false, operations: ['get_components'] } });
+				await fenceAfter(
+					() => alterUser({ username: 'opsmove-ci-preview', role: 'opsmoveother' }),
+					() =>
+						assert.rejects(enablePreviews(enableRequest('opsmove')), {
+							statusCode: 409,
+							message:
+								/^No role, user or trust policy was changed[\s\S]*User "opsmove-ci-preview" already exists and it is in role "opsmoveother"/,
+						})
+				);
+				assert.strictEqual(await generationOf('opsmove'), revoked);
+				assert.deepStrictEqual(
+					(await policiesOf('opsmove')).map((policy) => policy.id),
+					['github-actions-opsmove-preview-cleanup']
+				);
+
+				await alterUser({ username: 'opsmove-ci-preview', role: 'opsmove-ci-preview' });
+				const repaired = await enablePreviews(enableRequest('opsmove'));
+				assert.deepStrictEqual(repaired.created, ['trust policy github-actions-opsmove-preview']);
+				assert.notStrictEqual(await generationOf('opsmove'), revoked);
+				assert.strictEqual(repaired.enabled, true, JSON.stringify(repaired.problems));
+			});
+
+			it('does not replace the generation when the user it would create appears while the nodes were fencing', async () => {
+				await enablePreviews(enableRequest('opsappear'));
+				const revoked = await generationOf('opsappear');
+				await fencePreviewGeneration('opsappear', revoked);
+				await dropUser({ username: 'opsappear-ci-preview' });
+				await fenceAfter(
+					() =>
+						addUser({
+							username: 'opsappear-ci-preview',
+							role: 'opsappear-ci-preview',
+							active: true,
+							password: 'Appear-Password-1',
+						}),
+					() =>
+						assert.rejects(enablePreviews(enableRequest('opsappear')), {
+							statusCode: 409,
+							message: /user "opsappear-ci-preview" was created/,
+						})
+				);
+				assert.strictEqual(await generationOf('opsappear'), revoked);
+
+				const rerun = await enablePreviews(enableRequest('opsappear'));
+				assert.deepStrictEqual(rerun.created, []);
+				assert.notStrictEqual(await generationOf('opsappear'), revoked);
+				assert.strictEqual(rerun.enabled, true, JSON.stringify(rerun.problems));
 			});
 
 			it('reports the revoked generation alongside another defect of the role', async () => {

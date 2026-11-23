@@ -27,7 +27,6 @@ import {
 	planIdentityReconcile,
 	policiesOverlap,
 	policyDifferences,
-	roleDifference,
 	sameAuthority,
 	sameSet,
 	type DesiredIdentity,
@@ -275,12 +274,16 @@ export async function enablePreviews(req: any) {
 		const revoked = kept !== undefined && (await revokedGenerations(req.app)).includes(kept);
 		if (!existing) constraints.generation = mintGeneration();
 		else if (kept !== undefined) constraints.generation = kept;
-		const plan = planIdentityReconcile(
-			{ roles, users: await listUsersExternal(), policies },
-			desired,
-			(id) => `Disable previews of ${req.app} (disable_previews) or drop it (drop_oidc_trust id=${id}) first.`
-		);
-		plan.conflicts.push(...rivalPolicies(names, policies, desired.policies));
+		const reconcile = (roles: any[], users: any[], policies: any[]) => {
+			const plan = planIdentityReconcile(
+				{ roles, users, policies },
+				desired,
+				(id) => `Disable previews of ${req.app} (disable_previews) or drop it (drop_oidc_trust id=${id}) first.`
+			);
+			plan.conflicts.push(...rivalPolicies(names, policies, desired.policies));
+			return plan;
+		};
+		const plan = reconcile(roles, await listUsersExternal(), policies);
 		if (plan.conflicts.length > 0) {
 			throw new ClientError(
 				`Nothing was changed.\n${plan.conflicts.map((conflict) => `  - ${conflict}`).join('\n')}`,
@@ -300,15 +303,35 @@ export async function enablePreviews(req: any) {
 					HTTP_STATUS_CODES.CONFLICT
 				);
 			}
-			// alterRole checks no version, and the barrier can wait a minute on a peer.
-			const current: any = await getRoleByName(names.role);
-			if (!current || roleDifference(current, desired.role) !== undefined) {
+			// The barrier can wait a minute on a peer, and the writes below check no version, so the plan is made again on
+			// what the records are now, and it must decide what it decided before.
+			const policiesNow = await listPolicies(req);
+			const rolesNow = Array.from((await listRoles()) ?? []) as any[];
+			const now = reconcile(rolesNow, await listUsersExternal(), policiesNow);
+			const records: [string, string, string][] = [
+				[`role "${names.role}"`, plan.role, now.role],
+				[`user "${names.user}"`, plan.user, now.user],
+				...desired.policies.map((wanted, index): [string, string, string] => [
+					`trust policy "${wanted.id}"`,
+					plan.policies[index],
+					now.policies[index],
+				]),
+			];
+			const changes = [
+				...records
+					.filter(([, before, after]) => before !== after)
+					.map(([record, , after]) => `${record} was ${after === 'create' ? 'dropped' : 'created'}`),
+				...now.conflicts,
+			];
+			if (changes.length > 0) {
 				throw new ClientError(
-					`No role, user or trust policy was changed: role "${names.role}" changed while its revoked identity ` +
-						'generation was being fenced. Enable previews again.',
+					`No role, user or trust policy was changed: these changed while the revoked identity generation of role ` +
+						`"${names.role}" was being fenced. Enable previews again.\n` +
+						changes.map((change) => `  - ${change}`).join('\n'),
 					HTTP_STATUS_CODES.CONFLICT
 				);
 			}
+			const current = rolesNow.find((role) => role?.role === names.role);
 			constraints.generation = mintGeneration();
 			await alterRole({ id: current.id, role: names.role, permission: desired.role.permission });
 		}
