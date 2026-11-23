@@ -839,6 +839,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 const startedMounts = new Set<string>();
 let addedMetrics;
 let connectionCount = 0;
+// a module function: a listener made inside the connection handler would keep the first connection's scope
+function reportConnections(metrics) {
+	if (connectionCount > 0)
+		metrics.push({
+			metric: 'ws-connections',
+			connections: connectionCount,
+			byThread: true,
+		});
+}
 
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	const httpOptions = scope.options.getAll();
@@ -870,14 +879,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			const incomingMessages = new IterableEventQueue();
 			if (!addedMetrics) {
 				addedMetrics = true;
-				addAnalyticsListener((metrics) => {
-					if (connectionCount > 0)
-						metrics.push({
-							metric: 'ws-connections',
-							connections: connectionCount,
-							byThread: true,
-						});
-				});
+				addAnalyticsListener(reportConnections);
 			}
 			// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
 			let hasError;
