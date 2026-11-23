@@ -3983,14 +3983,17 @@ async function closeDatabaseGraph(
 			if (handleCloseStarted && !databaseClosed && !closeHandedOff) handOffIncompleteClose();
 		} finally {
 			releaseClosing();
-			if (handleCloseStarted && !databaseClosed) {
-				permanentlySuspendDatabaseCommits(rootStores);
-				for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
-			} else if (!databaseClosed && !handleCloseStarted) {
-				resumeTableMaintenance(dbTables);
-				for (const table of Object.values(dbTables)) refreshDerivedIndexes(table);
+			try {
+				if (handleCloseStarted && !databaseClosed) {
+					permanentlySuspendDatabaseCommits(rootStores);
+					for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+				} else if (!databaseClosed && !handleCloseStarted) {
+					resumeTableMaintenance(dbTables);
+					for (const table of Object.values(dbTables)) refreshDerivedIndexes(table);
+				}
+			} finally {
+				releaseDerivedIndexActivation();
 			}
-			releaseDerivedIndexActivation();
 		}
 	}
 }
