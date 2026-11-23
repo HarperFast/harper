@@ -392,6 +392,8 @@ const loggedMessagesByTransaction = new WeakMap<object, Map<string, Set<string> 
 const messageIdentity = (tableId: number, id: Id, version: number) =>
 	`${tableId}:${version}:${toBufferKey(id).toString('latin1')}`;
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
+// what BigInt() accepts, so a check-only pass can report a value it would throw on without building one
+const BIGINT_LITERAL = /^\s*([+-]?\d*|0[xX][\da-fA-F]+|0[oO][0-7]+|0[bB][01]+)\s*$/;
 // declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
 const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
@@ -11635,11 +11637,8 @@ export function makeTable(options): TableResourceClass {
 									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
 									if (typeof value === 'string' || typeof value === 'number') {
 										if (convert) return BigInt(value);
-										try {
-											BigInt(value);
-										} catch {
+										if (typeof value === 'number' ? !Number.isInteger(value) : !BIGINT_LITERAL.test(value))
 											addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
-										}
 										return;
 									}
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
@@ -14094,7 +14093,7 @@ export function makeTable(options): TableResourceClass {
 	 * the source's values, and an undeclared property's name is the source's too, so neither is logged.
 	 */
 	function reportSourceSchemaMismatch(id: Id, record: any, skipping: readonly string[]): void {
-		// a drifted source mismatches on every fill, so with nothing to log the check is not worth running
+		// a drifted source mismatches on every fill
 		if (!logger.trace && performance.now() - lastSourceSchemaMismatchWarn < 60_000) return;
 		let detail: string;
 		try {
@@ -15140,8 +15139,6 @@ export function makeTable(options): TableResourceClass {
 								if (status !== 200) updatedRecord.status = status;
 							}
 						}
-						// toJSON turns a Buffer into an object
-						if (!reusedCachedRecord) assertSourceRecordObject(updatedRecord);
 						if (typeof updatedRecord.toJSON === 'function') {
 							updatedRecord = updatedRecord.toJSON();
 							if (!reusedCachedRecord) assertSourceRecordObject(updatedRecord);

@@ -162,22 +162,22 @@ describe('Source fill schema mismatches', function () {
 	it('does not check a fill while trace is off and the table warned within the minute', async () => {
 		const validate = Throttled.prototype.validate;
 		let checks = 0;
-		Throttled.prototype.validate = function (...args) {
-			checks++;
-			return validate.apply(this, args);
-		};
-		responses.set('warned', { id: 'warned' });
-		await Throttled.get('warned');
-		checks = 0;
-		logger.trace = undefined;
 		try {
+			Throttled.prototype.validate = function (...args) {
+				checks++;
+				return validate.apply(this, args);
+			};
+			responses.set('warned', { id: 'warned' });
+			await Throttled.get('warned');
+			assert.equal(checks, 1, 'premise: the fill ran the check');
+			logger.trace = undefined;
 			responses.set('unchecked', { id: 'unchecked' });
 			await Throttled.get('unchecked');
 		} finally {
 			logger.trace = (...args) => traces.push(args.join(' '));
 			Throttled.prototype.validate = validate;
 		}
-		assert.equal(checks, 0);
+		assert.equal(checks, 1);
 	});
 
 	it('reports a BigInt the source sent that cannot be converted', async () => {
