@@ -177,7 +177,7 @@ describe('harper preview setup (harper#3609)', () => {
 			assert.match(text, /acme\/shop is public: from December 2, 2026, GitHub Actions blocks pull_request_target/);
 			assert.match(
 				text,
-				/Settings > Actions > Policies, .*add an Active policy that targets only \.github\/workflows\/preview\.yaml, with Restrict events allowing pull_request_target/
+				/repository's Settings > Actions > Policies, make sure an Active policy targets only \.github\/workflows\/preview\.yaml and its Restrict events allows pull_request_target.*An organization policy for it must target acme\/shop too/
 			);
 			assert.ok(text.includes(ACTIONS_POLICY_DOCS));
 			const warned = text.indexOf('is public');
@@ -192,7 +192,7 @@ describe('harper preview setup (harper#3609)', () => {
 			await fs.writeFile(path.join(directory, custom), starterPreviewWorkflow({ app: 'shop', branch: 'main' }));
 			await writeGhFor(visibility(false));
 			await setup({ workflow: '.github/workflows/pr.yml', write_workflow: undefined });
-			assert.match(printed(), /targets only \.github\/workflows\/pr\.yml,/);
+			assert.match(printed(), /targets only \.github\/workflows\/pr\.yml and/);
 		});
 
 		it('is worded as conditional when the repository visibility is unknown', async () => {
@@ -203,6 +203,13 @@ describe('harper preview setup (harper#3609)', () => {
 
 		it('says nothing for a private or internal repository, which GitHub does not block', async () => {
 			await writeGhFor(visibility(true));
+			await setup();
+			assert.doesNotMatch(printed(), /pull_request_target in public repositories/);
+			const internal = JSON.parse(repository);
+			internal.private = false;
+			internal.visibility = 'internal';
+			await fs.rm(path.join(directory, WORKFLOW));
+			await writeGhFor(`echo '${JSON.stringify(internal)}'`);
 			await setup();
 			assert.doesNotMatch(printed(), /pull_request_target in public repositories/);
 		});

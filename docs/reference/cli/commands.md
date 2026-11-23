@@ -355,15 +355,15 @@ It checks everything it can before it changes anything, so a refusal before step
 
 From December 2, 2026, GitHub Actions blocks `pull_request_target` in public repositories unless an Actions event policy allows it, so the preview workflow no longer runs and previews stop: PRs get no preview, and closed PRs keep theirs until they expire. Private and internal repositories are not affected. See [GitHub's announcement](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2).
 
-In a public repository, allow the event for the preview workflow alone. In **Settings > Actions > Policies**, the repository's or its organization's, create a policy:
+In a public repository, allow the event for the preview workflow alone. In the repository's **Settings > Actions > Policies**, create a policy, unless one already allows it:
 
 1. Set its enforcement status to **Active**.
 2. Under its target workflows, add the workflow file, `.github/workflows/preview.yaml` or the `workflow=` you passed.
 3. Turn on **Restrict events**, and allow `pull_request_target`, plus any other event that workflow runs on.
 
-An organization or enterprise policy can still block the event; **Policy insights**, under **Policies** in the sidebar, shows what a policy blocked. See [Governing execution of GitHub Actions workflows](https://docs.github.com/actions/how-tos/administer/control-workflow-execution). Setup does not check or create the policy, and `get_preview_policy` does not report it: GitHub's API reads it only with a GitHub token for the repository, which the cluster does not have for a public one.
+An organization can set the same policy in its own **Settings > Actions > Policies**; target the repository as well as the workflow file, or it applies to every repository with a file at that path. An organization or enterprise policy can still block the event; **Policy insights**, under **Policies** in the sidebar, shows what a policy blocked. See [Governing execution of GitHub Actions workflows](https://docs.github.com/actions/how-tos/administer/control-workflow-execution). Setup does not check or create the policy, and `get_preview_policy` does not report it: GitHub's API reads it only with a GitHub token for the repository, which the cluster does not have for a public one.
 
-The starter workflow carries a comment that says the same.
+The starter workflow carries a comment that says the same. Setup does not change a workflow that is already there.
 
 ##### What setup checks in the workflow
 

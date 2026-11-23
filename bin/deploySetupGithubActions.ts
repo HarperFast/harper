@@ -520,7 +520,12 @@ function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {
 		id: String(data.id),
 		fullName: data.full_name,
 		defaultBranch: typeof data.default_branch === 'string' ? data.default_branch : undefined,
-		private: typeof data.private === 'boolean' ? data.private : undefined,
+		private:
+			typeof data.visibility === 'string'
+				? data.visibility !== 'public'
+				: typeof data.private === 'boolean'
+					? data.private
+					: undefined,
 		canPush: data.permissions ? data.permissions.push === true || data.permissions.admin === true : undefined,
 	};
 }

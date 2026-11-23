@@ -140,9 +140,10 @@ function pullRequestTargetPolicyWarning(repository: string, isPrivate: boolean |
 		`${isPrivate === false ? `${repository} is public:` : `If ${repository} is public:`} from December 2, 2026, ` +
 		`GitHub Actions blocks pull_request_target in public repositories unless an Actions event policy allows it, ` +
 		`and previews stop.\n` +
-		`  In Settings > Actions > Policies, the repository's or its organization's, add an Active policy that targets only ${workflow}, ` +
-		`with Restrict events allowing pull_request_target and any other event that workflow runs on. ` +
-		`An organization or enterprise policy can still block it.\n` +
+		`  In the repository's Settings > Actions > Policies, make sure an Active policy targets only ${workflow} ` +
+		`and its Restrict events allows pull_request_target, plus any other event that workflow runs on. ` +
+		`An organization policy for it must target ${repository} too, and an organization or enterprise policy ` +
+		`can still block it: Policy insights shows what was blocked.\n` +
 		`  ${ACTIONS_POLICY_DOCS}`
 	);
 }

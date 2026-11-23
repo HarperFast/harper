@@ -191,7 +191,7 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 		match(stdout, /Wrote \.github\/workflows\/preview\.yaml/);
 		match(
 			stdout,
-			/If preview_setup_fixture\/shop is public: .*pull_request_target[\s\S]*targets only \.github\/workflows\/preview\.yaml,/
+			/If preview_setup_fixture\/shop is public: .*pull_request_target[\s\S]*targets only \.github\/workflows\/preview\.yaml and/
 		);
 		match(stderr, /the HARPER_PREVIEW_TARGET repository variable was not set/);
 
