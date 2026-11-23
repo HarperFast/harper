@@ -184,10 +184,13 @@ describe('Source fill schema mismatches', function () {
 		for (const [id, big] of [
 			['bad-bigint', 'n/a'],
 			['sign-only-bigint', ' - '],
-			['padded-bigint', ' '.repeat(100_000) + 'x'],
+			['padded-bigint', ' '.repeat(200_000) + 'x'],
 		]) {
 			responses.set(id, { id, name: 'n', big });
+			const started = performance.now();
 			assert.equal((await Validated.get(id)).big, big);
+			// a backtracking pattern takes minutes on the padded value
+			assert.ok(performance.now() - started < 2_000, `checking ${id} took too long`);
 			assert.match(mismatchesFor(Validated, id)[0], /\(invalid: big\)/);
 		}
 		responses.set('good-bigint', { id: 'good-bigint', name: 'n', big: ' -12 ' });
