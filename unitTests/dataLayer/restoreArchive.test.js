@@ -4,6 +4,7 @@ const testUtils = require('../testUtils');
 testUtils.preTestPrep();
 
 const assert = require('node:assert');
+const { ClientError } = require('#src/utility/errors/hdbError');
 const { randomBytes, randomUUID } = require('node:crypto');
 const {
 	existsSync,
@@ -1260,6 +1261,36 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(stagingLeft(fixture.name), [], 'the successor removed what it took over, with no restart');
+		});
+
+		it('removes the staging a failed successor took over, when the failure leaves nothing reserved', async function () {
+			const fixture = await seededDatabase();
+			await interruptAfterEnginePart(fixture);
+			await requestRestore(fixture.name, { cancel: true });
+			const abandoned = receiptOf(fixture.dir);
+			assert.strictEqual(abandoned.state, 'terminal');
+			// a terminal receipt with no marker, so the successor's claim is its own
+			rmSync(restoringMarkerPath(fixture.dir));
+
+			let inherited;
+			const restoreRunner = replaceExport(
+				restoreChildRunnerModule,
+				'runRestoreChild',
+				async (command, args, options) => {
+					if (command !== 'apply-and-prove') return runRestoreChild(command, args, options);
+					inherited = receiptOf(fixture.dir).superseded_staging_dirs;
+					throw new ClientError('refused before anything was replaced', 409);
+				}
+			);
+			try {
+				await assert.rejects(uploadAndRun(fixture.name, fixture.archive), /refused before anything was replaced/);
+			} finally {
+				restoreRunner();
+			}
+
+			assert.deepStrictEqual(inherited, [abandoned.staging_dir]);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(stagingLeft(fixture.name), [], 'nothing owns the inherited staging any more');
 		});
 
 		it('is finished by a restart retry of the same swap after only the engine part was installed', async function () {
