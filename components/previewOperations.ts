@@ -311,7 +311,7 @@ export async function enablePreviews(req: any) {
 				);
 			}
 			// The barrier can wait a minute on a peer, and the writes below check no version, so the plan is made again on
-			// what the records are now, and it must decide what it decided before. The role is read last, nearest its write.
+			// what the records are now, and it must decide what it decided before.
 			const policiesNow = await listPolicies(req);
 			const usersNow = await listUsersExternal();
 			const rolesNow = Array.from((await listRoles()) ?? []) as any[];
