@@ -14630,8 +14630,8 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	// A fill handed to a transaction from outside its snapshot can be versioned above its clock; a clock no write has
-	// reserved yet moves past it, so the transaction's own later write still supersedes the fill. Like the record-lock
-	// floor, it takes the native clock and leaves issuing the key to the write's reservation.
+	// reserved yet moves past it, so the transaction's own later write still supersedes the fill. A read never mints
+	// the key: the write's reservation issues and covers it.
 	function advanceClockPast(context: Context, version: number): void {
 		if (!isRocksDB || context?.timestamp || !(version > 0)) return;
 		const link = heldLink(context);
