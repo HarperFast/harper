@@ -8,7 +8,7 @@
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -46,10 +46,8 @@ async function componentStatuses(ctx: ContextWithHarper): Promise<Map<string, st
 }
 
 suite('compartment loader applies allowedDirectory to plain file imports', (ctx: ContextWithHarper) => {
-	let dataRootDir: string;
-
 	before(async () => {
-		dataRootDir = await mkdtemp(
+		const dataRootDir = await mkdtemp(
 			join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
 		);
 		ctx.harper = { dataRootDir };
@@ -118,11 +116,7 @@ suite('compartment loader applies allowedDirectory to plain file imports', (ctx:
 	});
 
 	after(async () => {
-		try {
-			await teardownHarper(ctx);
-		} finally {
-			if (dataRootDir) await rm(dataRootDir, { recursive: true, force: true });
-		}
+		await teardownHarper(ctx);
 	});
 
 	test('a component importing inside its own directory loads and serves', async () => {
