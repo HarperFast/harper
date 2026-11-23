@@ -475,6 +475,7 @@ async function copyDbEnvironment(
 			let retries = MAX_COPY_RETRIES;
 			let start = null;
 			let completed = false;
+			let lastError;
 			while (!completed && retries-- > 0) {
 				try {
 					// getRange, not getKeys + getEntry: on a dupSort index the latter yields one entry per
@@ -537,6 +538,7 @@ async function copyDbEnvironment(
 					}
 					completed = true;
 				} catch (error) {
+					lastError = error;
 					// Resume from the last key read, never past it: re-copying that key is idempotent (an
 					// identical put, and an identical dupSort pair, is a no-op) while advancing the key
 					// would jump the copy over everything in between and still reach the success path.
@@ -550,7 +552,8 @@ async function copyDbEnvironment(
 			if (!completed)
 				throw new Error(
 					`Copy of ${sourceDatabase} to ${targetDatabasePath} could not get past key ` +
-						`${describeKey(start)} in ${MAX_COPY_RETRIES} attempts`
+						`${describeKey(start)} in ${MAX_COPY_RETRIES} attempts`,
+					{ cause: lastError }
 				);
 			if (failedRecords > 0)
 				throw new Error(
@@ -1070,9 +1073,10 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		let retries = MAX_RETRIES;
 		let start = null;
 		let hasStart = false;
-		// a resumed primary read starts after the last record written, which re-putting would save blobs for again;
-		// an index read resumes inclusively, since its remaining duplicates share that key
+		// A resumed primary read starts after the last key read: re-putting that record would save its blobs again.
+		// An index read resumes at it, since its remaining duplicates share that key.
 		let resumed = false;
+		let lastError;
 		while (retries-- > 0) {
 			try {
 				if (isPrimary) {
@@ -1200,8 +1204,9 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
 				return { firstVersioned, versionlessKeys, failedRecords };
 			} catch (err) {
-				// resume at the last key read, as copyDbi does, so no unread entry is skipped
+				// resuming from the last key read, never past it, skips no unread entry
 				resumed = hasStart;
+				lastError = err;
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${describeKey(start)}, retrying (${retries} retries left):`,
 					err
@@ -1211,7 +1216,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		// Fail loudly so migrateOnStart's try/catch preserves the migrateOnStart flag and
 		// skips moving the LMDB files to backup, instead of leaving a partial copy.
 		throw new Error(
-			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${describeKey(start)}`
+			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${describeKey(start)}`,
+			{ cause: lastError }
 		);
 	}
 }
