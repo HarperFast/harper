@@ -516,7 +516,7 @@ interface RepositoryInfo {
 function isPrivateRepository(data: any): boolean | undefined {
 	if (data.visibility === 'public') return false;
 	if (data.visibility === 'private' || data.visibility === 'internal') return true;
-	return typeof data.private === 'boolean' ? data.private : undefined;
+	return data.private === true ? true : undefined;
 }
 
 function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {

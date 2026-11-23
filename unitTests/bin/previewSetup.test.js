@@ -155,6 +155,7 @@ describe('harper preview setup (harper#3609)', () => {
 			const parsed = JSON.parse(repository);
 			if (value === undefined) delete parsed.private;
 			else parsed.private = value;
+			if (value === false) parsed.visibility = 'public';
 			return `echo '${JSON.stringify(parsed)}'`;
 		};
 		const writeGhFor = (repositoryAnswer, { create = 'exit 0', variable = absentVariable } = {}) =>
@@ -198,6 +199,13 @@ describe('harper preview setup (harper#3609)', () => {
 
 		it('is worded as conditional when the repository visibility is unknown', async () => {
 			await writeGhFor(visibility(undefined));
+			await setup();
+			assert.match(printed(), /If acme\/shop is public: from December 2, 2026/);
+			output.length = 0;
+			await fs.rm(path.join(directory, WORKFLOW));
+			const withoutVisibility = JSON.parse(repository);
+			withoutVisibility.private = false;
+			await writeGhFor(`echo '${JSON.stringify(withoutVisibility)}'`);
 			await setup();
 			assert.match(printed(), /If acme\/shop is public: from December 2, 2026/);
 		});
