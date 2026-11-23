@@ -421,7 +421,6 @@ const ABSENT_ENTRY = Object.freeze({
 	},
 });
 const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
-// looked up once per source class: an outage serves many stale reads
 const sourceInstanceHooks = new WeakMap<object, boolean>();
 // `$distance` is left out: it can fall back to the record
 const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
@@ -14283,7 +14282,7 @@ export function makeTable(options): TableResourceClass {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				// a caller that passes no resource is forcing a load, so no hook is asked
+				// no resource means a forced load
 				const servesStale = Boolean(entry?.value && resource && allowsStale(resource, source, entry, id, context));
 				if (servesStale) {
 					let acquired: boolean;
