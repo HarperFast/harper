@@ -10,11 +10,12 @@ const { setupTestDBPath } = require('../testUtils');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 
+let freshImports = 0;
 /** Another instance of a module, whose module state (what its first connection registers) starts empty. */
 async function freshModule(specifier) {
 	const path = require.resolve(specifier);
 	// source runs load it as an ES module, which a distinct URL instantiates again
-	if (path.endsWith('.ts')) return import(`${pathToFileURL(path).href}?fresh`);
+	if (path.endsWith('.ts')) return import(`${pathToFileURL(path).href}?fresh=${++freshImports}`);
 	const loaded = require.cache[path];
 	delete require.cache[path];
 	try {
@@ -59,7 +60,6 @@ function upgradeRequest(protocol) {
 	};
 }
 
-/** Opens and closes one connection on `listener`; only WeakRefs to its socket and request leave. */
 async function closedConnection(listener, protocol) {
 	const ws = webSocket();
 	const request = upgradeRequest(protocol);

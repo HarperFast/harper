@@ -310,15 +310,18 @@ describe('MQTT packet parsing across connections', function () {
 		// synchronous reads only, where nothing else runs. The first read leaves the thread an idle parser.
 		connect(0);
 		const before = parsers();
-		let idle;
-		const { made, parsing } = await watchParsers(() => {
+		let idle, made, parsersUsed;
+		await watchParsers((watched) => {
 			for (let i = 1; i < clients.length; i++) connect(i);
 			idle = parsers();
+			// in the reads' turn: watchParsers sees every connection's parses until it has awaited
+			made = watched.made;
+			parsersUsed = new Set(watched.parsing).size;
 		});
 		assert.strictEqual(idle - before, 0, `${idle - before} parsers for 19 connections between packets`);
 		// the count alone would miss each connection taking one of the idle parsers other suites left
 		assert.strictEqual(made, 0);
-		assert.strictEqual(new Set(parsing).size, 1, 'the connections between packets parse with one parser');
+		assert.strictEqual(parsersUsed, 1, 'the connections between packets parse with one parser');
 		await waitFor(() => clients.every((connection) => connection.received('connack').length === 1));
 		// one with a packet half read keeps a parser until it has the rest
 		const ping = clients[0].encode({ cmd: 'pingreq' });
