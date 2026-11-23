@@ -656,9 +656,13 @@ type IncompleteDatabaseClose = {
 	task?: Promise<void>;
 };
 const incompleteDatabaseCloses = new Map<string, IncompleteDatabaseClose>();
-// resolved root paths and database names whose handles are being closed, counted per `closeDatabaseGraph` call
+// counted per `closeDatabaseGraph` call, so the first of two overlapping closes to finish does not lift the other's
 const closingDatabaseRoots = new Map<string, number>();
 const closingDatabaseNames = new Map<string, number>();
+
+function databaseRootClosing(rootPath: string): boolean {
+	return closingDatabaseRoots.size > 0 && closingDatabaseRoots.has(resolve(rootPath));
+}
 
 function countClosing(counts: Map<string, number>, keys: Iterable<string>): void {
 	for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -754,7 +758,7 @@ function databaseRootUnavailable(rootPath: string): boolean {
 		databaseDropPrepared(rootPath) ||
 		(residencyBlockedRoots.size > 0 && residencyBlockedRoots.has(resolve(rootPath))) ||
 		(incompleteDatabaseCloses.size > 0 && incompleteDatabaseCloses.has(resolve(rootPath))) ||
-		(closingDatabaseRoots.size > 0 && closingDatabaseRoots.has(resolve(rootPath)))
+		databaseRootClosing(rootPath)
 	);
 }
 
@@ -1546,7 +1550,7 @@ function loadDatabaseCatalogs(): Databases {
 	deferredResidencyReplays = blockedReplays.length ? blockedReplays : undefined;
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
-		// a closing database is unregistered by its own close, after its handles are closed
+		// its close unregisters it once the handles are closed
 		if (closingDatabaseNames.has(dbName) || databaseUsesPreparedRoot(dbName)) continue;
 		const definedTables = definedDatabases.get(dbName);
 		if (definedTables) {
@@ -3152,7 +3156,7 @@ function openDatabaseRoot(
 	{ allowPreparedDrop = false }: { allowPreparedDrop?: boolean } = {}
 ) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
-	// by name too: a rescan during the close no longer maps an alias to its closing root
+	// by name: a rescan during the close drops an alias's mapping to its closing root
 	if (closingDatabaseNames.has(databaseName)) throw new DatabaseClosingError(databaseName);
 	getDatabases();
 	if (!allowPreparedDrop) assertDatabaseResidencyAvailable(databaseName);
@@ -3269,6 +3273,8 @@ function openDatabaseRoot(
  * there and is closed the same way.
  */
 function openUnlessBlocked(rootPath: string, dbName: string, load: () => void): void {
+	// a sibling root the closing graph never loaded is skipped by name
+	if (databaseRootClosing(rootPath) || (closingDatabaseNames.size > 0 && closingDatabaseNames.has(dbName))) return;
 	// A root already in the engine map needs no exclusion: `load` then only re-runs `initStores` and
 	// never opens the directory, and a restore has to close the live handle first anyway (its close
 	// broadcast and `verifyDatabaseClosed` own that). Taking the lock here would make every rescan on
@@ -3853,7 +3859,7 @@ async function closeDatabaseStores(
 			await closeOwned();
 			await closeStore(rootStore.dbisDb, 'attributes store');
 			rootClosed = await closeStore(rootStore, 'root store');
-			// a store opened on this root during the closes above stays registered until below
+			// a backstop for any wrapper registered on this root after the first pass
 			await closeOwned();
 		} else if (!rootClosed) rootClosed = await closeStore(rootStore, 'root store');
 		if (rootClosed || !requireClosed) rootStorePaths.push(rootStore.path);
@@ -3909,16 +3915,26 @@ async function closeDatabaseGraph(
 	{ databaseNames, dbTables, rootStores }: ReturnType<typeof collectDatabaseGraph>,
 	requireClosed: boolean
 ): Promise<boolean> {
-	const releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, false, rootStores);
+	// the close cleans up only the graph it captured, so nothing may resolve these roots or names until it ends
+	const closingRootPaths = [...rootStores].map((rootStore) => resolve(rootStore.path));
+	countClosing(closingDatabaseRoots, closingRootPaths);
+	countClosing(closingDatabaseNames, databaseNames);
+	const releaseClosing = () => {
+		uncountClosing(closingDatabaseRoots, closingRootPaths);
+		uncountClosing(closingDatabaseNames, databaseNames);
+	};
+	let releaseDerivedIndexActivation: () => void;
+	try {
+		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, false, rootStores);
+	} catch (error) {
+		releaseClosing();
+		throw error;
+	}
 	let databaseClosed = false;
 	let handleCloseStarted = false;
-	const closingRootPaths = [...rootStores].map((rootStore) => resolve(rootStore.path));
+	let closeHandedOff = false;
 	try {
 		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
-		// an LMDB root's close() frees its read transaction before the environment closes, and a read in between
-		// renews the freed transaction; from here until the roots leave the registry nothing may hand them out
-		countClosing(closingDatabaseRoots, closingRootPaths);
-		countClosing(closingDatabaseNames, databaseNames);
 		handleCloseStarted = true;
 		// past the last point that resumes maintenance, so a disposed table is never handed back
 		for (const table of Object.values(dbTables)) table?.cleanup?.({ closing: true });
@@ -3938,6 +3954,7 @@ async function closeDatabaseGraph(
 						throw new AggregateError(retryFailures, `Could not finish closing database graph '${databaseName}'`);
 				}
 			);
+			closeHandedOff = true;
 			throw new AggregateError(
 				closeFailures,
 				`Could not close database graph '${[...databaseNames].join("', '")}' for destructive DDL`
@@ -3947,10 +3964,8 @@ async function closeDatabaseGraph(
 		databaseClosed = true;
 		return true;
 	} finally {
-		if (handleCloseStarted) {
-			uncountClosing(closingDatabaseRoots, closingRootPaths);
-			uncountClosing(closingDatabaseNames, databaseNames);
-		}
+		// a close that failed with no recovery record keeps its roots unavailable, as it keeps their commits suspended
+		if (databaseClosed || closeHandedOff || !handleCloseStarted) releaseClosing();
 		if (handleCloseStarted && !databaseClosed) {
 			permanentlySuspendDatabaseCommits(rootStores);
 			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);

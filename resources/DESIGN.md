@@ -298,7 +298,7 @@ Closing a dbi after its environment is a use-after-free, so `closeDatabase` clos
 
 ## A root whose handles are closing is never handed out
 
-From the first handle close until its roots leave the engine registry, `closeDatabaseGraph` counts the roots in `closingDatabaseRoots` and the names in `closingDatabaseNames`: a rescan skips the roots (`databaseRootUnavailable`) and leaves the database for the close to unregister, and `openDatabaseRoot` throws `DatabaseClosingError`. An LMDB root's `close()` frees its read transaction before the environment closes, and a read in between renews the freed transaction (`closingDatabaseRoot.test.js`).
+For the whole of a `closeDatabaseGraph` call, and for good after a failed close with no incomplete-close record, its roots and names are counted in `closingDatabaseRoots` and `closingDatabaseNames`: a rescan skips them (`databaseRootUnavailable`, `openUnlessBlocked`) and leaves the database for the close to unregister, and `openDatabaseRoot` throws `DatabaseClosingError`, so nothing outside the captured graph attaches to it. An LMDB root's `close()` frees its read transaction before the environment closes, and a read in between renews the freed transaction (`closingDatabaseRoot.test.js`).
 
 ## RocksDB teardown closes every wrapper the database opened
 

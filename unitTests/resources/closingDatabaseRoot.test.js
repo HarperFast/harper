@@ -49,9 +49,9 @@ describe('A database root while its close is in flight', function () {
 
 		assert.ok(duringClose, 'precondition: the root close ran through the hook');
 		assert.ok(!duringClose.rescanError, `rescan during close: ${duringClose.rescanError?.message}`);
-		assert.ok(duringClose.open instanceof DatabaseClosingError, `open during close: ${duringClose.open}`);
+		assert.ok(duringClose.open instanceof DatabaseClosingError, `open during close: ${duringClose.open?.message}`);
 		const readError = await duringClose.read;
-		assert.ok(readError instanceof DatabaseClosingError, `read during close: ${readError}`);
+		assert.ok(readError instanceof DatabaseClosingError, `read during close: ${readError?.message}`);
 		assert.ok(duringClose.closingItems === Items, 'the rescan leaves the closing database to its close');
 		assert.strictEqual((await duringClose.neighborItems?.get(2))?.name, 'two');
 		assert.ok(databases[databaseName] === undefined, 'the close unregisters the database');
@@ -59,6 +59,25 @@ describe('A database root while its close is in flight', function () {
 		assert.ok(Reopened.primaryStore.rootStore !== rootStore, 'the reopen opens a new root');
 		assert.strictEqual((await Reopened.get(1)).name, 'one');
 		assert.ok(database({ database: databaseName }));
+	});
+
+	it('refuses a declaration from the start of the close, before its handles close', async () => {
+		const databaseName = 'closingRootDrain';
+		const Items = table(definition(databaseName));
+		await Items.put({ id: 1, name: 'one' });
+		const auditStore = Items.primaryStore.rootStore.auditStore;
+		const stopAuditCleanup = auditStore.stopAuditCleanup;
+		let declared;
+		auditStore.stopAuditCleanup = function (...args) {
+			auditStore.stopAuditCleanup = stopAuditCleanup;
+			declared = catchError(() => table({ ...definition(databaseName), table: 'Late' }));
+			return stopAuditCleanup.apply(this, args);
+		};
+
+		await closeDatabase(databaseName);
+
+		assert.ok(declared instanceof DatabaseClosingError, `declaration during the drain: ${declared?.message}`);
+		assert.ok(!resetDatabases()[databaseName].Late, 'the refused declaration created no table');
 	});
 });
 
