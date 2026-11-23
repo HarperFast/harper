@@ -1156,42 +1156,6 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 				assert.strictEqual(await generationOf('opsresume'), replaced);
 			});
 
-			it('does not overwrite a role an administrator changed while the nodes were fencing', async () => {
-				await enablePreviews(enableRequest('opsedit', { maxTtlDays: 5 }));
-				const revoked = await generationOf('opsedit');
-				await fencePreviewGeneration('opsedit', revoked);
-				const replications = countReplications();
-				replications.install(async () => {
-					const role = await getRoleByName('opsedit-ci-preview');
-					const grant = role.permission.component_deploy;
-					await alterRole({
-						id: role.id,
-						role: role.role,
-						permission: {
-							...role.permission,
-							component_deploy: { ...grant, constraints: { ...grant.constraints, maxTtlDays: 1 } },
-						},
-					});
-					return { replicated: [{ node: 'node-b', components: [], fenced: true }] };
-				});
-				const savedNodes = server.nodes;
-				server.nodes = [{ name: 'node-b' }];
-				try {
-					await assert.rejects(enablePreviews(enableRequest('opsedit', { maxTtlDays: 5 })), {
-						statusCode: 409,
-						message:
-							/changed while the revoked identity generation of role "opsedit-ci-preview" was being fenced[\s\S]*Role "opsedit-ci-preview" already exists and its component_deploy grant/,
-					});
-				} finally {
-					replications.restore();
-					server.nodes = savedNodes;
-				}
-				const kept = (await getRoleByName('opsedit-ci-preview')).permission.component_deploy.constraints;
-				assert.strictEqual(kept.maxTtlDays, 1);
-				assert.strictEqual(kept.generation, revoked);
-			});
-
-			// A node that answers the census only after an administrator changed the identity's records.
 			const fenceAfter = async (change, run) => {
 				const replications = countReplications();
 				replications.install(async () => {
@@ -1208,6 +1172,63 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 				}
 				assert.strictEqual(replications.state.calls, 1);
 			};
+
+			it('does not overwrite a role an administrator changed while the nodes were fencing', async () => {
+				await enablePreviews(enableRequest('opsedit', { maxTtlDays: 5 }));
+				const revoked = await generationOf('opsedit');
+				await fencePreviewGeneration('opsedit', revoked);
+				await fenceAfter(
+					async () => {
+						const role = await getRoleByName('opsedit-ci-preview');
+						const grant = role.permission.component_deploy;
+						await alterRole({
+							id: role.id,
+							role: role.role,
+							permission: {
+								...role.permission,
+								component_deploy: { ...grant, constraints: { ...grant.constraints, maxTtlDays: 1 } },
+							},
+						});
+					},
+					() =>
+						assert.rejects(enablePreviews(enableRequest('opsedit', { maxTtlDays: 5 })), {
+							statusCode: 409,
+							message:
+								/changed while the revoked identity generation of role "opsedit-ci-preview" was being fenced[\s\S]*Role "opsedit-ci-preview" already exists and its component_deploy grant/,
+						})
+				);
+				const kept = (await getRoleByName('opsedit-ci-preview')).permission.component_deploy.constraints;
+				assert.strictEqual(kept.maxTtlDays, 1);
+				assert.strictEqual(kept.generation, revoked);
+			});
+
+			it('refuses a kept policy the exchange refuses for its shape, before fencing or replacing anything', async () => {
+				const { databases } = require('#src/resources/databases');
+				const { SYSTEM_TABLE_NAMES } = require('#src/utility/hdbTerms');
+				const table = databases.system[SYSTEM_TABLE_NAMES.OIDC_TRUST_TABLE_NAME];
+				await enablePreviews(enableRequest('opsshape'));
+				const revoked = await generationOf('opsshape');
+				await fencePreviewGeneration('opsshape', revoked);
+				const id = 'github-actions-opsshape-preview';
+				const row = await table.get(id);
+				await table.put(id, { ...row, enabled: 'false' });
+				const replications = countReplications();
+				replications.install(() => {
+					throw new Error('a refused enable sends nothing to a peer');
+				});
+				try {
+					await assert.rejects(enablePreviews(enableRequest('opsshape')), {
+						statusCode: 409,
+						message:
+							/Trust policy "github-actions-opsshape-preview" already exists and the exchange refuses it: 'enabled' is a string/,
+					});
+				} finally {
+					replications.restore();
+					await table.put(id, row);
+				}
+				assert.strictEqual(replications.state.calls, 0);
+				assert.strictEqual(await generationOf('opsshape'), revoked);
+			});
 
 			it('gives no trust to a user an administrator moved to another role while the nodes were fencing', async () => {
 				await enablePreviews(enableRequest('opsmove'));

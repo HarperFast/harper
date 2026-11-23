@@ -107,7 +107,6 @@ interface PolicyPins {
 	environment: string;
 }
 
-/** The only definition of a preview trust policy, so what is written and what is checked cannot drift. */
 function previewPolicy(names: PreviewNames, cleanup: boolean, pins: PolicyPins, description: string): DesiredPolicy {
 	return {
 		id: cleanup ? names.cleanupPolicy : names.policy,
@@ -274,13 +273,21 @@ export async function enablePreviews(req: any) {
 		const revoked = kept !== undefined && (await revokedGenerations(req.app)).includes(kept);
 		if (!existing) constraints.generation = mintGeneration();
 		else if (kept !== undefined) constraints.generation = kept;
+		const replaceHint = (id: string) =>
+			`Disable previews of ${req.app} (disable_previews) or drop it (drop_oidc_trust id=${id}) first.`;
 		const reconcile = (roles: any[], users: any[], policies: any[]) => {
-			const plan = planIdentityReconcile(
-				{ roles, users, policies },
-				desired,
-				(id) => `Disable previews of ${req.app} (disable_previews) or drop it (drop_oidc_trust id=${id}) first.`
-			);
+			const plan = planIdentityReconcile({ roles, users, policies }, desired, replaceHint);
 			plan.conflicts.push(...rivalPolicies(names, policies, desired.policies));
+			// Enable never rewrites a policy it keeps, so one the exchange refuses for its own shape stays refused.
+			for (const wanted of desired.policies) {
+				const policy = policies.find((candidate) => candidate?.id === wanted.id);
+				if (policy && policy.enabled !== false && policy.exchangeable === false) {
+					plan.conflicts.push(
+						`Trust policy "${wanted.id}" already exists and the exchange refuses it: ${policy.invalid_reason}. ` +
+							replaceHint(wanted.id)
+					);
+				}
+			}
 			return plan;
 		};
 		const plan = reconcile(roles, await listUsersExternal(), policies);
@@ -304,10 +311,11 @@ export async function enablePreviews(req: any) {
 				);
 			}
 			// The barrier can wait a minute on a peer, and the writes below check no version, so the plan is made again on
-			// what the records are now, and it must decide what it decided before.
+			// what the records are now, and it must decide what it decided before. The role is read last, nearest its write.
 			const policiesNow = await listPolicies(req);
+			const usersNow = await listUsersExternal();
 			const rolesNow = Array.from((await listRoles()) ?? []) as any[];
-			const now = reconcile(rolesNow, await listUsersExternal(), policiesNow);
+			const now = reconcile(rolesNow, usersNow, policiesNow);
 			const records: [string, string, string][] = [
 				[`role "${names.role}"`, plan.role, now.role],
 				[`user "${names.user}"`, plan.user, now.user],
@@ -431,7 +439,8 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 		if (typeof generation === 'string' && (await revokedGenerations(req.app)).includes(generation)) {
 			problems.push(
 				`role "${names.role}" is at an identity generation that disable_previews revoked on this node, so every ` +
-					'preview deploy it admits is refused: enable previews to give it a new one, or disable them to finish removing it'
+					'preview built under it is refused when it would go live: enable previews to give it a new one, or disable ' +
+					'them to finish removing it'
 			);
 		}
 		const operations = role.permission?.operations;
