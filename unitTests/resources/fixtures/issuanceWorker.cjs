@@ -9,6 +9,11 @@ const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources
 const { waitFor } = require('../../waitFor');
 
 async function run() {
+	// The parent claims its clock lead only once every worker has loaded. setupTestDBPath() already opens the
+	// existing databases, so it must follow the claim too.
+	const released = new Promise((resolve) => parentPort.once('message', resolve));
+	parentPort.postMessage({ ready: true });
+	await released;
 	setupTestDBPath();
 	setMainIsWorker(true);
 	const Tbl = table(workerData.definition);
