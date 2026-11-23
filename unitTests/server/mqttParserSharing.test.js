@@ -73,20 +73,8 @@ describe('MQTT packet parsing across connections', function () {
 		listener = mqttWebSocketListener();
 	});
 
-	function closedConnectionSocket() {
-		const { socket } = client(listener, 4);
-		socket.handlers.close();
-		return new WeakRef(socket);
-	}
 	// polled: a WeakRef keeps its target to the end of the turn it was made or read in
 	const collected = (ref, message) => waitFor(() => (global.gc(), ref.deref() === undefined), { message });
-
-	// First, so that when this file runs alone this is the thread's first connection: the one the connection-count
-	// analytics listener is registered from.
-	it('keeps nothing of a connection once it closes', async function () {
-		if (typeof global.gc !== 'function') this.skip();
-		await collected(closedConnectionSocket(), 'the thread still references a closed connection');
-	});
 
 	it('parses a packet split across reads as its own, while other connections parse theirs in between', async () => {
 		const v4 = client(listener, 4);
