@@ -200,6 +200,13 @@ const STRUCTURES_KEY = Symbol.for('structures');
 // certify coverage of that log, which a migration does not carry.
 const LOG_INDEPENDENT_CATALOG_KEYS = new Set(['residency_by_id', 'residency_by_set', 'next-table-id']);
 
+function describeKey(key: unknown): string {
+	if (typeof key === 'symbol') return 'symbol';
+	return JSON.stringify(key, (_, part) =>
+		typeof part === 'bigint' ? `${part}n` : typeof part === 'symbol' ? 'symbol' : part
+	);
+}
+
 function catalogSymbolName(key: unknown): string | undefined {
 	const head = Array.isArray(key) ? key[0] : key;
 	if (typeof head === 'symbol') return Symbol.keyFor(head) ?? head.description ?? '';
@@ -398,7 +405,6 @@ async function copyDbEnvironment(
 					newCompression = null;
 				}
 			}
-			// putSync, so a failed commit throws here
 			targetDbisDb.putSync(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
@@ -491,7 +497,7 @@ async function copyDbEnvironment(
 								continue;
 							}
 							written = targetDbi.put(key, value, isPrimary ? version : undefined);
-							// only the latest batch is awaited; lmdb-js rejects a failed commit's commitError separately
+							// lmdb-js also rejects a failed commit's commitError, separately
 							if (written !== observedWrite) {
 								observedWrite = written;
 								written.catch((error) => {
@@ -535,7 +541,7 @@ async function copyDbEnvironment(
 					// identical put, and an identical dupSort pair, is a no-op) while advancing the key
 					// would jump the copy over everything in between and still reach the success path.
 					console.error(
-						`Error iterating ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
+						`Error iterating ${sourceDatabase} near key ${describeKey(start)}, retrying (${retries} retries left):`,
 						error
 					);
 				}
@@ -544,7 +550,7 @@ async function copyDbEnvironment(
 			if (!completed)
 				throw new Error(
 					`Copy of ${sourceDatabase} to ${targetDatabasePath} could not get past key ` +
-						`${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)} in ${MAX_COPY_RETRIES} attempts`
+						`${describeKey(start)} in ${MAX_COPY_RETRIES} attempts`
 				);
 			if (failedRecords > 0)
 				throw new Error(
@@ -814,11 +820,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	// path string, so a handle left open on the staging path would hold the DB lock against the
 	// runtime's open of the renamed directory (harper#2012 restart-safety).
 	const targetHandles: RocksDatabase[] = [targetRootStore];
-	// The catalog codec's sharedStructuresKey wires the rocksdb-js getStructures/saveStructures
-	// closures so structures persist within the __dbis__ CF at Symbol.for('structures'), where the
-	// runtime attributesDbi RecordEncoder reads them via superGetStructures. Without it, own
-	// structure IDs starting at 0x40 are minted in-memory and silently lost on restart → runtime
-	// decoder interprets 0x40 as fixint 64 → "Data read, but end of buffer not reached 64" (harper#1260).
+	// The runtime reads __dbis__ shared structures from this CF's Symbol.for('structures'), so they must
+	// persist there, not be minted in memory and lost on restart (harper#1260).
 	const targetDbisDb = openRocksDb(targetPath, {
 		...catalogDbiOptions(),
 		disableWAL: false,
@@ -1067,19 +1070,9 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		let retries = MAX_RETRIES;
 		let start = null;
 		let hasStart = false;
+		// a resumed primary read starts after the last record written, which re-putting would save blobs for again;
+		// an index read resumes inclusively, since its remaining duplicates share that key
 		let resumed = false;
-		// the entry a resumed read starts at was already written; re-putting it would save its blobs again
-		const isResumedEntry = (key) => {
-			if (!resumed) return false;
-			resumed = false;
-			return (
-				key === start ||
-				(Array.isArray(key) &&
-					Array.isArray(start) &&
-					key.length === start.length &&
-					key.every((part, index) => part === start[index]))
-			);
-		};
 		while (retries-- > 0) {
 			try {
 				if (isPrimary) {
@@ -1096,9 +1089,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 						additionalAuditRefs: entryAdditionalAuditRefs,
 						receivedIdentityRefs: entryReceivedIdentityRefs,
 						copiedDeleteBoundary: entryCopiedDeleteBoundary,
-					} of sourceDbi.getRange({ start, transaction, versions: true })) {
+					} of sourceDbi.getRange({ start, transaction, versions: true, exclusiveStart: resumed })) {
 						try {
-							if (isResumedEntry(key)) continue;
 							start = key;
 							hasStart = true;
 							if (typeof key === 'symbol') {
@@ -1180,7 +1172,6 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				} else {
 					for (const { key, value } of sourceDbi.getRange({ start, transaction })) {
 						try {
-							if (isResumedEntry(key)) continue;
 							start = key;
 							hasStart = true;
 							if (typeof key === 'symbol') {
@@ -1212,7 +1203,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				// resume at the last key read, as copyDbi does, so no unread entry is skipped
 				resumed = hasStart;
 				console.error(
-					`Error iterating dbi for ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
+					`Error iterating dbi for ${sourceDatabase} near key ${describeKey(start)}, retrying (${retries} retries left):`,
 					err
 				);
 			}
@@ -1220,7 +1211,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		// Fail loudly so migrateOnStart's try/catch preserves the migrateOnStart flag and
 		// skips moving the LMDB files to backup, instead of leaving a partial copy.
 		throw new Error(
-			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${JSON.stringify(start)}`
+			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${describeKey(start)}`
 		);
 	}
 }
