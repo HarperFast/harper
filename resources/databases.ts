@@ -652,6 +652,7 @@ async function closeOwnedStores(path: string, close: (store: any) => Promise<boo
 type IncompleteDatabaseClose = {
 	databaseNames: Set<string>;
 	rootPaths: string[];
+	rootStores: Set<any>;
 	retry: () => Promise<void>;
 	task?: Promise<void>;
 };
@@ -3417,12 +3418,17 @@ const incompleteDatabaseDropStores = new Map<string, RootDatabaseKind>();
 
 function rememberIncompleteDatabaseClose(
 	databaseNames: Iterable<string>,
-	rootPaths: Iterable<string>,
+	rootStores: Set<any>,
 	retry: () => Promise<void>
 ): void {
 	const names = new Set(databaseNames);
-	const normalizedPaths = [...new Set([...rootPaths].map((rootPath) => resolve(rootPath)))];
-	const incompleteClose: IncompleteDatabaseClose = { databaseNames: names, rootPaths: normalizedPaths, retry };
+	const normalizedPaths = [...new Set([...rootStores].map((rootStore) => resolve(rootStore.path)))];
+	const incompleteClose: IncompleteDatabaseClose = {
+		databaseNames: names,
+		rootPaths: normalizedPaths,
+		rootStores,
+		retry,
+	};
 	for (const rootPath of normalizedPaths) incompleteDatabaseCloses.set(rootPath, incompleteClose);
 	logger.warn(
 		`Database '${[...names].join("', '")}' handles remain partially closed on this worker; the affected roots stay unavailable until drop_database is retried or the worker restarts`,
@@ -3949,15 +3955,11 @@ async function closeDatabaseGraph(
 			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
 		for (const name of databaseNames) unregisterDatabase(name);
-		rememberIncompleteDatabaseClose(
-			databaseNames,
-			[...rootStores].map((rootStore) => rootStore.path),
-			async () => {
-				const retryFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, true);
-				if (retryFailures.length > 0)
-					throw new AggregateError(retryFailures, `Could not finish closing database graph '${databaseName}'`);
-			}
-		);
+		rememberIncompleteDatabaseClose(databaseNames, rootStores, async () => {
+			const retryFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, true);
+			if (retryFailures.length > 0)
+				throw new AggregateError(retryFailures, `Could not finish closing database graph '${databaseName}'`);
+		});
 		closeHandedOff = true;
 	};
 	try {
@@ -3973,8 +3975,14 @@ async function closeDatabaseGraph(
 				`Could not close database graph '${[...databaseNames].join("', '")}' for destructive DDL`
 			);
 		}
-		// an overlapping close of the same graph may have thrown and recorded these roots; they are closed now
-		if (closeFailures.length === 0) for (const rootPath of closingRootPaths) incompleteDatabaseCloses.delete(rootPath);
+		// an overlapping close of these same handles may have thrown and recorded them; they are closed now
+		if (closeFailures.length === 0) {
+			for (const rootPath of closingRootPaths) {
+				const record = incompleteDatabaseCloses.get(rootPath);
+				if (record && [...record.rootStores].every((rootStore) => rootStores.has(rootStore)))
+					incompleteDatabaseCloses.delete(rootPath);
+			}
+		}
 		for (const name of databaseNames) unregisterDatabase(name);
 		databaseClosed = true;
 		return true;

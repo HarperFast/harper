@@ -157,10 +157,10 @@ describe('A database root while its close is in flight', function () {
 	it('refuses an alias of a database whose failed close awaits recovery', async () => {
 		const storageRoot = join(testRoot, 'closing-alias');
 		mkdirSync(storageRoot, { recursive: true });
-		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storageRoot);
-		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
-		resetDatabases();
 		try {
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storageRoot);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+			resetDatabases();
 			const Physical = table(definition('closing_physical'));
 			await Physical.put({ id: 1, name: 'one' });
 			await closeDatabase('closing_physical');
