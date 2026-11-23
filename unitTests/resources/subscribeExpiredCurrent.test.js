@@ -555,7 +555,7 @@ describe('Table.subscribe() skips expired current records on non-source tables',
 		assert.strictEqual(loaded.name, 'from-source-1');
 		assert.strictEqual(sourceGetCalls, 1);
 
-		// the fill commits in the background, so wait for it to land and then expire rather than for a fixed time
+		// the fill commits after get() resolves
 		await waitFor(() => CachedTable.primaryStore.getEntry('s1')?.value, 3000);
 		await waitFor(() => CachedTable.primaryStore.getEntry('s1').expiresAt < Date.now(), 3000);
 		const cachedEntry = CachedTable.primaryStore.getEntry('s1');

@@ -14616,7 +14616,6 @@ export function makeTable(options): TableResourceClass {
 		};
 	}
 
-	// unlike txnForContext, never opens a link
 	function heldLink(context: Context): any {
 		for (let txn: any = context?.transaction; txn && !isReleasedTransaction(txn); txn = txn.next) {
 			if (txn.db?.path !== primaryStore.path) continue;
@@ -15231,7 +15230,7 @@ export function makeTable(options): TableResourceClass {
 			sourceTimestamp = inheritedTimestamp;
 			if (!context?.timestamp && isRocksDB) {
 				// The requesting transaction read this fill, so the fill orders before that transaction's clock,
-				// which RocksDB fixed when it opened: a write the transaction then makes must supersede it (#2935).
+				// which RocksDB fixed when it opened: a write the transaction then makes must supersede it.
 				// A refresh still advances past the version it replaces.
 				const requesterClock = heldTransactionClock(context);
 				const cap = requesterClock > 0 ? timestampBelow(requesterClock) : undefined;
