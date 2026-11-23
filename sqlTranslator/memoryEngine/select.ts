@@ -678,7 +678,6 @@ function compileRemoveColumns(select: any, query: any) {
 
 // #section: GROUP BY
 
-/** The group columns for each grouping set, as `decartes` built them: `[nick, evaluator]` pairs. */
 function groupingSets(select: any, query: any): [string, Evaluator][][] {
 	const cc: CompileContext = { context: 'p', tableid: query.sources[0]?.alias, defcols: query.defcols };
 	if (!select.group) return [[]];
@@ -1599,7 +1598,6 @@ function addSetOrderColumns(query: any) {
 	});
 }
 
-/** The other branch's rows, renamed to this statement's columns by position. */
 function setOperationRows(query: any, nd: any, reverse = false): any[] {
 	const rows = [];
 	for (const row of nd.data) {

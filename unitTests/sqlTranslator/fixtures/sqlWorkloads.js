@@ -321,7 +321,6 @@ function featureWorkloads(seed, count) {
 	});
 }
 
-/** Joins linked through WHERE instead of an equality ON, which the engine turns into index lookups and filters. */
 function commaJoinWorkloads(seed, count) {
 	const rnd = rng(seed);
 	const pick = (a) => a[Math.floor(rnd() * a.length)];

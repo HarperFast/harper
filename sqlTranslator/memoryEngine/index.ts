@@ -25,7 +25,6 @@ export function compile(sql: string): (params?: any) => any {
 	return (params?: any) => compiled.map((statement) => statement(params ?? []));
 }
 
-/** Runs SQL text over parameter data, as `alasql(sql, params)` did. */
 export function query(sql: string, params?: any[]): any {
 	return compile(sql)(params);
 }

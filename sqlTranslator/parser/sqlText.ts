@@ -48,7 +48,7 @@ function lexesInside(body: string, quote: string): boolean {
 	return true;
 }
 
-/** `1e+25` lexes as `1e + 25` and `Infinity` as a column, so every number is written in plain decimal. */
+/** A number in plain decimal. `Infinity` and `NaN` read back as columns, so they have no spelling. */
 export function numberText(value: number): string {
 	if (!Number.isFinite(value)) throw unwritable(`The number ${value}`);
 	const text = String(value);
