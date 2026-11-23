@@ -296,6 +296,10 @@ A read transaction belongs to one database, so a related read uses the related t
 
 Closing a dbi after its environment is a use-after-free, so `closeDatabase` closes only the root, once; only `closed` counts (`lmdbCloseCompletion.test.js`). lmdb-js double-frees on a failed open: **every `.mdb` under the storage paths must be LMDB** (#2669).
 
+## A root whose handles are closing is never handed out
+
+From the first handle close until its roots leave the engine registry, `closeDatabaseGraph` counts the roots in `closingDatabaseRoots` and the names in `closingDatabaseNames`: a rescan skips the roots (`databaseRootUnavailable`) and leaves the database for the close to unregister, and `openDatabaseRoot` throws `DatabaseClosingError`. An LMDB root's `close()` frees its read transaction before the environment closes, and a read in between renews the freed transaction (`closingDatabaseRoot.test.js`).
+
 ## RocksDB teardown closes every wrapper the database opened
 
 Each reused wrapper is recorded in `ownedRocksStores` and closed before the root, or `restore_backup` finds the database open (#3120). Never close one because the graph dropped it (`closeLoadedDatabases.test.js`).

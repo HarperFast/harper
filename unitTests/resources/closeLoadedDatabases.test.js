@@ -28,6 +28,7 @@ const {
 const { getRegistryStatus, RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { schemaHandler } = require('#src/server/itc/serverHandlers');
+const { DatabaseClosingError } = require('#src/utility/errors/hdbError');
 const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 const { dropSchema } = require('#src/dataLayer/schema');
@@ -218,7 +219,7 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
-	it('closes the stores a declaration opened while the database was closing', async function () {
+	it('refuses a declaration while the database is closing, and leaves no store open', async function () {
 		this.timeout(30000);
 		const databaseName = 'closeduringdeclare';
 		const Items = table(itemsDefinition(databaseName));
@@ -226,15 +227,19 @@ describe('RocksDB handle release', function () {
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
 		// the owned list (which holds the attributes store) is drained first; the root closes after it
 		const close = rootStore.close;
-		let Late;
+		let declarationError;
 		rootStore.close = function (...args) {
 			rootStore.close = close;
-			Late = table({ table: 'Late', database: databaseName, attributes: [{ attribute: 'id', isPrimaryKey: true }] });
+			try {
+				table({ table: 'Late', database: databaseName, attributes: [{ attribute: 'id', isPrimaryKey: true }] });
+			} catch (error) {
+				declarationError = error;
+			}
 			return close.apply(this, args);
 		};
 		await closeDatabase(databaseName);
 
-		assert.ok(Late?.primaryStore, 'precondition: the declaration opened its store during the close');
+		assert.ok(declarationError instanceof DatabaseClosingError, `declaration during close: ${declarationError}`);
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
