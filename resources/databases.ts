@@ -3979,7 +3979,12 @@ async function closeDatabaseGraph(
 		if (closeFailures.length === 0) {
 			for (const rootPath of closingRootPaths) {
 				const record = incompleteDatabaseCloses.get(rootPath);
-				if (record && [...record.rootStores].every((rootStore) => rootStores.has(rootStore)))
+				if (
+					record &&
+					[...record.rootStores].every(
+						(rootStore) => rootStores.has(rootStore) && !ownedRocksStores.has(rootStore.path)
+					)
+				)
 					incompleteDatabaseCloses.delete(rootPath);
 			}
 		}
