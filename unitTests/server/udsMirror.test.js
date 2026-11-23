@@ -756,20 +756,38 @@ describe('UDS mirror (writeUdsMetadata, cleanup helpers)', () => {
 			assert.ok(!fs.existsSync(yamlPath), 'a certificate change after cleanup must not advertise it again');
 		});
 
-		it('publishes nothing, and retracts a stale yaml, when its bind identity cannot be read', async () => {
+		it('publishes nothing, and retracts a stale yaml, when its path is verifiably empty', async () => {
+			const sockPath = path.join(TEST_SOCKETS_DIR, 'vanished.sock');
+			const yamlPath = path.join(TEST_SOCKETS_DIR, 'vanished.yaml');
+			const server = { ...makeSecureServer(), secureContextsListeners: [] };
+			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			registerUdsCleanupPaths(sockPath, yamlPath);
+			publishUdsMetadata(sockPath, Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
+			await tick();
+
+			assert.doesNotThrow(() => recordUdsBindSuccess(sockPath)); // stat fails with ENOENT
+			server.secureContextsListeners.forEach((listener) => listener());
+			assert.ok(!fs.existsSync(yamlPath), 'nothing is at the path, so no live owner relies on the yaml');
+		});
+
+		it('publishes nothing, and keeps the yaml, when its bind identity cannot be read', async () => {
 			const blockingFile = path.join(TEST_SOCKETS_DIR, 'unreadable-parent');
 			const sockPath = path.join(blockingFile, 'unreadable.sock');
 			const yamlPath = path.join(TEST_SOCKETS_DIR, 'unreadable.yaml');
 			const server = { ...makeSecureServer(), secureContextsListeners: [] };
-			fs.writeFileSync(blockingFile, ''); // stat fails with ENOTDIR, not ENOENT
-			fs.writeFileSync(yamlPath, 'stale: metadata\n');
+			fs.writeFileSync(blockingFile, ''); // stat fails with ENOTDIR: ownership is unknown, not absent
+			fs.writeFileSync(yamlPath, 'another worker: metadata\n');
 			registerUdsCleanupPaths(sockPath, yamlPath);
 			publishUdsMetadata(sockPath, Promise.resolve(), server, () => writeUdsMetadata(yamlPath, 9926, server));
 			await tick();
 
 			assert.doesNotThrow(() => recordUdsBindSuccess(sockPath));
 			server.secureContextsListeners.forEach((listener) => listener());
-			assert.ok(!fs.existsSync(yamlPath), 'a mirror without a recorded identity is treated as a failed bind');
+			assert.strictEqual(
+				fs.readFileSync(yamlPath, 'utf8'),
+				'another worker: metadata\n',
+				'a yaml this worker cannot prove stale may belong to a live owner of the path'
+			);
 		});
 	});
 

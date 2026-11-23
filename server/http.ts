@@ -123,14 +123,12 @@ export function recordUdsBindSuccess(socketPath: string) {
 		entry.identity = { dev: stat.dev, ino: stat.ino };
 	} catch (error) {
 		// Extremely unlikely (we just bound this path). Without an identity this worker can neither
-		// publish the mirror nor clean it up, so count it as failed (an isolated worker left with no
-		// other mirror fails startup instead of reporting ready while unreachable) and retract any
-		// yaml there: it can only describe the socket this bind replaced.
+		// publish the mirror nor clean it up, so count it as failed: an isolated worker left with no
+		// other mirror fails startup instead of reporting ready while unreachable. A yaml there may
+		// belong to a worker that has since rebound the path, so it is retracted only when the path is
+		// verifiably empty (markUdsBindFailed).
 		harperLogger.error(`Could not stat freshly bound UDS mirror at ${socketPath}`, error);
-		failedUdsPaths.add(socketPath);
-		try {
-			unlinkSync(entry.yamlPath);
-		} catch {}
+		markUdsBindFailed(socketPath);
 		return;
 	}
 	for (const publish of entry.onBound) {
@@ -173,8 +171,8 @@ function ownershipOf(entry: {
  * that already rebound it). Unlike cleanupUdsFiles, a failed bind never produced a socket of its own,
  * so 'absent' here just means no bind ever won this path — not evidence of a live replacement — and
  * is safe to retract stale metadata for (see server/DESIGN.md's UDS ownership note for why this can't
- * require 'owned': its callers, an overlong path and a per-thread mirror skipped because its pool owns
- * it, never run listen(), so this worker's own identity is never recorded).
+ * require 'owned': its callers, an overlong path, a per-thread mirror skipped because its pool owns
+ * it, and a bind whose identity could not be read, never record this worker's own identity).
  */
 export function markUdsBindFailed(socketPath: string) {
 	failedUdsPaths.add(socketPath);

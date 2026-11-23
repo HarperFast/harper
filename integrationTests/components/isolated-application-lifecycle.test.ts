@@ -571,7 +571,12 @@ suite(
 			return metadata;
 		}
 
-		function publisher(mirrors: Record<string, number | null>, previous?: number): number | undefined {
+		function publisher(
+			mirrors: Record<string, number | null>,
+			expected: string[],
+			previous?: number
+		): number | undefined {
+			if (Object.keys(mirrors).sort().join('\n') !== expected.join('\n')) return undefined;
 			const named = new Set(Object.values(mirrors));
 			const [tid] = named;
 			return named.size === 1 && typeof tid === 'number' && tid > 0 && tid !== previous ? tid : undefined;
@@ -598,19 +603,31 @@ suite(
 			test(`a redeploy with restart: ${JSON.stringify(restart)} leaves each mirror with its new worker's metadata`, async () => {
 				const project = restart === true ? 'redo_full' : 'redo_roll';
 				await deploy(project, 1, true);
+				const first = await waitFor(
+					() => mirrorMetadata(project),
+					(mirrors) => publisher(mirrors, Object.keys(mirrors).sort()) !== undefined,
+					`${project}'s first deploy never published every mirror`,
+					10000
+				);
+				// every redeploy must bring back exactly these: the HTTPS and the MQTTS mirror
+				const expected = Object.keys(first).sort();
+				ok(
+					['9927', '8883'].every((port) => expected.some((name) => name.endsWith(`:${port}.sock`))),
+					`${project} bound ${JSON.stringify(expected)}`
+				);
 				const published = (previous?: number) =>
 					waitFor(
 						() => mirrorMetadata(project),
-						(mirrors) => publisher(mirrors, previous) !== undefined,
-						`${project}'s mirrors never all carried its new worker's metadata`,
+						(mirrors) => publisher(mirrors, expected, previous) !== undefined,
+						`${project}'s mirrors never all came back with its new worker's metadata`,
 						10000
-					).then((mirrors) => publisher(mirrors, previous));
-				let tid = await published();
+					).then((mirrors) => publisher(mirrors, expected, previous));
+				let tid = publisher(first, expected);
 				for (const version of [2, 3]) {
 					await deploy(project, version, restart);
 					const replacement = await published(tid);
 					await staysTrue(
-						async () => publisher(await mirrorMetadata(project), tid) === replacement,
+						async () => publisher(await mirrorMetadata(project), expected, tid) === replacement,
 						`${project}'s mirror metadata was removed after redeploying version ${version}`
 					);
 					tid = replacement;
