@@ -368,6 +368,8 @@ async function copyDbEnvironment(
 	const targetDbisDb = targetEnv.openDB(INTERNAL_DBIS_NAME, catalogDbiOptions() as any);
 	(targetDbisDb as any).encoder.useVersions = false;
 	let written;
+	let observedWrite;
+	let writeFailure;
 	let outstandingWrites = 0;
 	// One cutoff for the whole copy so a long copy classifies every tombstone against the same instant
 	const tombstoneCutoff = Date.now() - auditRetention;
@@ -422,6 +424,7 @@ async function copyDbEnvironment(
 			await copyDbi(useRawBytes(sourceAuditDbi), useRawBytes(targetAuditStore), false, transaction);
 		}
 		await written;
+		if (writeFailure) throw writeFailure;
 		for (const { key, value } of symbolKeyedRows) targetDbisDb.putSync(key, value);
 
 		/**
@@ -488,6 +491,11 @@ async function copyDbEnvironment(
 								continue;
 							}
 							written = targetDbi.put(key, value, isPrimary ? version : undefined);
+							// only the latest batch is awaited, so each batch's failure is recorded when it is issued
+							if (written !== observedWrite) {
+								observedWrite = written;
+								written.catch((error) => (writeFailure ??= error));
+							}
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
 							bytesCopied += (key?.length || 10) + value.length;
@@ -1055,12 +1063,19 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		const MAX_RETRIES = 1000;
 		let retries = MAX_RETRIES;
 		let start = null;
+		let hasStart = false;
 		let resumed = false;
 		// the entry a resumed read starts at was already written; re-putting it would save its blobs again
 		const isResumedEntry = (key) => {
 			if (!resumed) return false;
 			resumed = false;
-			return key === start || (typeof key === 'object' && JSON.stringify(key) === JSON.stringify(start));
+			return (
+				key === start ||
+				(Array.isArray(key) &&
+					Array.isArray(start) &&
+					key.length === start.length &&
+					key.every((part, index) => part === start[index]))
+			);
 		};
 		while (retries-- > 0) {
 			try {
@@ -1082,6 +1097,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 						try {
 							if (isResumedEntry(key)) continue;
 							start = key;
+							hasStart = true;
 							if (typeof key === 'symbol') {
 								skippedRecord++;
 								continue;
@@ -1165,10 +1181,11 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 						try {
 							if (isResumedEntry(key)) continue;
 							start = key;
+							hasStart = true;
 							if (typeof key === 'symbol') {
 								continue;
 							}
-							written = targetDbi.put(key, value);
+							written = targetDbi.putSync(key, value);
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0;
 							if (outstandingWrites++ > 5000) {
@@ -1193,7 +1210,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 			} catch (err) {
 				// Resume at the last key read, as copyDbi does: stepping past it, or stopping, would publish a copy
 				// missing whatever the iterator had not reached
-				resumed = start !== null;
+				resumed = hasStart;
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
 					err

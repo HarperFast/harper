@@ -1,8 +1,4 @@
-/**
- * LMDB seed, then compactOnStart, then migrateOnStart, reading everything back after each boot.
- *
- *   npm run test:integration -- "integrationTests/database/copy-db-catalog-and-audit-refs.test.ts"
- */
+// LMDB seed, then compactOnStart, then migrateOnStart, reading everything back after each boot.
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
@@ -117,7 +113,10 @@ suite('compaction and migration keep audit refs and catalog rows', (ctx: Context
 			env: { HARPER_STORAGE_ENGINE: 'lmdb' },
 			startupTimeoutMs: BOOT_TIMEOUT_MS,
 		});
-		ok(/Running compact on start/.test(ctx.harper.startupOutput?.stdout ?? ''), 'compactOnStart did not run');
+		ok(
+			/Moving copy compacted data to/.test(ctx.harper.startupOutput?.stdout ?? ''),
+			'compactOnStart did not compact the data database'
+		);
 		const result = await verify('after compaction');
 		ok(!/Rocks/.test(result.engine), `expected an LMDB store, got ${result.engine}`);
 		assertComplete(result, 'after compaction');
