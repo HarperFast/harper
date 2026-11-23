@@ -636,18 +636,26 @@ function retainUnclosedStore(path: string, store: any): void {
 	owned.push({ deref: () => store });
 }
 
+// a draining wrapper is in neither `ownedRocksStores` nor closed, so a check of that map alone would miss it
+const drainingOwnedStores = new Map<string, number>();
+
 async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
 	const failed: any[] = [];
 	let owned: OwnedStores | undefined;
-	// a declaration during an await below starts a fresh list, which the next pass drains
-	while ((owned = ownedRocksStores.get(path))) {
-		ownedRocksStores.delete(path);
-		for (const ref of owned) {
-			const store = ref.deref();
-			if (store && !(await close(store))) failed.push(store);
+	countClosing(drainingOwnedStores, [path]);
+	try {
+		// a declaration during an await below starts a fresh list, which the next pass drains
+		while ((owned = ownedRocksStores.get(path))) {
+			ownedRocksStores.delete(path);
+			for (const ref of owned) {
+				const store = ref.deref();
+				if (store && !(await close(store))) failed.push(store);
+			}
 		}
+	} finally {
+		for (const store of failed) retainUnclosedStore(path, store);
+		uncountClosing(drainingOwnedStores, [path]);
 	}
-	for (const store of failed) retainUnclosedStore(path, store);
 }
 type IncompleteDatabaseClose = {
 	databaseNames: Set<string>;
@@ -3982,7 +3990,10 @@ async function closeDatabaseGraph(
 				if (
 					record &&
 					[...record.rootStores].every(
-						(rootStore) => rootStores.has(rootStore) && !ownedRocksStores.has(rootStore.path)
+						(rootStore) =>
+							rootStores.has(rootStore) &&
+							!ownedRocksStores.has(rootStore.path) &&
+							!drainingOwnedStores.has(rootStore.path)
 					)
 				)
 					incompleteDatabaseCloses.delete(rootPath);
