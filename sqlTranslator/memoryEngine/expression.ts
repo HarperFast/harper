@@ -254,7 +254,8 @@ const isConstant = (node: any) =>
 	node instanceof ast.NumValue ||
 	node instanceof ast.StringValue ||
 	node instanceof ast.LogicValue ||
-	node instanceof ast.NullValue;
+	node instanceof ast.NullValue ||
+	(node instanceof ast.UniOp && (node.op === '-' || node.op === '+') && node.right instanceof ast.NumValue);
 
 /** Runs a subquery the statement recorded (`queriesfn`), with the current scope as its outer scope. */
 function runSubquery(index: number, env: Env): any {
@@ -408,10 +409,8 @@ function compileOp(node: any, cc: CompileContext): Evaluator {
 
 	if (body === undefined) {
 		const compare = COMPARISON[op];
-		// Any other operator text did not compile as JavaScript.
 		if (!compare) throw new SyntaxError('Unexpected identifier');
 		if (refs.length === 0) {
-			// The common case, a plain binary operator, without an operand array per row.
 			return plainBinary(op, compileExpression(node.left, cc), compileExpression(node.right, cc));
 		}
 		const left = ref(node.left);

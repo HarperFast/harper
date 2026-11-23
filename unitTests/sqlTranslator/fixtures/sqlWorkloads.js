@@ -2,8 +2,8 @@
 /**
  * Deterministic SELECT workloads for the in-memory SQL engine golden test (memoryEngine.test.js): random statements
  * of the shapes legacy SQL runs (parameter tables joined, filtered, grouped, sorted) over random rows, and a second
- * set exercising modifiers, set operations, window aggregates, row numbers and subqueries, and joins linked through
- * WHERE.
+ * set exercising modifiers, set operations, window aggregates, row numbers and subqueries, joins linked through WHERE,
+ * and equality joins whose ON calls a function.
  */
 
 function rng(seed) {
@@ -389,4 +389,26 @@ function commaJoinWorkloads(seed, count) {
 	return Array.from({ length: count }, makeQuery);
 }
 
-module.exports = { joinWorkloads, featureWorkloads, commaJoinWorkloads };
+function onFunctionWorkloads(seed, count) {
+	const rnd = rng(seed);
+	const pick = (a) => a[Math.floor(rnd() * a.length)];
+	const value = () => pick([0, 1, 2, '1', '2', -1, null, undefined, 'a', 'A', '', 1.5, true]);
+	const table = () =>
+		Array.from({ length: 1 + Math.floor(rnd() * 5) }, () => ({ id: value(), k: value(), v: value() }));
+	const fns = ['ABS', 'UPPER', 'LOWER', 'IFNULL', 'CONCAT', 'ROUND', 'LEN', 'COALESCE', 'NULLIF'];
+	const col = (alias) => (rnd() < 0.5 ? pick(['id', 'k', 'v']) : `${alias}.${pick(['id', 'k', 'v'])}`);
+	const expr = (alias) => {
+		const fn = pick(fns);
+		const extra = ['IFNULL', 'NULLIF', 'COALESCE', 'CONCAT'].includes(fn) ? ', ' + pick(['1', "'x'", col(alias)]) : '';
+		return rnd() < 0.7 ? `${fn}(${col(alias)}${extra})` : col(alias);
+	};
+	return Array.from({ length: count }, () => {
+		const mode = pick(['INNER JOIN', 'LEFT JOIN', 'JOIN', 'RIGHT JOIN', 'OUTER JOIN']);
+		const on = rnd() < 0.5 ? `${expr('a')} = ${expr('b')}` : `${expr('b')} = ${expr('a')}`;
+		const sql =
+			`SELECT a.id AS x, b.v AS y FROM ? AS a ${mode} ? AS b ON ${on}` + (rnd() < 0.3 ? ' ORDER BY a.id' : '');
+		return { sql, params: [table(), table()] };
+	});
+}
+
+module.exports = { joinWorkloads, featureWorkloads, commaJoinWorkloads, onFunctionWorkloads };

@@ -8,7 +8,7 @@ const assert = require('node:assert');
 const crypto = require('node:crypto');
 const { query, compile } = require('#src/sqlTranslator/memoryEngine/index');
 const golden = require('./fixtures/memoryEngineGolden.json');
-const { joinWorkloads, featureWorkloads, commaJoinWorkloads } = require('./fixtures/sqlWorkloads');
+const { joinWorkloads, featureWorkloads, commaJoinWorkloads, onFunctionWorkloads } = require('./fixtures/sqlWorkloads');
 
 /** A canonical text of a result: key order, undefined, NaN, -0, Dates and bigints all count. */
 function canon(value, seen = new Set()) {
@@ -93,6 +93,15 @@ describe('in-memory SQL engine', function () {
 		it('for joins linked through WHERE', function () {
 			const { seed, count, digests } = golden.commaJoins;
 			const mismatches = commaJoinWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
+			assert.deepStrictEqual(
+				mismatches.map((w) => w.sql),
+				[]
+			);
+		});
+
+		it('for equality joins whose ON calls a function', function () {
+			const { seed, count, digests } = golden.onFunctionJoins;
+			const mismatches = onFunctionWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
 			assert.deepStrictEqual(
 				mismatches.map((w) => w.sql),
 				[]

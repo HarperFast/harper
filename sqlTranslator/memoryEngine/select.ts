@@ -22,14 +22,13 @@ import {
 	unescapeq,
 	valueMap,
 } from './expression.ts';
-import { AGGREGATES, cloneDeep, deepEqual, Recordset, setOwn } from './functions.ts';
+import { AGGREGATES, cloneDeep, deepEqual, isInlineFunction, Recordset, setOwn } from './functions.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export type Statement = ((params: any, cb?: any, oldscope?: any) => any) & { query: any };
 
 const returnTrue = () => true;
-/** Marks where `SELECT *` copies a group's keys into the row. */
 const GROUP_STAR = Symbol('group *');
 const literal = (name: any) => decodeStringLiteral(String(name), "'");
 
@@ -237,10 +236,13 @@ function compileFrom(select: any, query: any) {
 /** Which source aliases an expression reads, as the generated `p['alias']` text showed. */
 function aliasesRead(node: any, query: any, cc: CompileContext): Set<string> {
 	const found = new Set<string>();
-	const visit = (n: any) => {
+	// `withDefcols` false below an inlined function, whose arguments were written without the column definitions,
+	// so an unqualified column there names only the default source (see compileExpression).
+	const visit = (n: any, withDefcols: boolean) => {
 		if (n === null || typeof n !== 'object') return;
 		if (n instanceof ast.Column) {
 			if (n.tableid) found.add(literal(n.tableid));
+			else if (!withDefcols) found.add(literal(cc.tableid));
 			else {
 				const tbid = query.defcols[n.columnid];
 				if (tbid && tbid !== '-') found.add(literal(tbid));
@@ -251,9 +253,10 @@ function aliasesRead(node: any, query: any, cc: CompileContext): Set<string> {
 			return;
 		}
 		if (n instanceof ast.Select || n instanceof ast.AggrValue) return;
-		for (const key of Object.keys(n)) visit(n[key]);
+		const inline = n instanceof ast.FuncValue && isInlineFunction(n.funcid);
+		for (const key of Object.keys(n)) visit(n[key], withDefcols && !(inline && key === 'args'));
 	};
-	visit(node);
+	visit(node, true);
 	return found;
 }
 
