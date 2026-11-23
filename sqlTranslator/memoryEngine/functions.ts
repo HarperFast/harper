@@ -2,8 +2,6 @@
  * The scalar function and named-aggregate library of the legacy SQL engine. It reproduces AlaSQL 4.22's observable
  * results, quirks included, because legacy SQL users depend on them: `UPPER(NULL)` is `'NULL'`, `LEN(5)` is
  * undefined, `NULLIF` compares with `==`, a call to an unknown function fails only when a row reaches it, and so on.
- * Line references (`alasql.fs.js:N`) point into AlaSQL 4.22.0's `dist/alasql.fs.js`, the reference these semantics
- * were differentially tested against.
  *
  * Nothing here evaluates text as JavaScript. AlaSQL's `__ala__` (the whole AlaSQL instance, so `__ala__('…')` ran
  * arbitrary AlaSQL, JavaScript blocks included) and `OBJECT_ID` (a lookup in AlaSQL's own database registry) are
@@ -32,16 +30,16 @@ type Evaluator = (ctx: EvalContext) => any;
  * AGGREGATES[funcid](...argValues, accumulator, stage, ...extra)
  * ```
  *
- * - stage 1, the group's first row (alasql.fs.js:10132-10143): `accumulator` is `undefined`; the result becomes it.
- * - stage 2, each later row (alasql.fs.js:10412-10426): the result replaces the accumulator.
- * - stage 3, after the last row (alasql.fs.js:7505-7528): every argument value is `undefined`, there are no extras,
+ * - stage 1, the group's first row: `accumulator` is `undefined`; the result becomes it.
+ * - stage 2, each later row: the result replaces the accumulator.
+ * - stage 3, after the last row: every argument value is `undefined`, there are no extras,
  *   and the result is the aggregate's value.
  *
  * `argValues` is one value per call argument (`MEDIAN(x)` one, `F(x, y)` two), so with more than one argument
  * everything after it shifts right and the function sees an argument value where it expects the accumulator; that
  * is how AlaSQL called them, and these functions keep the positional parameters that make it observable. `extra`
  * is passed at stages 1 and 2 only, and only for GROUP_CONCAT: `separator` (`undefined` when no SEPARATOR clause)
- * and `orderDirection` (the first ORDER BY item's `direction`, else `undefined`), alasql.fs.js:9969-9980.
+ * and `orderDirection` (the first ORDER BY item's `direction`, else `undefined`).
  */
 type AggregateFunction = (...args: any[]) => any;
 
@@ -63,18 +61,18 @@ function nullPrototype<T>(entries: Record<string, T>): Record<string, T> {
 
 // #section: utilities AlaSQL's generated code calls
 
-/** `n2u` (alasql.fs.js:3787): a NaN result becomes `undefined`. AlaSQL wraps each projected column in it. */
+/** `n2u`: a NaN result becomes `undefined`. AlaSQL wraps each projected column in it. */
 export function nanToUndefined(value: any): any {
 	// eslint-disable-next-line no-self-compare
 	return value === value ? value : undefined;
 }
 
-/** `und` (alasql.fs.js:3804): `undefined` stays `undefined` (null does not), anything else goes through `then`. */
+/** `und`: `undefined` stays `undefined` (null does not), anything else goes through `then`. */
 export function undefinedOrValue(value: any, then: (value: any) => any): any {
 	return value === undefined ? undefined : then(value);
 }
 
-/** `utils.setOwn` (alasql.fs.js:4741): assigns a key, making a `__proto__` key an own property. */
+/** `utils.setOwn`: assigns a key, making a `__proto__` key an own property. */
 export function setOwn(target: any, key: string, value: any): void {
 	if (key === '__proto__') {
 		Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
@@ -83,7 +81,7 @@ export function setOwn(target: any, key: string, value: any): void {
 	}
 }
 
-/** `utils.cloneDeep` (alasql.fs.js:4632). */
+/** `utils.cloneDeep`. */
 export function cloneDeep(obj: any): any {
 	if (obj === null || typeof obj !== 'object') return obj;
 	if (obj instanceof Date) return new Date(obj);
@@ -98,7 +96,7 @@ export function cloneDeep(obj: any): any {
 	return clone;
 }
 
-/** `utils.deepEqual` (alasql.fs.js:4668), the `==` and `!==` operators. Walks inherited enumerable keys too. */
+/** `utils.deepEqual`, the `==` and `!==` operators. Walks inherited enumerable keys too. */
 export function deepEqual(x: any, y: any): boolean {
 	if (x === y) return true;
 	if (typeof x === 'object' && x !== null && typeof y === 'object' && y !== null) {
@@ -111,7 +109,7 @@ export function deepEqual(x: any, y: any): boolean {
 	return false;
 }
 
-/** `utils.extend` (alasql.fs.js:4723), also the EXTEND function: copies `b`'s own keys onto `a`, which it mutates. */
+/** `utils.extend`, also the EXTEND function: copies `b`'s own keys onto `a`, which it mutates. */
 export function extend(a: any, b: any): any {
 	a = a || {};
 	for (const key in b) {
@@ -120,12 +118,12 @@ export function extend(a: any, b: any): any {
 	return a;
 }
 
-/** `utils.getValueOf` (alasql.fs.js:4776): unwraps `String` and `Number` objects. */
+/** `utils.getValueOf`: unwraps `String` and `Number` objects. */
 export function getValueOf(value: any): any {
 	return typeof value === 'object' && (value instanceof String || value instanceof Number) ? value.valueOf() : value;
 }
 
-/** AlaSQL's `Recordset` (alasql.fs.js:6094): a `SELECT RECORDSET` result, its params assigned onto it. */
+/** AlaSQL's `Recordset`: a `SELECT RECORDSET` result, its params assigned onto it. */
 export class Recordset {
 	[key: string]: any;
 	data: any[];
@@ -136,14 +134,14 @@ export class Recordset {
 }
 
 /**
- * `utils.flatArray` (alasql.fs.js:4785): for a `Recordset`, each row's value of the first column, unwrapped by
+ * `utils.flatArray`: for a `Recordset`, each row's value of the first column, unwrapped by
  * `getValueOf`; for an array, each row's value of the first row's first key.
  */
 export function flatArray(rows: any): any[] {
 	if (!rows || rows.length === 0) return [];
 	if (typeof rows === 'object' && rows instanceof Recordset) {
-		const columnid = rows.columns[0].columnid;
-		return rows.data.map((row: any) => getValueOf(row[columnid]));
+		// The first column is read per row, so an empty result with no columns gives [] rather than throwing.
+		return rows.data.map((row: any) => getValueOf(row[rows.columns[0].columnid]));
 	}
 	const key = Object.keys(rows[0])[0];
 	if (key === undefined) return [];
@@ -151,7 +149,7 @@ export function flatArray(rows: any): any[] {
 }
 
 /**
- * `utils.glob` (alasql.fs.js:4951), the GLOB operator. The pattern becomes a regular expression that is then
+ * `utils.glob`, the GLOB operator. The pattern becomes a regular expression that is then
  * upper-cased whole, escapes included (`\d` turns into `\D`), and an invalid one throws.
  */
 export function glob(value: any, pattern: any): boolean {
@@ -172,7 +170,7 @@ export function glob(value: any, pattern: any): boolean {
 }
 
 /**
- * `stdfn.REGEXP_LIKE` (alasql.fs.js:13332): the REGEXP operator (`REGEXP_LIKE(left, right)`) and the function.
+ * `stdfn.REGEXP_LIKE`: the REGEXP operator (`REGEXP_LIKE(left, right)`) and the function.
  * MySQL's `[[:<:]]`/`[[:>:]]` word boundaries become `\b`; `flags` goes to `RegExp` as is.
  */
 export function regexpLike(value: any, pattern: any, flags?: any): boolean {
@@ -184,7 +182,7 @@ export function regexpLike(value: any, pattern: any, flags?: any): boolean {
 
 const DATE_WITH_DOTS = /^\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}/;
 
-/** `newDate` (alasql.fs.js:15111): `yyyy.mm.dd hh:mm:ss` reads as `yyyy-mm-dd hh:mm:ss`; anything else as `new Date`. */
+/** `newDate`: `yyyy.mm.dd hh:mm:ss` reads as `yyyy-mm-dd hh:mm:ss`; anything else as `new Date`. */
 function newDate(d: any): Date {
 	if (typeof d === 'string' && DATE_WITH_DOTS.test(d)) d = d.replace('.', '-').replace('.', '-');
 	return new Date(d);
@@ -327,7 +325,7 @@ function styledDate(style: any, s: ReturnType<typeof dateParts>): string {
 	}
 }
 
-/** `stdfn.CONVERT` (alasql.fs.js:13951), CAST and CONVERT. `args.dbtypeid` keeps its case; the switch upper-cases it. */
+/** `stdfn.CONVERT`, CAST and CONVERT. `args.dbtypeid` keeps its case; the switch upper-cases it. */
 function convert(value: any, args: ConvertArgs): any {
 	let val = value;
 	const type = args.dbtypeid?.toUpperCase();
@@ -390,7 +388,7 @@ function convert(value: any, args: ConvertArgs): any {
 }
 
 /**
- * A value AlaSQL wrote into the generated code as JavaScript source (`yy.Convert#toJS`, alasql.fs.js:13910): a
+ * A value AlaSQL wrote into the generated code as JavaScript source (`yy.Convert#toJS`): a
  * NUMBER token's text reads as a sloppy-mode literal, so `010` is octal.
  */
 function sourceValue(value: any): any {
@@ -400,7 +398,7 @@ function sourceValue(value: any): any {
 }
 
 /**
- * Compiles a `Convert` node (CAST, CONVERT, `::`) as `yy.Convert#toJS` did (alasql.fs.js:13910). A `MAX` size was
+ * Compiles a `Convert` node (CAST, CONVERT, `::`) as `yy.Convert#toJS` did. A `MAX` size was
  * written into the generated code as the bare identifier `MAX`, so such a cast throws a ReferenceError at run time,
  * after evaluating its operand.
  */
@@ -426,7 +424,7 @@ export function compileConvert(
 // #section: inlined functions (alasql.stdlib)
 
 /**
- * AlaSQL compiled these to inline code (alasql.fs.js:13256-13398), each from the JavaScript source of its
+ * AlaSQL compiled these to inline code, each from the JavaScript source of its
  * arguments: a missing argument was the text `undefined`, an argument the template does not use is never
  * evaluated, and `und(s, …)` returns `undefined` only for `undefined`, so most string functions throw on NULL.
  * An argument the template repeats (IFNULL's, NULLIF's) is evaluated as many times, which RANDOM() can observe.
@@ -806,7 +804,7 @@ export function isInlineFunction(funcid: string): boolean {
 }
 
 /**
- * Compiles a `FuncValue` call with AlaSQL's three-way dispatch (`yy.FuncValue#toJS`, alasql.fs.js:13199):
+ * Compiles a `FuncValue` call with AlaSQL's three-way dispatch (`yy.FuncValue#toJS`):
  * 1. not registered under the exact name, and an inlined function under the upper-cased name: the inline form
  *    (IIF with other than three arguments throws here, at compile time);
  * 2. not registered under the exact name, and a called function under the upper-cased name: that function;
@@ -837,7 +835,7 @@ export function compileFunctionCall(funcid: string, args: Evaluator[], newid?: b
 
 /**
  * AlaSQL replaced each of its built-in aggregates with a wrapper that returns `undefined` at stage 3 when the
- * accumulator is `undefined` (alasql.fs.js:13686-13693). Harper's aggregates (MAD, MEAN, MODE, PROD, MEDIAN) were
+ * accumulator is `undefined`. Harper's aggregates (MAD, MEAN, MODE, PROD, MEDIAN) were
  * registered after that, unwrapped, so they finish an empty group with their own `null`.
  */
 function wrapBuiltin(fn: AggregateFunction): AggregateFunction {
@@ -847,7 +845,7 @@ function wrapBuiltin(fn: AggregateFunction): AggregateFunction {
 	};
 }
 
-/** GROUP_CONCAT (alasql.fs.js:13412): collects non-NULL values, then sorts (if ordered) and joins them. */
+/** GROUP_CONCAT: collects non-NULL values, then sorts (if ordered) and joins them. */
 function groupConcat(v: any, s: any, stage: any, separator?: any, orderDirection?: any): any {
 	if (separator === undefined) separator = ',';
 	if (stage === 1) return { values: v === null || v === undefined ? [] : [v], separator, orderDirection };
@@ -876,7 +874,7 @@ function groupConcat(v: any, s: any, stage: any, separator?: any, orderDirection
 	return values.join(s.separator);
 }
 
-/** QUART (alasql.fs.js:13566): the `nth` quartile (first by default) of the non-NULL values, by position. */
+/** QUART: the `nth` quartile (first by default) of the non-NULL values, by position. */
 function quart(v: any, s: any, stage: any, nth?: any): any {
 	if (stage === 2) {
 		if (v !== null) s.push(v);
@@ -894,7 +892,7 @@ function quart(v: any, s: any, stage: any, nth?: any): any {
 	return sorted[Math.floor(p)];
 }
 
-/** VAR (alasql.fs.js:13613): sample variance; skips NULL but not `undefined`. 0 for fewer than two values. */
+/** VAR: sample variance; skips NULL but not `undefined`. 0 for fewer than two values. */
 function variance(v: any, s: any, stage: any): any {
 	if (stage === 1) return v === null ? { sum: 0, sumSq: 0, count: 0 } : { sum: v, sumSq: v * v, count: 1 };
 	if (stage === 2) {
@@ -909,7 +907,7 @@ function variance(v: any, s: any, stage: any): any {
 	return 0;
 }
 
-/** VARP (alasql.fs.js:13653): population variance; counts every value, NULL included. */
+/** VARP: population variance; counts every value, NULL included. */
 function populationVariance(value: any, accumulator: any, stage: any): any {
 	if (stage === 1) return { count: 1, sum: value, sumSq: value * value };
 	if (stage === 2) {

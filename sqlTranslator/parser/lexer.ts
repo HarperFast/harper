@@ -112,18 +112,61 @@ export const NON_RESERVED = new Set([
 	'VIEW',
 ]);
 
-// Rules tried before any keyword, in order. Each is sticky so it matches only at the current offset.
-const LEADING_RULES: [RegExp, string | null][] = [
+const isLineTerminator = (c: string) => c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029';
+
+/**
+ * Where AlaSQL's rule `(['](\\.|[^']|\\')*?['])+` (and its `"` form) stopped matching a quoted string that starts at
+ * `at`, or -1 when it did not match, found in one pass rather than by running that regex. Each part closes at the
+ * first quote reached when a backslash takes the character after it; when that runs off the end, the regex fell back
+ * to the last quote such a backslash had taken. Parts repeat while the next character opens another (`'it''s'`).
+ */
+function quotedEnd(input: string, at: number, quote: string): number {
+	let end = quotedPart(input, at, quote);
+	if (end < 0) return -1;
+	let next: number;
+	while (input[end] === quote && (next = quotedPart(input, end, quote)) >= 0) end = next;
+	return end;
+}
+
+function quotedPart(input: string, at: number, quote: string): number {
+	let lastTaken = -1;
+	let i = at + 1;
+	while (i < input.length) {
+		const c = input[i];
+		if (c === quote) return i + 1;
+		if (c === '\\' && i + 1 < input.length && !isLineTerminator(input[i + 1])) {
+			if (input[i + 1] === quote) lastTaken = i + 1;
+			i += 2;
+		} else i++;
+	}
+	return lastTaken < 0 ? -1 : lastTaken + 1;
+}
+
+/** A quoted string rule: the length matched at `at`, or -1. `prefix` is an `N` or `X` before the quote. */
+const quotedRule =
+	(quote: string, prefix?: string) =>
+	(input: string, at: number): number => {
+		const start = prefix === undefined ? at : at + 1;
+		if (prefix !== undefined && input[at]?.toUpperCase() !== prefix) return -1;
+		if (input[start] !== quote) return -1;
+		const end = quotedEnd(input, start, quote);
+		return end < 0 ? -1 : end - at;
+	};
+
+type Rule = RegExp | ((input: string, at: number) => number);
+
+// Rules tried before any keyword, in order. A RegExp is sticky, so it matches only at the current offset.
+const LEADING_RULES: [Rule, string | null][] = [
 	[/``([^`])+``/y, 'JAVASCRIPT'],
 	[/\[\?\]/y, 'BRAQUESTION'],
 	[/@\[/y, 'ATLBRA'],
 	[/ARRAY\[/iy, 'ARRAYLBRA'],
 	[/\[([^\]'])*?\]/y, 'BRALITERAL'],
 	[/`([^`'])*?`/y, 'BRALITERAL'],
-	[/N(['](\\.|[^']|\\')*?['])+/iy, 'NSTRING'],
-	[/X(['](\\.|[^']|\\')*?['])+/iy, 'NSTRING'],
-	[/(['](\\.|[^']|\\')*?['])+/y, 'STRING'],
-	[/(["](\\.|[^"]|\\")*?["])+/y, 'DQSTRING'],
+	[quotedRule("'", 'N'), 'NSTRING'],
+	[quotedRule("'", 'X'), 'NSTRING'],
+	[quotedRule("'"), 'STRING'],
+	[quotedRule('"'), 'DQSTRING'],
 	[/--(.*?)($|\r\n|\r|\n)/y, null],
 	[/\s+/y, null],
 	[/\|\|/y, 'BARBAR'],
@@ -211,14 +254,21 @@ export function tokenize(input: string): Token[] {
 		at += length;
 	};
 	outer: while (at < input.length) {
-		for (const [regex, type] of LEADING_RULES) {
-			const match = stickyMatch(regex, input, at);
-			if (!match) continue;
+		for (const [rule, type] of LEADING_RULES) {
+			let length: number;
+			if (rule instanceof RegExp) {
+				const match = stickyMatch(rule, input, at);
+				if (!match) continue;
+				length = match[0].length;
+			} else {
+				length = rule(input, at);
+				if (length < 0) continue;
+			}
 			if (type === null) {
-				at += match[0].length;
+				at += length;
 				continue outer;
 			}
-			push(type, match[0], match[0].length);
+			push(type, input.slice(at, at + length), length);
 			continue outer;
 		}
 		let match = stickyMatch(VALUE_OF_SEARCH, input, at);

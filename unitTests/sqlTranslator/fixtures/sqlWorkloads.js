@@ -3,7 +3,7 @@
  * Deterministic SELECT workloads for the in-memory SQL engine golden test (memoryEngine.test.js): random statements
  * of the shapes legacy SQL runs (parameter tables joined, filtered, grouped, sorted) over random rows, and a second
  * set exercising modifiers, set operations, window aggregates, row numbers and subqueries, joins linked through WHERE,
- * and equality joins whose ON calls a function.
+ * equality joins whose ON calls a function, and GROUP BY ROLLUP, CUBE and GROUPING SETS.
  */
 
 function rng(seed) {
@@ -411,4 +411,41 @@ function onFunctionWorkloads(seed, count) {
 	});
 }
 
-module.exports = { joinWorkloads, featureWorkloads, commaJoinWorkloads, onFunctionWorkloads };
+function groupingSetWorkloads(seed, count) {
+	const rnd = rng(seed);
+	const pick = (a) => a[Math.floor(rnd() * a.length)];
+	const value = () => pick([1, 2, '1', 'a', 'b', null, undefined, 0]);
+	const table = () =>
+		Array.from({ length: Math.floor(rnd() * 7) }, () => ({
+			a: value(),
+			b: value(),
+			c: value(),
+			n: pick([1, 2, 3, null]),
+		}));
+	const col = () => pick(['a', 'b', 'c', 't.a', 't.b', 'UPPER(a)', 'LEN(b)']);
+	const group = () => {
+		const r = rnd();
+		const list = () => Array.from({ length: 1 + Math.floor(rnd() * 3) }, col).join(', ');
+		if (r < 0.3) return `ROLLUP(${list()})`;
+		if (r < 0.6) return `CUBE(${list()})`;
+		if (r < 0.8) return `GROUPING SETS(${list()})`;
+		return col();
+	};
+	return Array.from({ length: count }, () => {
+		const groups = Array.from({ length: 1 + Math.floor(rnd() * 2) }, group);
+		const aggregate = pick([
+			'COUNT(*) AS cnt',
+			'SUM(n) AS s',
+			'MAX(n) AS m',
+			'MEDIAN(n) AS md',
+			'GROUP_CONCAT(n) AS gc',
+		]);
+		let sql = `SELECT ${pick(['a', 'b', 't.a'])}, ${aggregate} FROM ? AS t GROUP BY ${groups.join(', ')}`;
+		if (rnd() < 0.2) sql += ' HAVING COUNT(*) > 1';
+		if (rnd() < 0.3) sql += ' ORDER BY a';
+		if (rnd() < 0.3) sql = `SELECT 1 IN (${sql.replace(/^SELECT [^,]+, /, 'SELECT ')}) AS [func_val] FROM ?`;
+		return { sql, params: [table(), table()] };
+	});
+}
+
+module.exports = { joinWorkloads, featureWorkloads, commaJoinWorkloads, onFunctionWorkloads, groupingSetWorkloads };

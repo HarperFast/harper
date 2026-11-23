@@ -7,10 +7,13 @@
  * errors here.
  */
 const assert = require('node:assert');
+const { spawnSync } = require('node:child_process');
+const { join } = require('node:path');
 const crypto = require('node:crypto');
 const { parse } = require('#src/sqlTranslator/parser/parser');
 const golden = require('./fixtures/parserGolden.json');
 const { generateStatements, mutateStatements } = require('./fixtures/sqlFuzz');
+const { tokenize } = require('#src/sqlTranslator/parser/lexer');
 
 function canonical(node) {
 	if (node === undefined) return '<undef>';
@@ -199,6 +202,52 @@ describe('SQL parser', function () {
 			const statement = first(sql);
 			assert.strictEqual(first(statement.toString()).toString(), statement.toString());
 			assert.match(statement.toString(), /ESCAPE '!'/);
+		});
+	});
+
+	describe('quoted strings', function () {
+		// AlaSQL's string rules, which the lexer reproduces without running them.
+		const RULES = [
+			[/N(['](\\.|[^']|\\')*?['])+/iy, 'NSTRING'],
+			[/X(['](\\.|[^']|\\')*?['])+/iy, 'NSTRING'],
+			[/(['](\\.|[^']|\\')*?['])+/y, 'STRING'],
+			[/(["](\\.|[^"]|\\")*?["])+/y, 'DQSTRING'],
+		];
+		const expected = (input) => {
+			for (const [regex, type] of RULES) {
+				regex.lastIndex = 0;
+				const match = regex.exec(input);
+				if (match) return `${type}:${match[0].length}`;
+			}
+			return 'none';
+		};
+		const actual = (input) => {
+			const token = tokenize(input)[0];
+			return ['NSTRING', 'STRING', 'DQSTRING'].includes(token.type) ? `${token.type}:${token.end}` : 'none';
+		};
+
+		it("match AlaSQL's rules on every short input", function () {
+			const alphabet = ["'", '\\', 'a', '\n', '"'];
+			const mismatches = [];
+			const visit = (input, left) => {
+				if (expected(input) !== actual(input)) mismatches.push(input);
+				if (left > 0) for (const c of alphabet) visit(input + c, left - 1);
+			};
+			for (const start of ["'", '"', "N'", "x'"]) visit(start, 6);
+			assert.deepStrictEqual(mismatches, []);
+		});
+
+		it('lex a long unterminated string in linear time', function () {
+			const child = spawnSync(process.execPath, [...process.execArgv, join(__dirname, 'fixtures', 'lexTiming.js')], {
+				input: "SELECT '" + '\\x'.repeat(50000),
+				encoding: 'utf8',
+				timeout: 20_000,
+			});
+			assert.strictEqual(child.signal, null, 'the lexer did not finish within 20 s');
+			assert.strictEqual(child.status, 0, child.stderr);
+			const { ms, second } = JSON.parse(child.stdout);
+			assert.notStrictEqual(second, 'STRING');
+			assert.ok(ms < 2000, `took ${ms} ms`);
 		});
 	});
 

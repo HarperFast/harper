@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
@@ -360,6 +361,12 @@ describe('Test update module', () => {
 		it('compiles a SET expression that is not a literal value', () => {
 			const result = create_update_record_rw(fake_columns_missing_value);
 			expect(result.dog_name).to.be.a('function');
+		});
+
+		it('compiles a SET expression to a function of the stored record, as the write bridge calls it', () => {
+			const { columns } = parseSql("UPDATE dev.dog SET dog_name = UPPER(dog_name) || '!' WHERE id = 1").statements[0];
+			const result = create_update_record_rw(columns);
+			assert.deepStrictEqual(result.dog_name([[{ id: 1, dog_name: 'hank' }]]), [{ func_val: 'HANK!' }]);
 		});
 	});
 

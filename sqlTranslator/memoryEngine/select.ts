@@ -256,7 +256,7 @@ function subqueryDatafn(select: any): (params: any, outer: any) => any {
 	};
 }
 
-/** Which source aliases an expression reads, as the generated `p['alias']` text showed. */
+/** The source aliases an expression reads, decided as AlaSQL did from its generated code's `p['alias']` text. */
 function aliasesRead(node: any, query: any, cc: CompileContext): Set<string> {
 	const found = new Set<string>();
 	// `withDefcols` false below an inlined function, whose arguments were written without the column definitions,
@@ -712,30 +712,98 @@ function compileRemoveColumns(select: any, query: any) {
 // #section: GROUP BY
 
 function groupingSets(select: any, query: any): [string, Evaluator][][] {
-	const cc: CompileContext = { context: 'p', tableid: query.sources[0]?.alias, defcols: query.defcols };
 	if (!select.group) return [[]];
-	let res: [string, Evaluator][][] = [[]];
-	for (const gv of select.group) {
-		if (gv instanceof ast.Column) {
-			gv.nick = gv.nick ? escapeq(gv.nick) : escapeq(gv.columnid);
-			query.groupColumns[gv.nick] = gv.nick;
-			const evaluate = compileExpression(gv, cc);
-			res = res.map((r) => r.concat([[gv.nick, evaluate]]));
-		} else if (gv instanceof ast.FuncValue) {
-			const name = escapeq(gv.toString());
-			query.groupColumns[name] = name;
-			const evaluate = compileExpression(gv, cc);
-			res = res.map((r) => r.concat([[name, evaluate]]));
-		} else if (gv instanceof ast.GroupExpression) {
-			throw new ClientError(`GROUP BY ${gv.type} is not supported`);
-		} else if (gv === '') {
-			res = [[['1', () => 1]]];
-		} else {
-			const name = escapeq(gv.toString());
-			const evaluate = compileExpression(gv, cc);
-			res = res.map((r) => r.concat([[name, evaluate]]));
+	return decartes(select.group, query).map((set: GroupEntry[]) => set.map(({ nick, evaluate }) => [nick, evaluate]));
+}
+
+// A group column of one grouping set. Not an array, so `concat` appends it, as AlaSQL's `nick\tcode` strings were.
+interface GroupEntry {
+	nick: string;
+	evaluate: Evaluator;
+}
+
+function groupContext(query: any): CompileContext {
+	return { context: 'p', tableid: query.sources[0]?.alias, defcols: query.defcols };
+}
+
+/** AlaSQL's `decartes`: a GROUP BY list becomes its grouping sets; a single item, its group columns. */
+function decartes(gv: any, query: any): any[] {
+	const cc = groupContext(query);
+	if (Array.isArray(gv)) {
+		let res: any[] = [[]];
+		for (const item of gv) {
+			if (item instanceof ast.Column) {
+				item.nick = item.nick ? escapeq(item.nick) : escapeq(item.columnid);
+				query.groupColumns[item.nick] = item.nick;
+				const entry: GroupEntry = { nick: item.nick, evaluate: compileExpression(item, cc) };
+				res = res.map((r) => r.concat(entry));
+			} else if (item instanceof ast.FuncValue) {
+				const nick = escapeq(item.toString());
+				query.groupColumns[nick] = nick;
+				const entry: GroupEntry = { nick, evaluate: compileExpression(item, cc) };
+				res = res.map((r) => r.concat(entry));
+			} else if (item instanceof ast.GroupExpression) {
+				if (item.type == 'ROLLUP') res = cartes(res, rollup(item.group, query));
+				else if (item.type == 'CUBE') res = cartes(res, cube(item.group, query));
+				else if (item.type == 'GROUPING SETS') res = cartes(res, groupingSetsOf(item.group, query));
+				else throw new Error('Unknown grouping function');
+			} else if (item === '') {
+				res = [[{ nick: '1', evaluate: () => 1 }]];
+			} else {
+				const entry: GroupEntry = { nick: escapeq(item.toString()), evaluate: compileExpression(item, cc) };
+				res = res.map((r) => r.concat(entry));
+			}
 		}
+		return res;
 	}
+	if (gv instanceof ast.FuncValue) {
+		query.groupColumns[escapeq(gv.toString())] = escapeq(gv.toString());
+		return [{ nick: gv.toString(), evaluate: compileExpression(gv, cc) }];
+	}
+	if (gv instanceof ast.Column) {
+		gv.nick = escapeq(gv.columnid);
+		query.groupColumns[gv.nick] = gv.nick;
+		return [{ nick: gv.nick, evaluate: compileExpression(gv, cc) }];
+	}
+	query.groupColumns[escapeq(gv.toString())] = escapeq(gv.toString());
+	return [{ nick: escapeq(gv.toString()), evaluate: compileExpression(gv, cc) }];
+}
+
+/** ROLLUP(a, b): the sets (), (a), (a, b), in that order. */
+function rollup(items: any[], query: any): GroupEntry[][] {
+	const cc = groupContext(query);
+	const entries = items.map((item): GroupEntry => {
+		if (item instanceof ast.Column) {
+			item.nick = escapeq(item.columnid);
+			query.groupColumns[escapeq(item.columnid)] = item.nick;
+			return { nick: item.nick, evaluate: compileExpression(item, cc) };
+		}
+		query.groupColumns[escapeq(item.toString())] = escapeq(item.toString());
+		return { nick: escapeq(item.toString()), evaluate: compileExpression(item, cc) };
+	});
+	const sets: GroupEntry[][] = [];
+	for (let size = 0; size <= entries.length; size++) sets.push(entries.slice(0, size));
+	return sets;
+}
+
+/** CUBE(a, b): every subset, ordered by the bits of its index (a is bit 0). */
+function cube(items: any[], query: any): any[][] {
+	const sets: any[][] = [];
+	for (let mask = 0; mask < 1 << items.length; mask++) {
+		let set: any[] = [];
+		for (let i = 0; i < items.length; i++) if (mask & (1 << i)) set = set.concat(decartes(items[i], query));
+		sets.push(set);
+	}
+	return sets;
+}
+
+function groupingSetsOf(items: any[], query: any): any[] {
+	return items.reduce((acc: any[], item: any) => acc.concat(decartes(item, query)), []);
+}
+
+function cartes(left: any[], right: any[]): any[] {
+	const res = [];
+	for (const a of left) for (const b of right) res.push(a.concat(b));
 	return res;
 }
 
@@ -750,7 +818,11 @@ function compileGroup(select: any, query: any): (env: Env) => void {
 	query.allgroups = allgroups;
 	query.ingroup = [];
 
+	const reduceStart = query.aggrKeys.length;
 	const aggregates = query.selectGroup.map((col: any) => compileAggregate(col, query, cc));
+	// AlaSQL recorded a named aggregate once per grouping set, so it was finished once per set.
+	const reduced = query.aggrKeys.slice(reduceStart);
+	for (let i = 1; i < allgroup.length; i++) query.aggrKeys.push(...reduced);
 	const sets = allgroup.map((agroup, setIdx) => {
 		const keyParts: Evaluator[] = [];
 		for (const [nick, evaluate] of agroup) {
