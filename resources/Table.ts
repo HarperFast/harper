@@ -8287,10 +8287,8 @@ export function makeTable(options): TableResourceClass {
 						}
 						if ((residencyId || write.residencyId) && audit && !isCopyApply && !transaction?.isRetry)
 							write.residencyId = residencyId;
-						// blobs this write saved are referenced by its audit entry (if it wrote one), which then owns
-						// their lifetime, even when the entry is audit-only: a retry that skips this write leaves
-						// the entry in the committed batch
-						write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
+						// set-only: see TransactionWrite.blobsAuditReferenced
+						if (audit && !isCopyApply) write.blobsAuditReferenced = true;
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
@@ -15321,8 +15319,8 @@ export function makeTable(options): TableResourceClass {
 								Boolean(invalidated),
 								auditRecord
 							);
-							// the audit entry owns the fill's blobs, even if a retry then skips the fill
-							sourceWrite.blobsAuditReferenced = Boolean(writeAudit);
+							// set-only: see TransactionWrite.blobsAuditReferenced
+							if (writeAudit) sourceWrite.blobsAuditReferenced = true;
 							// arm the eviction scanner, mirroring the .put() path
 							if (sourceContext.expiresAt) scheduleCleanup();
 						} else if (existingEntry) {
