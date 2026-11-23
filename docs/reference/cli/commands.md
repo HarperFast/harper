@@ -332,7 +332,7 @@ It checks everything it can before it changes anything, so a refusal before step
 8. Writes the starter workflow, if step 2 said to. Commit it to the default branch: GitHub runs `pull_request_target` workflows from there.
 9. Sets `HARPER_PREVIEW_TARGET` to the cluster's URL with `gh`, if the repository doesn't have it.
 
-`enable_previews` only creates. Running setup again with the same arguments leaves the cluster as it is, and one whose records differ from what is already there stops with a `409` that names each difference. To change the limits, run `harper preview teardown`, then setup again.
+`enable_previews` only creates. Running setup again with the same arguments leaves the cluster as it is, except a role whose identity generation `disable_previews` revoked on this node: setup then [replaces the generation](../operations-api/operations.md#enable_previews). One whose records differ from what is already there stops with a `409` that names each difference. To change the limits, run `harper preview teardown`, then setup again.
 
 | Parameter                   | Default                                      | Description                                                                                                                                                                                                                             |
 | --------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

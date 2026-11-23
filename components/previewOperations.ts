@@ -294,7 +294,7 @@ export async function enablePreviews(req: any) {
 			const { unreachable } = await censusOfNodes(req.app, kept);
 			if (unreachable.length > 0) {
 				throw new ClientError(
-					`No record was changed.\n${unreachable.map((node) => `  - ${node}`).join('\n')}\n` +
+					`No role, user or trust policy was changed.\n${unreachable.map((node) => `  - ${node}`).join('\n')}\n` +
 						`Role "${names.role}" is replaced at a new identity generation only after every node fenced the revoked ` +
 						'one: enable previews again once they answer, or disable them to finish removing the identity.',
 					HTTP_STATUS_CODES.CONFLICT
@@ -304,8 +304,8 @@ export async function enablePreviews(req: any) {
 			const current: any = await getRoleByName(names.role);
 			if (!current || roleDifference(current, desired.role) !== undefined) {
 				throw new ClientError(
-					`No record was changed: role "${names.role}" changed while its revoked identity generation was being ` +
-						'fenced. Enable previews again.',
+					`No role, user or trust policy was changed: role "${names.role}" changed while its revoked identity ` +
+						'generation was being fenced. Enable previews again.',
 					HTTP_STATUS_CODES.CONFLICT
 				);
 			}
@@ -570,9 +570,9 @@ async function dropPreviewRelease({ node, project, deploymentId }: PreviewReleas
 
 /**
  * On this node and every peer, refuse from now on any preview of `app` built at `generation`, waiting for one swapping
- * now, then report what is live: `list_releases` with a fence each node acknowledges. Internal to `disable_previews`.
- * A peer runs it as the origin node's identity, which is not a super user, under the authorization bypass harper-pro
- * gives an authorized node's operations.
+ * now, then report what is live: `list_releases` with a fence each node acknowledges. Internal to `disable_previews`,
+ * and to `enable_previews` replacing a revoked generation. A peer runs it as the origin node's identity, which is not a
+ * super user, under the authorization bypass harper-pro gives an authorized node's operations.
  */
 export async function fencePreviewReleases(req: any): Promise<any> {
 	if (!isOperationAuthorizationBypassed()) requireSuperUser(req);

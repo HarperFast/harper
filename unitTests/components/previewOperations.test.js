@@ -1078,7 +1078,7 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 				try {
 					await assert.rejects(enablePreviews(rerun), {
 						statusCode: 409,
-						message: /No record was changed\.\n {2}- node-b: it did not acknowledge the fence/,
+						message: /No role, user or trust policy was changed\.\n {2}- node-b: it did not acknowledge the fence/,
 					});
 				} finally {
 					silent.restore();
