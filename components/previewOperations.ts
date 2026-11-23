@@ -108,7 +108,7 @@ interface PolicyPins {
 	environment: string;
 }
 
-/** Shared by `enable_previews` and `get_preview_policy`, so what one writes the other accepts. */
+/** The only definition of a preview trust policy, so what is written and what is checked cannot drift. */
 function previewPolicy(names: PreviewNames, cleanup: boolean, pins: PolicyPins, description: string): DesiredPolicy {
 	return {
 		id: cleanup ? names.cleanupPolicy : names.policy,
