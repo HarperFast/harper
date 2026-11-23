@@ -24,7 +24,7 @@ interface EvalContext {
 }
 
 /** A compiled expression, evaluated against the engine's row context. */
-export type Evaluator = (ctx: EvalContext) => any;
+type Evaluator = (ctx: EvalContext) => any;
 
 /**
  * A named aggregate (AlaSQL's `alasql.aggr`), called once per row and once to finish:

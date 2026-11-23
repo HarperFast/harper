@@ -90,7 +90,6 @@ describe('in-memory SQL engine', function () {
 			);
 		});
 
-		// Two of these failed in AlaSQL, which reordered the join ahead of a JOIN ... ON that reads a later table.
 		it('for joins linked through WHERE', function () {
 			const { seed, count, digests } = golden.commaJoins;
 			const mismatches = commaJoinWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
@@ -154,6 +153,27 @@ describe('in-memory SQL engine', function () {
 			assert.strictEqual(rows.length, 400);
 			assert.deepStrictEqual(rows[7], { k: 7, v: 'r7' });
 			assert.ok(reads < 5000, `read b.[0] ${reads} times`);
+		});
+
+		it('joins tables linked out of FROM order through a later table, and returns rows in FROM order', function () {
+			const size = 300;
+			const table = (offset) => Array.from({ length: size }, (_, i) => [(i * 7 + offset) % size, offset + i]);
+			const [a, b, c] = [table(1), table(2), table(3)];
+			let reads = 0;
+			const counted = c.map((row) => new Proxy(row, { get: (target, key) => (key === '0' && reads++, target[key]) }));
+			const rows = query(
+				'SELECT a.[1] AS x, b.[1] AS y, c.[1] AS z FROM ? AS a, ? AS b, ? AS c WHERE a.[0] = c.[0] AND b.[0] = c.[0]',
+				[a, b, counted]
+			);
+			assert.strictEqual(rows.length, size);
+			const expected = [];
+			for (const ra of a) {
+				for (const rb of b) {
+					for (const rc of c) if (ra[0] === rc[0] && rb[0] === rc[0]) expected.push({ x: ra[1], y: rb[1], z: rc[1] });
+				}
+			}
+			assert.deepStrictEqual(rows, expected);
+			assert.ok(reads < 10 * size, `read c.[0] ${reads} times`);
 		});
 
 		it('sorts falsy values as empty text', function () {

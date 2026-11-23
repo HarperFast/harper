@@ -14,5 +14,3 @@ A few statements AlaSQL ran now fail:
 - The `__ala__()` and `OBJECT_ID()` functions are removed, and a call to a name that every JavaScript object inherits, such as `toString(name)`, no longer runs that inherited method. Either fails as an unknown function.
 
 GROUP BY, DISTINCT and joins now treat a value that names a JavaScript object property, such as `constructor` or `toString`, like any other value. AlaSQL returned wrong results for those values or failed the query.
-
-A join of three or more tables linked through WHERE, with a `JOIN ... ON` that is not an equality, now returns its rows. AlaSQL could fail such a query with a TypeError.

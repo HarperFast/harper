@@ -331,7 +331,6 @@ function compileJoins(select: any, query: any) {
 	}
 }
 
-/** A select column's name: its alias, else its column name, else its text. */
 const columnName = (col: any) => col.as || col.columnid || col.toString();
 
 function compileSelectStar(query: any, aliases: string[]): ((r: any, env: Env) => void)[] {
@@ -1157,8 +1156,20 @@ function runQuery(query: any, oldscope: any): any[] {
 	query.data = [];
 	query.xgroups = valueMap();
 	query.groups = [];
+	if (query.joinsorted) {
+		query.joinrows = [];
+		query.joinat = [];
+		for (const source of query.sources) {
+			if (source.optimization != 'ix') continue;
+			source.rowat = new Map();
+			source.data.forEach((row: any, i: number) => {
+				if (!source.rowat.has(row)) source.rowat.set(row, i);
+			});
+		}
+	}
 	const env: Env = { s: query.scope, params: query.params, query };
 	doJoin(query, env, 0);
+	if (query.joinsorted) emitJoinRows(query);
 
 	if (query.groupfn) {
 		query.data = [];
@@ -1255,8 +1266,8 @@ function runQuery(query: any, oldscope: any): any[] {
  * AlaSQL's `compileWhereJoins`, for sources joined without an equality ON (`FROM ?, ?`, CROSS JOIN, a non-equality
  * ON): a WHERE equality between a source and one before it becomes that source's index lookup, and an equality
  * between a source and a constant filters the source before the join. Each is a conjunct of the WHERE, which still
- * runs on every combination, so they only skip combinations it rejects. AlaSQL also reordered a join whose FROM
- * order leaves a source unlinked, then sorted the rows back into FROM order; this keeps FROM order.
+ * runs on every combination, so they only skip combinations it rejects. When FROM order leaves a source unlinked,
+ * the join runs in another order (`joinOrder`) and its rows are sorted back into FROM order (`emitJoinRows`).
  */
 function compileWhereJoins(select: any, query: any) {
 	if (!select.where || query.sources.length <= 1) return;
@@ -1268,6 +1279,7 @@ function compileWhereJoins(select: any, query: any) {
 	});
 	const links: { a: number; aExpr: Evaluator; b: number; bExpr: Evaluator }[] = [];
 	const filters: [Evaluator, Evaluator][][] = query.sources.map(() => []);
+	const pinned: boolean[] = [];
 	for (const cond of whereEqualities(select.where)) {
 		if (cond.allsome) continue;
 		const leftAliases = sourcesRead(cond.left, query.defcols);
@@ -1281,23 +1293,35 @@ function compileWhereJoins(select: any, query: any) {
 			if (a === undefined || b === undefined || a === b) continue;
 			links.push({ a, aExpr: ls, b, bExpr: rs });
 		} else if (leftAliases.length === 1 && rightAliases.length === 0) {
-			if (aliasToIdx[leftAliases[0]] !== undefined) filters[aliasToIdx[leftAliases[0]]].push([ls, rs]);
+			const idx = aliasToIdx[leftAliases[0]];
+			if (idx !== undefined) {
+				filters[idx].push([ls, rs]);
+				pinned[idx] = true;
+			}
 		} else if (leftAliases.length === 0 && rightAliases.length === 1) {
-			if (aliasToIdx[rightAliases[0]] !== undefined) filters[aliasToIdx[rightAliases[0]]].push([ls, rs]);
+			const idx = aliasToIdx[rightAliases[0]];
+			if (idx !== undefined) {
+				filters[idx].push([ls, rs]);
+				pinned[idx] = true;
+			}
 		}
 	}
-	for (let k = 1; k < query.sources.length; k++) {
-		const source = query.sources[k];
+	const order = joinOrder(query.sources, links, pinned);
+	const position: number[] = [];
+	order.forEach((idx, k) => (position[idx] = k));
+	order.forEach((idx, k) => {
+		if (k === 0) return;
+		const source = query.sources[idx];
 		for (const link of links) {
-			if (link.a === k && link.b < k) {
+			if (link.a === idx && position[link.b] < k) {
 				indexJoin(source, link.bExpr, link.aExpr);
 				break;
-			} else if (link.b === k && link.a < k) {
+			} else if (link.b === idx && position[link.a] < k) {
 				indexJoin(source, link.aExpr, link.bExpr);
 				break;
 			}
 		}
-	}
+	});
 	query.sources.forEach((source: any, idx: number) => {
 		const conditions = filters[idx];
 		if (conditions.length === 0) return;
@@ -1310,6 +1334,48 @@ function compileWhereJoins(select: any, query: any) {
 			return true;
 		};
 	});
+	if (order.some((idx, k) => idx !== k)) {
+		query.sources = order.map((idx) => query.sources[idx]);
+		query.sources.forEach((source: any, k: number) => (source.fromidx = order[k]));
+		query.joinsorted = true;
+	}
+}
+
+/**
+ * The order AlaSQL joined comma-joined sources in. FROM order is kept when every source links to one before it.
+ * Otherwise, when every source is an inner join, the first source with a constant condition (else the first) goes
+ * first, then repeatedly the first in FROM order linked to one already placed (else the first not placed).
+ */
+function joinOrder(sources: any[], links: { a: number; b: number }[], pinned: boolean[]): number[] {
+	const n = sources.length;
+	const fromOrder = sources.map((_, idx) => idx);
+	const movable = sources.every((source) => !source.joinmode || source.joinmode === 'INNER');
+	let linkedInFrom = true;
+	for (let k = 1; k < n && linkedInFrom; k++) {
+		linkedInFrom = links.some((l) => (l.a === k && l.b < k) || (l.b === k && l.a < k));
+	}
+	if (links.length === 0 || !movable || linkedInFrom) return fromOrder;
+	const placed: boolean[] = [];
+	let start = 0;
+	for (let i = 0; i < n; i++) {
+		if (pinned[i]) {
+			start = i;
+			break;
+		}
+	}
+	const order = [start];
+	placed[start] = true;
+	while (order.length < n) {
+		let next = -1;
+		for (let i = 0; i < n && next < 0; i++) {
+			if (placed[i]) continue;
+			if (links.some((l) => (l.a === i && placed[l.b]) || (l.b === i && placed[l.a]))) next = i;
+		}
+		if (next < 0) next = fromOrder.find((i) => !placed[i])!;
+		order.push(next);
+		placed[next] = true;
+	}
+	return order;
 }
 
 function indexJoin(source: any, left: Evaluator, right: Evaluator) {
@@ -1423,9 +1489,31 @@ function preIndex(query: any) {
 
 function emit(query: any, env: Env) {
 	if (query.wherefn(env)) {
+		if (query.joinrows) {
+			// Each source's row position in FROM order, to sort by in emitJoinRows.
+			const at: number[] = [];
+			for (let k = 0; k < query.sources.length; k++) at[query.sources[k].fromidx] = query.joinat[k];
+			query.joinrows.push({ at, scope: Object.assign({}, env.s) });
+		} else if (query.groupfn) query.groupfn(env);
+		else query.data.push(query.selectfn(env));
+	}
+}
+
+/** Hands a reordered join's rows on in FROM order, as a join in FROM order would have produced them. */
+function emitJoinRows(query: any) {
+	query.joinrows.sort((a: any, b: any) => {
+		for (let k = 0; k < a.at.length; k++) {
+			if (a.at[k] !== b.at[k]) return a.at[k] - b.at[k];
+		}
+		return 0;
+	});
+	for (const row of query.joinrows) {
+		const env: Env = { s: row.scope, params: query.params, query };
 		if (query.groupfn) query.groupfn(env);
 		else query.data.push(query.selectfn(env));
 	}
+	query.joinrows = query.joinat = undefined;
+	for (const source of query.sources) source.rowat = undefined;
 }
 
 function doJoin(query: any, env: Env, h: number) {
@@ -1439,6 +1527,7 @@ function doJoin(query: any, env: Env, h: number) {
 	const tableid = source.alias || source.tableid;
 	let pass = false;
 	let data = source.data;
+	let opt = false;
 	if (
 		source.joinmode != 'RIGHT' &&
 		source.joinmode != 'OUTER' &&
@@ -1446,6 +1535,7 @@ function doJoin(query: any, env: Env, h: number) {
 		source.optimization == 'ix'
 	) {
 		data = source.ix[source.onleftfn(env)] || [];
+		opt = true;
 	}
 	if (data === undefined) throw new Error('Data source number ' + h + ' in undefined');
 	const ilen = data.length;
@@ -1453,6 +1543,7 @@ function doJoin(query: any, env: Env, h: number) {
 	let i = 0;
 	while ((dataw = data[i]) || i < ilen) {
 		scope[tableid] = dataw;
+		if (query.joinrows) query.joinat[h] = opt ? source.rowat.get(dataw) : i;
 		let usingPassed = !source.onleftfn;
 		if (!usingPassed) {
 			let left = source.onleftfn(env);
