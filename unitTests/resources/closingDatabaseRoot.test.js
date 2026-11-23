@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { closeDatabase, database, databases, resetDatabases, table } = require('#src/resources/databases');
 const { DatabaseClosingError } = require('#src/utility/errors/hdbError');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 
 const definition = (databaseName) => ({
 	database: databaseName,
@@ -78,6 +79,44 @@ describe('A database root while its close is in flight', function () {
 
 		assert.ok(declared instanceof DatabaseClosingError, `declaration during the drain: ${declared?.message}`);
 		assert.ok(!resetDatabases()[databaseName].Late, 'the refused declaration created no table');
+	});
+
+	it('keeps a closing database on its root through a rescan, so an overlapping close waits for it', async () => {
+		const databaseName = 'closingRootTableless';
+		const rootStore = database({ database: databaseName });
+		const stopAuditCleanup = rootStore.auditStore.stopAuditCleanup;
+		let overlapping;
+		rootStore.auditStore.stopAuditCleanup = function (...args) {
+			rootStore.auditStore.stopAuditCleanup = stopAuditCleanup;
+			resetDatabases();
+			overlapping = closeDatabase(databaseName, { requireClosed: true }).then(() => rootStore.status);
+			return stopAuditCleanup.apply(this, args);
+		};
+
+		await closeDatabase(databaseName);
+
+		assert.ok(overlapping, 'precondition: the overlapping close started during the first');
+		assert.strictEqual(await overlapping, 'closed', 'the overlapping close resolves only once the root is closed');
+	});
+
+	it('hands a close that throws partway to the incomplete-close record, which a drop recovers', async () => {
+		const databaseName = 'closingRootThrows';
+		const Items = table(definition(databaseName));
+		await Items.put({ id: 1, name: 'one' });
+		const cleanup = Items.cleanup;
+		Items.cleanup = function () {
+			Items.cleanup = cleanup;
+			throw new Error('cleanup failed');
+		};
+
+		await assert.rejects(closeDatabase(databaseName), /cleanup failed/);
+
+		assert.ok(catchError(() => database({ database: databaseName })) instanceof DatabaseClosingError);
+		await new ResourceBridge().dropSchema({ schema: databaseName });
+		const Recreated = table(definition(databaseName));
+		await Recreated.put({ id: 2, name: 'two' });
+		assert.ok((await Recreated.get(1)) == null, 'the drop removed the old record');
+		assert.strictEqual((await Recreated.get(2)).name, 'two');
 	});
 });
 

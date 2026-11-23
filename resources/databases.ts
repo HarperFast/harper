@@ -1388,6 +1388,7 @@ export function getDatabases(): Databases {
 }
 
 function loadDatabaseCatalogs(): Databases {
+	const previousDefinedDatabases = definedDatabases;
 	definedDatabases = new Map();
 	relationshipsToHydrate = [];
 	const hdbBasePath = getHdbBasePath();
@@ -1548,9 +1549,13 @@ function loadDatabaseCatalogs(): Databases {
 		else entry.replay();
 	}
 	deferredResidencyReplays = blockedReplays.length ? blockedReplays : undefined;
+	// the scan skipped a closing database, which keeps its root mapping until its close unregisters it
+	for (const dbName of closingDatabaseNames.keys()) {
+		const defined = previousDefinedDatabases?.get(dbName);
+		if (defined && !definedDatabases.has(dbName)) definedDatabases.set(dbName, defined);
+	}
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
-		// its close unregisters it once the handles are closed
 		if (closingDatabaseNames.has(dbName) || databaseUsesPreparedRoot(dbName)) continue;
 		const definedTables = definedDatabases.get(dbName);
 		if (definedTables) {
@@ -3156,7 +3161,7 @@ function openDatabaseRoot(
 	{ allowPreparedDrop = false }: { allowPreparedDrop?: boolean } = {}
 ) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
-	// by name: a rescan during the close drops an alias's mapping to its closing root
+	// by name too, so the drop bypass below cannot reach a closing graph either
 	if (closingDatabaseNames.has(databaseName)) throw new DatabaseClosingError(databaseName);
 	getDatabases();
 	if (!allowPreparedDrop) assertDatabaseResidencyAvailable(databaseName);
@@ -3933,6 +3938,23 @@ async function closeDatabaseGraph(
 	let databaseClosed = false;
 	let handleCloseStarted = false;
 	let closeHandedOff = false;
+	const handOffIncompleteClose = () => {
+		for (const rootStore of rootStores) {
+			lmdbDatabaseEnvs.delete(rootStore.path);
+			rocksdbDatabaseEnvs.delete(rootStore.path);
+		}
+		for (const name of databaseNames) unregisterDatabase(name);
+		rememberIncompleteDatabaseClose(
+			databaseNames,
+			[...rootStores].map((rootStore) => rootStore.path),
+			async () => {
+				const retryFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, true);
+				if (retryFailures.length > 0)
+					throw new AggregateError(retryFailures, `Could not finish closing database graph '${databaseName}'`);
+			}
+		);
+		closeHandedOff = true;
+	};
 	try {
 		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
 		handleCloseStarted = true;
@@ -3940,21 +3962,7 @@ async function closeDatabaseGraph(
 		for (const table of Object.values(dbTables)) table?.cleanup?.({ closing: true });
 		const closeFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, requireClosed);
 		if (requireClosed && closeFailures.length > 0) {
-			for (const rootStore of rootStores) {
-				lmdbDatabaseEnvs.delete(rootStore.path);
-				rocksdbDatabaseEnvs.delete(rootStore.path);
-			}
-			for (const name of databaseNames) unregisterDatabase(name);
-			rememberIncompleteDatabaseClose(
-				databaseNames,
-				[...rootStores].map((rootStore) => rootStore.path),
-				async () => {
-					const retryFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, true);
-					if (retryFailures.length > 0)
-						throw new AggregateError(retryFailures, `Could not finish closing database graph '${databaseName}'`);
-				}
-			);
-			closeHandedOff = true;
+			handOffIncompleteClose();
 			throw new AggregateError(
 				closeFailures,
 				`Could not close database graph '${[...databaseNames].join("', '")}' for destructive DDL`
@@ -3964,8 +3972,9 @@ async function closeDatabaseGraph(
 		databaseClosed = true;
 		return true;
 	} finally {
-		// a close that failed with no recovery record keeps its roots unavailable, as it keeps their commits suspended
-		if (databaseClosed || closeHandedOff || !handleCloseStarted) releaseClosing();
+		// a close that threw partway keeps its roots unavailable through the incomplete-close record
+		if (handleCloseStarted && !databaseClosed && !closeHandedOff) handOffIncompleteClose();
+		releaseClosing();
 		if (handleCloseStarted && !databaseClosed) {
 			permanentlySuspendDatabaseCommits(rootStores);
 			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
