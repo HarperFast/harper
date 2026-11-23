@@ -216,10 +216,29 @@ function compileFrom(select: any, query: any) {
 	if (!select.from) return;
 	for (const tq of select.from) {
 		const alias = tq.as || tq.tableid;
-		if (!(tq instanceof ast.ParamValue)) throw new Error('Only parameter sources are supported in FROM');
-		query.aliases[alias] = { type: 'paramvalue' };
-		const param = tq.param;
-		const array = tq.array;
+		let datafn: (params: any, query: any) => any;
+		if (tq instanceof ast.ParamValue) {
+			query.aliases[alias] = { type: 'paramvalue' };
+			const param = tq.param;
+			const array = tq.array;
+			datafn = (params) => prepareFromData(params[param], array);
+		} else if (tq instanceof ast.Json) {
+			query.aliases[alias] = { type: 'json' };
+			const value = compileExpression(tq, { context: 'p', tableid: undefined as any });
+			const array = tq.array;
+			datafn = (params, outer) => prepareFromData(value({ s: {}, params, query: outer }), array);
+		} else if (tq instanceof ast.Select) {
+			query.aliases[alias] = { type: 'subquery' };
+			const subquery = compileSelect(tq);
+			if (subquery.query.modifier === undefined) subquery.query.modifier = 'RECORDSET';
+			datafn = (params, outer) => {
+				// Subqueries inside it were recorded on the outer statement, so it shares the outer compiled list.
+				if (!subquery.query.queriesfn && outer.queriesfn) subquery.query.queriesfn = outer.queriesfn;
+				return subquery(outer.params).data;
+			};
+		} else {
+			throw new Error('Only parameter, JSON and subquery sources are supported in FROM');
+		}
 		query.sources.push({
 			alias,
 			databaseid: 'alasql',
@@ -227,7 +246,7 @@ function compileFrom(select: any, query: any) {
 			joinmode: 'INNER',
 			onmiddlefn: returnTrue,
 			srcwherefn: returnTrue,
-			datafn: (params: any) => prepareFromData(params[param], array),
+			datafn,
 		});
 	}
 	query.defaultTableid = query.sources[0].alias;
@@ -1150,7 +1169,7 @@ function runQuery(query: any, oldscope: any): any[] {
 		for (const q of query.queriesfn) q.query.params = query.params;
 	}
 	query.scope = oldscope ? cloneDeep(oldscope) : {};
-	for (const source of query.sources) source.data = source.datafn(query.params);
+	for (const source of query.sources) source.data = source.datafn(query.params, query);
 	query.groupSources = new WeakMap();
 
 	preIndex(query);

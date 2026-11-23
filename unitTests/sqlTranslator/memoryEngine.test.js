@@ -159,6 +159,25 @@ describe('in-memory SQL engine', function () {
 			assert.strictEqual(reads('NULLIF'), 2);
 		});
 
+		it('reads JSON literal and subquery sources in FROM', function () {
+			const rows = [
+				{ a: 1, b: 'x' },
+				{ a: 2, b: 'y' },
+			];
+			assert.deepStrictEqual(query('SELECT 1 IN (SELECT 1 FROM @[1,2]) AS [func_val] FROM ?', [rows]), [
+				{ func_val: true },
+				{ func_val: true },
+			]);
+			assert.deepStrictEqual(query('SELECT * FROM @[{a: 5, b: 1}] AS x', [rows]), [{ a: 5, b: 1 }]);
+			assert.deepStrictEqual(query('SELECT * FROM (SELECT t.a AS n, t.b AS m FROM ? AS t) AS z', [rows]), [
+				{ n: 1, m: 'x' },
+				{ n: 2, m: 'y' },
+			]);
+			assert.deepStrictEqual(query('SELECT COUNT(*) AS c FROM (SELECT t.a FROM ? AS t WHERE t.a > 1) AS z', [rows]), [
+				{ c: 1 },
+			]);
+		});
+
 		it('counts a function call that takes no arguments', function () {
 			assert.deepStrictEqual(query('SELECT COUNT(CURRENT_TIMESTAMP) AS n FROM ? AS t', [[[1], [2]]]), [{ n: 2 }]);
 		});
