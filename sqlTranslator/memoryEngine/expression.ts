@@ -224,7 +224,7 @@ export function compileColumn(node: any, cc: CompileContext): Evaluator {
 }
 
 /** The key the group object holds an aggregate under. */
-export function aggregateKey(node: any): string {
+function aggregateKey(node: any): string {
 	const colas = node.aggrNick || node.nick;
 	return unescapeq(colas === undefined ? escapeq(node.toString()) : colas);
 }

@@ -4,11 +4,11 @@
  * returned for them. memoryEngineGolden.json holds the expected result of each seeded workload (sqlWorkloads.js); it
  * was generated, and checked against AlaSQL itself, while AlaSQL was still a dependency.
  */
-const assert = require('assert');
-const crypto = require('crypto');
+const assert = require('node:assert');
+const crypto = require('node:crypto');
 const { query, compile } = require('#src/sqlTranslator/memoryEngine/index');
 const golden = require('./fixtures/memoryEngineGolden.json');
-const { joinWorkloads, featureWorkloads } = require('./fixtures/sqlWorkloads');
+const { joinWorkloads, featureWorkloads, commaJoinWorkloads } = require('./fixtures/sqlWorkloads');
 
 /** A canonical text of a result: key order, undefined, NaN, -0, Dates and bigints all count. */
 function canon(value, seen = new Set()) {
@@ -89,6 +89,16 @@ describe('in-memory SQL engine', function () {
 				[]
 			);
 		});
+
+		// Two of these failed in AlaSQL, which reordered the join ahead of a JOIN ... ON that reads a later table.
+		it('for joins linked through WHERE', function () {
+			const { seed, count, digests } = golden.commaJoins;
+			const mismatches = commaJoinWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
+			assert.deepStrictEqual(
+				mismatches.map((w) => w.sql),
+				[]
+			);
+		});
 	});
 
 	describe('legacy semantics', function () {
@@ -127,6 +137,23 @@ describe('in-memory SQL engine', function () {
 			assert.deepStrictEqual(query('SELECT COUNT(*) AS [c], SUM([0]) AS [s], MIN([0]) AS [m] FROM ? AS t', [[]]), [
 				{ c: 0, s: 0, m: undefined },
 			]);
+		});
+
+		it('counts a function call that takes no arguments', function () {
+			assert.deepStrictEqual(query('SELECT COUNT(CURRENT_TIMESTAMP) AS n FROM ? AS t', [[[1], [2]]]), [{ n: 2 }]);
+		});
+
+		it('looks up the rows a WHERE equality links instead of trying every pair', function () {
+			const left = Array.from({ length: 400 }, (_, i) => [i]);
+			const right = Array.from({ length: 400 }, (_, i) => [i, 'r' + i]);
+			let reads = 0;
+			const counted = right.map(
+				(row) => new Proxy(row, { get: (target, key) => (key === '0' && reads++, target[key]) })
+			);
+			const rows = query('SELECT a.[0] AS k, b.[1] AS v FROM ? AS a, ? AS b WHERE a.[0] = b.[0]', [left, counted]);
+			assert.strictEqual(rows.length, 400);
+			assert.deepStrictEqual(rows[7], { k: 7, v: 'r7' });
+			assert.ok(reads < 5000, `read b.[0] ${reads} times`);
 		});
 
 		it('sorts falsy values as empty text', function () {

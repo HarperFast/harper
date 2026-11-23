@@ -126,7 +126,7 @@ const SELECT_MODIFIERS = new Set(['VALUE', 'ROW', 'COLUMN', 'MATRIX', 'TEXTSTRIN
 const JOIN_STARTS = new Set(['JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'FULL', 'SEMI', 'ANTI', 'CROSS', 'NATURAL']);
 const UNION_STARTS = new Set(['UNION', 'EXCEPT', 'INTERSECT']);
 
-export class SqlSyntaxError extends SyntaxError {}
+class SqlSyntaxError extends SyntaxError {}
 
 /** The bookkeeping the grammar actions kept per parse for subqueries, EXISTS and `?` parameters. */
 interface ParseState {

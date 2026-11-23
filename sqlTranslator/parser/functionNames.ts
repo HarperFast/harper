@@ -6,7 +6,7 @@
  */
 
 /** Scalar functions registered by exact name, including Harper's date, geo and JSON functions. */
-export const SCALAR_FUNCTIONS = new Set([
+const SCALAR_FUNCTIONS = new Set([
 	'Date',
 	'Number',
 	'String',
@@ -51,7 +51,7 @@ export const SCALAR_FUNCTIONS = new Set([
 ]);
 
 /** Aggregate functions called by name, `MEDIAN(x)`, rather than through an aggregate keyword such as `SUM`. */
-export const AGGREGATE_FUNCTIONS = new Set([
+const AGGREGATE_FUNCTIONS = new Set([
 	'GROUP_CONCAT',
 	'group_concat',
 	'MEDIAN',

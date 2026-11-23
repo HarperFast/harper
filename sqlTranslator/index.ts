@@ -276,7 +276,6 @@ function createDataObjects(columns, values) {
 			return record;
 		});
 	} catch (err) {
-		// A statement the engine refuses (a JavaScript expression) is the caller's error, with its own message.
 		if (err instanceof ClientError) throw err;
 		logger.error(err);
 		throw new Error(SQL_INSERT_ERROR_MSG);

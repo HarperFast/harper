@@ -6,8 +6,8 @@
  * was still a dependency. Statements AlaSQL accepted only by silently discarding tokens in its error recovery are
  * errors here.
  */
-const assert = require('assert');
-const crypto = require('crypto');
+const assert = require('node:assert');
+const crypto = require('node:crypto');
 const { parse } = require('#src/sqlTranslator/parser/parser');
 const golden = require('./fixtures/parserGolden.json');
 const { generateStatements, mutateStatements } = require('./fixtures/sqlFuzz');

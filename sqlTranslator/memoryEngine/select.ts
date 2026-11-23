@@ -4,10 +4,8 @@
  * This reproduces AlaSQL 4's query pipeline step for step, because legacy SQL's results are what users see:
  * nested-loop joins (an equality ON joins by the string form of its keys, RIGHT and OUTER joins by `==`), row
  * scopes keyed by alias, groups keyed by the concatenated group values, its aggregate accumulators, the
- * `(value || '')` ORDER BY comparator, DISTINCT by joined values, and LIMIT applied only when non-zero. AlaSQL's
- * join reordering and WHERE pushdown are left out: it re-applied the full WHERE to every row and restored the
- * original row order, so neither changed a result. Maps keyed by row values have no prototype (`valueMap()`),
- * where AlaSQL's did.
+ * `(value || '')` ORDER BY comparator, DISTINCT by joined values, and LIMIT applied only when non-zero. Maps keyed
+ * by row values have no prototype (`valueMap()`), where AlaSQL's did.
  */
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import * as ast from '../parser/ast.ts';
@@ -26,8 +24,6 @@ import {
 } from './expression.ts';
 import { AGGREGATES, cloneDeep, deepEqual, Recordset, setOwn } from './functions.ts';
 
-export { Recordset };
-
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export type Statement = ((params: any, cb?: any, oldscope?: any) => any) & { query: any };
@@ -37,7 +33,6 @@ const returnTrue = () => true;
 const GROUP_STAR = Symbol('group *');
 const literal = (name: any) => decodeStringLiteral(String(name), "'");
 
-/** Data a parameter source reads (`alasql.prepareFromData`). */
 function prepareFromData(data: any, array?: boolean): any {
 	let res = data;
 	if (typeof data === 'string') {
@@ -81,6 +76,7 @@ export function compileSelect(select: any): Statement {
 	if (grouped()) query.selectgfns = compileSelectGroup1(select, query);
 	else query.selectfns = compileSelect1(select, query);
 	compileRemoveColumns(select, query);
+	compileWhereJoins(select, query);
 	query.wherefn = select.where ? compileExpression(select.where, contextP(query)) : returnTrue;
 	if (grouped()) query.groupfn = compileGroup(select, query);
 	if (select.having) query.havingfn = compileHaving(select, query);
@@ -351,7 +347,6 @@ function compileSelectStar(query: any, aliases: string[]): ((r: any, env: Env) =
 	return steps;
 }
 
-/** The plain-select row builder: `var r = {...}` then the `*` copies. */
 function compileSelect1(select: any, query: any) {
 	query.columns = [];
 	query.xcolumns = {};
@@ -783,8 +778,10 @@ function compileAggregate(col: any, query: any, cc: CompileContext): { init: Ini
 	const colas = unescapeq(col.nick);
 	const value = compileExpression(col.expression, cc);
 	const hasFuncid = 'funcid' in col.expression;
-	// The first argument of the function an aggregate wraps, which some type checks read instead.
-	const first = hasFuncid ? compileExpression(col.expression.args[0], cc) : value;
+	// The first argument of the function an aggregate wraps, which some aggregates' type checks read instead. Compiled
+	// only by those, as AlaSQL read `args[0]` only there: COUNT(CURRENT_TIMESTAMP), whose call has no `args`, runs.
+	let firstArg: Evaluator | undefined;
+	const first = () => (firstArg ??= hasFuncid ? compileExpression(col.expression.args[0], cc) : value);
 	let afterInit: Init | undefined;
 	const distinctKey = '$$_VALUES_' + colas;
 	if (col.distinct) {
@@ -813,13 +810,14 @@ function compileAggregate(col: any, query: any, cc: CompileContext): { init: Ini
 					const y = value(env);
 					g[colas] = y instanceof Date ? undefined : y || typeof y == 'number' ? y : undefined;
 				},
-				update: wrap(hasFuncid ? sumUpdateFunc(colas, value, first) : sumUpdate(colas, value)),
+				update: wrap(hasFuncid ? sumUpdateFunc(colas, value, first()) : sumUpdate(colas, value)),
 				after: afterInit,
 			};
-		case 'TOTAL':
+		case 'TOTAL': {
+			const operand = hasFuncid ? first() : value;
 			return {
 				init: (g, env) => {
-					const v = hasFuncid ? first(env) : value(env);
+					const v = operand(env);
 					g[colas] =
 						v || typeof v == 'number'
 							? v
@@ -829,9 +827,10 @@ function compileAggregate(col: any, query: any, cc: CompileContext): { init: Ini
 									? Number(v)
 									: 0;
 				},
-				update: wrap(totalUpdate(colas, hasFuncid ? first : value)),
+				update: wrap(totalUpdate(colas, operand)),
 				after: afterInit,
 			};
+		}
 		case 'FIRST':
 			return {
 				init: (g, env) => (g[colas] = value(env)),
@@ -859,7 +858,7 @@ function compileAggregate(col: any, query: any, cc: CompileContext): { init: Ini
 							? y
 							: undefined;
 				},
-				update: wrap(minMaxUpdate(colas, value, hasFuncid ? first : value, greater)),
+				update: wrap(minMaxUpdate(colas, value, hasFuncid ? first() : value, greater)),
 				after: afterInit,
 			};
 		}
@@ -1250,6 +1249,147 @@ function runQuery(query: any, oldscope: any): any[] {
 	return query.data;
 }
 
+// #section: comma joins
+
+/**
+ * AlaSQL's `compileWhereJoins`, for sources joined without an equality ON (`FROM ?, ?`, CROSS JOIN, a non-equality
+ * ON): a WHERE equality between a source and one before it becomes that source's index lookup, and an equality
+ * between a source and a constant filters the source before the join. Each is a conjunct of the WHERE, which still
+ * runs on every combination, so they only skip combinations it rejects. AlaSQL also reordered a join whose FROM
+ * order leaves a source unlinked, then sorted the rows back into FROM order; this keeps FROM order.
+ */
+function compileWhereJoins(select: any, query: any) {
+	if (!select.where || query.sources.length <= 1) return;
+	if (query.sources.some((source: any, idx: number) => idx > 0 && source.onleftfn)) return;
+	const cc = contextP(query);
+	const aliasToIdx = valueMap();
+	query.sources.forEach((source: any, idx: number) => {
+		aliasToIdx[source.alias] = idx;
+	});
+	const links: { a: number; aExpr: Evaluator; b: number; bExpr: Evaluator }[] = [];
+	const filters: [Evaluator, Evaluator][][] = query.sources.map(() => []);
+	for (const cond of whereEqualities(select.where)) {
+		if (cond.allsome) continue;
+		const leftAliases = sourcesRead(cond.left, query.defcols);
+		const rightAliases = sourcesRead(cond.right, query.defcols);
+		if (!leftAliases || !rightAliases) continue;
+		const ls = compileExpression(cond.left, cc);
+		const rs = compileExpression(cond.right, cc);
+		if (leftAliases.length === 1 && rightAliases.length === 1) {
+			const a = aliasToIdx[leftAliases[0]];
+			const b = aliasToIdx[rightAliases[0]];
+			if (a === undefined || b === undefined || a === b) continue;
+			links.push({ a, aExpr: ls, b, bExpr: rs });
+		} else if (leftAliases.length === 1 && rightAliases.length === 0) {
+			if (aliasToIdx[leftAliases[0]] !== undefined) filters[aliasToIdx[leftAliases[0]]].push([ls, rs]);
+		} else if (leftAliases.length === 0 && rightAliases.length === 1) {
+			if (aliasToIdx[rightAliases[0]] !== undefined) filters[aliasToIdx[rightAliases[0]]].push([ls, rs]);
+		}
+	}
+	for (let k = 1; k < query.sources.length; k++) {
+		const source = query.sources[k];
+		for (const link of links) {
+			if (link.a === k && link.b < k) {
+				indexJoin(source, link.bExpr, link.aExpr);
+				break;
+			} else if (link.b === k && link.a < k) {
+				indexJoin(source, link.aExpr, link.bExpr);
+				break;
+			}
+		}
+	}
+	query.sources.forEach((source: any, idx: number) => {
+		const conditions = filters[idx];
+		if (conditions.length === 0) return;
+		source.filtered = true;
+		source.srcwherefn = (env: Env) => {
+			for (const [left, right] of conditions) {
+				// eslint-disable-next-line eqeqeq
+				if (!(left(env) == right(env))) return false;
+			}
+			return true;
+		};
+	});
+}
+
+function indexJoin(source: any, left: Evaluator, right: Evaluator) {
+	if (source.onleftfn) return;
+	source.onleftfn = left;
+	source.onrightfn = right;
+	source.optimization = 'ix';
+}
+
+/**
+ * The `=` conditions of a WHERE's top-level AND chain, as `extractWhereConditions` found them: it stepped into any
+ * node's `expression`, so the operand of a top-level CASE or CAST counts too.
+ */
+function whereEqualities(where: any): any[] {
+	const conditions: any[] = [];
+	const traverse = (node: any) => {
+		if (!node) return;
+		if (node.expression) {
+			traverse(node.expression);
+			return;
+		}
+		if (!(node instanceof ast.Op)) return;
+		if (node.op === 'AND') {
+			traverse(node.left);
+			traverse(node.right);
+		} else if (node.op === '=') conditions.push(node);
+	};
+	traverse(where);
+	return conditions;
+}
+
+/**
+ * The aliases of the sources an expression reads, in the order met, or null when that cannot be told (a subquery,
+ * an aggregate, a node not listed, or a bare column no single source answers for). Inside a function, CASE or
+ * list a bare column never counts, since its code read the first source.
+ */
+function sourcesRead(node: any, defcols: any): string[] | null {
+	const aliases: string[] = [];
+	let known = true;
+	const walk = (n: any, nested: boolean) => {
+		if (!known || n === null || typeof n !== 'object') return;
+		if (n instanceof ast.Column) {
+			const alias = n.tableid || (!nested && defcols && defcols[n.columnid]);
+			if (typeof alias !== 'string' || alias === '-' || alias === '.') known = false;
+			else if (!aliases.includes(alias)) aliases.push(alias);
+		} else if (n instanceof ast.Op) {
+			if (n.allsome || n.queriesidx !== undefined) known = false;
+			else {
+				walk(n.left, nested);
+				walk(n.right, nested);
+			}
+		} else if (n instanceof ast.UniOp) {
+			walk(n.right, nested);
+		} else if (n instanceof ast.FuncValue) {
+			for (const arg of n.args || []) walk(arg, true);
+		} else if (n instanceof ast.CaseValue) {
+			walk(n.expression, true);
+			for (const w of n.whens || []) {
+				walk(w.when, true);
+				walk(w.then, true);
+			}
+			walk(n.elses, true);
+		} else if (n instanceof ast.ArrayValue) {
+			for (const item of n.value || []) walk(item, true);
+		} else if (!(
+			n instanceof ast.NumValue ||
+			n instanceof ast.StringValue ||
+			n instanceof ast.LogicValue ||
+			n instanceof ast.NullValue ||
+			n instanceof ast.ParamValue ||
+			n instanceof ast.VarValue ||
+			n instanceof ast.DomainValueValue
+		)) {
+			known = false;
+		}
+	};
+	walk(node, false);
+	return known ? aliases : null;
+}
+
 function preIndex(query: any) {
 	for (let k = 0; k < query.sources.length; k++) {
 		const source = query.sources[k];
@@ -1268,6 +1408,15 @@ function preIndex(query: any) {
 					group.push(dataw);
 				}
 			}
+		} else if (source.filtered) {
+			// AlaSQL filtered twice, evaluating the conditions again on the rows that passed.
+			const scope: any = {};
+			const env: Env = { s: scope, params: query.params, query };
+			const pass = (row: any) => {
+				scope[source.alias] = row;
+				return source.srcwherefn(env);
+			};
+			source.data = source.data.filter(pass).filter(pass);
 		}
 	}
 }

@@ -68,7 +68,6 @@ function createUpdateRecord(columns: any[]) {
 
 		return record;
 	} catch (err) {
-		// A statement the engine refuses (a JavaScript expression) is the caller's error, with its own message.
 		if (err instanceof ClientError) throw err;
 		logger.error(err);
 		throw new Error(SQL_UPDATE_ERROR_MSG);

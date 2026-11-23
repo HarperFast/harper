@@ -19,7 +19,7 @@ export { legacyLike } from '../legacyLike.ts';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /** The engine's row context; opaque here, only passed through to argument evaluators. */
-export interface EvalContext {
+interface EvalContext {
 	[key: string]: any;
 }
 
@@ -44,7 +44,7 @@ export type Evaluator = (ctx: EvalContext) => any;
  * is passed at stages 1 and 2 only, and only for GROUP_CONCAT: `separator` (`undefined` when no SEPARATOR clause)
  * and `orderDirection` (the first ORDER BY item's `direction`, else `undefined`), alasql.fs.js:9969-9980.
  */
-export type AggregateFunction = (...args: any[]) => any;
+type AggregateFunction = (...args: any[]) => any;
 
 const UNDEFINED: Evaluator = () => undefined;
 
@@ -329,7 +329,7 @@ function styledDate(style: any, s: ReturnType<typeof dateParts>): string {
 }
 
 /** `stdfn.CONVERT` (alasql.fs.js:13951), CAST and CONVERT. `args.dbtypeid` keeps its case; the switch upper-cases it. */
-export function convert(value: any, args: ConvertArgs): any {
+function convert(value: any, args: ConvertArgs): any {
 	let val = value;
 	const type = args.dbtypeid?.toUpperCase();
 	let parts: ReturnType<typeof dateParts>;

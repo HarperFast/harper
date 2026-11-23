@@ -5,11 +5,9 @@
  */
 import * as ast from '../parser/ast.ts';
 import { parse } from '../parser/parser.ts';
-import { compileSelect, Recordset, type Statement } from './select.ts';
+import { compileSelect, type Statement } from './select.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
-export { Recordset };
 
 function compileStatement(statement: any): Statement {
 	if (statement instanceof ast.Select) return compileSelect(statement);

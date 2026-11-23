@@ -2,7 +2,8 @@
 /**
  * Deterministic SELECT workloads for the in-memory SQL engine golden test (memoryEngine.test.js): random statements
  * of the shapes legacy SQL runs (parameter tables joined, filtered, grouped, sorted) over random rows, and a second
- * set exercising modifiers, set operations, window aggregates, row numbers and subqueries.
+ * set exercising modifiers, set operations, window aggregates, row numbers and subqueries, and joins linked through
+ * WHERE.
  */
 
 function rng(seed) {
@@ -320,4 +321,73 @@ function featureWorkloads(seed, count) {
 	});
 }
 
-module.exports = { joinWorkloads, featureWorkloads };
+/** Joins linked through WHERE instead of an equality ON, which the engine turns into index lookups and filters. */
+function commaJoinWorkloads(seed, count) {
+	const rnd = rng(seed);
+	const pick = (a) => a[Math.floor(rnd() * a.length)];
+	const chance = (p) => rnd() < p;
+	const int = (n) => Math.floor(rnd() * n);
+	const WIDTH = 3;
+	const value = () =>
+		pick([
+			() => int(4),
+			() => int(4),
+			() => String(int(4)),
+			() => '',
+			() => 'a',
+			() => null,
+			() => undefined,
+			() => NaN,
+			() => true,
+			() => new Date(1700000000000 + int(2) * 86400000),
+			() => ({ x: int(2) }),
+		])();
+	const table = (rows) => Array.from({ length: rows }, () => Array.from({ length: WIDTH }, value));
+	const makeQuery = () => {
+		const aliases = ['a', 'b', 'c'].slice(0, chance(0.7) ? 2 : 3);
+		const params = aliases.map(() => table(int(6)));
+		const col = (alias) => `${alias}.[${int(WIDTH)}]`;
+		const lit = () => pick(['0', '1', "'1'", "''", "'a'", 'NULL', 'TRUE']);
+		const other = (alias) => pick(aliases.filter((x) => x !== alias));
+		const condition = () => {
+			const a = pick(aliases);
+			const r = rnd();
+			if (r < 0.35) return `${col(a)} = ${col(other(a))}`;
+			if (r < 0.5) return `${col(a)} = ${lit()}`;
+			if (r < 0.58) return `${lit()} = ${col(a)}`;
+			if (r < 0.64) return `UPPER(${col(a)}) = ${col(other(a))}`;
+			if (r < 0.69) return `${col(a)} + 1 = ${col(other(a))}`;
+			if (r < 0.74) return `[${int(WIDTH)}] = ${col(a)}`;
+			if (r < 0.79) return `(${col(a)} = ${col(other(a))} OR ${col(a)} = ${lit()})`;
+			if (r < 0.84) return `CASE ${col(a)} = ${col(other(a))} WHEN TRUE THEN TRUE ELSE ${lit()} END`;
+			if (r < 0.89) return `${col(a)} > ${lit()}`;
+			if (r < 0.94) return `${col(a)} IS NULL`;
+			return `${col(a)} <> ${col(other(a))}`;
+		};
+		const conditions = Array.from({ length: 1 + int(3) }, condition);
+		let from = ' FROM ? AS a';
+		for (let i = 1; i < aliases.length; i++) {
+			const al = aliases[i];
+			from += pick([
+				`, ? AS ${al}`,
+				`, ? AS ${al}`,
+				` CROSS JOIN ? AS ${al}`,
+				` JOIN ? AS ${al} ON ${col(aliases[i - 1])} < ${col(al)}`,
+				` LEFT JOIN ? AS ${al} ON ${col(aliases[i - 1])} <> ${col(al)}`,
+			]);
+		}
+		const columns = pick([
+			aliases.map((al) => `${al}.[0] AS [${al}0]`).join(', '),
+			'*',
+			`COUNT(*) AS n`,
+			`${col('a')} AS k, COUNT(*) AS n`,
+		]);
+		let sql = `SELECT ${columns}${from} WHERE ${conditions.join(pick([' AND ', ' AND ', ' OR ']))}`;
+		if (columns.startsWith('a.[') && columns.includes('COUNT')) sql += ` GROUP BY ${columns.split(' AS ')[0]}`;
+		if (chance(0.25)) sql += ` ORDER BY ${col('a')}`;
+		return { sql, params };
+	};
+	return Array.from({ length: count }, makeQuery);
+}
+
+module.exports = { joinWorkloads, featureWorkloads, commaJoinWorkloads };
