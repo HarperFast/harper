@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795424991594,
+  "lastUpdate": 1795424996349,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -37326,6 +37326,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 590.1,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bf042750f1fe0fc4803bf49829114e0395ab826d",
+          "message": "Retry backpressured seed batches in native-plane coverage (#4472)\n\nDispatch-Task: harper-native-plane-coverage-seed-503\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-11-23T03:51:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/bf042750f1fe0fc4803bf49829114e0395ab826d"
+        },
+        "date": 1795424994982,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 30210.64,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 30210.64,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 173.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 381,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 497.6,
             "unit": "ms"
           }
         ]
