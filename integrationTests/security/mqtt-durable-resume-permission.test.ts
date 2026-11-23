@@ -11,8 +11,10 @@
  *      session resumes, the other table's backlog arrived on one of the two resumes and new DurableFeed writes
  *      arrive. Whether the DurableFeed writes made while read was denied arrive is reported, not asserted (#2943
  *      decides whether the session keeps a topic it can no longer subscribe to).
- *   C  attribute `secret` denied while offline: the backlog arrives without `secret`.
- *   D1 a QoS 1 delivery left unacknowledged before `secret` was denied is sent again on resume without `secret`.
+ *   C  attribute `secret` denied while offline: the backlog arrives without `secret`, and so does a write made
+ *      after the resume.
+ *   D1 a QoS 1 delivery left unacknowledged before `secret` was denied is sent again on resume without `secret`,
+ *      ahead of a later write to the same record.
  *   D2 a QoS 1 delivery left unacknowledged before table read was removed is not sent again; the same steps for a
  *      control user whose role did not change do send it again.
  *
@@ -148,11 +150,11 @@ suite(
 			}
 			strictEqual(consecutive, needed, `the role change never showed on the principal's own reads: ${what}`);
 		}
-		async function put(table: string, id: string, secret: string) {
+		async function put(table: string, id: string, secret: string, title = `t-${id}`) {
 			const response = await fetch(`${httpURL}/${table}/${id}`, {
 				method: 'PUT',
 				headers: { 'Authorization': api.headers.Authorization, 'Content-Type': 'application/json' },
-				body: JSON.stringify({ id, title: `t-${id}`, secret }),
+				body: JSON.stringify({ id, title, secret }),
 				signal: AbortSignal.timeout(REQUEST_MS),
 			});
 			ok(response.status === 204 || response.status === 200, `PUT ${table}/${id} -> ${response.status}`);
@@ -164,6 +166,14 @@ suite(
 			acknowledge = true
 		): Promise<Conn> {
 			const conn: Conn = { frames: [], events: [] };
+			const record = (topic: string, payload: Buffer) => {
+				const text = payload.toString();
+				let json: any;
+				try {
+					json = JSON.parse(text);
+				} catch {}
+				conn.frames.push({ topic, text, json });
+			};
 			return new Promise((res) => {
 				const options: IClientOptions = {
 					protocolVersion: 5,
@@ -173,21 +183,13 @@ suite(
 					...user,
 					...extra,
 				};
+				// mqtt.js sends a QoS 1 PUBACK, and emits 'message', only once this option's callback is called: never
+				// calling it leaves the delivery unacknowledged, so the frame is recorded here instead
+				if (!acknowledge) options.customHandleAcks = (topic, payload) => record(topic, payload);
 				const client = mqtt.connect(mqttURL, options);
 				open.push(client);
 				conn.client = client;
-				if (!acknowledge) {
-					// mqtt.js sends the PUBACK from this callback; never calling it leaves the delivery unacknowledged
-					(client as any).handleMessage = () => {};
-				}
-				client.on('message', (topic, payload) => {
-					const text = payload.toString();
-					let json: any;
-					try {
-						json = JSON.parse(text);
-					} catch {}
-					conn.frames.push({ topic, text, json });
-				});
+				client.on('message', record);
 				client.on('disconnect', (packet: any) =>
 					conn.events.push(`server DISCONNECT 0x${Number(packet?.reasonCode ?? 0).toString(16)}`)
 				);
@@ -440,7 +442,14 @@ suite(
 				await waitFor(() => hasAll(resumed, 'DurableOther', offline)),
 				`the backlog never arrived: ${describe(resumed)}`
 			);
-			await sleep(1000);
+			// a subscription sends its catch-up before any later write, so this write's frame closes the catch-up; the
+			// settle then watches for a frame sent outside that order, as refusedResume does
+			await put('DurableOther', 'c-after-resume', 'c-secret-after-resume');
+			ok(
+				await waitFor(() => ids(resumed, 'DurableOther').includes('c-after-resume')),
+				`the write made after the resume never arrived: ${describe(resumed)}`
+			);
+			await sleep(SETTLE_MS);
 			t.diagnostic(`C resumed (secret denied): ${describe(resumed)}`);
 			strictEqual(resumed.connectError, undefined, describe(resumed));
 			deepStrictEqual(
@@ -477,12 +486,23 @@ suite(
 			);
 			const resumed = await connect(principal.user, { clean: false, clientId: principal.clientId });
 			const sentAgain = await waitFor(() => ids(resumed, 'DurableOther').includes('d1-unacked'));
-			await sleep(1000);
-			t.diagnostic(`D1 resumed: ${describe(resumed)}`);
 			strictEqual(resumed.connectError, undefined, describe(resumed));
 			ok(sentAgain, `the unacknowledged delivery was not sent again, so the arm proves nothing: ${describe(resumed)}`);
-			for (const frame of resumed.frames)
-				deepStrictEqual(frame.json, { id: 'd1-unacked', title: 't-d1-unacked' }, `${frame.topic} ${frame.text}`);
+			// as in C: a later write to the same record, told apart by its title, closes what the resume sends in order,
+			// and the settle watches for a frame sent outside that order
+			await put('DurableOther', 'd1-unacked', 'd1-secret-after-resume', 'after-resume');
+			const sentAfter = await waitFor(() => resumed.frames.some((frame) => frame.json?.title === 'after-resume'));
+			await sleep(SETTLE_MS);
+			t.diagnostic(`D1 resumed: ${describe(resumed)}`);
+			ok(sentAfter, `the write made after the resume never arrived: ${describe(resumed)}`);
+			const last = resumed.frames.length - 1;
+			resumed.frames.forEach((frame, index) =>
+				deepStrictEqual(
+					frame.json,
+					{ id: 'd1-unacked', title: index === last ? 'after-resume' : 't-d1-unacked' },
+					`${frame.topic} ${frame.text}`
+				)
+			);
 			await endGracefully(resumed);
 		});
 
