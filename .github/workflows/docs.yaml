@@ -51,3 +51,7 @@ jobs:
           name: docs-site
           path: site/build
           retention-days: 14
+      # After the upload, so a failing check still leaves the built site to inspect.
+      - name: Check for removed pages
+        working-directory: site
+        run: npm run --if-present check:removed-pages
