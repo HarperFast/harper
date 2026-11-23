@@ -208,6 +208,19 @@ describe('Stale-while-revalidate hook on the source', function () {
 		assert.deepEqual(hookCalls, []);
 	});
 
+	it('waits for the source on a must-revalidate read instead of asking the source hook', async function () {
+		await expire(ClassSourced, 'must-revalidate');
+		const reading = ClassSourced.get('must-revalidate', { mustRevalidate: true });
+		await waitFor(() => sourceCalls === 1);
+		let settled = false;
+		reading.then(() => (settled = true));
+		await delay(20);
+		assert.equal(settled, false, 'the read waits for the source');
+		pendingCalls[0].resolve({ id: 'must-revalidate', name: 'fresh must-revalidate' });
+		assert.equal((await reading).name, 'fresh must-revalidate');
+		assert.deepEqual(hookCalls, []);
+	});
+
 	it('still lets a hook on the table class serve stale to a no-cache read', async function () {
 		await expire(SubclassAllows, 'table-no-cache');
 		assert.equal((await SubclassAllows.get('table-no-cache', { noCache: true })).name, 'stale table-no-cache');

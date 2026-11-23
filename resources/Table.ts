@@ -14557,7 +14557,7 @@ export function makeTable(options): TableResourceClass {
 		let allowed;
 		if (typeof resource.allowStaleWhileRevalidate === 'function')
 			allowed = resource.allowStaleWhileRevalidate(entry, id);
-		else if (context?.noCache) allowed = false;
+		else if (context?.noCache || context?.mustRevalidate) allowed = false;
 		else if (typeof source?.allowStaleWhileRevalidate === 'function')
 			allowed = source.allowStaleWhileRevalidate(entry, id);
 		else if (typeof source === 'function' && sourceDefinesInstanceHook(source))
