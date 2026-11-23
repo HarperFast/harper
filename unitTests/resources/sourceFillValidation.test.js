@@ -8,7 +8,7 @@ const { waitFor } = require('../waitFor.js');
 
 describe('Source fill schema mismatches', function () {
 	this.timeout(10_000);
-	let Validated, Stamped, LongStamped, BigIntKeyed, Embedded, Loose, Sealed, responses, calls;
+	let Validated, Throttled, Stamped, LongStamped, BigIntKeyed, Embedded, Loose, Sealed, responses, calls;
 	let warnings, traces, originalWarn, originalTrace;
 
 	function sourceFor(Table) {
@@ -34,6 +34,14 @@ describe('Source fill schema mismatches', function () {
 				{ name: 'big', type: 'BigInt' },
 				{ name: 'secret', type: 'Int' },
 				{ name: 'meta', type: 'Meta', properties: [{ name: 'at', type: 'Date' }] },
+			],
+		});
+		Throttled = table({
+			database: 'test',
+			table: 'SourceFillValidatedThrottled',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'name', type: 'String', nullable: false },
 			],
 		});
 		Stamped = table({
@@ -97,7 +105,8 @@ describe('Source fill schema mismatches', function () {
 				{ name: 'name', type: 'String' },
 			],
 		});
-		for (const Table of [Validated, Stamped, LongStamped, BigIntKeyed, Embedded, Loose, Sealed]) sourceFor(Table);
+		for (const Table of [Validated, Throttled, Stamped, LongStamped, BigIntKeyed, Embedded, Loose, Sealed])
+			sourceFor(Table);
 		originalWarn = logger.warn;
 		originalTrace = logger.trace;
 		logger.warn = (...args) => warnings.push(args.join(' '));
@@ -133,20 +142,48 @@ describe('Source fill schema mismatches', function () {
 		assert.equal((await settled(Validated, 'mismatched')).value.count, 'three');
 		const [mismatch] = mismatchesFor(Validated, 'mismatched');
 		assert.match(mismatch, /does not match the schema \(invalid: name, count, secret\); it is cached as returned/);
-		assert.equal(warnings.length, 1);
-		assert.ok(warnings[0].startsWith(mismatch));
+		const tableWarnings = warnings.filter((line) => line.includes('SourceFillValidated returned'));
+		assert.equal(tableWarnings.length, 1);
+		assert.ok(tableWarnings[0].startsWith(mismatch));
 		for (const line of [...warnings, ...traces]) assert.doesNotMatch(line, /sentinel-secret-value|three/);
 		await Validated.get('mismatched');
 		assert.deepEqual(calls, ['mismatched'], 'the mismatched record was not cached');
 	});
 
 	it('warns once a minute per table, and traces every mismatch', async () => {
-		for (const id of ['first', 'second']) responses.set(id, { id, count: 1 });
-		await Validated.get('first');
-		await Validated.get('second');
-		assert.equal(mismatchesFor(Validated, 'first').length, 1);
-		assert.equal(mismatchesFor(Validated, 'second').length, 1);
-		assert.equal(warnings.filter((line) => line.includes('SourceFillValidated ')).length, 0, 'warned again');
+		for (const id of ['first', 'second']) responses.set(id, { id });
+		await Throttled.get('first');
+		await Throttled.get('second');
+		assert.equal(mismatchesFor(Throttled, 'first').length, 1);
+		assert.equal(mismatchesFor(Throttled, 'second').length, 1);
+		assert.equal(warnings.filter((line) => line.includes('SourceFillValidatedThrottled')).length, 1);
+	});
+
+	it('does not check a fill while trace is off and the table warned within the minute', async () => {
+		const validate = Throttled.prototype.validate;
+		let checks = 0;
+		Throttled.prototype.validate = function (...args) {
+			checks++;
+			return validate.apply(this, args);
+		};
+		responses.set('warned', { id: 'warned' });
+		await Throttled.get('warned');
+		checks = 0;
+		logger.trace = undefined;
+		try {
+			responses.set('unchecked', { id: 'unchecked' });
+			await Throttled.get('unchecked');
+		} finally {
+			logger.trace = (...args) => traces.push(args.join(' '));
+			Throttled.prototype.validate = validate;
+		}
+		assert.equal(checks, 0);
+	});
+
+	it('reports a BigInt the source sent that cannot be converted', async () => {
+		responses.set('bad-bigint', { id: 'bad-bigint', name: 'n', big: 'n/a' });
+		assert.equal((await Validated.get('bad-bigint')).big, 'n/a');
+		assert.match(mismatchesFor(Validated, 'bad-bigint')[0], /\(invalid: big\)/);
 	});
 
 	it('neither converts nor writes any value the source returned', async () => {
@@ -202,6 +239,7 @@ describe('Source fill schema mismatches', function () {
 			['blob', new Blob(['binary'])],
 			['json-array', { toJSON: () => [{ name: 'n' }] }],
 			['json-primitive', { toJSON: () => 'n' }],
+			['primitive', 'n'],
 		]) {
 			responses.set(id, response);
 			await assert.rejects(Loose.get(id), (error) => {

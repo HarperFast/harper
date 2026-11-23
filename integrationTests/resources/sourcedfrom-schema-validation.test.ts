@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
-// @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
+// @ts-expect-error utils/client.mjs has no type declarations
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'sourcedfrom-schema-validation');

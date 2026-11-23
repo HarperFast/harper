@@ -11529,7 +11529,6 @@ export function makeTable(options): TableResourceClass {
 		// #section: validation
 		validate(record: any, patch?: boolean, checkOnlySkipping?: readonly string[]) {
 			if (fullTextFieldNames) assertFullTextWrite(record);
-			// a check-only pass (a cache fill's) reports issues without converting or writing any value
 			const convert = checkOnlySkipping === undefined;
 			// Accumulate structured per-field issues so the 400 carries `{ path, code,
 			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
@@ -11634,8 +11633,15 @@ export function makeTable(options): TableResourceClass {
 							case 'BigInt':
 								if (typeof value !== 'bigint') {
 									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
-									if (typeof value === 'string' || typeof value === 'number')
-										return convert ? BigInt(value) : undefined;
+									if (typeof value === 'string' || typeof value === 'number') {
+										if (convert) return BigInt(value);
+										try {
+											BigInt(value);
+										} catch {
+											addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
+										}
+										return;
+									}
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
 								}
 								break;
@@ -14088,6 +14094,8 @@ export function makeTable(options): TableResourceClass {
 	 * the source's values, and an undeclared property's name is the source's too, so neither is logged.
 	 */
 	function reportSourceSchemaMismatch(id: Id, record: any, skipping: readonly string[]): void {
+		// a drifted source mismatches on every fill, so with nothing to log the check is not worth running
+		if (!logger.trace && performance.now() - lastSourceSchemaMismatchWarn < 60_000) return;
 		let detail: string;
 		try {
 			TableResource.prototype.validate(record, false, skipping);
@@ -15086,7 +15094,7 @@ export function makeTable(options): TableResourceClass {
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
 					if (expirationMs && sourceContext.expiresAt == undefined) sourceContext.expiresAt = Date.now() + expirationMs;
 					if (updatedRecord) {
-						if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
+						assertSourceRecordObject(updatedRecord);
 						if (updatedRecord.status > 0 && updatedRecord.headers) {
 							// if the source has a status code and headers, treat it as a response
 							const status = updatedRecord.status;
@@ -15132,7 +15140,7 @@ export function makeTable(options): TableResourceClass {
 								if (status !== 200) updatedRecord.status = status;
 							}
 						}
-						// before toJSON too, which turns a Buffer into an object
+						// toJSON turns a Buffer into an object
 						if (!reusedCachedRecord) assertSourceRecordObject(updatedRecord);
 						if (typeof updatedRecord.toJSON === 'function') {
 							updatedRecord = updatedRecord.toJSON();
@@ -15191,7 +15199,6 @@ export function makeTable(options): TableResourceClass {
 								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
 						if (!reusedCachedRecord) {
-							// the key, the record times and @embed vectors are set by Harper, not the source
 							const harperOwned = [primaryKey, updatedTimeProperty?.name, createdTimeProperty?.name];
 							for (const attribute of TableResource.embedAttributes) harperOwned.push(attribute.name);
 							reportSourceSchemaMismatch(id, updatedRecord, harperOwned);
