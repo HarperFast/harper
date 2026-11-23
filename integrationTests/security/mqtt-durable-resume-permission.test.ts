@@ -5,21 +5,10 @@
  * granted (docs/reference/users-and-roles/overview.md); it does not say which permission the catch-up uses. This
  * suite pins that the permission at reconnect decides.
  *
- *   A  unchanged role: the offline backlog of both tables arrives on resume (positive control).
- *   B  table read removed while offline: no DurableFeed frame arrives on resume; a fresh connection shows the
- *      change took effect (DurableFeed SUBSCRIBE refused, DurableOther still delivers). Then read is restored: the
- *      session resumes, the other table's backlog arrived on one of the two resumes and new DurableFeed writes
- *      arrive. Whether the DurableFeed writes made while read was denied arrive is reported, not asserted (#2943
- *      decides whether the session keeps a topic it can no longer subscribe to).
- *   C  attribute `secret` denied while offline: the backlog arrives without `secret`, and so does a write made
- *      after the resume.
- *   D1 a QoS 1 delivery left unacknowledged before `secret` was denied is sent again on resume without `secret`,
- *      ahead of a later write to the same record.
- *   D2 a QoS 1 delivery left unacknowledged before table read was removed is not sent again; the same steps for a
- *      control user whose role did not change do send it again.
- *
  * A refused resume may end the connection as not authorized (today) or go on to deliver what the role can still
- * read (one of #2943's options). B and D2 accept both and assert the denied table's absence either way.
+ * read (one of #2943's options). B and D2 accept both and assert the denied table's absence either way. After B
+ * restores read, whether the DurableFeed writes made while read was denied arrive is reported, not asserted:
+ * #2943 decides whether the session keeps a topic it can no longer subscribe to.
  *
  * Env: DURABLE_RESUME_THREADS (worker count, default 1). With more than one worker a role change is taken as
  * visible after 8 reads per worker in a row on fresh connections. Connections are hashed to workers, so that makes
@@ -116,11 +105,11 @@ suite(
 			strictEqual(added.status, 200, added.text);
 			return { roleId: role.body.id, user, clientId: `durable-resume-${arm}-${randomUUID().slice(0, 8)}` };
 		}
-		async function restView(principal: Principal, table: string, id: string) {
+		async function restView(principal: Principal, table: string, id: string, budgetMs: number) {
 			try {
 				const response = await fetch(`${httpURL}/${table}/${id}`, {
 					headers: { Authorization: basic(principal.user), Connection: 'close' },
-					signal: AbortSignal.timeout(2000),
+					signal: AbortSignal.timeout(Math.max(1, Math.min(2000, budgetMs))),
 				});
 				const text = await response.text();
 				return { status: response.status, hasSecret: text.includes('"secret"') };
@@ -132,7 +121,7 @@ suite(
 			principal: Principal,
 			feed: object,
 			other: object,
-			shows: () => Promise<boolean>,
+			shows: (budgetMs: number) => Promise<boolean>,
 			what: string
 		) {
 			const altered = await api
@@ -145,7 +134,9 @@ suite(
 			const deadline = Date.now() + 30_000;
 			let consecutive = 0;
 			while (consecutive < needed && Date.now() < deadline) {
-				consecutive = (await shows()) ? consecutive + 1 : 0;
+				const shown = await shows(deadline - Date.now());
+				if (Date.now() > deadline) break;
+				consecutive = shown ? consecutive + 1 : 0;
 				if (consecutive < needed) await sleep(25);
 			}
 			strictEqual(consecutive, needed, `the role change never showed on the principal's own reads: ${what}`);
@@ -258,7 +249,11 @@ suite(
 				15_000
 			);
 			ok(settled, `the resume neither refused nor delivered what the role can read: ${describe(conn)}`);
-			if (!conn.events.includes(NOT_AUTHORIZED)) await sleep(SETTLE_MS);
+			// the refusal is read before the transport closes, and a frame sent in between still counts
+			if (conn.events.includes(NOT_AUTHORIZED)) {
+				const closed = await waitFor(() => conn.events.includes('close'));
+				ok(closed, `the refused connection never closed: ${describe(conn)}`);
+			} else await sleep(SETTLE_MS);
 			return conn;
 		}
 		async function openDurable(arm: string, principal: Principal, topics: string[]) {
@@ -352,7 +347,7 @@ suite(
 				principal,
 				TABLE_NONE,
 				TABLE_FULL,
-				async () => (await restView(principal, 'DurableFeed', 'b-live')).status === 403,
+				async (budgetMs) => (await restView(principal, 'DurableFeed', 'b-live', budgetMs)).status === 403,
 				'DurableFeed read removed'
 			);
 			const offline = ['b-off-1', 'b-off-2', 'b-off-3'];
@@ -389,7 +384,7 @@ suite(
 				principal,
 				TABLE_FULL,
 				TABLE_FULL,
-				async () => (await restView(principal, 'DurableFeed', 'b-live')).status === 200,
+				async (budgetMs) => (await restView(principal, 'DurableFeed', 'b-live', budgetMs)).status === 200,
 				'DurableFeed read restored'
 			);
 			await put('DurableFeed', 'b-after-restore', 'b-after-secret');
@@ -429,8 +424,8 @@ suite(
 				principal,
 				TABLE_FULL,
 				TABLE_NO_SECRET,
-				async () => {
-					const view = await restView(principal, 'DurableOther', 'c-live');
+				async (budgetMs) => {
+					const view = await restView(principal, 'DurableOther', 'c-live', budgetMs);
 					return view.status === 200 && !view.hasSecret;
 				},
 				'secret denied on DurableOther'
@@ -478,8 +473,8 @@ suite(
 				principal,
 				TABLE_FULL,
 				TABLE_NO_SECRET,
-				async () => {
-					const view = await restView(principal, 'DurableOther', 'd1-unacked');
+				async (budgetMs) => {
+					const view = await restView(principal, 'DurableOther', 'd1-unacked', budgetMs);
 					return view.status === 200 && !view.hasSecret;
 				},
 				'secret denied on DurableOther'
@@ -488,8 +483,7 @@ suite(
 			const sentAgain = await waitFor(() => ids(resumed, 'DurableOther').includes('d1-unacked'));
 			strictEqual(resumed.connectError, undefined, describe(resumed));
 			ok(sentAgain, `the unacknowledged delivery was not sent again, so the arm proves nothing: ${describe(resumed)}`);
-			// as in C: a later write to the same record, told apart by its title, closes what the resume sends in order,
-			// and the settle watches for a frame sent outside that order
+			// as in C, with the later write told apart by its title
 			await put('DurableOther', 'd1-unacked', 'd1-secret-after-resume', 'after-resume');
 			const sentAfter = await waitFor(() => resumed.frames.some((frame) => frame.json?.title === 'after-resume'));
 			await sleep(SETTLE_MS);
@@ -523,7 +517,7 @@ suite(
 				principal,
 				TABLE_NONE,
 				TABLE_FULL,
-				async () => (await restView(principal, 'DurableFeed', 'd2-unacked')).status === 403,
+				async (budgetMs) => (await restView(principal, 'DurableFeed', 'd2-unacked', budgetMs)).status === 403,
 				'DurableFeed read removed'
 			);
 			await put('DurableOther', 'd2-readable', 'd2-readable-secret');
