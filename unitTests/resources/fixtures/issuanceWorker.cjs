@@ -19,7 +19,7 @@ async function run() {
 	const root = Tbl.primaryStore.rootStore;
 	if (workerData.mode === 'issue') {
 		const key = freshLocalKey(root);
-		return { key, ceiling: readLocalIssuanceCeiling(Tbl.auditStore) };
+		return { key, issuedAt: Date.now(), ceiling: readLocalIssuanceCeiling(Tbl.auditStore) };
 	}
 	const failedRoot = RocksDatabase.open(workerData.failedPath);
 	const failedAudit = new RocksTransactionLogStore(failedRoot);

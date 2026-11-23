@@ -56,7 +56,7 @@ describe('issuance coverage across live workers', function () {
 		worker.on('message', (message) => {
 			if (message.error) fail(new Error(message.error));
 			else if (message.ready) markReady();
-			else result = message.result;
+			else if (message.result) result = message.result;
 		});
 		worker.once('error', fail);
 		worker.once('exit', (code) => {
@@ -69,7 +69,7 @@ describe('issuance coverage across live workers', function () {
 	}
 	async function runWorkers(modes, claim) {
 		const started = modes.map(spawn);
-		// a worker that fails before the release rejects its `finished`, which must stop the claim
+		// a claim for a group that has already failed would still raise the process-wide clock for `after()` to wait out
 		await Promise.race([
 			Promise.all(started.map((worker) => worker.loaded)),
 			...started.map((worker) => worker.finished),
@@ -86,12 +86,12 @@ describe('issuance coverage across live workers', function () {
 				initialCeiling = readLocalIssuanceCeiling(Tbl.auditStore);
 			}
 		);
-		const sinceClaim = Date.now() - (claimed - CLAIM_LEAD_MS);
-		assert.ok(
-			Date.now() < claimed,
-			`the workers must issue before wall-clock catch-up (${sinceClaim} ms after the claim)`
-		);
 		for (const result of results) {
+			const sinceClaim = result.issuedAt - (claimed - CLAIM_LEAD_MS);
+			assert.ok(
+				result.issuedAt < claimed,
+				`the workers must issue before wall-clock catch-up (${sinceClaim} ms after the claim)`
+			);
 			assert.ok(result.key > claimed);
 			assert.ok(result.key < initialCeiling, 'opening another worker must not promote the reserved headroom');
 			assert.ok(result.ceiling < initialCeiling + 1, 'per-worker coverage must not compound full headroom steps');
