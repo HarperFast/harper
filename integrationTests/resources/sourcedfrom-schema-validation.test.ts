@@ -1,5 +1,5 @@
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, doesNotMatch, strictEqual } from 'node:assert';
+import { deepStrictEqual, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -9,7 +9,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'sourcedfrom-schema-validation');
 
-suite('sourcedFrom fills are held to the schema over REST', (ctx: ContextWithHarper) => {
+suite('sourcedFrom fills that do not match the schema, over REST', (ctx: ContextWithHarper) => {
 	const originRecords = new Map<string, object>();
 	const originRequests = new Map<string, number>();
 	let origin: http.Server;
@@ -49,22 +49,22 @@ suite('sourcedFrom fills are held to the schema over REST', (ctx: ContextWithHar
 		return { status: response.status, body: await response.text() };
 	};
 
-	test('a malformed source record fails like the same PUT, is not cached, and fills once corrected', async () => {
-		const malformed = { id: 'item', count: 'sentinel-count' };
+	test('a record that does not match the schema is served and cached as the source returned it', async () => {
+		const malformed = { id: 'item', count: 'not-a-number' };
 		strictEqual((await request('PUT', 'malformed-put', { ...malformed, id: 'malformed-put' })).status, 400);
 
 		originRecords.set('item', malformed);
-		const failed = await request('GET', 'item');
-		strictEqual(failed.status, 502, failed.body);
-		doesNotMatch(failed.body, /sentinel-count/);
-		strictEqual((await request('GET', 'item')).status, 502, 'the malformed record was cached');
-		strictEqual(originRequests.get('item'), 2);
-
-		originRecords.set('item', { id: 'item', name: 'from origin', count: 3 });
 		const filled = await request('GET', 'item');
 		strictEqual(filled.status, 200, filled.body);
-		deepStrictEqual(JSON.parse(filled.body), { id: 'item', name: 'from origin', count: 3 });
+		deepStrictEqual(JSON.parse(filled.body), malformed);
 		strictEqual((await request('GET', 'item')).status, 200);
-		strictEqual(originRequests.get('item'), 3, 'the corrected record was not served from the cache');
+		strictEqual(originRequests.get('item'), 1, 'the record was not served from the cache');
+	});
+
+	test('a source that returns something other than a record fails with 502 and caches nothing', async () => {
+		originRecords.set('list', [{ id: 'list', name: 'n' }]);
+		strictEqual((await request('GET', 'list')).status, 502);
+		strictEqual((await request('GET', 'list')).status, 502);
+		strictEqual(originRequests.get('list'), 2);
 	});
 });

@@ -274,7 +274,6 @@ import {
 	createDefaultEmbedder,
 	type EmbedAttribute,
 	type Embedder,
-	sourceState,
 } from './models/embedHook.ts';
 import {
 	buildDecideBefore,
@@ -1171,7 +1170,7 @@ interface TableResourceInstance<Record extends object = any> {
 	 */
 	publish(target: RequestTarget, message: Record, options?: any): void | Promise<void>;
 	_writePublish(id: Id, message: any, options?: any): void | Promise<void>;
-	validate(record: any, patch?: boolean, frameworkOwned?: readonly string[]): void;
+	validate(record: any, patch?: boolean, checkOnlySkipping?: readonly string[]): void;
 	getUpdatedTime(): number;
 	[ASSERT_TRACKED_WRITABLE](generation?: WriteGeneration): void;
 	[GET_TRACKED_WRITE_GENERATION](): WriteGeneration;
@@ -2215,6 +2214,7 @@ export function makeTable(options): TableResourceClass {
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let lastIssuanceFailureWarn = -Infinity;
 	let lastSourceFillWaitersWarn = -Infinity;
+	let lastSourceSchemaMismatchWarn = -Infinity;
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
@@ -11527,8 +11527,10 @@ export function makeTable(options): TableResourceClass {
 			return lockCoordinator;
 		}
 		// #section: validation
-		validate(record: any, patch?: boolean, frameworkOwned?: readonly string[]) {
+		validate(record: any, patch?: boolean, checkOnlySkipping?: readonly string[]) {
 			if (fullTextFieldNames) assertFullTextWrite(record);
+			// a check-only pass (a cache fill's) reports issues without converting or writing any value
+			const convert = checkOnlySkipping === undefined;
 			// Accumulate structured per-field issues so the 400 carries `{ path, code,
 			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
 			// message is still built for the HTTP title, preserving back-compat for callers that read it.
@@ -11624,20 +11626,22 @@ export function makeTable(options): TableResourceClass {
 								break;
 							case 'Date':
 								if (!(value instanceof Date)) {
-									if (typeof value === 'string' || typeof value === 'number') return new Date(value);
+									if (typeof value === 'string' || typeof value === 'number')
+										return convert ? new Date(value) : undefined;
 									else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a Date`);
 								}
 								break;
 							case 'BigInt':
 								if (typeof value !== 'bigint') {
 									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
-									if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
+									if (typeof value === 'string' || typeof value === 'number')
+										return convert ? BigInt(value) : undefined;
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
 								}
 								break;
 							case 'Bytes':
 								if (!(value instanceof Uint8Array)) {
-									if (typeof value === 'string') return Buffer.from(value);
+									if (typeof value === 'string') return convert ? Buffer.from(value) : undefined;
 									addError(
 										name,
 										'type',
@@ -11647,9 +11651,12 @@ export function makeTable(options): TableResourceClass {
 								break;
 							case 'Blob':
 								if (!(value instanceof Blob)) {
-									if (typeof value === 'string') value = Buffer.from(value);
+									if (typeof value === 'string') {
+										if (!convert) return;
+										value = Buffer.from(value);
+									}
 									if (value instanceof Buffer) {
-										return createBlob(value, { type: 'text/plain' });
+										return convert ? createBlob(value, { type: 'text/plain' }) : undefined;
 									}
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a Blob`);
 								}
@@ -11685,7 +11692,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					continue;
 				}
-				if (frameworkOwned?.includes(attribute.name)) continue;
+				if (checkOnlySkipping?.includes(attribute.name)) continue;
 				if (!patch || attribute.name in record) {
 					const name = attribute.name;
 					const value = record[name];
@@ -14069,34 +14076,37 @@ export function makeTable(options): TableResourceClass {
 			record === null ||
 			Array.isArray(record) ||
 			ArrayBuffer.isView(record) ||
-			record instanceof ArrayBuffer
+			utilTypes.isAnyArrayBuffer(record) ||
+			record instanceof Blob
 		)
 			throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
 	}
 
 	/**
-	 * The source is at fault, not the reader, so a failure is a 502 (which stale-if-error answers with the
-	 * cached copy). Messages quote the source's values, and an undeclared property's name is the source's
-	 * too, so neither reaches the reader.
+	 * The source is the record's source of truth, so a record that does not match the schema is cached as
+	 * returned and the disagreement is only reported, for whoever owns the schema. Validation messages quote
+	 * the source's values, and an undeclared property's name is the source's too, so neither is logged.
 	 */
-	function validateSourceRecord(record: any, frameworkOwned: readonly string[]): void {
+	function reportSourceSchemaMismatch(id: Id, record: any, skipping: readonly string[]): void {
+		let detail: string;
 		try {
-			TableResource.prototype.validate(record, false, frameworkOwned);
+			TableResource.prototype.validate(record, false, skipping);
+			return;
 		} catch (error) {
-			let detail = '';
 			if (error instanceof ValidationError) {
 				const declared = error.errors.filter((issue) => issue.code !== 'unknown_property');
 				const undeclared = error.errors.length - declared.length;
 				detail = declared.map((issue) => issue.path).join(', ');
 				if (undeclared > 0)
 					detail += `${detail ? '; ' : ''}${undeclared} undeclared propert${undeclared === 1 ? 'y' : 'ies'}`;
-			}
-			throw new ServerError(
-				`Source for ${tableName} returned a record that does not match the schema` +
-					(detail ? ` (invalid: ${detail})` : ''),
-				502
-			);
+			} else detail = error?.name ?? 'an error';
 		}
+		const message = `The source for ${tableName} returned record ${inspectForLog(id, KEY_FOR_LOG)}, which does not match the schema (invalid: ${detail}); it is cached as returned`;
+		logger.trace?.(message);
+		const now = performance.now();
+		if (now - lastSourceSchemaMismatchWarn < 60_000) return;
+		lastSourceSchemaMismatchWarn = now;
+		logger.warn?.(`${message}. Fix the schema to match the source, or the source to match the schema`);
 	}
 
 	function validateFullTextLeaf(
@@ -15181,35 +15191,10 @@ export function makeTable(options): TableResourceClass {
 								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
 						if (!reusedCachedRecord) {
-							// a Long created time the source supplies is its own Harper's version, fractional milliseconds
-							const createdTimeName = createdTimeProperty?.name;
-							const suppliedCreatedTime = createdTimeName && updatedRecord[createdTimeName];
-							const harperCreatedTime =
-								createdTimeToAssign ||
-								(createdTimeProperty?.type === 'Long' &&
-									Number.isFinite(suppliedCreatedTime) &&
-									Math.abs(suppliedCreatedTime) <= Number.MAX_SAFE_INTEGER + 1);
-							const harperOwned = [
-								primaryKey,
-								updatedTimeProperty?.name,
-								harperCreatedTime ? createdTimeName : undefined,
-							];
-							const computesEmbeddings = !(
-								issuanceFailed ||
-								context?.noCacheStore ||
-								sourceContext.noCacheStore ||
-								droppingTable
-							);
-							for (const attribute of TableResource.embedAttributes) {
-								if (
-									computesEmbeddings &&
-									updatedRecord[attribute.name] == null &&
-									TableResource.userEmbedders[attribute.name] &&
-									sourceState(updatedRecord, attribute.embed?.source) === 'value'
-								)
-									harperOwned.push(attribute.name);
-							}
-							validateSourceRecord(updatedRecord, harperOwned);
+							// the key, the record times and @embed vectors are set by Harper, not the source
+							const harperOwned = [primaryKey, updatedTimeProperty?.name, createdTimeProperty?.name];
+							for (const attribute of TableResource.embedAttributes) harperOwned.push(attribute.name);
+							reportSourceSchemaMismatch(id, updatedRecord, harperOwned);
 						}
 					}
 					resolved = true;
