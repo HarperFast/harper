@@ -180,6 +180,8 @@ if (
 export const FULL_WRITE_HEAD = 0x40000;
 // Primary rows only. createAuditEntry strips this bit when a copy sender forwards row flags.
 export const HAS_REPLICA_DEADLINE = 0x200000;
+// the header flags encode() writes a payload for (HAS_REPLICA_DEADLINE is checked where its payload is read)
+const PAYLOAD_FLAGS = HAS_EXPIRATION | HAS_RESIDENCY_ID | HAS_RESIDENCY_SLOT | HAS_NODE_ID | HAS_ADDITIONAL_AUDIT_REFS;
 if (VERSION_REUSED === HAS_REPLICA_DEADLINE) throw new Error('VERSION_REUSED collides with HAS_REPLICA_DEADLINE');
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
@@ -486,6 +488,21 @@ export class RecordEncoder extends StructonEncoder {
 						additionalAuditRefsNextEncoding = undefined;
 						receivedIdentityRefsNextEncoding = undefined;
 						copiedDeleteBoundaryNextEncoding = undefined;
+					}
+					// decode reads a payload for every one of these flags, so a flag without its payload shifts the body
+					if (metadata & PAYLOAD_FLAGS) {
+						const missing =
+							metadata &
+							PAYLOAD_FLAGS &
+							~(
+								(expiresAt >= 0 ? HAS_EXPIRATION : 0) |
+								(residencyId ? HAS_RESIDENCY_ID : 0) |
+								(residencySlot !== undefined ? HAS_RESIDENCY_SLOT : 0) |
+								(nodeId >= 0 ? HAS_NODE_ID : 0) |
+								(auditRefsToEncode > 0 ? HAS_ADDITIONAL_AUDIT_REFS : 0)
+							);
+						if (missing)
+							throw new Error(`Record metadata flags 0x${missing.toString(16)} are set without their payload`);
 					}
 				}
 				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
@@ -1026,9 +1043,15 @@ export function setNextEncoding(
 	nodeId = -1,
 	residencyId = 0,
 	residencySlot?: number,
-	replicaDeadline?: number
+	replicaDeadline?: number,
+	auditRefs?: Pick<Entry, 'additionalAuditRefs' | 'receivedIdentityRefs' | 'copiedDeleteBoundary'>
 ) {
 	replicaDeadlineNextEncoding = replicaDeadline;
+	additionalAuditRefsNextEncoding =
+		auditRefs?.additionalAuditRefs?.length > 0 ? auditRefs.additionalAuditRefs : undefined;
+	receivedIdentityRefsNextEncoding =
+		auditRefs?.receivedIdentityRefs?.length > 0 ? auditRefs.receivedIdentityRefs : undefined;
+	copiedDeleteBoundaryNextEncoding = auditRefs?.copiedDeleteBoundary;
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
 	expiresAtNextEncoding = expiresAt;
