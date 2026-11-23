@@ -6,9 +6,7 @@
  */
 
 export interface Token {
-	/** Terminal name, as the grammar's productions refer to it (`LITERAL`, `SELECT`, `COMMA`, ...). */
 	type: string;
-	/** The text the grammar actions read; usually the matched text, normalized for a few keywords. */
 	text: string;
 	start: number;
 	end: number;

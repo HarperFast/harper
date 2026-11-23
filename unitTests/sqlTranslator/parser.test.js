@@ -251,6 +251,14 @@ describe('SQL parser', function () {
 		});
 	});
 
+	describe('grouping sets', function () {
+		// AlaSQL's grammar had no parenthesized tuple inside ROLLUP, CUBE or GROUPING SETS either.
+		it('refuse a parenthesized list as one item', function () {
+			assert.throws(() => parse('SELECT a FROM t GROUP BY GROUPING SETS ((a, b), (a))'), SyntaxError);
+			assert.throws(() => parse('SELECT a FROM t GROUP BY ROLLUP((a, b), c)'), SyntaxError);
+		});
+	});
+
 	describe('errors', function () {
 		it('shows the text around the token it could not read', function () {
 			assert.throws(

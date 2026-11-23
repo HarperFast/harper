@@ -12,8 +12,6 @@ import * as alasqlExtension from '../../utility/functions/sql/alaSQLExtension.ts
 import dateFunctions from '../../utility/functions/date/dateFunctions.js';
 import * as geo from '../../utility/functions/geo.ts';
 
-export { legacyLike } from '../legacyLike.ts';
-
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /** The engine's row context; opaque here, only passed through to argument evaluators. */
@@ -61,17 +59,6 @@ function nullPrototype<T>(entries: Record<string, T>): Record<string, T> {
 
 // #section: utilities AlaSQL's generated code calls
 
-/** AlaSQL wrapped each projected column in this. */
-export function nanToUndefined(value: any): any {
-	// eslint-disable-next-line no-self-compare
-	return value === value ? value : undefined;
-}
-
-/** Only `undefined` skips `then`; `null` goes through it. */
-export function undefinedOrValue(value: any, then: (value: any) => any): any {
-	return value === undefined ? undefined : then(value);
-}
-
 /** `utils.setOwn`: assigns a key, making a `__proto__` key an own property. */
 export function setOwn(target: any, key: string, value: any): void {
 	if (key === '__proto__') {
@@ -117,12 +104,10 @@ export function extend(a: any, b: any): any {
 	return a;
 }
 
-/** `utils.getValueOf`: unwraps `String` and `Number` objects. */
 export function getValueOf(value: any): any {
 	return typeof value === 'object' && (value instanceof String || value instanceof Number) ? value.valueOf() : value;
 }
 
-/** AlaSQL's `Recordset`: a `SELECT RECORDSET` result, its params assigned onto it. */
 export class Recordset {
 	[key: string]: any;
 	data: any[];

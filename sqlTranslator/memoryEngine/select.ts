@@ -555,7 +555,6 @@ function compileSelectGroup0(select: any, query: any) {
 	if (select.having) findAggregator(select.having, query);
 }
 
-/** Collects the aggregates an expression holds into `query.selectGroup`, as `findAggregator` did. */
 function findAggregator(node: any, query: any) {
 	if (node instanceof ast.AggrValue) {
 		if (node.over) return;
@@ -786,8 +785,18 @@ function rollup(items: any[], query: any): GroupEntry[][] {
 	return sets;
 }
 
+// Each grouping set runs every row through its own group, and AlaSQL built all of them up front.
+const MAX_GROUPING_SETS = 4096;
+
+function tooManyGroupingSets(count: number) {
+	if (count > MAX_GROUPING_SETS) {
+		throw new ClientError(`GROUP BY expands to more than ${MAX_GROUPING_SETS} grouping sets`);
+	}
+}
+
 /** CUBE(a, b): every subset, ordered by the bits of its index (a is bit 0). */
 function cube(items: any[], query: any): any[][] {
+	tooManyGroupingSets(2 ** items.length);
 	const sets: any[][] = [];
 	for (let mask = 0; mask < 1 << items.length; mask++) {
 		let set: any[] = [];
@@ -802,6 +811,7 @@ function groupingSetsOf(items: any[], query: any): any[] {
 }
 
 function cartes(left: any[], right: any[]): any[] {
+	tooManyGroupingSets(left.length * right.length);
 	const res = [];
 	for (const a of left) for (const b of right) res.push(a.concat(b));
 	return res;
@@ -1892,7 +1902,9 @@ function modify(query: any, res: any): any {
 			if (res.length === 0) return undefined;
 			const keyIndex = columns && columns.length > 0 ? columns[0].columnid : Object.keys(res[0])[0];
 			const valIndex = columns && columns.length > 1 ? columns[1].columnid : Object.keys(res[0])[1];
-			return res.reduce((acc: any, row: any) => ({ ...acc, [row[keyIndex]]: row[valIndex] }), {});
+			const index: any = {};
+			for (const row of res) setOwn(index, row[keyIndex], row[valIndex]);
+			return index;
 		}
 		case 'RECORDSET':
 			return new Recordset({ columns, data: res });

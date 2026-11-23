@@ -203,6 +203,19 @@ describe('in-memory SQL engine', function () {
 			]);
 		});
 
+		it('refuses a GROUP BY that expands to more than 4,096 grouping sets', function () {
+			const columns = (n) => Array.from({ length: n }, (_, i) => `t.[${i}]`).join(', ');
+			assert.strictEqual(query(`SELECT COUNT(*) AS c FROM ? AS t GROUP BY CUBE(${columns(12)})`, [[[1]]]).length, 4096);
+			assert.throws(
+				() => query(`SELECT COUNT(*) AS c FROM ? AS t GROUP BY CUBE(${columns(13)})`, [[[1]]]),
+				/more than 4096 grouping sets/
+			);
+			assert.throws(
+				() => query(`SELECT COUNT(*) AS c FROM ? AS t GROUP BY CUBE(${columns(7)}), CUBE(${columns(6)})`, [[[1]]]),
+				/more than 4096 grouping sets/
+			);
+		});
+
 		it('counts a function call that takes no arguments', function () {
 			assert.deepStrictEqual(query('SELECT COUNT(CURRENT_TIMESTAMP) AS n FROM ? AS t', [[[1], [2]]]), [{ n: 2 }]);
 		});

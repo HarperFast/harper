@@ -8,7 +8,6 @@ const assert = require('node:assert');
 const {
 	AGGREGATES,
 	Recordset,
-	legacyLike,
 	cloneDeep,
 	compileConvert,
 	compileFunctionCall,
@@ -18,10 +17,9 @@ const {
 	getValueOf,
 	glob,
 	isInlineFunction,
-	nanToUndefined,
 	regexpLike,
-	undefinedOrValue,
 } = require('#src/sqlTranslator/memoryEngine/functions');
+const { legacyLike } = require('#src/sqlTranslator/legacyLike');
 
 const constant = (value) => () => value;
 const call = (funcid, ...values) => compileFunctionCall(funcid, values.map(constant))({});
@@ -296,19 +294,6 @@ describe('legacy SQL function library', function () {
 			assert.deepStrictEqual(flatArray(null), []);
 			const recordset = new Recordset({ data: [{ x: new String('s') }, { x: 2 }], columns: [{ columnid: 'x' }] });
 			assert.deepStrictEqual(flatArray(recordset), ['s', 2]);
-		});
-
-		it('nanToUndefined and undefinedOrValue', function () {
-			assert.strictEqual(nanToUndefined(NaN), undefined);
-			assert.strictEqual(nanToUndefined(0), 0);
-			assert.strictEqual(
-				undefinedOrValue(null, (value) => `${value}!`),
-				'null!'
-			);
-			assert.strictEqual(
-				undefinedOrValue(undefined, () => 'called'),
-				undefined
-			);
 		});
 	});
 
