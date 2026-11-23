@@ -1139,7 +1139,6 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								clearNextEncoding();
 								versionlessKeys.add(typeof key === 'object' ? JSON.stringify(key) : key);
 							}
-							// putSync: rocksdb-js's put would turn a failed encode into an unobserved rejection
 							written = encodeBlobsWithFilePath(
 								() => targetDbi.putSync(key, value, version),
 								typeof key === 'number' ? key : recordsCopied,

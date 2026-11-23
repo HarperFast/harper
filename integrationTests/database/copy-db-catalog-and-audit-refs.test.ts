@@ -1,4 +1,3 @@
-// LMDB seed, then compactOnStart, then migrateOnStart, reading everything back after each boot.
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
