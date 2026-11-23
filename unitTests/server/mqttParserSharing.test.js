@@ -73,17 +73,16 @@ describe('MQTT packet parsing across connections', function () {
 		listener = mqttWebSocketListener();
 	});
 
-	/** A connection that closes before sending anything; only a WeakRef to its socket leaves. */
 	function closedConnectionSocket() {
 		const { socket } = client(listener, 4);
 		socket.handlers.close();
 		return new WeakRef(socket);
 	}
-	/** Resolves once nothing but WeakRefs reach `ref`'s target; a WeakRef keeps it to the end of the turn it was read in. */
+	// polled: a WeakRef keeps its target to the end of the turn it was made or read in
 	const collected = (ref, message) => waitFor(() => (global.gc(), ref.deref() === undefined), { message });
 
-	// First, so that when this file runs alone its connection is the thread's first, which the connection metric's
-	// analytics listener was registered from.
+	// First, so that when this file runs alone this is the thread's first connection: the one the connection-count
+	// analytics listener is registered from.
 	it('keeps nothing of a connection once it closes', async function () {
 		if (typeof global.gc !== 'function') this.skip();
 		await collected(closedConnectionSocket(), 'the thread still references a closed connection');
@@ -323,9 +322,15 @@ describe('MQTT packet parsing across connections', function () {
 		// synchronous reads only, where nothing else runs. The first read leaves the thread an idle parser.
 		connect(0);
 		const before = parsers();
-		for (let i = 1; i < clients.length; i++) connect(i);
-		const idle = parsers();
+		let idle;
+		const { made, parsing } = await watchParsers(() => {
+			for (let i = 1; i < clients.length; i++) connect(i);
+			idle = parsers();
+		});
 		assert.strictEqual(idle - before, 0, `${idle - before} parsers for 19 connections between packets`);
+		// the count alone would miss each connection taking one of the idle parsers other suites left
+		assert.strictEqual(made, 0);
+		assert.strictEqual(new Set(parsing).size, 1, 'the connections between packets parse with one parser');
 		await waitFor(() => clients.every((connection) => connection.received('connack').length === 1));
 		// one with a packet half read keeps a parser until it has the rest
 		const ping = clients[0].encode({ cmd: 'pingreq' });
@@ -346,10 +351,14 @@ describe('MQTT packet parsing across connections', function () {
 		await waitFor(() => connection.received('connack').length === 1);
 		return connection;
 	}
-	/** A WeakRef to the parser `read` leaves the connection holding. */
 	async function heldParser(read) {
-		const { parsing } = await watchParsers(read);
-		return new WeakRef(parsing.at(-1));
+		let held;
+		// taken in the read's turn: watchParsers sees every connection's parses until it has awaited
+		await watchParsers(({ parsing }) => {
+			read();
+			held = new WeakRef(parsing.at(-1));
+		});
+		return held;
 	}
 
 	// Each holds its socket to the end, as whatever outlives a close (the WebSocket library's references, a store an

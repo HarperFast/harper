@@ -839,7 +839,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 const startedMounts = new Set<string>();
 let addedMetrics;
 let connectionCount = 0;
-// a module function: a listener made inside the connection handler would keep the first connection's scope
+// not made in the connection handler, whose closures share one context that the thread would then keep
 function reportConnections(metrics) {
 	if (connectionCount > 0)
 		metrics.push({

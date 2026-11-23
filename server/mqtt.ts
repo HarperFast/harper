@@ -507,9 +507,9 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		addAnalyticsListener(reportConnections);
 	}
 	// What a connection keeps lives in this scope for as long as it is open, so helpers that need nothing of it are
-	// module functions, and what only some connections need (a stall timer's callback) is built when they do. A
-	// closure made here keeps all of the scope, so one the thread keeps (an analytics listener) would keep a closed
-	// connection's.
+	// module functions, and what only some connections need (a stall timer's callback) is built when they do. The
+	// closures made here share one context, so one the thread keeps (an analytics listener) would keep a closed
+	// connection's state.
 	let disconnected;
 	// set by a failed delivery, so sibling subscriptions stop writing before the aborted socket's 'close' arrives
 	let aborted = false;
