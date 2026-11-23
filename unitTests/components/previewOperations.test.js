@@ -1191,15 +1191,15 @@ describe('enable_previews / disable_previews / get_preview_policy (harper#3042)'
 			});
 
 			it('reports the revoked generation alongside another defect of the role', async () => {
-				await enablePreviews(enableRequest('opsboth'));
-				await fencePreviewGeneration('opsboth', await generationOf('opsboth'));
-				const role = await getRoleByName('opsboth-ci-preview');
+				await enablePreviews(enableRequest('opsrevokeddefect'));
+				await fencePreviewGeneration('opsrevokeddefect', await generationOf('opsrevokeddefect'));
+				const role = await getRoleByName('opsrevokeddefect-ci-preview');
 				await alterRole({
 					id: role.id,
 					role: role.role,
 					permission: { ...role.permission, operations: ['drop_component'] },
 				});
-				const { problems } = await statusOf('opsboth');
+				const { problems } = await statusOf('opsrevokeddefect');
 				assert.ok(
 					problems.some((problem) => /identity generation that disable_previews revoked/.test(problem)),
 					problems.join()
