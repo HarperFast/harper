@@ -26,6 +26,18 @@ no longer exists, and the published path is never absent between an unlink and a
 - The uWS mirror (`HARPER_UWS_UDS`) keeps its direct bind: measured on uWebSockets.js 20.68.0,
   `app.close()` never unlinks a `listen_unix` path, so it is not exposed. Bun restarts are
   non-overlapping, so the Bun mirror is not exposed either.
+- A mirror's `.yaml` is published only by the worker whose bind is the socket on disk.
+  `restartWorkers()` never pre-starts an isolated application's worker, so on a certified (rolling
+  or full-restart) redeploy its replacement is held: it loads beside its predecessor and binds only
+  after that predecessor has exited. A yaml written while it loaded was deleted by the predecessor's
+  `cleanupUdsFiles()`, which still saw its own socket, leaving a socket no proxy routes
+  (harper#4436). `publishUdsMetadata()` therefore waits for `recordUdsBindSuccess()` and checks
+  ownership before every write, so `cleanupUdsFiles()`'s socket check also covers the yaml. The
+  check and each write or unlink are separate syscalls, so two workers acting in the same instant
+  can still cross; the crash sweeps (`cleanupSocketsDirectory()`, main's
+  `cleanupApplicationSockets()` once an application has no slot) remove files their writer cannot.
+  Covered by the redeploy suite in `integrationTests/components/isolated-application-lifecycle.test.ts`
+  and the `publishUdsMetadata` cases in `unitTests/server/udsMirror.test.js`.
 
 ## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.ts`)
 

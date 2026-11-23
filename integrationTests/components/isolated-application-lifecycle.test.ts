@@ -4,13 +4,15 @@
  * only that worker, with or without `restart`. Dropping a component that is not on this node restarts nothing.
  *
  * The worker-thread deploy and drop are the paths a replicated peer runs: replication receives operations on a worker.
+ * A redeploy, rolling or full-restart, leaves each of the application's UDS mirrors with its new worker's metadata
+ * (harper#4436).
  *
  * Run: npm run test:integration -- "integrationTests/components/isolated-application-lifecycle.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, match, notDeepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join, resolve } from 'node:path';
-import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -307,11 +309,10 @@ suite(
 			);
 			const holdEnds = Date.now() + 2000;
 			while (!settled && Date.now() < holdEnds) {
-				// its mirror metadata is written while it loads; the socket that serves is bound only once it is admitted
 				deepStrictEqual(
-					(await mirrorsOf('preview_one')).filter((name) => name.endsWith('.sock')),
+					await mirrorsOf('preview_one'),
 					[],
-					'a mirror was bound before its canary reported'
+					'a mirror was bound or advertised before its canary reported'
 				);
 				await sleep(200);
 			}
@@ -541,6 +542,98 @@ suite(
 			deepStrictEqual(othersThan(after, 'preview_broken'), ids(before));
 			await served('preview_broken', 2);
 		});
+	}
+);
+
+suite(
+	"a redeployed isolated application's mirror keeps its metadata (harper#4436)",
+	{ skip: UNSUPPORTED_HERE },
+	(ctx: ContextWithHarper) => {
+		const { prepare, teardown, packageTarball, rawOperation, mirrorsOf, waitFor, staysTrue, requestMirror } =
+			lifecycleHarness(ctx);
+		const socketsDir = () => join(ctx.harper.dataRootDir, 'sockets');
+
+		before(async () => {
+			await prepare();
+			await startHarper(ctx, {
+				config: { threads: { count: POOL, maxIsolated: 8 }, tls: { unixDomainSockets: true } },
+			});
+		});
+
+		after(teardown);
+
+		async function mirrorMetadata(application: string): Promise<Record<string, number | null>> {
+			const metadata: Record<string, number | null> = {};
+			for (const sock of (await mirrorsOf(application)).filter((name) => name.endsWith('.sock'))) {
+				const yaml = await readFile(join(socketsDir(), sock.replace(/\.sock$/, '.yaml')), 'utf8').catch(() => null);
+				metadata[sock] = yaml === null ? null : Number(/^tid: (\d+)$/m.exec(yaml)?.[1]);
+			}
+			return metadata;
+		}
+
+		function publisher(
+			mirrors: Record<string, number | null>,
+			expected: string[],
+			previous?: number
+		): number | undefined {
+			if (Object.keys(mirrors).sort().join('\n') !== expected.join('\n')) return undefined;
+			const named = new Set(Object.values(mirrors));
+			const [tid] = named;
+			return named.size === 1 && typeof tid === 'number' && tid > 0 && tid !== previous ? tid : undefined;
+		}
+
+		async function deploy(project: string, version: number, restart: boolean | 'rolling') {
+			const { status, body } = await rawOperation({
+				operation: 'deploy_component',
+				project,
+				package: await packageTarball(project, { version }),
+				isolated: true,
+				restart,
+			});
+			strictEqual(status, 200, JSON.stringify(body));
+			// a rolling release goes live from its activation job, after the deploy answers
+			await waitFor(
+				() => requestMirror(project, `/${resourceName(project)}`).catch(() => undefined),
+				(answer) => answer?.status === 200 && JSON.parse(answer.body).version === version,
+				`${project} never served version ${version}`
+			);
+		}
+
+		for (const restart of [true, 'rolling'] as const) {
+			test(`a redeploy with restart: ${JSON.stringify(restart)} leaves each mirror with its new worker's metadata`, async () => {
+				const project = restart === true ? 'redo_full' : 'redo_roll';
+				await deploy(project, 1, true);
+				const first = await waitFor(
+					() => mirrorMetadata(project),
+					(mirrors) => publisher(mirrors, Object.keys(mirrors).sort()) !== undefined,
+					`${project}'s first deploy never published every mirror`,
+					10000
+				);
+				// every redeploy must bring back exactly these: the HTTPS and the MQTTS mirror
+				const expected = Object.keys(first).sort();
+				ok(
+					['9927', '8883'].every((port) => expected.some((name) => name.endsWith(`:${port}.sock`))),
+					`${project} bound ${JSON.stringify(expected)}`
+				);
+				const published = (previous?: number) =>
+					waitFor(
+						() => mirrorMetadata(project),
+						(mirrors) => publisher(mirrors, expected, previous) !== undefined,
+						`${project}'s mirrors never all came back with its new worker's metadata`,
+						10000
+					).then((mirrors) => publisher(mirrors, expected, previous));
+				let tid = publisher(first, expected);
+				for (const version of [2, 3]) {
+					await deploy(project, version, restart);
+					const replacement = await published(tid);
+					await staysTrue(
+						async () => publisher(await mirrorMetadata(project), expected, tid) === replacement,
+						`${project}'s mirror metadata was removed after redeploying version ${version}`
+					);
+					tid = replacement;
+				}
+			});
+		}
 	}
 );
 
