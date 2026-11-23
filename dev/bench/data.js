@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795418623888,
+  "lastUpdate": 1795424991594,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -30645,6 +30645,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 3530,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "bf042750f1fe0fc4803bf49829114e0395ab826d",
+          "message": "Retry backpressured seed batches in native-plane coverage (#4472)\n\nDispatch-Task: harper-native-plane-coverage-seed-503\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-11-23T03:51:59Z",
+          "url": "https://github.com/HarperFast/harper/commit/bf042750f1fe0fc4803bf49829114e0395ab826d"
+        },
+        "date": 1795424986964,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 23151,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 13404,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 13234,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 14779520,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9566,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1588,
             "unit": "ops"
           }
         ]
