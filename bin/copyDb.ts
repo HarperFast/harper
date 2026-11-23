@@ -1191,8 +1191,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
 				return { firstVersioned, versionlessKeys, failedRecords };
 			} catch (err) {
-				// Resume from the last key read, as copyDbi does: re-copying it is idempotent, while stepping past
-				// it, or stopping, would publish a copy missing whatever the iterator had not reached
+				// Resume at the last key read, as copyDbi does: stepping past it, or stopping, would publish a copy
+				// missing whatever the iterator had not reached
 				resumed = start !== null;
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,

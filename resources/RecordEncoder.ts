@@ -493,7 +493,6 @@ export class RecordEncoder extends StructonEncoder {
 						additionalAuditRefsNextEncoding = undefined;
 						receivedIdentityRefsNextEncoding = undefined;
 						copiedDeleteBoundaryNextEncoding = undefined;
-						// trimming keeps at least one ref
 						writtenPayloadFlags |= HAS_ADDITIONAL_AUDIT_REFS;
 					}
 					// decode reads a payload for each of these flags, so a bare flag would shift the body into the header
