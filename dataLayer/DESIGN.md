@@ -107,6 +107,7 @@ lock blocks a claim until it has.
   (harper#3106). `assertRestoreTargetNotLmdb` checks for a sibling `.mdb` at admission on each restore route,
   before any in-place or recovery exemption; `resumableReceipt` first requires an eligible restart
   receipt for resume, so a nonexistent resume never claims a target. An in-place RocksDB restore is admitted.
+  LMDB creation uses a different exclusion key from the RocksDB target and can race this probe.
   The existence check and the pin are one step under the management lock. A rerun over an interrupted attempt retires the
   inherited pins (`superseded_pin_ids`) only once its own source has proved: until then the earlier
   backup may be the blocked database's only recovery source.

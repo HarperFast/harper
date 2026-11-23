@@ -641,11 +641,8 @@ export async function validateRestoreBackup(request: any) {
 	// they act on the restore record the target already has, which needs no backup to resolve
 	if (resume || cancel) {
 		const { assertRestartRestoreActionable } = await import('./restoreIntent.ts');
-		assertRestartRestoreActionable(
-			databaseName,
-			restoreTargetDir(databaseName, targetDatabase, { cancel, resume }),
-			resume ? 'resume' : 'cancel'
-		);
+		const databaseDir = restoreTargetDir(databaseName, targetDatabase, { cancel, resume });
+		if (cancel) assertRestartRestoreActionable(databaseName, databaseDir, 'cancel');
 		return;
 	}
 	const requestedBackupId = request.backup_id === undefined ? undefined : requireBackupId(request.backup_id);
