@@ -11,7 +11,7 @@
  */
 
 const assert = require('assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
@@ -110,7 +110,7 @@ function evalCondition(row, c) {
 
 function runSql(sql) {
 	return new Promise((resolve, reject) => {
-		const parsed = alasql.parse(sql);
+		const parsed = parseSql(sql);
 		const variant = sql.trim().split(/\s+/)[0].toLowerCase();
 		router.route(
 			{
@@ -591,7 +591,7 @@ describe('sqlEngine phase 1: SELECT pipeline', () => {
 	it("'auto' falls back to legacy when search() throws a ClientError", async () => {
 		makeThrowingTable(new ClientError('search rejected', 403));
 		process.env.HARPER_SQL_ENGINE = 'auto';
-		const parsed = alasql.parse('SELECT id FROM dev.user WHERE id = 1');
+		const parsed = parseSql('SELECT id FROM dev.user WHERE id = 1');
 		const data = await new Promise((resolve, reject) => {
 			router.route(
 				{

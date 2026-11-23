@@ -11,7 +11,7 @@
  */
 
 const assert = require('assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
@@ -76,7 +76,7 @@ function evalCondition(row, c) {
 
 function runSql(sql) {
 	return new Promise((resolve, reject) => {
-		const parsed = alasql.parse(sql);
+		const parsed = parseSql(sql);
 		const variant = sql.trim().split(/\s+/)[0].toLowerCase();
 		router.route(
 			{

@@ -5,19 +5,13 @@
  */
 
 const assert = require('assert');
-const alasql = require('alasql');
+const sqlAst = require('#src/sqlTranslator/parser/ast');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 
-const {
-	assertLegacySqlText,
-	generatedName,
-	installLegacySqlText,
-	quoteString,
-} = require('#src/sqlTranslator/legacySqlText');
+const { assertLegacySqlText, generatedName, quoteString } = require('#src/sqlTranslator/legacySqlText');
 const { backtickASTSchemaItems } = require('#src/utility/common_utils');
 
-installLegacySqlText();
-
-const parse = (sql) => alasql.parse(sql).statements[0];
+const parse = (sql) => parseSql(sql).statements[0];
 
 // The text legacy SQL runs: Harper backticks names before writing the statement out.
 function reparsed(sql) {
@@ -127,8 +121,8 @@ describe('legacy SQL text', function () {
 	});
 
 	it('refuses a statement whose text reads a column the statement does not, or reads it more often', function () {
-		const writer = alasql.yy.StringValue.prototype.toString;
-		alasql.yy.StringValue.prototype.toString = function () {
+		const writer = sqlAst.StringValue.prototype.toString;
+		sqlAst.StringValue.prototype.toString = function () {
 			return "'" + this.value + "'";
 		};
 		try {
@@ -142,7 +136,7 @@ describe('legacy SQL text', function () {
 			assertUnwritable("SELECT 'x''; SELECT ssn FROM dev.t; SELECT ''y' AS v FROM dev.t");
 			assertUnwritable("INSERT INTO dev.t (id, label) VALUES (1, CONCAT('x'', ssn, ''y'))");
 		} finally {
-			alasql.yy.StringValue.prototype.toString = writer;
+			sqlAst.StringValue.prototype.toString = writer;
 		}
 	});
 

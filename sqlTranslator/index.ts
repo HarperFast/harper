@@ -9,6 +9,8 @@ const cbUpdateUpdate = util.callbackify(update);
 import { convertDelete as deleteTranslator } from './deleteTranslator.ts';
 const cbDeleteTranslator = util.callbackify(deleteTranslator);
 import alasql from 'alasql';
+import * as sqlAst from './parser/ast.ts';
+import { parse } from './parser/parser.ts';
 import * as opAuth from '../utility/operation_authorization.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import alasqlFunctionImporter from './alasqlFunctionImporter.ts';
@@ -44,18 +46,18 @@ export function evaluateSQL(jsonMessage: any, callback: any) {
 		//TODO; This is a temporary check and should be removed once validation is integrated.
 		let schema = undefined;
 		let statement = parsedSql.ast.statements[0];
-		if (statement instanceof (alasql as any).yy.Insert) {
+		if (statement instanceof sqlAst.Insert) {
 			schema = statement.into.databaseid;
-		} else if (statement instanceof (alasql as any).yy.Select) {
+		} else if (statement instanceof sqlAst.Select) {
 			schema = statement.from ? statement.from[0].databaseid : null;
-		} else if (statement instanceof (alasql as any).yy.Update) {
+		} else if (statement instanceof sqlAst.Update) {
 			schema = statement.table.databaseid;
-		} else if (statement instanceof (alasql as any).yy.Delete) {
+		} else if (statement instanceof sqlAst.Delete) {
 			schema = statement.table.databaseid;
 		} else {
 			logger.error(`AST in evaluateSQL is not a valid SQL type.`);
 		}
-		if (!(statement instanceof (alasql as any).yy.Select) && hdbUtils.isEmptyOrZeroLength(schema)) {
+		if (!(statement instanceof sqlAst.Select) && hdbUtils.isEmptyOrZeroLength(schema)) {
 			return callback('No schema specified', null);
 		}
 	}
@@ -119,7 +121,7 @@ export function convertSQLToAST(sql: string) {
 	}
 	try {
 		let trimmedSql = sql.trim();
-		let ast = alasql.parse(trimmedSql);
+		let ast = parse(trimmedSql);
 		let variant = trimmedSql.split(' ')[0].toLowerCase();
 		astResponse.ast = ast;
 		astResponse.variant = variant;

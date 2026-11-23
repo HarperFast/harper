@@ -1,4 +1,4 @@
-import { loadRuntimeModule, loadNativePackage } from './packageUtils.js';
+import { loadRuntimeModule } from './packageUtils.js';
 /**
  * This module is used before a SQL or NoSQL operation is performed in order to ensure the user's assigned role
  * has the permissions and lack of restrictions needed to process the operation.  Only verifyPerms and verifyPermsAST
@@ -596,7 +596,7 @@ function sqlWriteScopeDenial(userObject: any, sqlVariant: string) {
 }
 
 let StatementBucket;
-let alasql;
+let sqlAst;
 export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
@@ -622,7 +622,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 	try {
 		StatementBucket ??= loadRuntimeModule('sqlTranslator/sql_statement_bucket').default;
-		alasql ??= loadNativePackage('alasql');
+		sqlAst ??= loadRuntimeModule('sqlTranslator/parser/ast');
 
 		const permsResponse = new PermissionResponseObject();
 		let parsedAst = new StatementBucket(ast);
@@ -675,7 +675,7 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 
 		//If the AST is for a SELECT, we need to check for wildcards and, if they exist, update the AST to include the
 		// attributes that the user has READ perms for - we can skip this step for super users
-		const nonSuperSelect = !isSuperUser && ast instanceof (alasql.yy as any).Select;
+		const nonSuperSelect = !isSuperUser && ast instanceof sqlAst.Select;
 		if (nonSuperSelect) {
 			ast = parsedAst.updateAttributeWildcardsForRolePerms(fullRolePerms, userObject);
 		}

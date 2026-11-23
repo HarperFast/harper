@@ -4,7 +4,7 @@
  * AST SQL values such as attributes, tables, etc.
  **/
 
-import alasql from 'alasql';
+import * as sqlAst from './parser/ast.ts';
 import _harperLogger from '../utility/logging/harper_logger.ts';
 const harperLogger = _harperLogger;
 import * as hdbUtils from '../utility/common_utils.ts';
@@ -147,10 +147,10 @@ class sqlStatementBucket {
 	getRowAccessors(): string[] {
 		const accessors = [];
 		for (const node of astNodes(this.ast)) {
-			if (node instanceof (alasql as any).yy.Column && node.columnid === '_') accessors.push('_');
-			else if (node instanceof (alasql as any).yy.JavaScript) accessors.push('JavaScript expression');
+			if (node instanceof sqlAst.Column && node.columnid === '_') accessors.push('_');
+			else if (node instanceof sqlAst.JavaScript) accessors.push('JavaScript expression');
 			// The `sql` operation binds no parameters, but legacy SQL runs every statement against its own rows.
-			else if (node instanceof (alasql as any).yy.ParamValue) accessors.push('parameter');
+			else if (node instanceof sqlAst.ParamValue) accessors.push('parameter');
 			// A JSON literal's `__proto__` key hides an expression in the prototype, where every walk here
 			// (own properties only) misses it but AlaSQL's JSON compiler still evaluates it.
 			else if (!isKnownPrototype(Object.getPrototypeOf(node))) accessors.push('JSON literal with __proto__');
@@ -175,7 +175,7 @@ class sqlStatementBucket {
 			}
 		}
 		if (tables.length === 0) return { paths };
-		const { Op, Column, NumValue } = (alasql as any).yy;
+		const { Op, Column, NumValue } = sqlAst;
 		const isMemberAccess = (node) => node instanceof Op && (node.op === '->' || node.op === '!');
 		const owners = (column) => {
 			const qualifier = column.tableid;
@@ -228,8 +228,8 @@ class sqlStatementBucket {
 	 */
 	getWriteStatementReads(): { schema: string; table: string; attributes: string[] } | undefined {
 		const ast = this.ast;
-		const isUpdate = ast instanceof (alasql as any).yy.Update;
-		if (!isUpdate && !(ast instanceof (alasql as any).yy.Delete)) return undefined;
+		const isUpdate = ast instanceof sqlAst.Update;
+		if (!isUpdate && !(ast instanceof sqlAst.Delete)) return undefined;
 		const { databaseid: schema, tableid: table } = ast.table;
 		const tables = loadDatabaseRegistry()?.[schema];
 		const primaryKey = tables && Object.hasOwn(tables, table) ? (tables[table] as any)?.primaryKey : undefined;
@@ -307,7 +307,7 @@ class sqlStatementBucket {
 				const isJoin = this.ast.from.length > 1 || this.ast.joins?.length > 0;
 				const qualifier = val.tableid ?? (isJoin ? (this.ast.from[0].as ?? this.ast.from[0].tableid) : undefined);
 				finalTableAttrs.forEach(({ attribute_name }) => {
-					let newColumn = new (alasql as any).yy.Column({ columnid: attribute_name });
+					let newColumn = new sqlAst.Column({ columnid: attribute_name });
 					if (qualifier) {
 						newColumn.tableid = qualifier;
 					}
@@ -362,7 +362,7 @@ function filterReadRestrictedAttrs(attrPerms: any[]) {
 let astPrototypes: Set<object> | undefined;
 function isKnownPrototype(prototype: object | null): boolean {
 	astPrototypes ??= new Set(
-		Object.values((alasql as any).yy)
+		Object.values(sqlAst)
 			.filter((value) => typeof value === 'function')
 			.map((astClass: any) => astClass.prototype)
 	);
@@ -402,7 +402,7 @@ export function* astNodes(root: any): Generator<any> {
 function* columnNodes(root: any): Generator<any> {
 	const notColumns = new Set();
 	for (const node of astNodes(root)) {
-		if (node instanceof (alasql as any).yy.Json) {
+		if (node instanceof sqlAst.Json) {
 			// Only the literal's own plain objects and arrays: nested AST nodes, a nested JSON literal
 			// included, are reached by the outer walk, so each is marked once.
 			const pending = [node.value];
@@ -486,7 +486,7 @@ function getTableTargets(ast: any): TableTargets {
 		}
 	};
 
-	if (ast instanceof (alasql as any).yy.Select) {
+	if (ast instanceof sqlAst.Select) {
 		if (Array.isArray(ast.from)) {
 			ast.from.forEach((from, index) => addRef(from, `subquery in FROM position ${index + 1}`));
 		}
@@ -512,10 +512,10 @@ function getTableTargets(ast: any): TableTargets {
 		if (ast.pivot) opaque.push('PIVOT clause');
 		if (ast.unpivot) opaque.push('UNPIVOT clause');
 		addNestedQueries();
-	} else if (ast instanceof (alasql as any).yy.Insert) {
+	} else if (ast instanceof sqlAst.Insert) {
 		addRef(ast.into, 'INSERT target');
 		addNestedQueries();
-	} else if (ast instanceof (alasql as any).yy.Update || ast instanceof (alasql as any).yy.Delete) {
+	} else if (ast instanceof sqlAst.Update || ast instanceof sqlAst.Delete) {
 		addRef(ast.table, 'write target');
 		addNestedQueries();
 	}
@@ -614,13 +614,13 @@ function getRecordAttributesAST(
 	}
 	// We can reference any schema/table attributes, so we need to check each possibility
 	// affected attributes is a Map of Maps like so [schema, Map[table, [attributesArray]]];
-	if (ast instanceof (alasql as any).yy.Insert) {
+	if (ast instanceof sqlAst.Insert) {
 		getInsertAttributes(ast, affectedAttributes, tableLookup);
-	} else if (ast instanceof (alasql as any).yy.Select) {
+	} else if (ast instanceof sqlAst.Select) {
 		getSelectAttributes(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup, unresolvedColumns);
-	} else if (ast instanceof (alasql as any).yy.Update) {
+	} else if (ast instanceof sqlAst.Update) {
 		getUpdateAttributes(ast, affectedAttributes, tableLookup, unresolvedColumns);
-	} else if (ast instanceof (alasql as any).yy.Delete) {
+	} else if (ast instanceof sqlAst.Delete) {
 		getDeleteAttributes(ast, affectedAttributes, tableLookup, unresolvedColumns);
 	} else {
 		harperLogger.error(`AST in getRecordAttributesAST() is not a valid SQL type.`);

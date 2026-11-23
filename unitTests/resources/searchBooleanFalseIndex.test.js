@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { estimateCondition } = require('#src/resources/search');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
 const mutation = require('#src/sqlEngine/executor/runMutation');
@@ -178,7 +178,7 @@ describe('SQL over an indexed boolean attribute', () => {
 
 	function runSql(sql) {
 		return new Promise((resolve, reject) => {
-			const ast = alasql.parse(sql).statements[0];
+			const ast = parseSql(sql).statements[0];
 			const variant = sql.trim().split(/\s+/)[0].toLowerCase();
 			const hdb_user = { username: 'test' };
 			router.route(

@@ -3,7 +3,7 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 const rewire = require('rewire');
 const sql = require('#src/sqlTranslator/index');
 const update = rewire('#js/dataLayer/update');
@@ -34,7 +34,6 @@ describe('Test update module', () => {
 		let p_get_table_schema_rw;
 		let p_search_rw;
 		let update_records_rw;
-		let alasql_parse_spy;
 		let write_rw;
 
 		const fake_table_info = {
@@ -80,7 +79,6 @@ describe('Test update module', () => {
 			p_search_rw = update.__set__('pSqlSelect', p_search_stub);
 			update_records_rw = update.__set__('updateRecords', update_records_stub);
 			write_rw = update.__set__('write', write_stub);
-			alasql_parse_spy = sandbox.spy(alasql, 'parse');
 		});
 
 		after(() => {
@@ -106,7 +104,7 @@ describe('Test update module', () => {
 			p_search_stub.resolves(records_fake);
 
 			const expected_select_string = 'SELECT id FROM `dev`.`dog`  WHERE `id` = 1';
-			const expected_search_statement = alasql.parse(expected_select_string).statements[0];
+			const expected_search_statement = parseSql(expected_select_string).statements[0];
 			const expected_new_records = [
 				{
 					id: 1,
@@ -117,7 +115,6 @@ describe('Test update module', () => {
 			sandbox.resetHistory();
 			await update.update({ statement: test_ast_statement, hdb_user });
 
-			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
 			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
@@ -146,7 +143,7 @@ describe('Test update module', () => {
 			p_search_stub.resolves(records_fake);
 
 			const expected_select_string = 'SELECT id FROM `dev`.`dog` ';
-			const expected_search_statement = alasql.parse(expected_select_string).statements[0];
+			const expected_search_statement = parseSql(expected_select_string).statements[0];
 			const expected_new_records = [
 				{
 					id: 1,
@@ -173,7 +170,6 @@ describe('Test update module', () => {
 			sandbox.resetHistory();
 			await update.update({ statement: test_ast_statement, hdb_user });
 
-			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
 			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
@@ -186,13 +182,12 @@ describe('Test update module', () => {
 			p_search_stub.resolves(records_fake);
 
 			const expected_select_string = 'SELECT id FROM `dev`.`dog`  WHERE `id` = 0';
-			const expected_search_statement = alasql.parse(expected_select_string).statements[0];
+			const expected_search_statement = parseSql(expected_select_string).statements[0];
 			const expected_new_records = [];
 
 			sandbox.resetHistory();
 			await update.update({ statement: test_ast_statement, hdb_user });
 
-			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
 			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
@@ -209,7 +204,7 @@ describe('Test update module', () => {
 			p_search_stub.resolves(records_fake);
 
 			const expected_select_string = "SELECT id FROM `dev`.`dog`  WHERE `id` = 1 AND `dog_name` = 'Bob'";
-			const expected_search_statement = alasql.parse(expected_select_string).statements[0];
+			const expected_search_statement = parseSql(expected_select_string).statements[0];
 			const expected_new_records = [
 				{
 					id: 1,
@@ -221,7 +216,6 @@ describe('Test update module', () => {
 			sandbox.resetHistory();
 			await update.update({ statement: test_ast_statement, hdb_user });
 
-			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
 			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
@@ -244,7 +238,7 @@ describe('Test update module', () => {
 			p_search_stub.resolves(records_fake);
 
 			const expected_select_string = 'SELECT id FROM `dev`.`dog`  WHERE `id` != 1';
-			const expected_search_statement = alasql.parse(expected_select_string).statements[0];
+			const expected_search_statement = parseSql(expected_select_string).statements[0];
 			const expected_new_records = [
 				{
 					id: 2,
@@ -263,7 +257,6 @@ describe('Test update module', () => {
 			sandbox.resetHistory();
 			await update.update({ statement: test_ast_statement, hdb_user });
 
-			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
 			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});
@@ -289,7 +282,7 @@ describe('Test update module', () => {
 			p_search_stub.resolves(records_fake);
 
 			const expected_select_string = 'SELECT id FROM `dev`.`dog`  WHERE `friendly` IS NULL';
-			const expected_search_statement = alasql.parse(expected_select_string).statements[0];
+			const expected_search_statement = parseSql(expected_select_string).statements[0];
 			const expected_new_records = [
 				{
 					id: 1,
@@ -311,7 +304,6 @@ describe('Test update module', () => {
 			sandbox.resetHistory();
 			await update.update({ statement: test_ast_statement, hdb_user });
 
-			expect(alasql_parse_spy.firstCall.args[0]).to.equal(expected_select_string);
 			expect(p_search_stub.firstCall.args[0]).to.eql({ statement: expected_search_statement, hdb_user });
 			expect(update_records_stub.firstCall.args[1]).to.eql(expected_new_records);
 		});

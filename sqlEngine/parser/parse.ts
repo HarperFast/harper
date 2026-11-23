@@ -1,22 +1,18 @@
-import alasql from 'alasql';
+import { parse } from '../../sqlTranslator/parser/parser.ts';
 /**
- * Thin wrapper around alasql.parse.
- *
- * The new engine never owns the raw AlaSQL parse output beyond this file —
- * normalizer.ts converts it into the internal IR (ast.ts) and the rest of the
- * pipeline only sees the IR.
+ * Parses SQL into the statement AST (sqlTranslator/parser). The new engine never owns that AST beyond
+ * this file and normalizer.ts, which converts it into the internal IR (ast.ts); the rest of the pipeline
+ * only sees the IR.
  */
 
-export interface AlaSqlParseResult {
+export interface SqlParseResult {
 	ast: unknown;
 	variant: string;
 }
 
-export function parseSql(sql: string): AlaSqlParseResult {
+export function parseSql(sql: string): SqlParseResult {
 	const trimmed = sql.trim();
-	const ast = alasql.parse(trimmed);
+	const ast = parse(trimmed);
 	const variant = trimmed.split(/\s+/)[0]?.toLowerCase() ?? '';
 	return { ast, variant };
 }
-
-export { alasql };

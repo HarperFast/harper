@@ -1,4 +1,4 @@
-import alasql from 'alasql';
+import { parse } from './parser/parser.ts';
 import * as search from '../dataLayer/search.ts';
 import log from '../utility/logging/harper_logger.ts';
 import harperBridge from '../dataLayer/harperBridge/harperBridge.ts';
@@ -29,7 +29,7 @@ export async function convertDelete({ statement, hdb_user }) {
 
 	let whereString = hdbUtils.isEmpty(where) ? '' : ` WHERE  ${where.toString()}`;
 	let selectString = `SELECT ${(tableInfo as any).hash_attribute} FROM ${from.toString()} ${whereString}`;
-	let searchStatement = (alasql as any).parse(selectString).statements[0];
+	let searchStatement = parse(selectString).statements[0];
 
 	let deleteObj: any = {
 		operation: terms.OPERATIONS_ENUM.DELETE,

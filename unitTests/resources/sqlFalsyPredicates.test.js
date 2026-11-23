@@ -2,7 +2,7 @@
 
 require('../testUtils');
 const assert = require('node:assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
@@ -392,7 +392,7 @@ describe('SQL join predicates over falsy and NaN values', function () {
 	}
 
 	function joinStrategies(text) {
-		const plan = optimize(buildLogicalPlan(bind(normalizeStatement(alasql.parse(text).statements[0], 'select'), {})));
+		const plan = optimize(buildLogicalPlan(bind(normalizeStatement(parseSql(text).statements[0], 'select'), {})));
 		const strategies = [];
 		(function walk(node) {
 			if (node.kind === 'Join') strategies.push(node.strategy);
