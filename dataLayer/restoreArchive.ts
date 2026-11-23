@@ -18,6 +18,7 @@ import {
 	archiveRouter,
 	assertUploadFits,
 	createStagingAreas,
+	isEngineOnly,
 	mintStagingId,
 	planStaging,
 	readStagedRecord,
@@ -47,7 +48,6 @@ const NOT_WITH_AN_ARCHIVE: Record<string, string> = {
 	backup_id: `'backup_id' names a managed backup; omit it when restoring an archive`,
 	immutable_source: `'immutable_source' applies to a backup repository, not an archive`,
 	target_database: `an archive restores into 'database', which may be a new database; omit 'target_database'`,
-	allow_engine_only: `an archive restore replaces the blob roots with what the archive carries; omit 'allow_engine_only'`,
 	resume: `'resume' finishes an interrupted restore from its record; send it without an archive`,
 	cancel: `'cancel' withdraws a restore by its record; send it without an archive`,
 	staging_id: `'staging_id' is set by the server`,
@@ -59,6 +59,8 @@ export interface ArchiveRestoreOptions {
 	retainPrevious: boolean;
 	acceptIncompatible: boolean;
 	acceptUnverifiedBlobs: boolean;
+	/** Admit an archive made with `exclude_blobs`, restoring its records over the blob files already here. */
+	allowEngineOnly: boolean;
 	sha256?: string;
 }
 
@@ -66,10 +68,8 @@ function readArchiveRestoreOptions(request: any, { offline = false } = {}): Arch
 	for (const [field, message] of Object.entries(NOT_WITH_AN_ARCHIVE)) {
 		if (request[field] !== undefined) throw new ClientError(message);
 	}
-	const { databaseName, onRestart, retainPrevious, acceptIncompatible, acceptUnverifiedBlobs } = readRestoreRequest(
-		request,
-		{ offline, archive: true }
-	);
+	const { databaseName, onRestart, retainPrevious, acceptIncompatible, acceptUnverifiedBlobs, allowEngineOnly } =
+		readRestoreRequest(request, { offline, archive: true });
 	if (request.sha256 !== undefined && (typeof request.sha256 !== 'string' || !SHA256_PATTERN.test(request.sha256))) {
 		throw new ClientError(`'sha256' must be 64 hexadecimal characters`);
 	}
@@ -79,6 +79,7 @@ function readArchiveRestoreOptions(request: any, { offline = false } = {}): Arch
 		retainPrevious,
 		acceptIncompatible,
 		acceptUnverifiedBlobs,
+		allowEngineOnly,
 		sha256: request.sha256?.toLowerCase(),
 	};
 }
@@ -150,6 +151,7 @@ export async function stageArchive(
 		databaseDir: string;
 		blobRoots: string[];
 		acceptIncompatible: boolean;
+		allowEngineOnly?: boolean;
 		sha256?: string;
 		restoredFrom: string;
 		contentLength?: number;
@@ -177,6 +179,7 @@ export async function stageArchive(
 			const extracted = await extractArchiveStream(stream, {
 				router: archiveRouter(plan, {
 					acceptIncompatible: target.acceptIncompatible,
+					allowEngineOnly: target.allowEngineOnly === true,
 					onManifest(found, foundWaived) {
 						manifest = found;
 						waived = foundWaived;
@@ -193,6 +196,10 @@ export async function stageArchive(
 			if (!existsSync(join(plan.parts[0].staged, 'CURRENT'))) {
 				throw new ClientError('The archive holds no Harper database (it has no RocksDB CURRENT file)');
 			}
+			const engineOnly = isEngineOnly({ manifest });
+			// the blob roots stay as they are, so only the engine part is installed, and only its area kept
+			const parts = engineOnly ? plan.parts.filter((part) => part.kind === 'engine') : plan.parts;
+			if (engineOnly) await removeStagingArea(plan.areas.filter((area) => area !== plan.stagingDir));
 			const record: StagedRecord = {
 				version: 1,
 				staging_id: plan.stagingId,
@@ -209,7 +216,7 @@ export async function stageArchive(
 				},
 				manifest,
 				waived,
-				parts: withIdentities(plan.parts),
+				parts: withIdentities(parts),
 				created_at: Date.now(),
 			};
 			writeStagedRecord(plan.stagingDir, record);
@@ -256,6 +263,7 @@ export async function restoreBackupFromUpload(
 		databaseDir,
 		blobRoots,
 		acceptIncompatible: options.acceptIncompatible,
+		allowEngineOnly: options.allowEngineOnly,
 		sha256: options.sha256,
 		restoredFrom: 'upload',
 		contentLength: Number.isFinite(contentLength) && contentLength > 0 ? contentLength : undefined,
@@ -304,6 +312,7 @@ export async function restoreStagedArchive<T>(
 			restoredFrom: record.restored_from,
 			archiveSha256: record.archive.sha256,
 			sourceDatabase: record.manifest?.database,
+			engineOnly: isEngineOnly(record),
 		});
 	} catch (error) {
 		if (!receiptOwnsStaging(target.databaseDir, stagingDir)) {
@@ -342,6 +351,7 @@ export async function restoreArchiveOffline(request: any, file: string) {
 			databaseDir,
 			blobRoots,
 			acceptIncompatible: options.acceptIncompatible,
+			allowEngineOnly: options.allowEngineOnly,
 			sha256: options.sha256,
 			restoredFrom: file,
 		}));
@@ -364,7 +374,7 @@ export async function restoreArchiveOffline(request: any, file: string) {
 				backupDir: backupDirForDatabase(databaseName),
 				databaseDir,
 				blobRoots,
-				allowEngineOnly: false,
+				allowEngineOnly: staged.engineOnly === true,
 				acceptIncompatible: options.acceptIncompatible,
 				acceptUnverifiedBlobs: options.acceptUnverifiedBlobs,
 				immutableSource: false,

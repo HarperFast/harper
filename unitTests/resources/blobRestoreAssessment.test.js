@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { randomBytes } = require('node:crypto');
 const { copyFileSync, statSync, truncateSync, unlinkSync, writeFileSync } = require('node:fs');
+const { sep } = require('node:path');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -103,16 +104,26 @@ describe('restored blob assessment', function () {
 	describe('assessBlobReferences', function () {
 		it('reports verified when every referenced file is whole, counting every record scanned', async function () {
 			const { name, Table } = newTable();
-			await putBlob(Table, 1);
-			await putBlob(Table, 2);
+			const paths = [await putBlob(Table, 1), await putBlob(Table, 2)];
 			await Table.put({ id: 3 });
 			const assessment = await assessBlobReferences({ [name]: Table });
+			// a file id up to nine hex digits is laid out as <3>/<3>/<3> under its root
+			const fileIdOf = (path) =>
+				parseInt(
+					path
+						.split(sep)
+						.slice(-3)
+						.map((segment) => segment.padStart(3, '0'))
+						.join(''),
+					16
+				);
 			assert.deepStrictEqual(assessment, {
 				blobIntegrity: 'verified',
 				recordsScanned: { [name]: 3 },
 				references: 2,
 				markers: 0,
 				failures: [],
+				highestFileId: Math.max(...paths.map(fileIdOf)),
 			});
 		});
 

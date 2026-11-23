@@ -93,12 +93,13 @@ describe('archive extraction from a stream', function () {
 	});
 
 	function extract(input, options = {}) {
-		const { acceptIncompatible = false, budget = 1024 ** 3, ...rest } = options;
+		const { acceptIncompatible = false, allowEngineOnly = false, budget = 1024 ** 3, ...rest } = options;
 		const budgets = new Map();
 		for (const part of plan.parts) budgets.set(String(require('node:fs').statSync(part.staged).dev), budget);
 		return extractArchiveStream(Buffer.isBuffer(input) ? Readable.from([input]) : input, {
 			router: archiveRouter(plan, {
 				acceptIncompatible,
+				allowEngineOnly,
 				onManifest(_manifest, foundWaived) {
 					waived = foundWaived;
 				},
@@ -221,13 +222,33 @@ describe('archive extraction from a stream', function () {
 		assert.deepStrictEqual(listTree(engine()), []);
 	});
 
-	it('refuses an archive made with exclude_blobs, and one with more blob roots than this instance', async function () {
+	it('refuses an archive made with exclude_blobs unless allow_engine_only, and one with more blob roots than this instance', async function () {
+		const engineOnly = { manifest: { blobs: false, blob_root_count: 0 } };
+		await assert.rejects(
+			extract(gzipSync(await archiveOf([{ name: 'CURRENT', body: 'x' }], engineOnly))),
+			/exclude_blobs=true and carries no blob files.*pass allow_engine_only=true/
+		);
+		assert.deepStrictEqual(listTree(engine()), []);
+		await extract(gzipSync(await archiveOf([{ name: 'CURRENT', body: 'x' }], engineOnly)), { allowEngineOnly: true });
+		assert.deepStrictEqual(listTree(engine()), ['CURRENT']);
+		rmSync(join(engine(), 'CURRENT'));
 		await assert.rejects(
 			extract(
-				gzipSync(await archiveOf([{ name: 'CURRENT', body: 'x' }], { manifest: { blobs: false, blob_root_count: 0 } }))
+				gzipSync(
+					await archiveOf(
+						[
+							{ name: 'CURRENT', body: 'x' },
+							{ name: 'blobs/0/0/0/1', body: 'y' },
+						],
+						engineOnly
+					)
+				),
+				{ allowEngineOnly: true }
 			),
-			/exclude_blobs/
+			/"blobs\/0\/0\/0\/1" is a blob file, but the archive's manifest says it was made with exclude_blobs/
 		);
+		// refused at the entry, after the engine file before it; the stager removes the area
+		rmSync(join(engine(), 'CURRENT'));
 		await assert.rejects(
 			extract(gzipSync(await archiveOf([{ name: 'CURRENT', body: 'x' }], { manifest: { blob_root_count: 2 } }))),
 			/2 blob root\(s\), but this instance has 1/

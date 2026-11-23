@@ -90,6 +90,11 @@ export interface StagedRecord {
 	proven_at?: number;
 }
 
+/** An archive made with `exclude_blobs`: its engine part is installed alone, over the blob roots already here. */
+export function isEngineOnly(record: Pick<StagedRecord, 'manifest'>): boolean {
+	return record.manifest?.blobs === false;
+}
+
 export interface StagingPlan {
 	stagingId: string;
 	/** The engine part's area, which holds `staged.json`; the area a receipt names. */
@@ -471,12 +476,15 @@ export function archiveRouter(
 	plan: StagingPlan,
 	options: {
 		acceptIncompatible: boolean;
+		/** Admit an archive made with `exclude_blobs`, whose records keep the blob files already here. */
+		allowEngineOnly: boolean;
 		onManifest: (manifest: BackupArchiveManifest | null, waived: string[]) => void;
 	}
 ): ArchiveRouter {
 	const engine = plan.parts[0];
 	const blobParts = plan.parts.filter((part) => part.kind === 'blobs');
 	const budgetOf = new Map(plan.parts.map((part) => [part, String(statSync(part.staged).dev)]));
+	let engineOnly = false;
 	return {
 		admitManifest(manifest) {
 			let waived: string[] = [];
@@ -491,12 +499,13 @@ export function archiveRouter(
 						`Archive manifest ${ARCHIVE_MANIFEST_ENTRY} has no valid 'blobs' and 'blob_root_count'`
 					);
 				}
-				if (!manifest.blobs) {
+				engineOnly = !manifest.blobs;
+				if (engineOnly && !options.allowEngineOnly) {
 					throw new ClientError(
-						'The archive was made with exclude_blobs, so restoring it would keep the live blob files, which cannot be proven before the database is replaced; take the archive without exclude_blobs'
+						"The archive was made with exclude_blobs=true and carries no blob files. To restore its records over the blob files already in this database's blob paths, pass allow_engine_only=true; a record whose blob file is missing fails the restore unless accept_unverified_blobs=true is passed too"
 					);
 				}
-				if (manifest.blob_root_count > blobParts.length) {
+				if (!engineOnly && manifest.blob_root_count > blobParts.length) {
 					throw new ClientError(
 						`The archive has ${manifest.blob_root_count} blob root(s), but this instance has ${blobParts.length} blob path(s); configure matching storage.blobPaths before restoring`
 					);
@@ -507,6 +516,11 @@ export function archiveRouter(
 		route(segments, kind): EntryDestination | null {
 			if (segments.length === 1 && segments[0] === 'README.md' && kind === 'file') return null;
 			if (segments[0] !== BLOB_PART) return { root: engine.staged, segments, budget: budgetOf.get(engine)! };
+			if (engineOnly) {
+				throw new ClientError(
+					`Archive entry ${JSON.stringify(segments.join('/'))} is a blob file, but the archive's manifest says it was made with exclude_blobs`
+				);
+			}
 			if (segments.length === 1) {
 				if (kind === 'directory') return null;
 				throw new ClientError(`Archive entry "blobs" must be a directory`);
@@ -623,7 +637,8 @@ function partAction(part: StagedPart): PartAction {
 export function verifyStagedSwap(record: StagedRecord, databaseDir: string, blobRoots: string[]): void {
 	if (record.state !== 'proven') throw new Error('The staged archive has not been proven');
 	const blobParts = record.parts.filter((part) => part.kind === 'blobs');
-	const expected = [databaseDir, ...blobRoots].map((path) => resolve(path));
+	// an engine-only archive replaces the database directory alone; its blob roots stay as they are
+	const expected = [databaseDir, ...(isEngineOnly(record) ? [] : blobRoots)].map((path) => resolve(path));
 	const recorded = [record.parts[0].destination, ...blobParts.map((part) => part.destination)].map((path) =>
 		resolve(path)
 	);
@@ -633,7 +648,7 @@ export function verifyStagedSwap(record: StagedRecord, databaseDir: string, blob
 			409
 		);
 	}
-	assertDestinationsApart(expected);
+	assertDestinationsApart([databaseDir, ...blobRoots]);
 	for (const part of record.parts) partAction(part);
 }
 

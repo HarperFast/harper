@@ -342,21 +342,17 @@ export async function assertBlobSnapshotRestorable(
  * Refuse an engine-only restore unless the operator has accepted the mixed result.
  *
  * Restoring engine files without the matching blobs produces a mixed generation: records rolled back
- * to the backup point, addressing whichever blobs the roots happen to hold. There are two ways that
- * goes wrong, and the destination being empty rules out only the first:
+ * to the backup point, addressing whichever blobs the roots happen to hold. Either:
  *
  * 1. Blobs are present now, so a restored record can resolve onto a blob that no longer belongs to it,
  *    or onto nothing at all if the blob it referenced was deleted since the backup point.
- * 2. The roots are empty, so nothing collides today -- but blob ids are a per-database counter that
- *    `getNextFileId` (`resources/blob.ts`) re-seeds by scanning the roots. Empty roots re-seed at 1,
- *    which is exactly the id space the restored records already reference, so the *next* blob written
- *    is placed at a path a restored record points at. A brand-new target database is not exempt: its
- *    roots are empty for the same reason.
+ * 2. The roots are empty -- a brand-new target database's always are -- so every reference is missing,
+ *    which the proof refuses unless `accept_unverified_blobs`. The blob id counter, which `getNextFileId`
+ *    (`resources/blob.ts`) seeds from the files in the roots, would then hand out ids the restored
+ *    records already reference, so the proof raises the blob file id floor above them.
  *
  * Purging the roots instead is not the answer -- that strips blobs the restored records still
- * reference -- so the operator has to choose, and the choice is recorded. Case 2 would stop being a
- * hazard if the blob-id high-water mark were persisted with the engine and restored alongside it, so
- * the counter could not fall behind the references it has already handed out.
+ * reference -- so the operator has to choose, and the choice is recorded.
  */
 export function assertEngineOnlyRestoreAllowed(
 	databaseName: string,
@@ -371,7 +367,7 @@ export function assertEngineOnlyRestoreAllowed(
 	// the opt-in is accepting whichever one applies.
 	throw new ClientError(
 		`Cannot restore an engine-only backup over database '${databaseName}': the backup captured no blobs, so the restored records would address whichever blobs are on disk now. ` +
-			`If the database still has blob files, a record can resolve to a blob that no longer belongs to it; if it has none, blob ids restart at 1 and the next blob written lands on a path a restored record already references — so a new target database is not an escape. ` +
+			`If the database still has blob files, a record can resolve to a blob that no longer belongs to it; if it has none, as a new target database has none, every record's blob is missing, and the restore fails unless accept_unverified_blobs is passed too. ` +
 			`Restore a backup that includes blobs, or pass 'allow_engine_only' to accept the mixed result.`
 	);
 }

@@ -584,9 +584,9 @@ latest backup in place:
 A backup created with \`exclude_blobs\` carries no blobs, so restoring one is refused unless you pass
 \`allow_engine_only=true\`. The restored records address whichever blobs are on disk now: if the
 database still has blob files a record can resolve to one that no longer belongs to it, and if it has
-none the blob ids start over at 1 and the next blob written lands on a path a restored record already
-references. Restoring into a new database is **not** a way around this — its blob roots are empty for
-the same reason. Restore a backup that includes blobs, or accept the mixed result explicitly.
+none (a new database has none) every record's blob is missing, which the restore refuses unless you
+also pass \`accept_unverified_blobs=true\`. Restore a backup that includes blobs, or accept the mixed
+result explicitly.
 
 The \`system\` database cannot be restored while Harper is running; stop the server and run the same
 command offline. Neither can a database a loaded component holds open: stop the server, or have
@@ -801,7 +801,7 @@ export async function restoreBackup(request: any) {
 					databaseName,
 					databaseDir,
 					backupDir: backupDirForDatabase(databaseName),
-					allowEngineOnly: false,
+					allowEngineOnly: staged.engineOnly === true,
 					acceptIncompatible,
 					acceptUnverifiedBlobs,
 					retainPrevious,
@@ -1381,8 +1381,18 @@ ${
 
 ## Restoring
 
-This is a raw snapshot archive, not a managed backup repository. To restore it, stop Harper and lay
-the files back down in two places:
+Restore it with Harper running or stopped:
+
+    harper restore_backup database=${databaseName} file=<this archive>${blobs ? '' : ' allow_engine_only=true'}
+${
+	blobs
+		? ''
+		: `
+With allow_engine_only, the database's blob files on the instance are kept, and each restored record
+reads the blob file that is there now; add accept_unverified_blobs=true if some are missing.
+`
+}
+By hand instead, stop Harper and lay the files back down in two places:
   1. The RocksDB files — everything except blobs/ and ${ARCHIVE_MANIFEST_ENTRY} — go into the
      database's directory (typically <rootPath>/database/${databaseName}).
   2. Each blobs/<rootIndex>/ tree goes into the matching blob root — the index maps to

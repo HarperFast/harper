@@ -104,6 +104,8 @@ export interface StagedRestoreSource {
 	sourceDatabase?: string;
 	/** Finish the interrupted archive restore the target's receipt records, instead of starting one. */
 	resume?: boolean;
+	/** Made with `exclude_blobs`: the swap installs the engine part alone, admitted by `allow_engine_only`. */
+	engineOnly?: boolean;
 }
 
 /**
@@ -361,7 +363,7 @@ async function publishUnderFence(request: PublishRestoreRequest): Promise<Record
 async function claimStagedSource(request: PublishRestoreRequest): Promise<ClaimedRestore> {
 	const { databaseDir, targetDatabase, backupDir } = request;
 	const staged = request.staged!;
-	const { readStagedRecord } = await import('./archiveStaging.ts');
+	const { isEngineOnly, readStagedRecord } = await import('./archiveStaging.ts');
 	const record = readStagedRecord(staged.stagingDir, targetDatabase);
 	if (record.state !== 'proven') throw new Error('The staged archive has not been proven');
 	let receipt!: RestoreReceipt;
@@ -413,6 +415,7 @@ async function claimStagedSource(request: PublishRestoreRequest): Promise<Claime
 				requested_by: request.requestedBy,
 				options: {
 					accept_unverified_blobs: request.acceptUnverifiedBlobs,
+					...(isEngineOnly(record) ? { allow_engine_only: true } : {}),
 					accept_incompatible_backup: request.acceptIncompatible,
 				},
 			}),

@@ -2905,6 +2905,42 @@ function generateFilePath(storageInfo: StorageInfo) {
 	storageInfo.filePath = filePath;
 }
 const idIncrementers = new Map<RootDatabase, BigInt64Array>();
+/**
+ * Audit metadata at or above every blob file id this database's records reference. The counter seeds from
+ * the highest file in the blob roots, which an engine-only restore can leave below ids its records already
+ * reference, so a restore's proof raises this and the seed takes whichever is higher. RocksDB only.
+ */
+const BLOB_FILE_ID_FLOOR_KEY = Symbol.for('blob-file-id-floor');
+
+export function readBlobFileIdFloor(auditStore: any): number {
+	let stored: any;
+	try {
+		stored = auditStore?.getBinary?.(BLOB_FILE_ID_FLOOR_KEY);
+	} catch {
+		return 0;
+	}
+	if (stored?.byteLength !== 8) return 0;
+	const floor = Buffer.from(stored.buffer, stored.byteOffset, 8).readDoubleLE(0);
+	return Number.isSafeInteger(floor) && floor > 0 ? floor : 0;
+}
+
+/** Raises the floor to `fileId`, never lowers it; durable once the caller flushes the store. */
+export async function raiseBlobFileIdFloor(auditStore: any, fileId: number): Promise<void> {
+	if (!Number.isSafeInteger(fileId) || fileId <= 0) return;
+	const { commitAuditMetadata } = await import('./auditStore.ts');
+	commitAuditMetadata(
+		auditStore,
+		(read) => {
+			const existing = readBlobFileIdFloor({ getBinary: read });
+			if (existing >= fileId) return undefined;
+			const bytes = Buffer.alloc(8);
+			bytes.writeDoubleLE(fileId, 0);
+			return [[BLOB_FILE_ID_FLOOR_KEY, new Uint8Array(bytes)]];
+		},
+		'blob file id floor'
+	);
+}
+
 function getNextFileId(): number {
 	// all threads will use a shared buffer to atomically increment the id
 	// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
@@ -2938,6 +2974,7 @@ function getNextFileId(): number {
 			}
 			highestId = Math.max(highestId, id);
 		}
+		highestId = Math.max(highestId, readBlobFileIdFloor((currentStore as any).auditStore));
 		idIncrementer = new BigInt64Array([BigInt(highestId) + 1n]);
 		// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
 		idIncrementer = new BigInt64Array(currentStore.getUserSharedBuffer('blob-file-id', idIncrementer.buffer));
@@ -4045,6 +4082,8 @@ export interface BlobReferenceAssessment {
 	markers: number;
 	/** The first few references that resolve to neither a whole file nor a capture marker. */
 	failures: { table: string; id: unknown; state: RestoredBlobFileState }[];
+	/** The highest blob file id any record references, which the id counter must never fall to. */
+	highestFileId: number;
 }
 
 const REPORTED_BLOB_FAILURES = 20;
@@ -4052,9 +4091,13 @@ const REPORTED_BLOB_FAILURES = 20;
 /**
  * Decodes every record of every table and resolves each file-backed blob reference, for a restore that
  * must not publish a generation it cannot read. Unlike {@link findIncompleteBlobRefs}, a record that
- * cannot be decoded is an error rather than a skip.
+ * cannot be decoded is an error rather than a skip. `resolvePath` moves each reference's path before its
+ * file is checked, so a generation opened over other roots can be checked against these.
  */
-export async function assessBlobReferences(database: Record<string, any>): Promise<BlobReferenceAssessment> {
+export async function assessBlobReferences(
+	database: Record<string, any>,
+	{ resolvePath }: { resolvePath?: (path: string) => string } = {}
+): Promise<BlobReferenceAssessment> {
 	const { HAS_BLOBS } = await import('./auditStore.ts');
 	const { decodeStrictly } = await import('./RecordEncoder.ts');
 	const assessment: BlobReferenceAssessment = {
@@ -4063,6 +4106,7 @@ export async function assessBlobReferences(database: Record<string, any>): Promi
 		references: 0,
 		markers: 0,
 		failures: [],
+		highestFileId: 0,
 	};
 	let failed = false;
 	// It runs in the restore child, with nothing to share the CPU with; a short yield keeps it
@@ -4085,12 +4129,15 @@ export async function assessBlobReferences(database: Record<string, any>): Promi
 					findBlobsInObject(value, (blob) => {
 						if (blob instanceof FileBackedBlob) {
 							const storageInfo = storageInfoForBlob.get(blob);
-							if (storageInfo?.fileId != null) references.push({ path: getFilePath(storageInfo), size: blob.size });
+							if (storageInfo?.fileId == null) return;
+							references.push({ path: getFilePath(storageInfo), size: blob.size });
+							const fileId = parseInt(storageInfo.fileId, 16);
+							if (fileId > assessment.highestFileId) assessment.highestFileId = fileId;
 						}
 					});
 					for (const { path, size } of references) {
 						assessment.references++;
-						const state = await classifyRestoredBlobFile(path, size);
+						const state = await classifyRestoredBlobFile(resolvePath ? resolvePath(path) : path, size);
 						if (state === 'marker') assessment.markers++;
 						else if (state !== 'complete') {
 							failed = true;

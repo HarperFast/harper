@@ -37,6 +37,7 @@ const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === '
 suite('restore_backup restores a get_backup archive (harper#2639)', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	const scratch = mkdtempSync(join(tmpdir(), 'harper-archive-restore-'));
 	const archive = join(scratch, `${DATABASE}.tar.gz`);
+	const engineOnlyArchive = join(scratch, `${DATABASE}-noblobs.tar.gz`);
 	let archived: Record<string, any>;
 
 	function authorization() {
@@ -186,6 +187,13 @@ suite('restore_backup restores a get_backup archive (harper#2639)', { skip: skip
 		const downloaded = await cli(['get_backup', `database=${DATABASE}`, `out=${archive}`]);
 		strictEqual(downloaded.exit, 0, downloaded.out);
 		ok(existsSync(archive), downloaded.out);
+		const engineOnly = await cli([
+			'get_backup',
+			`database=${DATABASE}`,
+			'exclude_blobs=true',
+			`out=${engineOnlyArchive}`,
+		]);
+		strictEqual(engineOnly.exit, 0, engineOnly.out);
 	});
 
 	after(async () => {
@@ -232,6 +240,60 @@ suite('restore_backup restores a get_backup archive (harper#2639)', { skip: skip
 		ok(refused.exit !== 0, `a truncated archive must be refused:\n${refused.out}`);
 		match(refused.out, /not a whole get_backup archive|end-of-archive/);
 		deepStrictEqual(await blobs(DATABASE, { action: 'snapshot' }), live);
+		await stagingRemoved();
+	});
+
+	test('exclude_blobs archive: restored with allow_engine_only over the blob files already here (harper#4431)', async () => {
+		// the archive's own blob files, under records that then change without touching a blob
+		const full = await cli(['restore_backup', `database=${DATABASE}`, `file=${archive}`]);
+		strictEqual((await settledJob(jobIdOf(full.out))).status, 'COMPLETE', full.out);
+		await stagingRemoved();
+		await blobs(DATABASE, { action: 'delete', id: 'c' });
+		await blobs(DATABASE, { action: 'put', id: 'd', label: 'live' });
+		notDeepStrictEqual(await blobs(DATABASE, { action: 'snapshot' }), archived);
+
+		const refused = await cli(['restore_backup', `database=${DATABASE}`, `file=${engineOnlyArchive}`]);
+		ok(refused.exit !== 0, `an engine-only archive needs the opt-in:\n${refused.out}`);
+		match(refused.out, /allow_engine_only=true/);
+		await stagingRemoved();
+
+		const restored = await cli([
+			'restore_backup',
+			`database=${DATABASE}`,
+			`file=${engineOnlyArchive}`,
+			'allow_engine_only=true',
+		]);
+		strictEqual(restored.exit, 0, restored.out);
+		const job = await settledJob(jobIdOf(restored.out));
+		strictEqual(job.status, 'COMPLETE', JSON.stringify(job));
+		strictEqual(job.result?.allow_engine_only, true);
+		strictEqual(job.result?.blob_integrity, 'verified');
+		deepStrictEqual(await blobs(DATABASE, { action: 'snapshot' }), archived, 'records restored, blob files kept');
+		await stagingRemoved();
+	});
+
+	test('exclude_blobs archive: into a database with no blob files, only with accept_unverified_blobs', async () => {
+		const database = 'archive_restore_engine_only';
+		const restore = (...extra: string[]) =>
+			cli(['restore_backup', `database=${database}`, `file=${engineOnlyArchive}`, 'allow_engine_only=true', ...extra]);
+		const refused = await restore();
+		strictEqual(refused.exit, 0, refused.out);
+		const failed = await settledJob(jobIdOf(refused.out));
+		strictEqual(failed.status, 'ERROR', JSON.stringify(failed));
+		match(failed.message, /not in this instance's blob paths.*accept_unverified_blobs=true/);
+		await stagingRemoved();
+
+		const restored = await restore('accept_unverified_blobs=true');
+		strictEqual(restored.exit, 0, restored.out);
+		const job = await settledJob(jobIdOf(restored.out));
+		strictEqual(job.status, 'COMPLETE', JSON.stringify(job));
+		strictEqual(job.result?.blob_integrity, 'unverified');
+		const rows = await op({ operation: 'sql', sql: `SELECT id, label FROM ${database}.Items ORDER BY id` });
+		strictEqual(rows.status, 200, rows.text);
+		deepStrictEqual(
+			rows.body.map((row: any) => row.id),
+			['a', 'b', 'c']
+		);
 		await stagingRemoved();
 	});
 

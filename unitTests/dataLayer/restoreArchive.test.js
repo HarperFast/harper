@@ -160,10 +160,37 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 		return records;
 	}
 
-	async function archiveOf(Items, name) {
+	async function archiveOf(Items, name, { excludeBlobs = false } = {}) {
 		const chunks = [];
-		for await (const chunk of createBackupStream(Items.primaryStore.rootStore, name, true)) chunks.push(chunk);
+		for await (const chunk of createBackupStream(Items.primaryStore.rootStore, name, true, excludeBlobs))
+			chunks.push(chunk);
 		return Buffer.concat(chunks);
+	}
+
+	/**
+	 * A database with a file-backed blob, archived with get_backup exclude_blobs=true, then changed in its
+	 * records but not its blobs, so the live blob roots still hold every file the archive references.
+	 */
+	async function engineOnlyDatabase() {
+		const name = `restore_archive_${process.pid}_${++sequence}`;
+		databases.push(name);
+		const Items = table(definition(name));
+		await putWithBlob(Items, 'a', 'archived', randomBytes(BLOB_BYTES));
+		await Items.put({ id: 'only-in-archive', label: 'archived' });
+		// unflushed, as on a serving database: the records are in the archive's transaction logs alone
+		const archived = await snapshot(Items);
+		const archive = await archiveOf(Items, name, { excludeBlobs: true });
+		await Items.delete('only-in-archive');
+		await Items.put({ id: 'only-live', label: 'live' });
+		await Items.primaryStore.rootStore.flush();
+		return { name, dir: resolveDatabasePath(name), archive, archived, live: await snapshot(Items) };
+	}
+
+	/** Every file under the blob roots of `name`, with its bytes. */
+	function blobFilesOf(name) {
+		return getBlobPathsForDatabaseName(name).flatMap((root) =>
+			filesUnder(root, () => true).map((path) => [path, readFileSync(path).toString('base64')])
+		);
 	}
 
 	/**
@@ -796,6 +823,142 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 		});
 	});
 
+	describe('an archive made with exclude_blobs', function () {
+		it('is refused at its manifest without allow_engine_only, naming the option, and changes nothing', async function () {
+			const fixture = await engineOnlyDatabase();
+			await assert.rejects(
+				uploadAndRun(fixture.name, fixture.archive),
+				/exclude_blobs=true and carries no blob files.*pass allow_engine_only=true/
+			);
+			await refusedUploadRemoved(fixture.name);
+			assert.deepStrictEqual(await snapshot(getDatabases()[fixture.name].Items), fixture.live);
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+		});
+
+		it('with allow_engine_only, installs the engine files alone and keeps the blob files already here', async function () {
+			const fixture = await engineOnlyDatabase();
+			const blobsBefore = blobFilesOf(fixture.name);
+			assert.ok(blobsBefore.length > 0, 'precondition: the live blob root holds the archived blob');
+			let stagedParts;
+			const restoreRunner = replaceExport(
+				restoreChildRunnerModule,
+				'runRestoreChild',
+				async (command, args, options) => {
+					if (command === 'apply-and-prove') stagedParts = partsOf(args.stagingDir);
+					return runRestoreChild(command, args, options);
+				}
+			);
+			let outcome;
+			try {
+				outcome = await uploadAndRun(fixture.name, fixture.archive, { allow_engine_only: true });
+			} finally {
+				restoreRunner();
+			}
+
+			assert.deepStrictEqual(
+				stagedParts.record.parts.map((part) => part.kind),
+				['engine'],
+				'only the engine part is staged'
+			);
+			assert.strictEqual(outcome.result.allow_engine_only, true);
+			assert.strictEqual(outcome.result.blob_integrity, 'verified');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
+			assert.deepStrictEqual(blobFilesOf(fixture.name), blobsBefore, 'the blob roots are as they were');
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.deepStrictEqual(stagingLeft(fixture.name), []);
+		});
+
+		it('refuses, before anything is replaced, records whose blob files are not here, unless accept_unverified_blobs', async function () {
+			const fixture = await engineOnlyDatabase();
+			const name = `${fixture.name}_new`;
+			databases.push(name);
+			await assert.rejects(
+				uploadAndRun(name, fixture.archive, { allow_engine_only: true }),
+				/references blob files that are not in this instance's blob paths.*accept_unverified_blobs=true/
+			);
+			assert.strictEqual(readRestoreReceipt(resolveDatabasePath(name)).kind, 'absent');
+			assert.strictEqual(restoreMarkerPresent(resolveDatabasePath(name)), false);
+			assert.deepStrictEqual(stagingLeft(name), []);
+
+			const { result } = await uploadAndRun(name, fixture.archive, {
+				allow_engine_only: true,
+				accept_unverified_blobs: true,
+			});
+			assert.strictEqual(result.blob_integrity, 'unverified');
+			const Items = loadedItems(name);
+			assert.strictEqual((await Items.get('a')).label, 'archived');
+			// the blob id counter seeds above the ids restored records reference, not from the empty roots
+			const written = randomBytes(BLOB_BYTES);
+			await putWithBlob(Items, 'new', 'written', written);
+			assert.deepStrictEqual(Buffer.from(await (await Items.get('new')).data.arrayBuffer()), written);
+			await assert.rejects(
+				(await Items.get('a')).data.arrayBuffer(),
+				'the restored record still finds its blob missing, not the one written after'
+			);
+		});
+
+		it('checks the blob files again once the database is closed, leaving it blocked until resume finds them', async function () {
+			const fixture = await engineOnlyDatabase();
+			const [[blobPath, blobBytes]] = blobFilesOf(fixture.name);
+			// passes the check before the close, and is gone by the one after it
+			const restoreRunner = replaceExport(
+				restoreChildRunnerModule,
+				'runRestoreChild',
+				async (command, args, options) => {
+					if (command === 'apply-and-prove') rmSync(blobPath);
+					return runRestoreChild(command, args, options);
+				}
+			);
+			try {
+				await assert.rejects(
+					uploadAndRun(fixture.name, fixture.archive, { allow_engine_only: true }),
+					/references blob files that are not in this instance's blob paths/
+				);
+			} finally {
+				restoreRunner();
+			}
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), true, 'destruction began, so the database is blocked');
+			assert.strictEqual(receiptOf(fixture.dir).options.allow_engine_only, true);
+
+			writeFileSync(blobPath, Buffer.from(blobBytes, 'base64'));
+			const { result } = await requestRestore(fixture.name, { resume: true });
+			assert.strictEqual(result.blob_integrity, 'verified');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
+			assert.strictEqual(restoreMarkerPresent(fixture.dir), false);
+			assert.deepStrictEqual(stagingLeft(fixture.name), []);
+		});
+
+		it('with on_restart=true, is swapped in and proven by the next startup', async function () {
+			const fixture = await engineOnlyDatabase();
+			const blobsBefore = blobFilesOf(fixture.name);
+			const { jobId } = await requestRestoreOnRestart(fixture, { allow_engine_only: true });
+			assert.strictEqual(receiptOf(fixture.dir).options.allow_engine_only, true);
+
+			await boot(fixture.name);
+
+			const job = await jobTable().get(jobId);
+			assert.strictEqual(job.status, JOB_STATUS_ENUM.COMPLETE);
+			assert.strictEqual(job.result.allow_engine_only, true);
+			assert.strictEqual(job.result.blob_integrity, 'verified');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
+			assert.deepStrictEqual(blobFilesOf(fixture.name), blobsBefore);
+			assert.deepStrictEqual(stagingLeft(fixture.name), []);
+		});
+
+		it('restores with Harper stopped, from an archive file', async function () {
+			const fixture = await engineOnlyDatabase();
+			const file = join(scratch, `${fixture.name}.tar.gz`);
+			writeFileSync(file, fixture.archive);
+			await closeDatabase(fixture.name);
+			const result = await restoreArchiveOffline({ database: fixture.name, allow_engine_only: true }, file);
+			assert.strictEqual(result.allow_engine_only, true);
+			assert.strictEqual(result.blob_integrity, 'verified');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
+			assert.deepStrictEqual(stagingLeft(fixture.name), []);
+		});
+	});
+
 	describe('an interrupted archive restore', function () {
 		/**
 		 * Runs an upload whose child installs only the database directory and then dies, as a crash between
@@ -1189,7 +1352,6 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			[{ backup_id: 1 }, /names a managed backup/],
 			[{ immutable_source: true }, /applies to a backup repository/],
 			[{ target_database: 'other' }, /omit 'target_database'/],
-			[{ allow_engine_only: true }, /omit 'allow_engine_only'/],
 			[{ resume: true }, /without an archive/],
 			[{ cancel: true }, /without an archive/],
 			[{ sha256: 'abc' }, /64 hexadecimal/],

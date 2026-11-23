@@ -1470,8 +1470,7 @@ describe('rocksdbBackup', function () {
 			await writeBlobDbRecord();
 			const created = await createBackupOffline(BLOB_DB, true);
 
-			// Empty roots do not make this safe: the id counter re-seeds from the roots, so it hands out
-			// 1 again and the next blob lands on a path the restored records already reference.
+			// Empty roots do not make this safe: every restored reference would be missing.
 			await assert.rejects(
 				restoreBackupOffline(BLOB_DB, created.backup_id),
 				(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)
@@ -1495,8 +1494,7 @@ describe('rocksdbBackup', function () {
 			const target = `${BLOB_DB}-copy`;
 
 			try {
-				// A fresh target's roots are empty for the same reason, so it is exposed to the same
-				// id reissue -- naming a new database is not an escape hatch.
+				// A fresh target's roots are empty, so every restored reference would be missing.
 				await assert.rejects(
 					restoreBackupOffline(BLOB_DB, created.backup_id, target),
 					(error) => error.statusCode === 400 && /allow_engine_only/.test(error.message)

@@ -231,6 +231,14 @@ database directory and next to each blob root), and installed by rename (harper#
   crosses a filesystem; a part on another filesystem than its destination is refused, never copied. Destinations
   at or inside one another are refused too (`assertDestinationsApart`): moving one aside would carry
   another's installed part away after destruction began.
+- **An engine-only archive is checked on both sides of the close (`isEngineOnly`).** Its staged proof
+  replays over placeholder roots and checks references against the live roots by stat alone, so
+  nothing the child runs (audit cleanup included) can remove a live file; replay must run there, since
+  a live database's records are mostly still in its logs. Only the engine part is staged and swapped;
+  the proof then runs again against the live roots, fenced, as a managed engine-only restore's does.
+- **The blob id counter never falls below a restored reference.** `getNextFileId` seeds from the
+  files in the roots, so a proof raises the `blob-file-id-floor` audit metadata to the highest id
+  its records reference (`raiseBlobFileIdFloor`), and the seed takes the higher of the two.
 - **Staging is owned by its receipt.** Until a receipt names an area, only its creator removes it (the
   upload handler, or the job that fails before the claim). After, only settle, cancel and the startup
   sweep do; a new restore over a non-terminal staged receipt is refused naming `resume`/`cancel`, so a
