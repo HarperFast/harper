@@ -401,15 +401,7 @@ function compileOp(node: any, cc: CompileContext): Evaluator {
 		if (!compare) throw new SyntaxError('Unexpected identifier');
 		if (refs.length === 0) {
 			// The common case, a plain binary operator, without an operand array per row.
-			const left = compileExpression(node.left, cc);
-			const right = compileExpression(node.right, cc);
-			if (op === '&&' || op === '||') return (env) => compare(left(env), right(env));
-			return (env) => {
-				const a = left(env);
-				const b = right(env);
-				if (isNullish(a) || isNullish(b)) return undefined;
-				return compare(a, b);
-			};
+			return plainBinary(op, compileExpression(node.left, cc), compileExpression(node.right, cc));
 		}
 		const left = ref(node.left);
 		const right = ref(node.right);
@@ -417,19 +409,92 @@ function compileOp(node: any, cc: CompileContext): Evaluator {
 	}
 
 	const evaluate = body;
-	const evaluateRefs = (env: Env) => {
-		const y = new Array(refs.length);
-		for (let i = 0; i < refs.length; i++) y[i] = refs[i](env);
-		return y;
-	};
-	if (skipNullCheck || op === '&&' || op === '||' || op === 'IS') {
-		return (env) => evaluate(evaluateRefs(env), env);
-	}
+	const count = refs.length;
+	// One operand array reused across rows; a nested evaluation of this same node, if one ever ran, gets its own.
+	let spare: any[] | undefined = new Array(count);
+	const nullable = !(skipNullCheck || op === '&&' || op === '||' || op === 'IS');
 	return (env) => {
-		const y = evaluateRefs(env);
-		for (let i = 0; i < y.length; i++) if (isNullish(y[i])) return undefined;
-		return evaluate(y, env);
+		const y = spare ?? new Array(count);
+		spare = undefined;
+		try {
+			for (let i = 0; i < count; i++) y[i] = refs[i](env);
+			if (nullable) {
+				for (let i = 0; i < count; i++) if (isNullish(y[i])) return undefined;
+			}
+			return evaluate(y, env);
+		} finally {
+			spare = y;
+		}
 	};
+}
+
+/** A binary operator over two operands, one closure per operator so each comparison is inlined. */
+function plainBinary(op: string, left: Evaluator, right: Evaluator): Evaluator {
+	const both =
+		(apply: (a: any, b: any) => any): Evaluator =>
+		(env) => {
+			const a = left(env);
+			const b = right(env);
+			return isNullish(a) || isNullish(b) ? undefined : apply(a, b);
+		};
+	switch (op) {
+		case '&&':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return a && b;
+			};
+		case '||':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return a || b;
+			};
+		case '===':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return isNullish(a) || isNullish(b) ? undefined : a === b;
+			};
+		case '>':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return isNullish(a) || isNullish(b) ? undefined : a > b;
+			};
+		case '<':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return isNullish(a) || isNullish(b) ? undefined : a < b;
+			};
+		case '>=':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return isNullish(a) || isNullish(b) ? undefined : a >= b;
+			};
+		case '<=':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return isNullish(a) || isNullish(b) ? undefined : a <= b;
+			};
+		case '+':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return isNullish(a) || isNullish(b) ? undefined : a + b;
+			};
+		case '*':
+			return (env) => {
+				const a = left(env);
+				const b = right(env);
+				return isNullish(a) || isNullish(b) ? undefined : a * b;
+			};
+		default:
+			return both(COMPARISON[op]);
+	}
 }
 
 function compileUniOp(node: any, cc: CompileContext): Evaluator {

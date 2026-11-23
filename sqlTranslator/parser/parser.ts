@@ -1349,7 +1349,6 @@ class Parser {
 		return new ast.NumValue({ value: +token.text });
 	}
 
-	/** A StringValue: quoted text, including `N'...'`. */
 	private isStringValueToken(offset = 0): boolean {
 		return this.isStringToken(offset) || this.is('NSTRING', offset);
 	}

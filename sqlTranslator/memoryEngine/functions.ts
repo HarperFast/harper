@@ -430,7 +430,7 @@ export function compileConvert(
  * AlaSQL compiled these to inline code (alasql.fs.js:13256-13398), each from the JavaScript source of its
  * arguments: a missing argument was the text `undefined`, an argument the template does not use is never
  * evaluated, and `und(s, …)` returns `undefined` only for `undefined`, so most string functions throw on NULL.
- * An argument the template repeats (IFNULL's, NULLIF's) is evaluated once here, which nothing can observe.
+ * An argument the template repeats (IFNULL's, NULLIF's) is evaluated as many times, which RANDOM() can observe.
  */
 type InlineBuilder = (args: Evaluator[]) => Evaluator;
 
@@ -476,11 +476,8 @@ function substring(args: Evaluator[]): Evaluator {
 function nullIf(args: Evaluator[]): Evaluator {
 	const a = argument(args, 0);
 	const b = argument(args, 1);
-	return (ctx) => {
-		const value = a(ctx);
-		// eslint-disable-next-line eqeqeq
-		return value == b(ctx) ? undefined : value;
-	};
+	// eslint-disable-next-line eqeqeq
+	return (ctx) => (a(ctx) == b(ctx) ? undefined : a(ctx));
 }
 
 function returnOne(): Evaluator {
@@ -505,10 +502,7 @@ const INLINE: Record<string, InlineBuilder> = nullPrototype<InlineBuilder>({
 	IFNULL: (args) => {
 		const a = argument(args, 0);
 		const b = argument(args, 1);
-		return (ctx) => {
-			const value = a(ctx);
-			return value === undefined || value === null ? b(ctx) : value;
-		};
+		return (ctx) => (typeof a(ctx) === 'undefined' || a(ctx) === null ? b(ctx) : a(ctx));
 	},
 	INSTR: (args) => {
 		const a = argument(args, 0);

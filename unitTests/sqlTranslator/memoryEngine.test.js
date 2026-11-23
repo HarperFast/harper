@@ -138,6 +138,18 @@ describe('in-memory SQL engine', function () {
 			]);
 		});
 
+		it('evaluates the operand IFNULL and NULLIF repeat as often as AlaSQL did', function () {
+			const reads = (fn) => {
+				let n = 0;
+				const row = {};
+				Object.defineProperty(row, 0, { get: () => (n++, 5), enumerable: true });
+				query(`SELECT ${fn}(t.[0], 3) AS v FROM ? AS t`, [[row]]);
+				return n;
+			};
+			assert.strictEqual(reads('IFNULL'), 3);
+			assert.strictEqual(reads('NULLIF'), 2);
+		});
+
 		it('counts a function call that takes no arguments', function () {
 			assert.deepStrictEqual(query('SELECT COUNT(CURRENT_TIMESTAMP) AS n FROM ? AS t', [[[1], [2]]]), [{ n: 2 }]);
 		});
