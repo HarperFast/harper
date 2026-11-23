@@ -1,6 +1,6 @@
 'use strict';
 /**
- * This class is meant as a getter object that sits between the alasql (or other module) AST and any module requiring interpreted
+ * This class is meant as a getter object that sits between the parsed AST (sqlTranslator/parser) and any module requiring interpreted
  * AST SQL values such as attributes, tables, etc.
  **/
 

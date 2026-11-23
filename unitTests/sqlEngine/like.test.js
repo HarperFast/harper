@@ -5,14 +5,15 @@ const { spawnSync } = require('node:child_process');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
+const { query: runLegacySql } = require('#src/sqlTranslator/memoryEngine/index');
+const { legacyLike } = require('#src/sqlTranslator/legacyLike');
 const { compileExpr } = require('#src/sqlEngine/expressions/compile');
 const { tokenizeLike } = require('#src/sqlEngine/expressions/like');
 const { whereToConditions } = require('#src/sqlEngine/optimizer/whereToConditions');
 const { normalizeStatement } = require('#src/sqlEngine/parser/normalizer');
 const { EngineRuntimeError, EngineUnsupportedError } = require('#src/sqlEngine/errors');
 const { ClientError } = require('#src/utility/errors/hdbError');
-require('#src/sqlTranslator/alasqlFunctionImporter').default(alasql);
 
 function likeExpr(pattern, escape, negated = false) {
 	const expr = {
@@ -198,8 +199,7 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			const value = randomString(next, 'aaA\n\r\u2028_', 16);
 			const label = `${JSON.stringify(value)} LIKE ${JSON.stringify(pattern)}`;
 			assert.strictEqual(v2Like(pattern, value, escape), dpLike(pattern, value, escape), label);
-			const legacy =
-				escape === undefined ? alasql.utils.like(pattern, value) : alasql.utils.like(pattern, value, escape);
+			const legacy = escape === undefined ? legacyLike(pattern, value) : legacyLike(pattern, value, escape);
 			assert.strictEqual(legacy, dpLike(pattern, value, escape, true), `legacy ${label}`);
 		}
 	});
@@ -246,13 +246,13 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 				value = value.slice(0, at) + ALPHABET[next() % ALPHABET.length] + value.slice(at + 1);
 			}
 			const label = `${JSON.stringify(value)} LIKE ${JSON.stringify(pattern)}`;
-			const actual = legacy ? alasql.utils.like(pattern, value) : v2Like(pattern, value);
+			const actual = legacy ? legacyLike(pattern, value) : v2Like(pattern, value);
 			assert.strictEqual(actual, piecesLike(pieces, value), (legacy ? 'legacy ' : 'v2 ') + label);
 		}
 	});
 
 	it('matches any one code unit with _, in every segment position, on both engines', () => {
-		for (const like of [v2Like, (pattern, value) => alasql.utils.like(pattern, value)]) {
+		for (const like of [v2Like, (pattern, value) => legacyLike(pattern, value)]) {
 			for (const terminator of ['\n', '\r', '\u2028', '\u2029']) {
 				assert.strictEqual(like('a_b', `a${terminator}b`), true);
 				assert.strictEqual(like('_%', terminator), true);
@@ -278,7 +278,7 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			assert.strictEqual(like('%\n' + run + '\n%', 'a\n' + 'b\n'.repeat(35) + 'c'), false);
 		}
 		assert.strictEqual(v2Like('a!_b', 'a\nb', '!'), false);
-		assert.strictEqual(alasql.utils.like('a!_b', 'a\nb', '!'), false);
+		assert.strictEqual(legacyLike('a!_b', 'a\nb', '!'), false);
 	});
 
 	it('keeps line terminators and noncharacters in the value distinct from those in the pattern', () => {
@@ -287,11 +287,11 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(v2Like('%' + run + '\n%', a + '\r'), false);
 		assert.strictEqual(v2Like('%' + run + '\n%', a + '\n'), true);
 		assert.strictEqual(v2Like('%\n' + run + '%', '\uffff' + a), false);
-		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\uffff' + a), false);
-		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\n' + a), true);
-		assert.strictEqual(alasql.utils.like('%[b\n]' + run + '%', '\r' + a), false);
+		assert.strictEqual(legacyLike('%[^\uffff]' + run + '%', '\uffff' + a), false);
+		assert.strictEqual(legacyLike('%[^\uffff]' + run + '%', '\n' + a), true);
+		assert.strictEqual(legacyLike('%[b\n]' + run + '%', '\r' + a), false);
 		// Past 64 `_`, legacy matches `_` against a placeholder noncharacter, which the value may hold.
-		for (const like of [v2Like, (pattern, value) => alasql.utils.like(pattern, value)]) {
+		for (const like of [v2Like, (pattern, value) => legacyLike(pattern, value)]) {
 			assert.strictEqual(like('%a' + run + '%', 'a' + '\uffff'.repeat(70)), true);
 			// The match starts in the first search window and ends in the second: 4 x 70 = 280.
 			const straddling = 'x'.repeat(245) + 'a' + '\uffff'.repeat(68) + 'b';
@@ -310,14 +310,14 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 			assert.strictEqual(like('%\ufffe%a' + run + 'b', '\ufffe' + 'a' + '\uffff'.repeat(70) + 'b'), true);
 			assert.strictEqual(like('%\ufffe%a' + run + '\uffff', '\ufffe' + 'a' + '\ufffe'.repeat(71)), false);
 		}
-		assert.strictEqual(alasql.utils.like('%[^\uffff]' + run + '%', '\ufffe' + '\uffff'.repeat(70)), true);
-		assert.strictEqual(alasql.utils.like('%[\ufffe]%a' + run + 'b', '\ufffe' + 'a' + '\ufdd0'.repeat(70) + 'b'), true);
+		assert.strictEqual(legacyLike('%[^\uffff]' + run + '%', '\ufffe' + '\uffff'.repeat(70)), true);
+		assert.strictEqual(legacyLike('%[\ufffe]%a' + run + 'b', '\ufffe' + 'a' + '\ufdd0'.repeat(70) + 'b'), true);
 		// With every noncharacter a literal, the placeholder comes from the Private Use Area.
 		const all = NONCHARACTERS.join('');
 		for (const tail of ['', '\uffff', 'B']) {
 			const value = all + 'a' + (all + '\uf8ff\uf8fe').repeat(3).slice(0, 70) + tail;
-			assert.strictEqual(alasql.utils.like('%' + all + '%a' + run + 'b%', value), tail === 'B');
-			assert.strictEqual(alasql.utils.like('%' + all + '%a' + run + '%', value), true);
+			assert.strictEqual(legacyLike('%' + all + '%a' + run + 'b%', value), tail === 'B');
+			assert.strictEqual(legacyLike('%' + all + '%a' + run + '%', value), true);
 		}
 	});
 
@@ -360,8 +360,8 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		assert.strictEqual(v2Like('_'.repeat(10_000), 'x'.repeat(10_000)), true);
 		assert.strictEqual(v2Like('%' + 'a'.repeat(10_000) + '%', 'x' + 'a'.repeat(10_000)), true);
 		assert.strictEqual(v2Like('!%'.repeat(10_000), '%'.repeat(10_000), '!'), true);
-		assert.strictEqual(alasql.utils.like('%' + 'Ab'.repeat(5_000) + '%', 'x' + 'aB'.repeat(5_000)), true);
-		assert.strictEqual(alasql.utils.like('%' + '[ab]'.repeat(10_000) + '%', 'x' + 'ab'.repeat(5_000)), true);
+		assert.strictEqual(legacyLike('%' + 'Ab'.repeat(5_000) + '%', 'x' + 'aB'.repeat(5_000)), true);
+		assert.strictEqual(legacyLike('%' + '[ab]'.repeat(10_000) + '%', 'x' + 'ab'.repeat(5_000)), true);
 	});
 
 	it('rejects a segment wider than 10,000 characters on both engines', () => {
@@ -376,11 +376,11 @@ describe('sqlEngine LIKE matcher (v2)', () => {
 		]) {
 			assert.throws(() => tokenizeLike(pattern, '!'), tooWide);
 			assert.throws(() => v2Like(pattern, 'a', '!'), tooWide);
-			assert.throws(() => alasql.utils.like(pattern, 'a', '!'), tooWide);
+			assert.throws(() => legacyLike(pattern, 'a', '!'), tooWide);
 		}
-		assert.throws(() => alasql.utils.like('%' + '[ab]'.repeat(10_001) + '%', 'a'), tooWide);
+		assert.throws(() => legacyLike('%' + '[ab]'.repeat(10_001) + '%', 'a'), tooWide);
 		assert.strictEqual(v2Like(('a'.repeat(10_000) + '%').repeat(3), 'a'.repeat(30_000)), true);
-		assert.strictEqual(alasql.utils.like(('a'.repeat(10_000) + '%').repeat(3), 'a'.repeat(30_000)), true);
+		assert.strictEqual(legacyLike(('a'.repeat(10_000) + '%').repeat(3), 'a'.repeat(30_000)), true);
 	});
 
 	it('is case-sensitive', () => {
@@ -448,7 +448,7 @@ describe('sqlEngine LIKE index conditions', () => {
 });
 
 describe('sqlEngine LIKE ESCAPE normalization', () => {
-	const where = (sql) => normalizeStatement(alasql.parse(sql).statements[0], 'select').where;
+	const where = (sql) => normalizeStatement(parseSql(sql).statements[0], 'select').where;
 
 	it('carries the ESCAPE character into the IR', () => {
 		const like = where("SELECT id FROM dev.t WHERE ip LIKE 't0!%' ESCAPE '!'");
@@ -475,69 +475,69 @@ describe('sqlEngine LIKE ESCAPE normalization', () => {
 	});
 });
 
-describe('legacy alasql LIKE', () => {
+describe('legacy LIKE', () => {
 	const rows = ['t_0', 'tx0', 't!x0', 't!_0', 't0%', 't0!z', 't0a', 'T0%'].map((c) => ({ c }));
-	const select = (where) => alasql(`SELECT c FROM ? WHERE ${where}`, [rows]).map((row) => row.c);
+	const select = (where) => runLegacySql(`SELECT c FROM ? WHERE ${where}`, [rows]).map((row) => row.c);
 
 	it('keeps ESCAPE when a WHERE clause is serialized and re-parsed', () => {
 		const sql = "SELECT id FROM t WHERE c LIKE 't0!%' ESCAPE '!' AND d NOT LIKE 'x#_' ESCAPE '#'";
-		const text = alasql.parse(sql).statements[0].where.toString();
+		const text = parseSql(sql).statements[0].where.toString();
 		assert.strictEqual(text, "c LIKE 't0!%' ESCAPE '!' AND d NOT LIKE 'x#_' ESCAPE '#'");
-		assert.strictEqual(alasql.parse(`SELECT id FROM t WHERE ${text}`).statements[0].where.toString(), text);
+		assert.strictEqual(parseSql(`SELECT id FROM t WHERE ${text}`).statements[0].where.toString(), text);
 	});
 
-	it('keeps alasql semantics: case-insensitive, ESCAPE and classes; _ matches a line terminator, as in v2', () => {
+	it('keeps legacy semantics: case-insensitive, ESCAPE and classes; _ matches a line terminator, as in v2', () => {
 		assert.deepStrictEqual(select("c LIKE 't0!%' ESCAPE '!'"), ['t0%', 'T0%']);
 		assert.deepStrictEqual(select("c LIKE 't0%'"), ['t0%', 't0!z', 't0a', 'T0%']);
 		assert.deepStrictEqual(select("c LIKE 't[!_]%'"), ['t_0', 't!x0', 't!_0']);
 		assert.deepStrictEqual(select("c LIKE 't[^!_]%'"), ['tx0', 't0%', 't0!z', 't0a', 'T0%']);
 		assert.deepStrictEqual(select("c LIKE '[s-u]0_'"), ['t0%', 't0a', 'T0%']);
-		assert.strictEqual(alasql.utils.like('a_b', 'a\nb'), true);
-		assert.strictEqual(alasql.utils.like('a%b', 'a\nb'), true);
-		assert.strictEqual(alasql.utils.like('ABC', 'abc'), true);
-		assert.strictEqual(alasql.utils.like('é', 'É'), true);
-		assert.strictEqual(alasql.utils.like('s', 'ſ'), false);
-		assert.strictEqual(alasql.utils.like('a%', null), false);
-		assert.strictEqual(alasql.utils.like('12%', 12345), true);
+		assert.strictEqual(legacyLike('a_b', 'a\nb'), true);
+		assert.strictEqual(legacyLike('a%b', 'a\nb'), true);
+		assert.strictEqual(legacyLike('ABC', 'abc'), true);
+		assert.strictEqual(legacyLike('é', 'É'), true);
+		assert.strictEqual(legacyLike('s', 'ſ'), false);
+		assert.strictEqual(legacyLike('a%', null), false);
+		assert.strictEqual(legacyLike('12%', 12345), true);
 		// A pattern that is not a string matches nothing, as in v2.
-		assert.strictEqual(alasql.utils.like(123, '123'), false);
-		assert.throws(() => alasql.utils.like(123, '123', '!!'), ClientError);
+		assert.strictEqual(legacyLike(123, '123'), false);
+		assert.throws(() => legacyLike(123, '123', '!!'), ClientError);
 		assert.strictEqual(compileExpr(likeExpr(123)).eval({ v: '123' }), null);
 	});
 
-	it('treats characters alasql leaked into its regex as literals', () => {
-		assert.strictEqual(alasql.utils.like('a$b', 'a$b'), true);
-		assert.strictEqual(alasql.utils.like('^a', 'a'), false);
-		assert.strictEqual(alasql.utils.like('a\\d', 'a\\d'), true);
-		assert.strictEqual(alasql.utils.like('a!d', 'ad', '!'), true);
-		assert.strictEqual(alasql.utils.like('a!d', 'a5', '!'), false);
-		assert.strictEqual(alasql.utils.like('a[b', 'a[b'), true);
+	it('treats characters the old matcher leaked into its regex as literals', () => {
+		assert.strictEqual(legacyLike('a$b', 'a$b'), true);
+		assert.strictEqual(legacyLike('^a', 'a'), false);
+		assert.strictEqual(legacyLike('a\\d', 'a\\d'), true);
+		assert.strictEqual(legacyLike('a!d', 'ad', '!'), true);
+		assert.strictEqual(legacyLike('a!d', 'a5', '!'), false);
+		assert.strictEqual(legacyLike('a[b', 'a[b'), true);
 	});
 
 	it('honors an escaped ] inside a class', () => {
-		assert.strictEqual(alasql.utils.like('a[!]]', 'a]', '!'), true);
-		assert.strictEqual(alasql.utils.like('a[!]]', 'a!]', '!'), false);
-		assert.strictEqual(alasql.utils.like('[a!-c]', 'b', '!'), false);
-		assert.strictEqual(alasql.utils.like('[a!-c]', '-', '!'), true);
-		assert.strictEqual(alasql.utils.like('[^_]', 'a', '^'), true);
-		assert.strictEqual(alasql.utils.like('[^_]', '_', '^'), false);
-		assert.strictEqual(alasql.utils.like('[^^]]', 'a', '^'), true);
-		assert.strictEqual(alasql.utils.like('[^^]]', ']', '^'), false);
+		assert.strictEqual(legacyLike('a[!]]', 'a]', '!'), true);
+		assert.strictEqual(legacyLike('a[!]]', 'a!]', '!'), false);
+		assert.strictEqual(legacyLike('[a!-c]', 'b', '!'), false);
+		assert.strictEqual(legacyLike('[a!-c]', '-', '!'), true);
+		assert.strictEqual(legacyLike('[^_]', 'a', '^'), true);
+		assert.strictEqual(legacyLike('[^_]', '_', '^'), false);
+		assert.strictEqual(legacyLike('[^^]]', 'a', '^'), true);
+		assert.strictEqual(legacyLike('[^^]]', ']', '^'), false);
 		// An earlier `[` that never closes leaves a later class intact, whatever pairs the escape forms for it.
-		assert.strictEqual(alasql.utils.like('[a[^]', '[ax', '^'), true);
-		assert.strictEqual(alasql.utils.like('[a[^]', '[a[]', '^'), false);
-		assert.strictEqual(alasql.utils.like('[a![b]', '[', '!'), true);
-		assert.strictEqual(alasql.utils.like('[a![b]', '!', '!'), false);
+		assert.strictEqual(legacyLike('[a[^]', '[ax', '^'), true);
+		assert.strictEqual(legacyLike('[a[^]', '[a[]', '^'), false);
+		assert.strictEqual(legacyLike('[a![b]', '[', '!'), true);
+		assert.strictEqual(legacyLike('[a![b]', '!', '!'), false);
 	});
 
 	it('folds case per code unit in every segment position', () => {
-		assert.strictEqual(alasql.utils.like('%AbC%', 'xxabcxx'), true);
-		assert.strictEqual(alasql.utils.like('%a.c%', 'xxA.Cxx'), true);
-		assert.strictEqual(alasql.utils.like('%a.c%', 'xxabcxx'), false);
-		assert.strictEqual(alasql.utils.like('%s%', 'x\u017fx'), false);
-		assert.strictEqual(alasql.utils.like('%\u00e9%', 'x\u00c9x'), true);
-		assert.strictEqual(alasql.utils.like('%[a-c]b%', 'xxBBxx'), true);
-		assert.strictEqual(alasql.utils.like('%ab%ab', 'ab'), false);
+		assert.strictEqual(legacyLike('%AbC%', 'xxabcxx'), true);
+		assert.strictEqual(legacyLike('%a.c%', 'xxA.Cxx'), true);
+		assert.strictEqual(legacyLike('%a.c%', 'xxabcxx'), false);
+		assert.strictEqual(legacyLike('%s%', 'x\u017fx'), false);
+		assert.strictEqual(legacyLike('%\u00e9%', 'x\u00c9x'), true);
+		assert.strictEqual(legacyLike('%[a-c]b%', 'xxBBxx'), true);
+		assert.strictEqual(legacyLike('%ab%ab', 'ab'), false);
 	});
 
 	it('agrees with the reference when classes split the noncharacters past 64 _', () => {
@@ -587,7 +587,7 @@ describe('legacy alasql LIKE', () => {
 			const expected = piecesLike(pieces, value);
 			outcomes.add(expected);
 			assert.strictEqual(
-				alasql.utils.like(pattern, value),
+				legacyLike(pattern, value),
 				expected,
 				`${JSON.stringify(value)} LIKE ${JSON.stringify(pattern)}`
 			);
@@ -607,9 +607,9 @@ describe('legacy alasql LIKE', () => {
 				['a' + run + 'b%' + SPLITTING_CLASSES, 'a' + ones + 'bx' + prefix],
 				['%' + SPLITTING_CLASSES + '%a' + run + 'b%', 'x' + prefix + 'xa' + ones + 'bx'],
 			]) {
-				assert.strictEqual(alasql.utils.like(pattern, value), true, JSON.stringify(pattern));
-				assert.strictEqual(alasql.utils.like(pattern, value.replace(ones, ones.slice(1))), false);
-				assert.strictEqual(alasql.utils.like(pattern.toUpperCase(), value), true);
+				assert.strictEqual(legacyLike(pattern, value), true, JSON.stringify(pattern));
+				assert.strictEqual(legacyLike(pattern, value.replace(ones, ones.slice(1))), false);
+				assert.strictEqual(legacyLike(pattern.toUpperCase(), value), true);
 			}
 		}
 	});
@@ -626,32 +626,32 @@ describe('legacy alasql LIKE', () => {
 		const run = '_'.repeat(65);
 		const pattern = (units) => 'a' + run + '[' + units.join('') + ']';
 		assert.throws(
-			() => alasql.utils.like(pattern(named), 'a'),
+			() => legacyLike(pattern(named), 'a'),
 			(error) => error instanceof ClientError && error.statusCode === 400 && /private-use/.test(error.message)
 		);
 		// One unit fewer leaves U+E001 and U+E000, so the pattern matches as usual.
 		const fewer = named.filter((unit) => unit !== '\ue000');
-		assert.strictEqual(alasql.utils.like(pattern(fewer), 'a' + 'x'.repeat(65) + '\ufffe'), true);
-		assert.strictEqual(alasql.utils.like(pattern(fewer), 'a' + '\ue001'.repeat(65) + '\ufffe'), true);
-		assert.strictEqual(alasql.utils.like(pattern(fewer), 'a' + '\ue000'.repeat(65) + '\ufffe'), true);
-		assert.strictEqual(alasql.utils.like(pattern(fewer), 'a' + '\ue000'.repeat(65) + '\ue000'), false);
+		assert.strictEqual(legacyLike(pattern(fewer), 'a' + 'x'.repeat(65) + '\ufffe'), true);
+		assert.strictEqual(legacyLike(pattern(fewer), 'a' + '\ue001'.repeat(65) + '\ufffe'), true);
+		assert.strictEqual(legacyLike(pattern(fewer), 'a' + '\ue000'.repeat(65) + '\ufffe'), true);
+		assert.strictEqual(legacyLike(pattern(fewer), 'a' + '\ue000'.repeat(65) + '\ue000'), false);
 		// A range names only its endpoints.
-		assert.strictEqual(alasql.utils.like('a' + run + '[\ue000-\uf8fe]', 'a' + '\uf8ff'.repeat(65) + '\ue005'), true);
+		assert.strictEqual(legacyLike('a' + run + '[\ue000-\uf8fe]', 'a' + '\uf8ff'.repeat(65) + '\ue005'), true);
 		// At 64 `_`, `_` is any unit and nothing is refused.
 		assert.strictEqual(
-			alasql.utils.like('a' + '_'.repeat(64) + '[' + named.join('') + ']', 'a' + 'x'.repeat(64) + '\ufffe'),
+			legacyLike('a' + '_'.repeat(64) + '[' + named.join('') + ']', 'a' + 'x'.repeat(64) + '\ufffe'),
 			true
 		);
 	});
 
 	it('rejects a malformed pattern or escape with a client error', () => {
 		const clientError = (error) => error instanceof ClientError && error.statusCode === 400;
-		assert.throws(() => alasql.utils.like('[z-a]', 'b'), clientError);
-		assert.throws(() => alasql.utils.like('a!', 'a', '!'), clientError);
-		assert.throws(() => alasql.utils.like('a!%', 'a%', '!!'), clientError);
-		assert.throws(() => alasql.utils.like('a%', 'a', ''), clientError);
-		assert.throws(() => alasql.utils.like('a%', 'a', 1), clientError);
-		assert.strictEqual(alasql.utils.like('a%', 'a'), true);
+		assert.throws(() => legacyLike('[z-a]', 'b'), clientError);
+		assert.throws(() => legacyLike('a!', 'a', '!'), clientError);
+		assert.throws(() => legacyLike('a!%', 'a%', '!!'), clientError);
+		assert.throws(() => legacyLike('a%', 'a', ''), clientError);
+		assert.throws(() => legacyLike('a%', 'a', 1), clientError);
+		assert.strictEqual(legacyLike('a%', 'a'), true);
 	});
 
 	it('matches correctly while evicting cached patterns by total length', () => {
@@ -659,17 +659,17 @@ describe('legacy alasql LIKE', () => {
 		const patterns = Array.from({ length: 30 }, (_, i) => '%' + String(i).padStart(2, '0') + body);
 		for (let round = 0; round < 2; round++) {
 			for (const [i, pattern] of patterns.entries()) {
-				assert.strictEqual(alasql.utils.like(pattern, String(i).padStart(2, '0') + 'X'.repeat(50_000)), true);
-				assert.strictEqual(alasql.utils.like(pattern, 'nope'), false);
+				assert.strictEqual(legacyLike(pattern, String(i).padStart(2, '0') + 'X'.repeat(50_000)), true);
+				assert.strictEqual(legacyLike(pattern, 'nope'), false);
 			}
 		}
 	});
 
 	it('tokenizes unclosed [ in linear time', () => {
-		assert.strictEqual(alasql.utils.like('['.repeat(10_000) + '%', '['.repeat(10_001)), true);
+		assert.strictEqual(legacyLike('['.repeat(10_000) + '%', '['.repeat(10_001)), true);
 		// Linear: ~60 ms. Rescanning for `]` at every `[` (quadratic): ~50 s.
 		const start = performance.now();
-		assert.strictEqual(alasql.utils.like(('['.repeat(5_000) + '%').repeat(40), 'x'), false);
+		assert.strictEqual(legacyLike(('['.repeat(5_000) + '%').repeat(40), 'x'), false);
 		assert.ok(performance.now() - start < 10_000);
 	});
 });

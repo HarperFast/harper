@@ -20,10 +20,6 @@
 			"pinDigests": true
 		},
 		{
-			"matchPackageNames": ["alasql"],
-			"groupName": "alasql"
-		},
-		{
 			"matchPackageNames": ["sinon"],
 			"groupName": "sinon",
 			"enabled": false
@@ -49,8 +45,7 @@
 			"groupName": "all non-major dependencies",
 			"groupSlug": "all-minor-patch",
 			"matchUpdateTypes": ["minor", "patch"],
-			"matchCurrentVersion": "!/^0/",
-			"matchPackageNames": ["!alasql"]
+			"matchCurrentVersion": "!/^0/"
 		},
 		{
 			"description": "Keep the separately provisioned historical fulltext upgrade engines exact-pinned; remove each fixture when its migration support ends.",

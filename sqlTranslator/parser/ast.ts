@@ -5,7 +5,7 @@
  * text that parses to the same node: legacy SQL runs that text, so the writers for string, JSON and number
  * literals quote and spell values so they read back as the same value (see sqlText.ts).
  */
-import { AGGREGATE_FUNCTIONS, SCALAR_FUNCTIONS, STANDARD_FUNCTIONS } from './functionNames.ts';
+import { isRegisteredName, STANDARD_FUNCTIONS } from './functionNames.ts';
 import { jsonText, numberText, quoteString, unwritable } from './sqlText.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -306,7 +306,7 @@ export class AggrValue extends Node {
 export class FuncValue extends Node {
 	toString() {
 		let s = '';
-		if (SCALAR_FUNCTIONS.has(this.funcid) || AGGREGATE_FUNCTIONS.has(this.funcid)) s += this.funcid;
+		if (isRegisteredName(this.funcid)) s += this.funcid;
 		else if (STANDARD_FUNCTIONS.has(this.funcid.toUpperCase())) {
 			s += this.funcid.toUpperCase().replace(INVALID_FUNCTION_NAME_CHARS, '');
 		}

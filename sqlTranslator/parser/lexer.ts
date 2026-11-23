@@ -10,7 +10,6 @@ export interface Token {
 	type: string;
 	/** The text the grammar actions read; usually the matched text, normalized for a few keywords. */
 	text: string;
-	/** Offset of the match in the lexed input. */
 	start: number;
 	end: number;
 }
@@ -143,6 +142,12 @@ const DATABASE_PREFIX = /(DATABASE|SCHEMA)(S)?/iy;
 const EXPONENT_NUMBER = /\d+(\.\d*)?[eE][+-]?\d+(?![a-zA-Z_0-9])/y;
 const LITERAL = /[0-9]*[a-zA-Z_]+[a-zA-Z_0-9]*/y;
 const NUMBER = /(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(?![a-zA-Z_0-9])/y;
+const WORD_START = /[A-Za-z0-9_]/;
+const WORD_RULES = [
+	[EXPONENT_NUMBER, 'NUMBER'],
+	[LITERAL, 'LITERAL'],
+	[NUMBER, 'NUMBER'],
+] as const;
 
 // Operators after the keywords and names, in rule order.
 const SYMBOL_RULES: [string, string][] = [
@@ -228,7 +233,7 @@ export function tokenize(input: string): Token[] {
 			continue;
 		}
 		const char = input[at];
-		if (/[A-Za-z0-9_]/.test(char)) {
+		if (WORD_START.test(char)) {
 			if ((match = stickyMatch(NOT_WORD, input, at))) {
 				push('NOT_' + (match[1].toUpperCase() === 'BETWEEN' ? 'BETWEEN' : 'LIKE'), match[0], match[0].length);
 				continue;
@@ -255,11 +260,7 @@ export function tokenize(input: string): Token[] {
 				push(keyword, KEYWORD_TEXT.get(upper) ?? word, word.length);
 				continue;
 			}
-			for (const [regex, type] of [
-				[EXPONENT_NUMBER, 'NUMBER'],
-				[LITERAL, 'LITERAL'],
-				[NUMBER, 'NUMBER'],
-			] as const) {
+			for (const [regex, type] of WORD_RULES) {
 				if ((match = stickyMatch(regex, input, at))) {
 					push(type, match[0], match[0].length);
 					continue outer;

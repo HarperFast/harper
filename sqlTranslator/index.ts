@@ -8,22 +8,18 @@ import { update } from '../dataLayer/update.ts';
 const cbUpdateUpdate = util.callbackify(update);
 import { convertDelete as deleteTranslator } from './deleteTranslator.ts';
 const cbDeleteTranslator = util.callbackify(deleteTranslator);
-import alasql from 'alasql';
+import * as memoryEngine from './memoryEngine/index.ts';
 import * as sqlAst from './parser/ast.ts';
 import { parse } from './parser/parser.ts';
 import * as opAuth from '../utility/operation_authorization.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import alasqlFunctionImporter from './alasqlFunctionImporter.ts';
 import { assertLegacySqlText } from './legacySqlText.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { handleHDBError } from '../utility/errors/hdbError.ts';
+import { ClientError, handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import * as sqlEngineRouter from '../sqlEngine/router.ts';
 import { getOperationAuthorizationState } from '../server/serverHelpers/operationAuthorizationState.ts';
-
-//here we call to define and import custom functions to alasql
-alasqlFunctionImporter(alasql);
 
 let UNAUTHORIZED_RESPONSE = 403;
 const SQL_INSERT_ERROR_MSG = 'There was a problem performing this insert. Please check the logs and try again.';
@@ -273,13 +269,15 @@ function createDataObjects(columns, values) {
 				if ('value' in value) {
 					record[columns[x]] = value.value;
 				} else {
-					record[columns[x]] = (alasql as any).compile(`SELECT ${value.toString()} AS [${terms.FUNC_VAL}] FROM ?`);
+					record[columns[x]] = memoryEngine.compile(`SELECT ${value.toString()} AS [${terms.FUNC_VAL}] FROM ?`);
 				}
 			});
 
 			return record;
 		});
 	} catch (err) {
+		// A statement the engine refuses (a JavaScript expression) is the caller's error, with its own message.
+		if (err instanceof ClientError) throw err;
 		logger.error(err);
 		throw new Error(SQL_INSERT_ERROR_MSG);
 	}

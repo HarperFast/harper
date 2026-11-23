@@ -2,16 +2,14 @@
 
 /**
  * SQLSearch.js
- * This class is used to receive the alasql generated AST from a SQL SELECT,
- * process and return results by passing the raw values into the alasql SQL parser
+ * This class receives the parsed AST of a SQL SELECT, fetches the rows it reads, and runs the statement over them
+ * with the in-memory SQL engine (sqlTranslator/memoryEngine).
  */
 
 import difference from 'lodash/difference.js';
 import pullAt from 'lodash/pullAt.js';
 import uniqBy from 'lodash/uniqBy.js';
-import alasql from 'alasql';
-alasql.options.cache = false;
-import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
+import * as memoryEngine from '../sqlTranslator/memoryEngine/index.ts';
 import * as sqlAst from '../sqlTranslator/parser/ast.ts';
 import { generatedName } from '../sqlTranslator/legacySqlText.ts';
 import clone from 'clone';
@@ -41,9 +39,6 @@ function isRefusal(error: unknown): boolean {
 	);
 }
 
-//here we call to define and import custom functions to alasql
-alasqlFunctionImporter(alasql);
-
 interface SearchObject {
 	schema: string;
 	table: string;
@@ -54,7 +49,7 @@ interface SearchObject {
 	hash_values?: any[];
 }
 
-interface AlaSQLAST {
+interface SelectAST {
 	where?: any;
 	columns?: any[];
 	from?: any[];
@@ -67,7 +62,7 @@ interface AlaSQLAST {
 }
 
 class SQLSearch {
-	statement: AlaSQLAST;
+	statement: SelectAST;
 	columns: Record<string, any[]>;
 	all_table_attributes: any[];
 	fetch_attributes: any[];
@@ -218,7 +213,7 @@ class SQLSearch {
 			this.data[schemaTable] = {};
 			const tableClass = getDatabases()[table.databaseid][table.tableid];
 			this.data[schemaTable].__hashName = tableClass.primaryKey;
-			// AlaSQL evaluates what it reads, so a non-super caller's related records reach it as data
+			// The in-memory engine evaluates what it reads, so a non-super caller's related records reach it as data
 			if (tableClass.hasRelationships && this.hdb_user && !this.hdb_user.role?.permission?.super_user)
 				this.data[schemaTable].__relationshipColumns = new Set(
 					Object.keys(tableClass.propertyResolvers).filter(
@@ -522,10 +517,10 @@ class SQLSearch {
 			//this scenario is reached by doing a select with only calculations
 			try {
 				let sql = this._buildSQL(false);
-				results = await alasql.promise(sql);
+				results = memoryEngine.query(sql);
 			} catch (e) {
 				if (e instanceof ClientError) throw e;
-				log.error('Error thrown from AlaSQL in SQLSearch class method checkEmptySQL.');
+				log.error('Error thrown from the in-memory SQL engine in SQLSearch class method checkEmptySQL.');
 				log.error(e);
 				throw new Error('There was a problem with the SQL statement');
 			}
@@ -621,7 +616,7 @@ class SQLSearch {
 		}
 
 		//We need to check if statement only includes basic columns and a from value in the statement
-		// - if so, cannot treat as a simple select query and need to run through alasql
+		// - if so, cannot treat as a simple select query and need to run through the in-memory engine
 		const simpleSelectQuery = this._isSimpleSelect();
 		if (simpleSelectQuery) {
 			this._addFetchColumns(this.columns.columns);
@@ -1056,11 +1051,11 @@ class SQLSearch {
 				' '
 			)} ${whereClause} ${orderClause} ${limit} ${offset}`;
 			const finalSqlOperation = this._convertColumnsToIndexes(initialSql, tables);
-			joined = await alasql.promise(finalSqlOperation, tableData);
+			joined = memoryEngine.query(finalSqlOperation, tableData);
 			tableData = null;
 		} catch (err) {
 			if (err instanceof ClientError) throw err;
-			log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
+			log.error('Error thrown from the in-memory SQL engine in SQLSearch class method processJoins.');
 			log.error(err);
 			throw new Error('There was a problem processing the data.');
 		}
@@ -1282,14 +1277,14 @@ class SQLSearch {
 		try {
 			let sql = this._buildSQL();
 			log.trace(`Final SQL: ${sql}`);
-			finalResults = await alasql.promise(sql, tableData);
+			finalResults = memoryEngine.query(sql, tableData);
 			if (this.has_outer_join) {
 				finalResults = this._translateUndefinedValues(finalResults);
 			}
-			log.trace(`Final AlaSQL results data included ${finalResults.length} rows`);
+			log.trace(`Final in-memory SQL results data included ${finalResults.length} rows`);
 		} catch (err) {
 			if (err instanceof ClientError) throw err;
-			log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
+			log.error('Error thrown from the in-memory SQL engine in SQLSearch class method finalSQL.');
 			log.error(err);
 			throw new Error('There was a problem running the generated sql.');
 		}
@@ -1392,7 +1387,7 @@ class SQLSearch {
 	}
 
 	/**
-	 * Builds out the final result JSON for a simple SQL query to return to the main search method without using alasql
+	 * Builds out the final result JSON for a simple SQL query to return to the main search method without the in-memory engine
 	 * @returns {Promise<any[]>}
 	 * @private
 	 */

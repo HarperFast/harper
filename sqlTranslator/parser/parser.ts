@@ -17,7 +17,7 @@
  *   the same bookkeeping the grammar actions did, quirks included.
  */
 import * as ast from './ast.ts';
-import { AGGREGATE_FUNCTIONS } from './functionNames.ts';
+import { isAggregateName } from './functionNames.ts';
 import { NON_RESERVED, type Token, tokenize, uncomment } from './lexer.ts';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -1031,7 +1031,8 @@ class Parser {
 	}
 
 	parseExpression(minPrecedence = 0): any {
-		let left = this.parsePrefix();
+		// Nesting recurses through here, so a parenthesis skips parsePrefix and parsePrimary, whose frames are large.
+		let left = this.peek().type === 'LPAR' ? this.parseParenthesized() : this.parsePrefix();
 		for (;;) {
 			const token = this.peek();
 			const type = token.type;
@@ -1189,6 +1190,30 @@ class Parser {
 		return this.parsePrimary();
 	}
 
+	private parseParenthesized(): any {
+		// `((SELECT ...))` is a parenthesized subquery expression, not a parenthesized SELECT.
+		if (this.is('SELECT', 1)) {
+			this.next();
+			const select = this.parseSelect();
+			this.expect('RPAR');
+			(this.state.queries ??= []).push(select);
+			select.queriesidx = this.state.queries.length;
+			return select;
+		}
+		if (this.is('INSERT', 1)) {
+			this.next();
+			const insert = this.parseInsert();
+			this.expect('RPAR');
+			(this.state.queries ??= []).push(insert);
+			insert.queriesidx = this.state.queries.length;
+			return insert;
+		}
+		this.next();
+		const right = this.parseExpression();
+		this.expect('RPAR');
+		return new ast.UniOp({ right });
+	}
+
 	private parsePrimary(): any {
 		const token = this.peek();
 		switch (token.type) {
@@ -1256,29 +1281,6 @@ class Parser {
 					return func;
 				}
 				return new ast.FuncValue({ funcid: this.parseLiteral(), newid: true });
-			}
-			case 'LPAR': {
-				// `((SELECT ...))` is a parenthesized subquery expression, not a parenthesized SELECT.
-				if (this.is('SELECT', 1)) {
-					this.next();
-					const select = this.parseSelect();
-					this.expect('RPAR');
-					(this.state.queries ??= []).push(select);
-					select.queriesidx = this.state.queries.length;
-					return select;
-				}
-				if (this.is('INSERT', 1)) {
-					this.next();
-					const insert = this.parseInsert();
-					this.expect('RPAR');
-					(this.state.queries ??= []).push(insert);
-					insert.queriesidx = this.state.queries.length;
-					return insert;
-				}
-				this.next();
-				const right = this.parseExpression();
-				this.expect('RPAR');
-				return new ast.UniOp({ right });
 			}
 			case 'AT':
 				if (this.is('LPAR', 1) || this.isStringValueToken(1) || this.is('NUMBER', 1) || this.is('TRUE', 1)) {
@@ -1568,7 +1570,7 @@ class Parser {
 		const over = this.parseOverClause();
 		const upper = funcid.toUpperCase();
 		if (args.length > 1 && (upper === 'MIN' || upper === 'MAX')) return new ast.FuncValue({ funcid, args, over });
-		if (AGGREGATE_FUNCTIONS.has(funcid)) {
+		if (isAggregateName(funcid)) {
 			return new ast.AggrValue({
 				aggregatorid: 'REDUCE',
 				funcid,
@@ -1761,7 +1763,6 @@ function reorderInsert(insert: any, flag: any): any {
 	return ordered;
 }
 
-// Terminals that can start an expression (besides names).
 const EXPRESSION_STARTS = new Set([
 	'NUMBER',
 	'STRING',

@@ -150,3 +150,16 @@ export const STANDARD_FUNCTIONS = new Set([
 	'SUBDATE',
 	'DATE_SUB',
 ]);
+
+/**
+ * Whether a call to `name` parses as an aggregate. The registries were plain objects, so a name every object
+ * inherits (`toString`, `valueOf`, `constructor`, ...) was found there too.
+ */
+export function isAggregateName(name: string): boolean {
+	return AGGREGATE_FUNCTIONS.has(name) || name in Object.prototype;
+}
+
+/** Whether `FuncValue#toString()` writes `name` as it stands (see isAggregateName for inherited names). */
+export function isRegisteredName(name: string): boolean {
+	return SCALAR_FUNCTIONS.has(name) || isAggregateName(name);
+}

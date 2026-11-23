@@ -884,11 +884,11 @@ describe('TypeStrip runtime boundaries', () => {
 					const resolutions = [];
 					registerHooks({ resolve(specifier, context, next) { const result = next(specifier, context); resolutions.push(result.url); return result; } });
 					await import(${JSON.stringify(entry)});
-					if (resolutions.some(url => url.includes('/alasql/') || url.includes('/mathjs/') || url.endsWith('/sqlTranslator/index.${extension}'))) throw new Error('SQL loaded during boot');
+					if (resolutions.some(url => url.includes('/sqlTranslator/parser/') || url.includes('/sqlTranslator/memoryEngine/') || url.includes('/mathjs/') || url.endsWith('/sqlTranslator/index.${extension}'))) throw new Error('SQL loaded during boot');
 					const { loadRuntimeModule } = await import(${JSON.stringify(helpers)});
 					const sql = loadRuntimeModule('sqlTranslator/index');
 					if (typeof sql.evaluateSQL !== 'function' || typeof sql.convertSQLToAST !== 'function' || typeof loadRuntimeModule('dataLayer/SQLSearch').default !== 'function' || typeof loadRuntimeModule('sqlTranslator/SelectValidator').default !== 'function') throw new Error('Cold module export missing');
-					if (!resolutions.some(url => url.includes('/alasql/'))) throw new Error('Cold dependency observation missing');
+					if (!resolutions.some(url => url.includes('/sqlTranslator/memoryEngine/'))) throw new Error('Cold dependency observation missing');
 					console.log('cold SQL loaded'); process.exit(0);`,
 					env: process.env,
 					encoding: 'utf8',

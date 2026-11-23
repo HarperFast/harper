@@ -24,6 +24,25 @@ function canonical(node) {
 	return out;
 }
 
+/**
+ * Paths at which a node already reached by another path appears. Consumers walk the tree with iterators that
+ * refuse a node seen twice, so which nodes are shared decides which statements they accept.
+ */
+function sharedPaths(root) {
+	const seen = new Set();
+	const paths = [];
+	(function walk(node, path) {
+		if (node === null || typeof node !== 'object') return;
+		if (seen.has(node)) {
+			paths.push(path);
+			return;
+		}
+		seen.add(node);
+		for (const key of Object.keys(node)) walk(node[key], path + '.' + key);
+	})(root, '$');
+	return paths;
+}
+
 function digest(sql) {
 	let result;
 	try {
@@ -40,7 +59,7 @@ function digest(sql) {
 	});
 	return crypto
 		.createHash('sha1')
-		.update(JSON.stringify([canonical(result), text]))
+		.update(JSON.stringify([canonical(result), text, sharedPaths(result)]))
 		.digest('hex')
 		.slice(0, 16);
 }
@@ -96,6 +115,14 @@ describe('SQL parser', function () {
 			assert.strictEqual(first('SELECT -a * b FROM t').columns[0].toString(), '-a * b');
 			assert.strictEqual(first('SELECT -a * b FROM t').columns[0].op, '-');
 		});
+
+		// Legacy SQL ran expressions nested about 2,270 parentheses deep before its stack ran out.
+		it('parses parentheses nested 3,000 deep', function () {
+			const depth = 3000;
+			let node = first(`SELECT ${'('.repeat(depth)}1${')'.repeat(depth)} AS x`).columns[0];
+			for (let i = 0; i < depth; i++) node = node.right;
+			assert.strictEqual(node.value, 1);
+		});
 	});
 
 	describe('names', function () {
@@ -124,6 +151,19 @@ describe('SQL parser', function () {
 			assert.strictEqual(column.op, '->');
 			assert.strictEqual(column.left.tableid, 't');
 			assert.strictEqual(column.right, 'd');
+		});
+	});
+
+	describe('function calls', function () {
+		it('parses a call to a registered aggregate, or to a name every object inherits, as an aggregate', function () {
+			const [median, inherited, scalar] = first('SELECT median(a), toString(b), UPPER(c) FROM t').columns;
+			assert.strictEqual(median.constructor.name, 'AggrValue');
+			assert.strictEqual(inherited.constructor.name, 'AggrValue');
+			assert.strictEqual(scalar.constructor.name, 'FuncValue');
+		});
+
+		it('writes an unknown function name as a bare parenthesized list', function () {
+			assert.strictEqual(first('SELECT foo(a), upper(b) FROM t').toString(), 'SELECT (a), UPPER(b) FROM t');
 		});
 	});
 

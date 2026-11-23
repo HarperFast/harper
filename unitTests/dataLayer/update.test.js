@@ -357,9 +357,9 @@ describe('Test update module', () => {
 			);
 		});
 
-		it('Tests alasql compile called if value not in column expression', () => {
+		it('compiles a SET expression that is not a literal value', () => {
 			const result = create_update_record_rw(fake_columns_missing_value);
-			expect(result.dog_name.name).to.equal('statement');
+			expect(result.dog_name).to.be.a('function');
 		});
 	});
 
