@@ -54,6 +54,7 @@ describe('issuance coverage across live workers', function () {
 		finished.catch(() => {});
 		const timer = setTimeout(() => fail(new Error(`issuance worker timed out (${mode})`)), 30_000);
 		worker.on('message', (message) => {
+			if (!message) return;
 			if (message.error) fail(new Error(message.error));
 			else if (message.ready) markReady();
 			else if (message.result) result = message.result;
