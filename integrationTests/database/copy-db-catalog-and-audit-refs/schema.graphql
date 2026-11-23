@@ -1,0 +1,6 @@
+type Counter @table(audit: false) @export {
+	id: ID @primaryKey
+	group: String @indexed
+	label: String
+	n: Int
+}

@@ -22,6 +22,12 @@ When `migrateOnStart` opens a source LMDB primary store for the RocksDB copy, it
 
 The persisted `compression` is LMDB-shaped: falsy (`''`, `false`, `null`) when disabled, `{ startingOffset, threshold, dictionary? }` when enabled. rocksdb-js >= 2.6 rejects `''` and booleans and treats unset as "keep the family's codec, or lz4". So every RocksDB open takes the one per-process codec, `getRocksCompression()` (inside `openRocksDatabase`; see [The RocksDB codec is a deployment setting, resolved once per process](../resources/DESIGN.md#the-rocksdb-codec-is-a-deployment-setting-resolved-once-per-process)), derived by `toRocksCompression()`; never pass persisted attribute compression to a RocksDB open. `bin/copyDb.ts`'s `openRocksDb` applies the same codec, because a full migration is the one moment the whole dataset is written, and files written uncompressed stay so until rewritten.
 
+## Migration carries every header field and catalog row
+
+`copyDbToRocks` re-encodes every primary record through `setNextEncoding`, so each header field a decoded record can carry must be passed there, the audit refs included. `RecordEncoder.encode` refuses a payload flag (`PAYLOAD_FLAGS`, plus `HAS_REPLICA_DEADLINE`) without its payload: a flag alone makes `decode` read body bytes as header, so a field added without migration plumbing fails the migration instead of corrupting it. The copier writes with `putSync` and fails on any record it could not write (`migrationAuditRefs.test.js`).
+
+Both `__dbis__` walks pass `start: null`: lmdb-js's default start skips Symbol keys. Compaction copies every Symbol-keyed row but the structures dictionary. A migration keeps only `LOG_INDEPENDENT_CATALOG_KEYS`: `[seq, …]` and `[copyBound, …]` rows certify coverage of a transaction log the migration does not carry (`readOriginStates`). Both targets use the runtime catalog codec: a plain encoder writes 32–63 as a fixint the runtime reads as a struct (`copyDbCatalogSymbols.test.js`).
+
 ## System table bootstrap: `systemSchema.json` + upgrade directive
 
 A new system table needs three changes:
