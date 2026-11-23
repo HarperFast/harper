@@ -357,9 +357,8 @@ describe('MQTT packet parsing across connections', function () {
 		assert.strictEqual(typeof connection.socket.handlers.message, 'function');
 	});
 
-	// uWS runs the close handler inside close(), so the read that parses a DISCONNECT ends after its connection has.
-	// Collected because a closed connection's parser is dropped, not pooled; pooling a clean one (harper#4543) would
-	// make this check the pool instead.
+	// uWS runs the close handler inside close(). Collected because a closed connection's parser is dropped, not
+	// pooled; pooling a clean one (harper#4543) would make this check the pool instead.
 	it('gives up the parser of a connection that closes while its read parses', async function () {
 		if (typeof global.gc !== 'function') this.skip();
 		const connection = await connected('closed-while-parsing');
