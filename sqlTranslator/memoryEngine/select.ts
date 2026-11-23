@@ -770,6 +770,7 @@ function decartes(gv: any, query: any): any[] {
 
 /** ROLLUP(a, b): the sets (), (a), (a, b), in that order. */
 function rollup(items: any[], query: any): GroupEntry[][] {
+	tooManyGroupingSets(items.length + 1);
 	const cc = groupContext(query);
 	const entries = items.map((item): GroupEntry => {
 		if (item instanceof ast.Column) {
@@ -807,6 +808,7 @@ function cube(items: any[], query: any): any[][] {
 }
 
 function groupingSetsOf(items: any[], query: any): any[] {
+	tooManyGroupingSets(items.length);
 	return items.reduce((acc: any[], item: any) => acc.concat(decartes(item, query)), []);
 }
 
@@ -1615,7 +1617,6 @@ function emit(query: any, env: Env) {
 	}
 }
 
-/** Hands a reordered join's rows on in FROM order, as a join in FROM order would have produced them. */
 function emitJoinRows(query: any) {
 	query.joinrows.sort((a: any, b: any) => {
 		for (let k = 0; k < a.at.length; k++) {
@@ -1903,7 +1904,11 @@ function modify(query: any, res: any): any {
 			const keyIndex = columns && columns.length > 0 ? columns[0].columnid : Object.keys(res[0])[0];
 			const valIndex = columns && columns.length > 1 ? columns[1].columnid : Object.keys(res[0])[1];
 			const index: any = {};
-			for (const row of res) setOwn(index, row[keyIndex], row[valIndex]);
+			for (const row of res) {
+				// The object literal it replaces converted the key as a property name, so `__proto__` stays own.
+				const key = row[keyIndex];
+				setOwn(index, typeof key === 'symbol' ? key : String(key), row[valIndex]);
+			}
 			return index;
 		}
 		case 'RECORDSET':

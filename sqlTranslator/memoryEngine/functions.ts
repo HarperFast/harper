@@ -59,8 +59,7 @@ function nullPrototype<T>(entries: Record<string, T>): Record<string, T> {
 
 // #section: utilities AlaSQL's generated code calls
 
-/** `utils.setOwn`: assigns a key, making a `__proto__` key an own property. */
-export function setOwn(target: any, key: string, value: any): void {
+export function setOwn(target: any, key: PropertyKey, value: any): void {
 	if (key === '__proto__') {
 		Object.defineProperty(target, key, { value, writable: true, enumerable: true, configurable: true });
 	} else {
@@ -95,8 +94,7 @@ export function deepEqual(x: any, y: any): boolean {
 	return false;
 }
 
-/** `utils.extend`, also the EXTEND function: copies `b`'s own keys onto `a`, which it mutates. */
-export function extend(a: any, b: any): any {
+function extend(a: any, b: any): any {
 	a = a || {};
 	for (const key in b) {
 		if (Object.hasOwn(b, key)) setOwn(a, key, b[key]);

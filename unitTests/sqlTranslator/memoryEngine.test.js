@@ -214,6 +214,24 @@ describe('in-memory SQL engine', function () {
 				() => query(`SELECT COUNT(*) AS c FROM ? AS t GROUP BY CUBE(${columns(7)}), CUBE(${columns(6)})`, [[[1]]]),
 				/more than 4096 grouping sets/
 			);
+			const wide = Array.from({ length: 5000 }, () => 't.[0]').join(', ');
+			assert.throws(() => query(`SELECT COUNT(*) AS c FROM ? AS t GROUP BY ROLLUP(${wide})`, [[[1]]]), /grouping sets/);
+			assert.throws(
+				() => query(`SELECT COUNT(*) AS c FROM ? AS t GROUP BY GROUPING SETS(${wide})`, [[[1]]]),
+				/grouping sets/
+			);
+		});
+
+		it('keeps an INDEX key that reads as __proto__ as an own key', function () {
+			const index = query('SELECT INDEX [0], [1] FROM ? AS t', [
+				[
+					[['__proto__'], 1],
+					['a', 2],
+				],
+			]);
+			assert.ok(Object.hasOwn(index, '__proto__'));
+			assert.strictEqual(index.a, 2);
+			assert.strictEqual(Object.getPrototypeOf(index), Object.prototype);
 		});
 
 		it('counts a function call that takes no arguments', function () {

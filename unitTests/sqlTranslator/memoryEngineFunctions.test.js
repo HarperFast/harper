@@ -12,7 +12,6 @@ const {
 	compileConvert,
 	compileFunctionCall,
 	deepEqual,
-	extend,
 	flatArray,
 	getValueOf,
 	glob,
@@ -276,7 +275,7 @@ describe('legacy SQL function library', function () {
 			const clone = cloneDeep(JSON.parse('{"__proto__":{"x":1}}'));
 			assert.ok(Object.hasOwn(clone, '__proto__'));
 			assert.strictEqual(Object.getPrototypeOf(clone), Object.prototype);
-			assert.deepStrictEqual(extend(null, { a: 1 }), { a: 1 });
+			assert.deepStrictEqual(call('EXTEND', null, { a: 1 }), { a: 1 });
 		});
 
 		it('glob is case-insensitive with * and ?', function () {
