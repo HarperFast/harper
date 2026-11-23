@@ -9049,7 +9049,6 @@ export function makeTable(options): TableResourceClass {
 				// since those never run the ensureLoaded-gated freshness check this transform
 				// otherwise applies unconditionally to every read.
 				const includeExpired = (target as any).includeExpired === true;
-				// the instance's class: a table subclass's stale-while-revalidate hook and source apply to its rows
 				const transformToRecord = (this.constructor as typeof TableResource).transformEntryForSelect(
 					select,
 					context,

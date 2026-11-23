@@ -23,9 +23,7 @@ suite('sourcedFrom stale-while-revalidate hook on the source', (ctx: ContextWith
 		return text ? JSON.parse(text) : undefined;
 	}
 	const setOrigin = (state: { value?: string; mode?: string }) => request('/Origin/', 'POST', state);
-	// a read that waited on the held origin would not answer within this
 	const staleRead = (id: string) => request(`/Quote/${id}`, 'GET', undefined, 3_000);
-	// past the schema's one-second expiration
 	const cacheThenExpire = async (id: string, value: string) => {
 		await setOrigin({ value, mode: 'ok' });
 		assert.strictEqual((await request(`/Quote/${id}`)).value, value);
