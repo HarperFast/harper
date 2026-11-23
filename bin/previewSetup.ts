@@ -240,6 +240,8 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			);
 		}
 	}
+	const policyWarning = pullRequestTargetPolicyWarning(repository.fullName, repository.private, workflow);
+	if (policyWarning) console.log(chalk.yellow(`! ${policyWarning}`));
 	assertGithubVariableSettable(repository, PREVIEW_TARGET_VARIABLE, audience, args.allow_unverified === true);
 	// Before anything is written: a cluster without secret custody cannot hold the credential.
 	const secretsKey = credential ? await fetchSecretsPublicKey(transport) : undefined;
@@ -284,8 +286,6 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 				`  To remove it all, previews included: harper preview teardown app=${app}`
 		)
 	);
-	const policyWarning = pullRequestTargetPolicyWarning(repository.fullName, repository.private, workflow);
-	if (policyWarning) console.log(chalk.yellow(`! ${policyWarning}`));
 
 	if (secretsKey) {
 		const { secretName } = await sealDeployCredential(

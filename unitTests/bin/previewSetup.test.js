@@ -157,11 +157,11 @@ describe('harper preview setup (harper#3609)', () => {
 			else parsed.private = value;
 			return `echo '${JSON.stringify(parsed)}'`;
 		};
-		const writeGhFor = (repositoryAnswer, createAnswer = 'exit 0') =>
+		const writeGhFor = (repositoryAnswer, { create = 'exit 0', variable = absentVariable } = {}) =>
 			fs.writeFile(
 				path.join(directory, 'bin', 'gh'),
-				`#!/bin/sh\ncase "$*" in\n  auth*) exit 1 ;;\n  *POST*) ${createAnswer} ;;\n` +
-					`  *actions/variables*) ${absentVariable} ;;\n  *) ${repositoryAnswer} ;;\nesac\n`,
+				`#!/bin/sh\ncase "$*" in\n  auth*) exit 1 ;;\n  *POST*) ${create} ;;\n` +
+					`  *actions/variables*) ${variable} ;;\n  *) ${repositoryAnswer} ;;\nesac\n`,
 				{ mode: 0o755 }
 			);
 
@@ -170,7 +170,7 @@ describe('harper preview setup (harper#3609)', () => {
 			console.log = (...parts) => output.push(stripVTControlCharacters(parts.join(' ')));
 		});
 
-		it('names the workflow, where to allow it, and the guide, as soon as previews are enabled', async () => {
+		it('names the workflow, where to allow it, and the guide, before anything can stop setup', async () => {
 			await writeGhFor(visibility(false));
 			await setup();
 			const text = printed();
@@ -180,9 +180,7 @@ describe('harper preview setup (harper#3609)', () => {
 				/repository's Settings > Actions > Policies, make sure an Active policy targets only \.github\/workflows\/preview\.yaml and its Restrict events allows pull_request_target.*An organization policy for it must target acme\/shop too/
 			);
 			assert.ok(text.includes(ACTIONS_POLICY_DOCS));
-			const warned = text.indexOf('is public');
-			assert.ok(text.indexOf('can deploy previews of shop') < warned);
-			assert.ok(warned < text.indexOf('Wrote .github/workflows/preview.yaml'));
+			assert.ok(text.indexOf('is public') < text.indexOf('can deploy previews of shop'));
 			assert.ok((await fs.readFile(path.join(directory, WORKFLOW), 'utf8')).includes(ACTIONS_POLICY_DOCS));
 		});
 
@@ -215,8 +213,15 @@ describe('harper preview setup (harper#3609)', () => {
 		});
 
 		it('is printed even when setting the repository variable fails afterwards', async () => {
-			await writeGhFor(visibility(false), 'echo "gh: HTTP 403" >&2; exit 1');
+			await writeGhFor(visibility(false), { create: 'echo "gh: HTTP 403" >&2; exit 1' });
 			await assert.rejects(setup(), /repository variable was not set/);
+			assert.match(printed(), /acme\/shop is public/);
+		});
+
+		it('is printed when setup stops at the repository variable, before it enables anything', async () => {
+			await writeGhFor(visibility(false), { variable: 'echo https://other.example.com:9925/' });
+			await assert.rejects(setup(), /Nothing was changed/);
+			assert.strictEqual(enabled(), false);
 			assert.match(printed(), /acme\/shop is public/);
 		});
 	});

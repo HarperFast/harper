@@ -513,6 +513,12 @@ interface RepositoryInfo {
 	canPush?: boolean;
 }
 
+function isPrivateRepository(data: any): boolean | undefined {
+	if (data.visibility === 'public') return false;
+	if (data.visibility === 'private' || data.visibility === 'internal') return true;
+	return typeof data.private === 'boolean' ? data.private : undefined;
+}
+
 function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {
 	const data = body as any;
 	if (!Number.isSafeInteger(data?.id) || data.id <= 0 || typeof data?.full_name !== 'string') return undefined;
@@ -520,12 +526,7 @@ function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {
 		id: String(data.id),
 		fullName: data.full_name,
 		defaultBranch: typeof data.default_branch === 'string' ? data.default_branch : undefined,
-		private:
-			typeof data.visibility === 'string'
-				? data.visibility !== 'public'
-				: typeof data.private === 'boolean'
-					? data.private
-					: undefined,
+		private: isPrivateRepository(data),
 		canPush: data.permissions ? data.permissions.push === true || data.permissions.admin === true : undefined,
 	};
 }
