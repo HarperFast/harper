@@ -23,7 +23,6 @@ interface EvalContext {
 	[key: string]: any;
 }
 
-/** A compiled expression, evaluated against the engine's row context. */
 type Evaluator = (ctx: EvalContext) => any;
 
 /**

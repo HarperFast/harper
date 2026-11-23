@@ -250,6 +250,12 @@ const COMPARISON: Record<string, (a: any, b: any) => any> = {
 	'||': (a, b) => a || b,
 };
 
+const isConstant = (node: any) =>
+	node instanceof ast.NumValue ||
+	node instanceof ast.StringValue ||
+	node instanceof ast.LogicValue ||
+	node instanceof ast.NullValue;
+
 /** Runs a subquery the statement recorded (`queriesfn`), with the current scope as its outer scope. */
 function runSubquery(index: number, env: Env): any {
 	return env.query.queriesfn[index](env.params, null, env.s);
@@ -361,7 +367,12 @@ function compileOp(node: any, cc: CompileContext): Evaluator {
 			} else {
 				const items = node.right.map(ref);
 				const left = ref(node.left);
-				body = (y) => negate !== new Set(items.map((i: number) => y[i])).has(getValueOf(y[left]));
+				if (node.right.every(isConstant)) {
+					const set = new Set(items.map((i: number) => refs[i](undefined as any)));
+					body = (y) => negate !== set.has(getValueOf(y[left]));
+				} else {
+					body = (y) => negate !== new Set(items.map((i: number) => y[i])).has(getValueOf(y[left]));
+				}
 			}
 		} else {
 			const right = ref(node.right);
