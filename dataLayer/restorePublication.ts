@@ -710,9 +710,9 @@ async function abandonOrRelease(
 	} finally {
 		releaseRestoreLock(lock);
 	}
+	await releaseFence(request, false);
 	// what the removed receipt inherited has no other owner; its own staging is its creator's to remove
 	if (receipt.superseded_staging_dirs?.length) await removeReceiptStaging({ ...receipt, staging_dir: undefined });
-	await releaseFence(request, false);
 }
 
 async function releaseFence(request: PublishRestoreRequest, generationReplaced: boolean): Promise<void> {
