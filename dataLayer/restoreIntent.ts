@@ -32,6 +32,7 @@ import {
 	readRestoreReceipt,
 	removeRestoreReceipt,
 	removeUnreadableRestoreReceipt,
+	resumableReceipt,
 	writeRestoreReceipt,
 	type RestoreReceipt,
 	type RestoreReceiptRead,
@@ -430,18 +431,6 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 		receipt,
 		`Restore of database '${databaseName}' from ${describeRestoreSource(receipt)} runs at the next startup; restarting now`
 	);
-}
-
-function resumableReceipt(databaseName: string, read: RestoreReceiptRead): RestoreReceipt {
-	if (
-		read.kind !== 'valid' ||
-		read.receipt.route !== 'on_restart' ||
-		read.receipt.state === 'committed' ||
-		read.receipt.record_lost
-	) {
-		throw new ClientError(`Database '${databaseName}' has no pending restart restore to resume`, 404);
-	}
-	return read.receipt;
 }
 
 /** A record that cannot be read is cancellable: removing it is what cancel is for. */

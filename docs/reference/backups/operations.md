@@ -227,7 +227,7 @@ A startup that cannot apply the restore records the error, leaves the database u
 - An ordinary restore (without `on_restart`) can replace a restore that has stopped. While a restart restore is still pending, an ordinary restore's job ends in `ERROR` naming `resume=true`, `cancel=true` and another `backup_id` with `on_restart=true`; offline, the command fails telling you to withdraw it with `cancel=true` first.
 - `cancel: true` withdraws it ([cancelling](#cancelling-a-restart-restore)).
 
-`resume` and `cancel` take only `database`. Each refuses `backup_id`, `on_restart`, `retain_previous`, `target_database`, `immutable_source`, `allow_engine_only`, `accept_incompatible_backup` and `accept_unverified_blobs` with status code 400. They are checked when submitted, before a job is created: `resume` fails with status code 409 while the LMDB conflict remains and 404 when there is no restart restore to resume, and `cancel` with 404 when there is no restore to cancel and 409 when the restore has already been applied and is being finished.
+`resume` and `cancel` take only `database`. Each refuses `backup_id`, `on_restart`, `retain_previous`, `target_database`, `immutable_source`, `allow_engine_only`, `accept_incompatible_backup` and `accept_unverified_blobs` with status code 400. They are checked when submitted, before a job is created: `resume` fails with status code 404 when there is no resumable restart receipt, even if an LMDB sibling exists. With a resumable receipt, it fails with 409 while the LMDB conflict remains. `cancel` fails with 404 when there is no restore to cancel and 409 when the restore has already been applied and is being finished.
 
 #### Cancelling a restart restore
 
@@ -269,11 +269,13 @@ A component that opens the database itself would see a database that is only par
 - it has begun replacing its database and has not published, or
 - it has taken, or begun taking, its pre-restore backup and has not published.
 
-For an LMDB conflict, withdraw the restore with `cancel: true`, or resolve the conflicting LMDB store before resuming. The same applies while any restore record cannot be read. For that boot Harper sets [`HARPER_SAFE_MODE`](../configuration/overview.md#harper_safe_mode) to `restore-unpublished` and logs at error level in `hdb.log` (with the record's path in place of the database name when it cannot be read):
+Harper also starts in restore safe mode while any restore record cannot be read. For that boot Harper sets [`HARPER_SAFE_MODE`](../configuration/overview.md#harper_safe_mode) to `restore-unpublished` and logs at error level in `hdb.log` (with the record's path in place of the database name when it cannot be read):
 
 ```
 A restore (<database>) has not published, so this boot starts in safe mode and loads no component. Finish it with restore_backup for that database: resume=true or another backup_id with on_restart=true, or, once it has stopped retrying, an ordinary restore; Harper restarts by itself once no restore keeps components off. cancel=true withdraws a restore that had not begun replacing the database.
 ```
+
+For an LMDB conflict, stop Harper if it is running, preserve the conflicting LMDB store and move it to a safe location before retrying or resuming. `cancel: true` withdraws a restart restore if one exists; if replacement has begun, cancellation leaves the database blocked and does not resolve the LMDB conflict.
 
 The operations API keeps running, so finish or withdraw the restore as [above](#failed-attempts). Once no restore keeps components off, Harper restarts by itself and loads them. An ordinary restore that does so reports `restarting: true` in its result. If you start Harper with `HARPER_SAFE_MODE` already set, Harper keeps your value, across its own restarts too, and does not log this message.
 

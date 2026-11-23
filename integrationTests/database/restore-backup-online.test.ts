@@ -108,6 +108,10 @@ suite(
 			await lmdb.close();
 			try {
 				const before = readFileSync(`${targetDir}.mdb`);
+				const nothingToResume = await op({ operation: 'restore_backup', database: target, resume: true });
+				strictEqual(nothingToResume.status, 404, nothingToResume.text);
+				ok(/no pending restart restore to resume/.test(nothingToResume.text), nothingToResume.text);
+				ok(!/Starting job with id/.test(nothingToResume.text), nothingToResume.text);
 				const refused = await op({
 					operation: 'restore_backup',
 					database: DATABASE,

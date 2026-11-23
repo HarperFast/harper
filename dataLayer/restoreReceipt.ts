@@ -121,6 +121,18 @@ export function describeRestoreSource(receipt: Pick<RestoreReceipt, 'backup_id'>
 	return `backup ${receipt.backup_id}`;
 }
 
+export function resumableReceipt(databaseName: string, read: RestoreReceiptRead): RestoreReceipt {
+	if (
+		read.kind !== 'valid' ||
+		read.receipt.route !== 'on_restart' ||
+		read.receipt.state === 'committed' ||
+		read.receipt.record_lost
+	) {
+		throw new ClientError(`Database '${databaseName}' has no pending restart restore to resume`, 404);
+	}
+	return read.receipt;
+}
+
 /** A receipt that is not `committed` — or that cannot be read — keeps the target undiscoverable. */
 export function receiptBlocksDiscovery(read: RestoreReceiptRead): boolean {
 	if (read.kind === 'absent') return false;
