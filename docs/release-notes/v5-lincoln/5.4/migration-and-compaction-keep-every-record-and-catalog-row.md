@@ -8,4 +8,4 @@ section: 'Storage'
 
 `storage.compactOnStart` and `harper copy-db` now copy the residency mappings and the table-id counter in the database catalog. A migration copies them too, and starts replication bookkeeping fresh with its new transaction log, as it did before.
 
-Neither fixes a database moved by an earlier release. `migrateOnStart` leaves the LMDB original under `<rootPath>/backup/<database>.mdb`; to redo an affected migration, stop Harper, remove the RocksDB database directory, move that file back into the database directory, and start with `migrateOnStart` again. Writes made since that migration are not in the backup.
+Neither fixes a database moved by an earlier release. `migrateOnStart` leaves the LMDB original under `<rootPath>/backup/<database>.mdb`; to redo an affected migration, confirm that file is there, stop Harper, move the RocksDB database directory aside (it holds every write made since the migration, which the backup does not), move the file back into the database directory, and start with `migrateOnStart` again.

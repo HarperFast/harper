@@ -74,6 +74,7 @@ suite('compaction and migration keep audit refs and catalog rows', (ctx: Context
 
 	function assertComplete(result: Verification, label: string) {
 		deepStrictEqual(result.undecodable, [], `records that no longer decode ${label}`);
+		strictEqual(result.auditRefFlagged, RECORD_COUNT, `records with header audit refs ${label}`);
 		deepStrictEqual(result.records, expectedRecords(), `record bodies ${label}`);
 		strictEqual(result.indexHits, RECORD_COUNT, `secondary index hits ${label}`);
 		deepStrictEqual(result.residency, RESIDENCY_OWNERS, `residency_by_id ${label}`);
@@ -106,7 +107,6 @@ suite('compaction and migration keep audit refs and catalog rows', (ctx: Context
 	test('the LMDB source holds header audit refs and the catalog rows', async () => {
 		const result = await verify('before compaction');
 		ok(!/Rocks/.test(result.engine), `expected an LMDB store, got ${result.engine}`);
-		strictEqual(result.auditRefFlagged, RECORD_COUNT, 'records written with header audit refs');
 		assertComplete(result, 'before compaction');
 	});
 

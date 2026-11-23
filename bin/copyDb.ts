@@ -374,6 +374,12 @@ async function copyDbEnvironment(
 	// we use a single transaction to get a snapshot, also we can't use snapshot: false on dupsort dbs
 	const transaction = sourceDbisDb.useReadTransaction();
 	const catalogWrites: Promise<unknown>[] = [];
+	// observed when issued, so a failed commit rejects the join below instead of surfacing as unhandled
+	const writeCatalogRow = (key: any, value: unknown) => {
+		const write = targetDbisDb.put(key, value);
+		write.catch(() => {});
+		catalogWrites.push(write);
+	};
 	// written after the data and audit log they describe, so an interrupted copy claims none of it
 	const symbolKeyedRows: { key: any; value: unknown }[] = [];
 	try {
@@ -397,7 +403,7 @@ async function copyDbEnvironment(
 					newCompression = null;
 				}
 			}
-			catalogWrites.push(targetDbisDb.put(key, attribute));
+			writeCatalogRow(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
 			// we want to directly copy bytes so we don't have the overhead of
@@ -421,7 +427,8 @@ async function copyDbEnvironment(
 			console.log('copying audit log for', sourceDatabase, 'to', targetDatabasePath);
 			await copyDbi(useRawBytes(sourceAuditDbi), useRawBytes(targetAuditStore), false, transaction);
 		}
-		for (const { key, value } of symbolKeyedRows) catalogWrites.push(targetDbisDb.put(key, value));
+		await written;
+		for (const { key, value } of symbolKeyedRows) writeCatalogRow(key, value);
 		await Promise.all(catalogWrites);
 
 		/**
@@ -1120,8 +1127,6 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								typeof key === 'number' ? key : recordsCopied,
 								sourceRootStore
 							);
-							// Capture the put promise so the tripwire awaits THIS record's write, not
-							// an ordering assumption about later puts in the batch.
 							if (version) firstVersioned ??= { key, version, written };
 							// Feed only the record's SHAPE to the observer so it accumulates the canonical
 							// classic structure (key list) for this shape; the encoded output is discarded.
@@ -1144,7 +1149,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 							}
 						} catch (error) {
 							failedRecords++;
-							// staged metadata an aborted write left behind must not prefix the next encode on any store
+							// an aborted write's staged header would prefix the next encode, on any store
 							clearNextEncoding();
 							console.error(
 								'Error migrating record',
@@ -1185,21 +1190,12 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
 				return { firstVersioned, versionlessKeys, failedRecords };
 			} catch (err) {
+				// Resume from the last key read, as copyDbi does: re-copying it is idempotent, while stepping past
+				// it, or stopping, would publish a copy missing whatever the iterator had not reached
 				console.error(
-					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
+					`Error iterating dbi for ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
 					err
 				);
-				if (typeof start === 'string') {
-					if (start === 'z') {
-						console.error('Reached end of dbi', start, 'for', sourceDatabase);
-						return { failedRecords };
-					}
-					start = start.slice(0, -2) + 'z';
-				} else if (typeof start === 'number') start++;
-				else {
-					console.error('Unknown key type', start, 'for', sourceDatabase);
-					return { failedRecords };
-				}
 			}
 		}
 		// Fail loudly so migrateOnStart's try/catch preserves the migrateOnStart flag and
