@@ -3973,6 +3973,8 @@ async function closeDatabaseGraph(
 				`Could not close database graph '${[...databaseNames].join("', '")}' for destructive DDL`
 			);
 		}
+		// an overlapping close of the same graph may have thrown and recorded these roots; they are closed now
+		if (closeFailures.length === 0) for (const rootPath of closingRootPaths) incompleteDatabaseCloses.delete(rootPath);
 		for (const name of databaseNames) unregisterDatabase(name);
 		databaseClosed = true;
 		return true;

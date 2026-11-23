@@ -129,6 +129,31 @@ describe('A database root while its close is in flight', function () {
 		assert.strictEqual((await Recreated.get(2)).name, 'two');
 	});
 
+	it('lets an overlapping close that finishes cleanly clear the record a failed close left', async () => {
+		const databaseName = 'closingRootOverlapClean';
+		const Items = table(definition(databaseName));
+		await Items.put({ id: 1, name: 'one' });
+		const auditStore = Items.primaryStore.rootStore.auditStore;
+		const stopAuditCleanup = auditStore.stopAuditCleanup;
+		const cleanup = Items.cleanup;
+		let overlapping;
+		auditStore.stopAuditCleanup = function (...args) {
+			auditStore.stopAuditCleanup = stopAuditCleanup;
+			overlapping = closeDatabase(databaseName);
+			Items.cleanup = function () {
+				Items.cleanup = cleanup;
+				throw new Error('cleanup failed');
+			};
+			return stopAuditCleanup.apply(this, args);
+		};
+
+		await assert.rejects(closeDatabase(databaseName), /cleanup failed/);
+		assert.strictEqual(await overlapping, true);
+
+		const Reopened = table(definition(databaseName));
+		assert.strictEqual((await Reopened.get(1)).name, 'one');
+	});
+
 	it('refuses an alias of a database whose failed close awaits recovery', async () => {
 		const storageRoot = join(testRoot, 'closing-alias');
 		mkdirSync(storageRoot, { recursive: true });
@@ -157,9 +182,12 @@ describe('A database root while its close is in flight', function () {
 				`alias open during recovery: ${opened?.message ?? opened?.path}`
 			);
 		} finally {
-			await new ResourceBridge().dropSchema({ schema: 'closing_physical' });
-			env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
-			setupTestDBPath();
+			try {
+				await new ResourceBridge().dropSchema({ schema: 'closing_physical' });
+			} finally {
+				env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+				setupTestDBPath();
+			}
 		}
 	});
 });
