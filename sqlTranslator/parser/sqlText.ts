@@ -80,7 +80,6 @@ export function isJsonData(value: any): boolean {
 	return Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype;
 }
 
-/** The text of a JSON literal's value: nested objects and arrays, scalars, and AST nodes it holds. */
 export function jsonText(value: any): string {
 	if (typeof value === 'string') {
 		const text = quoteString(value);

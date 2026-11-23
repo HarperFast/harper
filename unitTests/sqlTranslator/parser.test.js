@@ -206,7 +206,6 @@ describe('SQL parser', function () {
 		it('shows the text around the token it could not read', function () {
 			assert.throws(
 				() => parse('SELECT * FROM t WHERE ) x'),
-				// The 20 characters before it, then it and what follows, up to 20 characters.
 				(error) => error instanceof SyntaxError && error.message.split('\n')[1] === '...LECT * FROM t WHERE ) x'
 			);
 		});

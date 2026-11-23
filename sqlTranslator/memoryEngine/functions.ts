@@ -642,7 +642,6 @@ const CALLED: Record<string, (...args: any[]) => any> = nullPrototype<(...args: 
 	ASCII: function ASCII(a: any) {
 		return a.charCodeAt(0);
 	},
-	// The first argument that is not NULL, undefined or a NaN number.
 	COALESCE: function COALESCE(...args: any[]) {
 		for (const value of args) {
 			if (value === null || value === undefined) continue;

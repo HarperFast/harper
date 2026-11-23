@@ -1,9 +1,8 @@
 'use strict';
 
 /**
- * SQLSearch.js
- * This class receives the parsed AST of a SQL SELECT, fetches the rows it reads, and runs the statement over them
- * with the in-memory SQL engine (sqlTranslator/memoryEngine).
+ * Legacy SQL's SELECT: fetches the rows a parsed statement reads, then runs the statement over them with the
+ * in-memory SQL engine (sqlTranslator/memoryEngine).
  */
 
 import difference from 'lodash/difference.js';
@@ -615,8 +614,6 @@ class SQLSearch {
 			this._addFetchColumns(this.columns.where);
 		}
 
-		//We need to check if statement only includes basic columns and a from value in the statement
-		// - if so, cannot treat as a simple select query and need to run through the in-memory engine
 		const simpleSelectQuery = this._isSimpleSelect();
 		if (simpleSelectQuery) {
 			this._addFetchColumns(this.columns.columns);
