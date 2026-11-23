@@ -149,7 +149,6 @@ const WORD_RULES = [
 	[NUMBER, 'NUMBER'],
 ] as const;
 
-// Operators after the keywords and names, in rule order.
 const SYMBOL_RULES: [string, string][] = [
 	['~~*', 'LIKE'],
 	['!~~*', 'NOT_LIKE'],
@@ -204,7 +203,6 @@ function stickyMatch(regex: RegExp, input: string, at: number): RegExpExecArray 
 	return regex.exec(input);
 }
 
-/** Tokenizes the whole input; the last token is always EOF. An unknown character becomes an INVALID token. */
 export function tokenize(input: string): Token[] {
 	const tokens: Token[] = [];
 	let at = 0;

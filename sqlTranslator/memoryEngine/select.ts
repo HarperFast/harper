@@ -51,7 +51,6 @@ function prepareFromData(data: any, array?: boolean): any {
 
 // #section: compile
 
-/** Compiles a SELECT to a statement function `(params, cb?, oldscope?) => result`. */
 export function compileSelect(select: any): Statement {
 	const query: any = {
 		removeKeys: [],
@@ -1489,7 +1488,6 @@ function preIndex(query: any) {
 function emit(query: any, env: Env) {
 	if (query.wherefn(env)) {
 		if (query.joinrows) {
-			// Each source's row position in FROM order, to sort by in emitJoinRows.
 			const at: number[] = [];
 			for (let k = 0; k < query.sources.length; k++) at[query.sources[k].fromidx] = query.joinat[k];
 			query.joinrows.push({ at, scope: Object.assign({}, env.s) });
@@ -1737,7 +1735,6 @@ function doDistinct(query: any) {
 	for (const key in uniq) query.data.push(uniq[key]);
 }
 
-/** Applies the statement's modifier (VALUE, ROW, COLUMN, MATRIX, RECORDSET, INDEX, TEXTSTRING). */
 function modify(query: any, res: any): any {
 	if (typeof res === 'undefined' || typeof res === 'number' || typeof res === 'string' || typeof res === 'boolean') {
 		return res;

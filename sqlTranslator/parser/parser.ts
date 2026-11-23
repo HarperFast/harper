@@ -247,7 +247,6 @@ class Parser {
 
 	// #section: SELECT
 
-	/** `Select`: a full SELECT, a parenthesized one with set operations, ORDER BY and LIMIT after it. */
 	parseSelect(): any {
 		if (this.is('LPAR')) {
 			this.next();
@@ -1353,7 +1352,6 @@ class Parser {
 		return this.isStringToken(offset) || this.is('NSTRING', offset);
 	}
 
-	/** AnyString: single- or double-quoted text (not `N'...'`), where the grammar wants a file name or key. */
 	private isStringToken(offset = 0): boolean {
 		const type = this.peek(offset).type;
 		return type === 'STRING' || type === 'DQSTRING';
@@ -1822,7 +1820,6 @@ const SELECT_LIST_FOLLOW = new Set(['ORDER', 'LIMIT', 'GO']);
 // FIRST and LAST start an aggregate in an expression, so there they are never names.
 const PRIMARY_FOLLOW = new Set(['FIRST', 'LAST']);
 
-/** Parses SQL text (comments allowed) into its statements. Throws a SqlSyntaxError for invalid SQL. */
 export function parse(sql: string): ast.Statements {
 	return new Parser(uncomment(sql)).parseStatements();
 }
