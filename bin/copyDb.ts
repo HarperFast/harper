@@ -398,7 +398,7 @@ async function copyDbEnvironment(
 					newCompression = null;
 				}
 			}
-			// putSync: an async put's failed commit also rejects a second promise no caller can observe
+			// putSync, so a failed commit throws here
 			targetDbisDb.putSync(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
@@ -491,10 +491,13 @@ async function copyDbEnvironment(
 								continue;
 							}
 							written = targetDbi.put(key, value, isPrimary ? version : undefined);
-							// only the latest batch is awaited, so each batch's failure is recorded when it is issued
+							// only the latest batch is awaited; lmdb-js rejects a failed commit's commitError separately
 							if (written !== observedWrite) {
 								observedWrite = written;
-								written.catch((error) => (writeFailure ??= error));
+								written.catch((error) => {
+									error?.commitError?.catch?.(() => {});
+									writeFailure ??= error;
+								});
 							}
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
@@ -1136,8 +1139,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								clearNextEncoding();
 								versionlessKeys.add(typeof key === 'object' ? JSON.stringify(key) : key);
 							}
-							// rocksdb-js's put is an async wrapper over putSync, so a failed encode would be a rejection
-							// this catch never sees
+							// putSync: rocksdb-js's put would turn a failed encode into an unobserved rejection
 							written = encodeBlobsWithFilePath(
 								() => targetDbi.putSync(key, value, version),
 								typeof key === 'number' ? key : recordsCopied,
@@ -1208,8 +1210,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
 				return { firstVersioned, versionlessKeys, failedRecords };
 			} catch (err) {
-				// Resume at the last key read, as copyDbi does: stepping past it, or stopping, would publish a copy
-				// missing whatever the iterator had not reached
+				// resume at the last key read, as copyDbi does, so no unread entry is skipped
 				resumed = hasStart;
 				console.error(
 					`Error iterating dbi for ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
