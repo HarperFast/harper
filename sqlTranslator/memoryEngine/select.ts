@@ -185,7 +185,7 @@ function compileQueries(select: any, query: any) {
 	share(query.queriesfn);
 }
 
-/** Only parameter sources exist: a named table, as in AlaSQL with no tables created, does not. */
+/** A named table does not exist here, as in AlaSQL with no tables created. */
 function missingTable(table: any): never {
 	if (table.databaseid) throw new TypeError("Cannot read properties of undefined (reading 'tables')");
 	throw new Error('Table does not exist: ' + table.tableid);
@@ -229,13 +229,7 @@ function compileFrom(select: any, query: any) {
 			datafn = (params, outer) => prepareFromData(value({ s: {}, params, query: outer }), array);
 		} else if (tq instanceof ast.Select) {
 			query.aliases[alias] = { type: 'subquery' };
-			const subquery = compileSelect(tq);
-			if (subquery.query.modifier === undefined) subquery.query.modifier = 'RECORDSET';
-			datafn = (params, outer) => {
-				// Subqueries inside it were recorded on the outer statement, so it shares the outer compiled list.
-				if (!subquery.query.queriesfn && outer.queriesfn) subquery.query.queriesfn = outer.queriesfn;
-				return subquery(outer.params).data;
-			};
+			datafn = subqueryDatafn(tq);
 		} else {
 			throw new Error('Only parameter, JSON and subquery sources are supported in FROM');
 		}
@@ -250,6 +244,17 @@ function compileFrom(select: any, query: any) {
 		});
 	}
 	query.defaultTableid = query.sources[0].alias;
+}
+
+/** The rows of a derived table (`FROM (SELECT ...)`, `JOIN (SELECT ...)`), as AlaSQL's `subqueryDatafn` read them. */
+function subqueryDatafn(select: any): (params: any, outer: any) => any {
+	const subquery = compileSelect(select);
+	if (subquery.query.modifier === undefined) subquery.query.modifier = 'RECORDSET';
+	return (params, outer) => {
+		// Subqueries inside it were recorded on the outer statement, so it shares the outer compiled list.
+		if (!subquery.query.queriesfn && outer.queriesfn) subquery.query.queriesfn = outer.queriesfn;
+		return subquery(outer.params).data;
+	};
 }
 
 /** Which source aliases an expression reads, as the generated `p['alias']` text showed. */
@@ -283,17 +288,25 @@ function compileJoins(select: any, query: any) {
 	for (const jn of select.joins) {
 		if (jn.joinmode === 'CROSS') jn.joinmode = 'INNER';
 		if (jn instanceof ast.Apply) throw new ClientError('APPLY is not supported');
-		if (!jn.param) throw new Error('Only parameter sources are supported in JOIN');
-		const param = jn.param.param;
-		const array = jn.array;
+		let datafn: (params: any, outer: any) => any;
+		if (jn.select) {
+			datafn = subqueryDatafn(jn.select);
+			query.aliases[jn.as] = { type: 'subquery' };
+		} else if (jn.param) {
+			const param = jn.param.param;
+			const array = jn.array;
+			datafn = (params) => prepareFromData(params[param], array);
+			query.aliases[jn.as] = { type: 'paramvalue' };
+		} else {
+			throw new Error('Only parameter and subquery sources are supported in JOIN');
+		}
 		const source: any = {
 			alias: jn.as,
 			joinmode: jn.joinmode,
 			onmiddlefn: returnTrue,
 			srcwherefn: returnTrue,
-			datafn: (params: any) => prepareFromData(params[param], array),
+			datafn,
 		};
-		query.aliases[source.alias] = { type: 'paramvalue' };
 		const alias = source.alias;
 		if (jn.natural)
 			throw new Error('In this version of Alasql NATURAL JOIN works for tables with predefined columns only');
@@ -954,8 +967,10 @@ function compileAggregate(col: any, query: any, cc: CompileContext): { init: Ini
 				: [];
 			const args: Evaluator[] =
 				col.args && col.args.length > 1 ? col.args.map((arg: any) => compileExpression(arg, cc)) : [value];
+			const only = args.length === 1 && extra.length === 0 ? args[0] : undefined;
 			const call = (env: Env, accumulator: any, stage: number) => {
 				if (!aggregate) throw new TypeError(`alasql.aggr.${col.funcid} is not a function`);
+				if (only) return aggregate(only(env), accumulator, stage);
 				return aggregate(...args.map((arg) => arg(env)), accumulator, stage, ...extra);
 			};
 			return {

@@ -159,7 +159,7 @@ describe('in-memory SQL engine', function () {
 			assert.strictEqual(reads('NULLIF'), 2);
 		});
 
-		it('reads JSON literal and subquery sources in FROM', function () {
+		it('reads JSON literal and subquery sources in FROM and JOIN', function () {
 			const rows = [
 				{ a: 1, b: 'x' },
 				{ a: 2, b: 'y' },
@@ -173,6 +173,16 @@ describe('in-memory SQL engine', function () {
 				{ n: 1, m: 'x' },
 				{ n: 2, m: 'y' },
 			]);
+			assert.deepStrictEqual(
+				query(
+					'SELECT t.a AS v, s.c AS c FROM ? AS t LEFT JOIN (SELECT u.b AS b, COUNT(*) AS c FROM ? AS u GROUP BY u.b) AS s ON t.b = s.b',
+					[rows, rows]
+				),
+				[
+					{ v: 1, c: 1 },
+					{ v: 2, c: 1 },
+				]
+			);
 			assert.deepStrictEqual(query('SELECT COUNT(*) AS c FROM (SELECT t.a FROM ? AS t WHERE t.a > 1) AS z', [rows]), [
 				{ c: 1 },
 			]);

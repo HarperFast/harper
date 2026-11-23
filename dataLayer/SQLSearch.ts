@@ -1,10 +1,5 @@
 'use strict';
 
-/**
- * Legacy SQL's SELECT: fetches the rows a parsed statement reads, then runs the statement over them with the
- * in-memory SQL engine (sqlTranslator/memoryEngine).
- */
-
 import difference from 'lodash/difference.js';
 import pullAt from 'lodash/pullAt.js';
 import uniqBy from 'lodash/uniqBy.js';
@@ -1384,7 +1379,6 @@ class SQLSearch {
 	}
 
 	/**
-	 * Builds out the final result JSON for a simple SQL query to return to the main search method without the in-memory engine
 	 * @returns {Promise<any[]>}
 	 * @private
 	 */
