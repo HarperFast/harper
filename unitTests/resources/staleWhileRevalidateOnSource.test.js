@@ -174,6 +174,46 @@ describe('Stale-while-revalidate hook on the source', function () {
 		assert.equal((await reading).name, 'fresh declined');
 	});
 
+	it('waits for the source on a no-cache read instead of asking the source hook', async function () {
+		await expire(ClassSourced, 'no-cache');
+		const reading = ClassSourced.get('no-cache', { noCache: true });
+		await waitFor(() => sourceCalls === 1);
+		let settled = false;
+		reading.then(() => (settled = true));
+		await delay(20);
+		assert.equal(settled, false, 'the read waits for the source');
+		pendingCalls[0].resolve({ id: 'no-cache', name: 'fresh no-cache' });
+		assert.equal((await reading).name, 'fresh no-cache');
+		assert.deepEqual(hookCalls, []);
+	});
+
+	it('waits for the source on a no-cache query instead of asking the source hook', async function () {
+		await expire(QuerySourced, 'no-cache-query');
+		const searching = (async () => {
+			const names = [];
+			for await (const record of QuerySourced.search(
+				{ conditions: [{ attribute: 'name', value: 'stale no-cache-query' }] },
+				{ noCache: true }
+			))
+				names.push(record.name);
+			return names;
+		})();
+		let settled = false;
+		searching.then(() => (settled = true));
+		await waitFor(() => sourceCalls === 1);
+		await delay(20);
+		assert.equal(settled, false, 'the query waits for the source');
+		pendingCalls[0].resolve({ id: 'no-cache-query', name: 'stale no-cache-query' });
+		assert.deepEqual(await searching, ['stale no-cache-query']);
+		assert.deepEqual(hookCalls, []);
+	});
+
+	it('still lets a hook on the table class serve stale to a no-cache read', async function () {
+		await expire(SubclassAllows, 'table-no-cache');
+		assert.equal((await SubclassAllows.get('table-no-cache', { noCache: true })).name, 'stale table-no-cache');
+		assert.equal(sourceCalls, 1);
+	});
+
 	it('waits for the source when neither the table nor the source class has a hook', async function () {
 		await expire(HooklessClass, 'hookless');
 		const reading = HooklessClass.get('hookless');
