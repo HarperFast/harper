@@ -51,7 +51,7 @@ describe('issuance coverage across live workers', function () {
 			finish = resolve;
 			fail = reject;
 		});
-		finished.catch(() => {}); // a worker that fails while only `ready` is awaited must not be unhandled
+		finished.catch(() => {});
 		const timer = setTimeout(() => fail(new Error(`issuance worker timed out (${mode})`)), 30_000);
 		worker.on('message', (message) => {
 			if (message.error) fail(new Error(message.error));
@@ -65,13 +65,15 @@ describe('issuance coverage across live workers', function () {
 			if (code !== 0 || !result) fail(new Error(`issuance worker exited ${code} (${mode})`));
 			else finish(result);
 		});
-		return { ready: Promise.race([loaded, finished]), release: () => worker.postMessage({ go: true }), finished };
+		return { loaded, release: () => worker.postMessage({ go: true }), finished };
 	}
-	// Loading a worker's module graph takes seconds on a slow runner, so `claim` (which starts a wall-clock lead)
-	// runs only once every worker has loaded, and the workers open their database after it.
 	async function runWorkers(modes, claim) {
 		const started = modes.map(spawn);
-		await Promise.all(started.map((worker) => worker.ready));
+		// a worker that fails before the release rejects its `finished`, which must stop the claim
+		await Promise.race([
+			Promise.all(started.map((worker) => worker.loaded)),
+			...started.map((worker) => worker.finished),
+		]);
 		claim();
 		for (const worker of started) worker.release();
 		return Promise.all(started.map((worker) => worker.finished));
@@ -84,7 +86,11 @@ describe('issuance coverage across live workers', function () {
 				initialCeiling = readLocalIssuanceCeiling(Tbl.auditStore);
 			}
 		);
-		assert.ok(Date.now() < claimed, 'the workers must issue before wall-clock catch-up');
+		const sinceClaim = Date.now() - (claimed - CLAIM_LEAD_MS);
+		assert.ok(
+			Date.now() < claimed,
+			`the workers must issue before wall-clock catch-up (${sinceClaim} ms after the claim)`
+		);
 		for (const result of results) {
 			assert.ok(result.key > claimed);
 			assert.ok(result.key < initialCeiling, 'opening another worker must not promote the reserved headroom');
@@ -99,7 +105,8 @@ describe('issuance coverage across live workers', function () {
 			const above = readLocalIssuanceCeiling(Tbl.auditStore) + 1000;
 			lifted = claimLocalKey(Other.primaryStore.rootStore, Math.max(above, Date.now() + CLAIM_LEAD_MS));
 		});
-		assert.ok(result.failures > 0, 'the real closed audit store must reject coverage');
+		const ahead = lifted - Date.now();
+		assert.ok(result.failures > 0, `the real closed audit store must reject coverage (the lift is ${ahead} ms ahead)`);
 		assert.strictEqual(result.calls[0].noCacheStore, true);
 		assert.strictEqual(result.calls.length, 2, 'the waiter must not share the raw-version outcome');
 		assert.deepStrictEqual(
