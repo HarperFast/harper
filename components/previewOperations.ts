@@ -421,8 +421,8 @@ async function describePreviewPolicy(req: any, names: PreviewNames) {
 	if (!user) problems.push(`user "${names.user}" is missing`);
 	else if (user.active === false) problems.push(`user "${names.user}" is inactive`);
 	else if (user.role?.role !== names.role) problems.push(`user "${names.user}" is in role "${user.role?.role}"`);
-	// The pins enable_previews would write: cleanup's come from the deploy policy wherever that one's are well-formed,
-	// so a malformed cleanup pin cannot hide a disagreement between the two.
+	// Cleanup's pins come from the deploy policy wherever that one's are well-formed, so a malformed cleanup pin cannot
+	// hide a disagreement between the two.
 	const pinsOf = (policy: any, isCleanup: boolean): PolicyPins => ({
 		audience: isCleanup && deploy ? deploy.audience : policy.audience,
 		repository_id: isCleanup && hasRepositoryId(deploy) ? deploy.claims.repository_id : policy.claims?.repository_id,
