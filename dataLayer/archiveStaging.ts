@@ -14,6 +14,7 @@ import {
 	readFileSync,
 	realpathSync,
 	renameSync,
+	rmdirSync,
 	rmSync,
 	statSync,
 } from 'node:fs';
@@ -171,12 +172,40 @@ function assertDestinationsApart(destinations: string[]): void {
 export function createStagingAreas(plan: StagingPlan): void {
 	assertDestinationsApart(plan.parts.map((part) => part.destination));
 	for (const part of plan.parts) {
-		mkdirSync(part.staged, { recursive: true, mode: 0o700 });
-		mkdirSync(dirname(part.previous), { recursive: true, mode: 0o700 });
+		mkdirAgainstRemoval(part.staged);
+		mkdirAgainstRemoval(dirname(part.previous));
 		if (statSync(part.staged).dev !== deviceOf(part.destination)) {
 			throw new ClientError(
 				`Cannot stage the archive beside ${part.destination}: ${part.staged} is on another filesystem, and a restore installs by rename`
 			);
+		}
+	}
+}
+
+/**
+ * A settle removing an emptied `<key>.staged` directory holds no extraction lock, so it can remove the
+ * parent between a recursive mkdir's creating it and creating the area inside it.
+ */
+function mkdirAgainstRemoval(path: string): void {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			mkdirSync(path, { recursive: true, mode: 0o700 });
+			return;
+		} catch (error: any) {
+			if (error?.code !== 'ENOENT' || attempt === 3) throw error;
+		}
+	}
+}
+
+/** The `<key>.staged` directory holding an area, once its last area is gone. */
+function removeEmptyStagedDir(stagedDir: string): void {
+	if (!basename(stagedDir).endsWith(STAGED_SUFFIX)) return;
+	try {
+		rmdirSync(stagedDir);
+	} catch (error: any) {
+		// another area, or one an extraction is creating
+		if (error?.code !== 'ENOENT' && error?.code !== 'ENOTEMPTY' && error?.code !== 'EEXIST') {
+			logger.warn(`Could not remove the empty restore staging directory ${stagedDir}`, error);
 		}
 	}
 }
@@ -187,6 +216,7 @@ export async function removeStagingArea(areas: Iterable<string>): Promise<void> 
 		try {
 			const failures = await rimrafSteadily(area);
 			if (failures.length > 0) throw new AggregateError(failures, `${failures.length} entries could not be removed`);
+			removeEmptyStagedDir(dirname(area));
 		} catch (error) {
 			logger.warn(`Could not remove the restore staging area ${area}; the next startup removes it`, error);
 		}
@@ -708,6 +738,7 @@ export function sweepStagingAtStartup(roots: string[] = databaseRoots(), blobPat
 					logger.warn(`Could not remove the restore staging area ${area}`, error);
 				}
 			}
+			removeEmptyStagedDir(join(location, name));
 		}
 	}
 	return removed;

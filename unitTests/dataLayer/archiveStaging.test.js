@@ -25,6 +25,7 @@ const {
 	stagingBudgets,
 	mintStagingId,
 	planStaging,
+	removeStagingArea,
 	stagedAreasOfReceipt,
 	sweepStagingAtStartup,
 	verifyStagedSwap,
@@ -250,6 +251,17 @@ describe('archive staging', function () {
 			assert.strictEqual(areas[areas.length - 1], plan.stagingDir);
 			assert.deepStrictEqual([...areas].sort(), [...plan.areas].sort());
 		});
+
+		it('removes each area’s <key>.staged directory with its last area, and keeps one holding another', async function () {
+			const plan = stage();
+			const other = planStaging(databaseDir, blobRoots, mintStagingId());
+			createStagingAreas(other);
+			await removeStagingArea(plan.areas);
+			for (const area of other.areas) assert.ok(existsSync(area), `${area} is kept`);
+			await removeStagingArea(other.areas);
+			for (const area of plan.areas)
+				assert.strictEqual(existsSync(dirname(area)), false, `${dirname(area)} is removed`);
+		});
 	});
 
 	it('compares a known upload length with every destination filesystem’s budget together', function () {
@@ -407,6 +419,20 @@ describe('archive staging', function () {
 			for (const path of [...unreadable, ...owned, ...cancelled, ...marked, ...ours])
 				assert.ok(existsSync(path), `${path} is kept`);
 			for (const path of [...orphaned, ...superseded]) assert.strictEqual(existsSync(path), false);
+		});
+
+		it('removes a <key>.staged directory once its last area is gone, and keeps one still holding an area', function () {
+			const databases = join(root, 'database');
+			const blobPaths = [join(root, 'blobs')];
+			const emptied = [databases, ...blobPaths].map((location) => area(location, 'emptied', earlierId()));
+			const ours = area(databases, 'shared', mintStagingId());
+			const orphanBeside = area(databases, 'shared', earlierId());
+
+			sweepStagingAtStartup([databases], blobPaths);
+
+			for (const path of emptied) assert.strictEqual(existsSync(dirname(path)), false, `${dirname(path)} is removed`);
+			assert.strictEqual(existsSync(orphanBeside), false);
+			assert.ok(existsSync(ours));
 		});
 
 		it('moves an installed archive’s record to its charge before removing the area, and keeps the area while it cannot', function () {
