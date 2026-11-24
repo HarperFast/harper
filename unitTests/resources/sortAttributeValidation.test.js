@@ -12,82 +12,65 @@ async function fromAsync(iterable) {
 }
 
 describe('A sort level after the first', () => {
-	let Items, Owners;
+	let Sealed, Open;
 
 	before(async () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
-		Owners = table({
+		const Owners = table({
 			table: 'SortAttributeOwner',
-			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', type: 'String' }, { name: 'profile' }],
-		});
-		await Owners.put('o1', { name: 'first', profile: { level: 1 } });
-		Items = table({
-			table: 'SortAttributeValidation',
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'tag', indexed: true },
-				{ name: 'rank', type: 'Int' },
-				{ name: 'details' },
-				{ name: 'v', type: 'Array', indexed: { type: 'HNSW' } },
-				{ name: 'ownerId', indexed: true },
-				{ name: 'owner', relationship: { from: 'ownerId' }, definition: { tableClass: Owners } },
+				{ name: 'name', type: 'String' },
 			],
 		});
-		for (let id = 1; id <= 4; id++)
-			await Items.put(id, {
+		await Owners.put('o1', { name: 'first' });
+		const attributes = [
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'tag', indexed: true },
+			{ name: 'rank', type: 'Int' },
+			{ name: 'details' },
+			{ name: 'v', type: 'Array', indexed: { type: 'HNSW' } },
+			{ name: 'ownerId', indexed: true },
+			{ name: 'owner', relationship: { from: 'ownerId' }, definition: { tableClass: Owners } },
+		];
+		Sealed = table({ table: 'SortAttributeSealed', database: 'test', sealed: true, attributes });
+		Open = table({ table: 'SortAttributeOpen', database: 'test', attributes });
+		for (let id = 1; id <= 4; id++) {
+			const record = {
 				tag: id % 2 ? 'odd' : 'even',
 				rank: 10 - id,
 				details: { score: id },
 				v: [id, 0, 1],
 				ownerId: 'o1',
-			});
+			};
+			await Sealed.put(id, record);
+			await Open.put(id, { ...record, undeclared: id });
+		}
 	});
 
-	it('is refused with a 404 when it names an attribute the table does not define', async () => {
-		await assert.rejects(
-			async () => fromAsync(Items.search({ sort: { attribute: 'tag', next: { attribute: 'rnak' } } })),
-			(error) => error.statusCode === 404 && /rnak is not a defined attribute/.test(error.message)
-		);
-	});
-
-	it('is refused when it names no attribute', async () => {
-		await assert.rejects(
-			async () => fromAsync(Items.search({ sort: { attribute: 'tag', next: { descending: true } } })),
-			/Sort requires an attribute/
-		);
-	});
-
-	it('is refused when a relationship path names a leaf the related table does not define', async () => {
-		await assert.rejects(
-			async () => fromAsync(Items.search({ sort: { attribute: 'tag', next: { attribute: ['owner', 'nmae'] } } })),
-			(error) => error.statusCode === 404 && /owner\.nmae is not a defined attribute/.test(error.message)
-		);
-		// record metadata resolves only on the searched table: through a relationship it read a missing entry
-		await assert.rejects(
-			async () =>
-				fromAsync(Items.search({ sort: { attribute: 'tag', next: { attribute: ['owner', '$updatedtime'] } } })),
-			(error) => error.statusCode === 404
-		);
-	});
-
-	it('is refused when a path continues past a declared scalar', async () => {
-		for (const attribute of [
-			['rank', 'x'],
-			['owner', 'name', 'x'],
-		]) {
+	it('on a sealed table, is refused with a 404 when its root is an attribute the table does not define', async () => {
+		for (const attribute of ['rnak', ['rnak', 'x']]) {
 			await assert.rejects(
-				async () => fromAsync(Items.search({ sort: { attribute: 'tag', next: { attribute } } })),
-				(error) => error.statusCode === 404 && error.message.includes(`${attribute.join('.')} is not a defined`)
+				async () => fromAsync(Sealed.search({ sort: { attribute: 'tag', next: { attribute } } })),
+				(error) => error.statusCode === 404 && /rnak(\.x)? is not a defined attribute/.test(error.message)
 			);
 		}
 	});
 
-	it('orders by $distance after a threshold condition drives the search', async () => {
+	it('is refused when it names no attribute', async () => {
+		for (const Table of [Sealed, Open]) {
+			await assert.rejects(
+				async () => fromAsync(Table.search({ sort: { attribute: 'tag', next: { descending: true } } })),
+				/Sort requires an attribute/
+			);
+		}
+	});
+
+	it('on a sealed table, orders by $distance after a threshold condition drives the search', async () => {
 		const rows = await fromAsync(
-			Items.search({
+			Sealed.search({
 				conditions: [{ attribute: 'v', comparator: 'lt', value: 2, target: [1, 0, 1] }],
 				sort: { attribute: 'tag', next: { attribute: '$distance' } },
 				select: ['id'],
@@ -96,22 +79,31 @@ describe('A sort level after the first', () => {
 		assert.equal(rows.length, 4);
 	});
 
-	it('orders by a defined attribute, record metadata, or a path into an untyped field, here or on a related table', async () => {
+	it('on a sealed table, orders by a defined attribute, record metadata, or a path from a defined root', async () => {
 		for (const next of [
 			{ attribute: 'rank' },
 			{ attribute: '$updatedtime' },
 			{ attribute: ['details', 'score'] },
 			{ attribute: ['owner', 'name'] },
-			{ attribute: ['owner', 'profile', 'level'] },
 		]) {
-			const rows = await fromAsync(Items.search({ sort: { attribute: 'tag', next }, select: ['id'] }));
+			const rows = await fromAsync(Sealed.search({ sort: { attribute: 'tag', next }, select: ['id'] }));
 			assert.equal(rows.length, 4, JSON.stringify(next));
 		}
 		const ranked = await fromAsync(
-			Items.search({ sort: { attribute: 'tag', next: { attribute: 'rank' } }, select: ['id'] })
+			Sealed.search({ sort: { attribute: 'tag', next: { attribute: 'rank' } }, select: ['id'] })
 		);
 		assert.deepEqual(
 			ranked.map((row) => row.id),
+			[4, 2, 3, 1]
+		);
+	});
+
+	it('on an open table, orders by an attribute its records store without declaring it', async () => {
+		const rows = await fromAsync(
+			Open.search({ sort: { attribute: 'tag', next: { attribute: 'undeclared', descending: true } }, select: ['id'] })
+		);
+		assert.deepEqual(
+			rows.map((row) => row.id),
 			[4, 2, 3, 1]
 		);
 	});

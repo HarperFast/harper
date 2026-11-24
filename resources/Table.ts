@@ -973,10 +973,17 @@ function bothOpen(opening: any, other: any) {
 	};
 	return both;
 }
-/** Closes a search result nothing has read; a transform of one has no `onDone`, but its iterator's return reaches the search's. */
+/**
+ * Closes a search result nothing has read. A transform of one has no `onDone`; its opening's `release` reaches
+ * every search a concatenation joined, where an iterator's return reaches only the first.
+ */
 function closeUnread(results: any) {
-	if (results?.onDone !== undefined) results.onDone?.();
-	else results?.[Symbol.asyncIterator]?.().return?.();
+	if (results?.onDone !== undefined) return results.onDone?.();
+	const release = results?.[SEARCH_OPENING]?.release;
+	if (release) return release();
+	const closing = results?.[Symbol.asyncIterator]?.().return?.();
+	if (closing?.then)
+		closing.then(null, (error) => harperLogger.warn?.('Closing an unread search result failed:', error));
 }
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>) {
@@ -14212,23 +14219,11 @@ export function makeTable(options): TableResourceClass {
 	}
 	function assertSortAttribute(name: any): void {
 		if (name == null) throw new ClientError('Sort requires an attribute');
-		if (!sortPathDefined(Array.isArray(name) ? name : [name]))
+		// an open table can store attributes it does not declare, and they order its records
+		if (!sealed) return;
+		const root = String(Array.isArray(name) ? name[0] : name);
+		if (!propertyResolvers?.[root] && !findAttribute(attributes, root))
 			throw new ClientError(`${Array.isArray(name) ? name.join('.') : name} is not a defined attribute`, 404);
-	}
-	function sortPathDefined(path: any[]): boolean {
-		let fields = attributes;
-		for (let i = 0; i < path.length; i++) {
-			const step = String(path[i]);
-			const field = fields?.find((attribute) => attribute.name === step);
-			// record metadata resolves from the entry, which a path into a related record does not carry
-			if (!field) return path.length === 1 && Boolean(propertyResolvers?.[step]);
-			const related = field.definition?.tableClass || field.elements?.definition?.tableClass;
-			if (related) fields = related.attributes;
-			else if (field.properties) fields = field.properties;
-			// the schema stops at an untyped field, which can hold any object
-			else return i === path.length - 1 || !SCALAR_TYPES.has(field.type);
-		}
-		return true;
 	}
 	function assertRecordField(name: unknown): void {
 		const field = Array.isArray(name) ? name[0] : name;
@@ -14612,12 +14607,19 @@ export function makeTable(options): TableResourceClass {
 		const head = sort.attribute;
 		const headName = Array.isArray(head) ? head.join('.') : head;
 		if (head == null && target.operator !== 'or') throw new ClientError('Sort requires an attribute');
-		// a condition on the sort's own attribute orders the search in its place
-		const headConditioned =
-			target.operator !== 'or' && prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head));
-		if (head != null && target.operator !== 'or' && !findAttribute(attributes, head) && !headConditioned)
+		if (
+			head != null &&
+			target.operator !== 'or' &&
+			!findAttribute(attributes, head) &&
+			!prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
+		)
 			throw new ClientError(`${headName} is not a defined attribute`, 404);
-		if (sort.text !== undefined && headConditioned)
+		// a condition on the sort's own attribute would order the search in its place
+		if (
+			sort.text !== undefined &&
+			target.operator !== 'or' &&
+			prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
+		)
 			throw new ClientError(
 				`A sort with text on "${headName}" can not be combined with a condition on "${headName}"; sort by the condition's target`
 			);
@@ -14630,13 +14632,7 @@ export function makeTable(options): TableResourceClass {
 			!headAttribute.isPrimaryKey
 		)
 			throw new ClientError(`${headName} is not indexed and not combined with any other conditions`, 404);
-		if (
-			!target.explain &&
-			target.operator !== 'or' &&
-			!target.enforceExecutionOrder &&
-			!headConditioned &&
-			!prepared.some((condition) => conditionDrivesIndex(TableResource, condition))
-		) {
+		if (prepared.length === 0 && !target.explain) {
 			const leading = Array.isArray(head) && head.length === 1 ? head[0] : head;
 			if (typeof leading === 'string')
 				indices[leading]?.customIndex?.searchDistance?.(

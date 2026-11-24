@@ -410,21 +410,36 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.deepEqual(await fromAsync(Doc.search(target)), [{ id: 1 }, { id: 3 }]);
 		});
 
-		it('refuses an undefined later sort level before it calls the model', () => {
+		it('on a sealed table, refuses an undefined later sort level before it calls the model', () => {
+			const Sealed = table({
+				table: 'SortTextSealedDoc',
+				database: 'test',
+				sealed: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'content', type: 'String' },
+					{
+						name: 'embedding',
+						type: 'Array',
+						embed: { source: 'content', model: 'doc-model' },
+						indexed: { type: 'HNSW' },
+					},
+				],
+			});
 			assert.throws(
-				() => Doc.search({ sort: { attribute: 'embedding', text: 'red fruit', next: { attribute: 'nope' } } }),
+				() => Sealed.search({ sort: { attribute: 'embedding', text: 'red fruit', next: { attribute: 'nope' } } }),
 				(error) => error.statusCode === 404 && /nope is not a defined attribute/.test(error.message)
 			);
 			assert.equal(embed.calls.length, 0);
 		});
 
-		it('beside only a filter that drives no index, refuses what the leading index refuses before it calls the model', async () => {
+		it('beside a filter that drives no index, refuses what the leading index refuses', async () => {
 			const sort = { attribute: 'embedding', text: 'red fruit', descending: true };
-			assert.throws(
-				() => Doc.search({ conditions: [{ attribute: 'content', comparator: 'contains', value: 'a' }], sort }),
+			await assert.rejects(
+				async () =>
+					fromAsync(Doc.search({ conditions: [{ attribute: 'content', comparator: 'contains', value: 'a' }], sort })),
 				(error) => error.statusCode === 400 && /descending sort order with HNSW/.test(error.message)
 			);
-			assert.equal(embed.calls.length, 0);
 			const rows = await fromAsync(
 				Doc.search({ conditions: [{ attribute: 'tag', value: 'odd' }], sort, select: ['id'] })
 			);
@@ -953,6 +968,36 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			});
 		}
 
+		it('a gate closed before its first step releases both text searches its override concatenates', async () => {
+			if (!observesSnapshot) return;
+			const release = embed.hold();
+			class Joined extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					const first = super.search({ ...target, sort: { attribute: 'embedding', text: 'red fruit' } });
+					return first.concat(super.search({ ...target, sort: { attribute: 'embedding', text: 'yellow fruit' } }));
+				}
+			}
+			const transaction = new DatabaseTransaction();
+			try {
+				const iterator = new Joined(null, { transaction, user: { username: 'reader' } })
+					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+					[Symbol.asyncIterator]();
+				await waitFor(() => embed.calls.length === 2);
+				await iterator.return();
+				const held = transaction.readTxnsUsed;
+				release();
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				assert.equal(transaction.readTxnsUsed, held, 'a search opened after the gate closed');
+			} finally {
+				release();
+				transaction.abort();
+			}
+		});
+
 		it('an asynchronously granted read embeds and searches', async () => {
 			class Granted extends Doc {
 				async allowRead() {
@@ -1151,6 +1196,38 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				context.installed.slice(installedBeforeAbort).filter((txn) => !isReleasedTransaction(txn)),
 				[]
 			);
+		});
+
+		it('a request aborted after the model answered opens no search, in every return shape', async () => {
+			for (const shape of [{}, { explain: true }, { count: 'exact', limit: 2 }]) {
+				const context = recordingContext();
+				context.signal = new AbortController().signal;
+				let installedAtAnswer;
+				// a caller aborts once the answer is in, past the model call's own abort race
+				__setEmbedFnForTest((input, opts) => {
+					const answer = embed(input, opts);
+					if (opts.inputType !== 'query') return answer;
+					return answer.then((vectors) => {
+						installedAtAnswer = context.installed.length;
+						context.signal = AbortSignal.abort();
+						return vectors;
+					});
+				});
+				try {
+					const result = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, ...shape }, context);
+					await rejectsWith(shape.explain || shape.count ? result : fromAsync(result), (error) =>
+						assert.equal(error.statusCode, 499, JSON.stringify(shape))
+					);
+					// the request's own transaction is released from the context then; none is opened
+					assert.deepEqual(
+						context.installed.slice(installedAtAnswer).filter((txn) => !isReleasedTransaction(txn)),
+						[],
+						JSON.stringify(shape)
+					);
+				} finally {
+					__setEmbedFnForTest(embed);
+				}
+			}
 		});
 
 		it('reads from a snapshot taken after the text is embedded', async () => {

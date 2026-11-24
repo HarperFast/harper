@@ -1372,7 +1372,7 @@ Sort order object:
 | `descending` | Sort descending if `true` (default: `false`)               |
 | `next`       | Secondary sort to resolve ties (same structure)            |
 
-<VersionBadge type="changed" version="v5.5.0" /> Each `attribute` in a `next` chain must be one the table defines, a path to one through a relationship or typed object, a path into an untyped field, or the table's record metadata such as `$updatedtime`. An undefined one is rejected with a 404, as an undefined first `attribute` already is; before v5.5.0 it was ignored.
+<VersionBadge type="changed" version="v5.5.0" /> On a sealed table, each `attribute` in a `next` chain must start at an attribute the table defines or at record metadata such as `$updatedtime`. An undefined one is rejected with a 404, as an undefined first `attribute` already is; before v5.5.0 it was ignored. An open table can store attributes it does not declare, so a `next` attribute there is not checked.
 
 For top-level collection queries, Harper uses an index to provide sort order, so a `sort` needs one of:
 
