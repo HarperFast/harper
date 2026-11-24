@@ -192,19 +192,22 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 		});
 
 		it('applies a replicated role write that steps the role version back to the next lookup', async () => {
-			// harper#4483: merged under a newer patch, the older put is stored under its own version on LMDB
+			// harper#4483: merged under a newer patch, the older put is stored under its own version on LMDB, which is
+			// the version found was stamped with
 			await testUtils.seedUsers([lookupUser()]);
 			const now = Date.now() + 300;
 			const role = { id: 'lookup_role', role: 'lookup_role', permission: { super_user: false }, merges: 0 };
+			const merge = { merges: { __op__: 'add', value: 1 } };
 			await databases.system.hdb_role.put(role, { timestamp: now - 100 });
-			await databases.system.hdb_role.patch('lookup_role', { merges: { __op__: 'add', value: 1 } }, { timestamp: now });
+			await databases.system.hdb_role.patch('lookup_role', merge, { timestamp: now - 50 });
 			const found = user.getUserWithRole('lookup_user');
 			assert.strictEqual(found.role.permission.super_user, false);
+			await databases.system.hdb_role.patch('lookup_role', merge, { timestamp: now });
 			await applyRoleFrom(`${server.hostname}-tie`, { ...role, permission: { super_user: true } }, now - 50);
 			const entry = databases.system.hdb_role.primaryStore.getEntry('lookup_role');
 			const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 			assert.strictEqual(entry.version, isLMDB ? now - 50 : now, 'LMDB stores the older write under its own version');
-			assert.strictEqual(entry.value.merges, 1, 'the newer patch is reapplied over the older put');
+			assert.strictEqual(entry.value.permission.super_user, true, 'the put wins its tie with the patch at now - 50');
 			assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
 			assert.strictEqual(user.isCurrentUser(found), false, 'the role it was built from changed');
 			assert.strictEqual(user.getUserWithRole('lookup_user').role.permission.super_user, true);
