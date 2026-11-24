@@ -965,25 +965,34 @@ function bothOpen(opening: any, other: any) {
 	const both: any = Promise.all([opening, other]);
 	both.catch(() => {});
 	both.release = () => {
-		try {
-			opening.release?.();
-		} finally {
-			other.release?.();
-		}
+		cleanUp(() => opening.release?.());
+		cleanUp(() => other.release?.());
 	};
 	return both;
+}
+/** A cleanup has no caller left to take its failure, thrown or rejected, so the failure is logged. */
+function cleanUp(close: () => unknown) {
+	try {
+		const closing: any = close();
+		if (closing?.then) closing.then(null, logCleanupFailure);
+	} catch (error) {
+		logCleanupFailure(error);
+	}
+}
+function logCleanupFailure(error: unknown) {
+	harperLogger.warn?.('Closing a search result failed:', error);
 }
 /**
  * Closes a search result nothing has read. A transform of one has no `onDone`; its opening's `release` reaches
  * every search a concatenation joined, where an iterator's return reaches only the first.
  */
 function closeUnread(results: any) {
-	if (results?.onDone !== undefined) return results.onDone?.();
-	const release = results?.[SEARCH_OPENING]?.release;
-	if (release) return release();
-	const closing = results?.[Symbol.asyncIterator]?.().return?.();
-	if (closing?.then)
-		closing.then(null, (error) => harperLogger.warn?.('Closing an unread search result failed:', error));
+	cleanUp(() => {
+		if (results?.onDone !== undefined) return results.onDone?.();
+		const release = results?.[SEARCH_OPENING]?.release;
+		if (release) return release();
+		return (results?.[Symbol.asyncIterator] ?? results?.[Symbol.iterator])?.call(results).return?.();
+	});
 }
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>) {
@@ -1024,7 +1033,7 @@ function carryThroughTransforms(
 function deferredIterator(
 	options: any,
 	openResults: () => Promise<any>,
-	onFinish: () => void,
+	onFinish: (iterated: boolean) => void,
 	synchronousIterationMessage: string
 ) {
 	const asynchronous = options === true || options?.async;
@@ -1036,7 +1045,7 @@ function deferredIterator(
 	const finish = () => {
 		if (completed) return;
 		completed = true;
-		onFinish();
+		onFinish(opened !== undefined);
 	};
 	const failStep = (error: any) => {
 		if (returned) return { value: undefined, done: true };
@@ -1088,7 +1097,7 @@ function deferredIterator(
 			finish();
 			const inner = opened;
 			if (inner) return Promise.resolve().then(() => inner.return?.(value) ?? { value, done: true });
-			// onFinish releases the search; a model can ignore the abort, so this never waits for the opening
+			// a model can ignore the abort, so close never waits for the opening
 			return Promise.resolve({ value, done: true });
 		},
 		throw(error: any) {
@@ -8895,6 +8904,7 @@ export function makeTable(options): TableResourceClass {
 					let resolvedResults: any;
 					let earlyColumns: ColumnsList | undefined;
 					let gateClosed = false;
+					let handedOver = false;
 					gatedResults.pendingAuth = true;
 					const authorization = Promise.resolve(allowed).then(
 						async (resolved) => {
@@ -8937,13 +8947,17 @@ export function makeTable(options): TableResourceClass {
 									if (!state.allowed) throw new AccessViolation((context as any).user);
 									return state.results;
 								}),
-							() => gatedResults.onDone?.(),
+							(iterated) => {
+								handedOver ||= iterated;
+								gatedResults.onDone?.();
+							},
 							'Can not synchronously iterate while allowRead is asynchronous'
 						);
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;
 						gateClosed = true;
-						closeUnread(resolvedResults);
+						// an iterator that read the results owns their cursor and closes it
+						if (!handedOver) closeUnread(resolvedResults);
 					};
 					return propagateSearchAuthorization(gatedResults, authorization);
 				}
@@ -8995,7 +9009,7 @@ export function makeTable(options): TableResourceClass {
 					return searched;
 				});
 			opening.catch(() => {});
-			opening.release = () => deferred.onDone?.();
+			opening.release = () => cleanUp(() => deferred.onDone?.());
 			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false, bothOpen);
 			deferred.iterate = (options: any = {}) =>
 				deferredIterator(
@@ -14218,7 +14232,7 @@ export function makeTable(options): TableResourceClass {
 		return false;
 	}
 	function assertSortAttribute(name: any): void {
-		if (name == null) throw new ClientError('Sort requires an attribute');
+		if (name == null || (Array.isArray(name) && name.length === 0)) throw new ClientError('Sort requires an attribute');
 		// an open table can store attributes it does not declare, and they order its records
 		if (!sealed) return;
 		const root = String(Array.isArray(name) ? name[0] : name);

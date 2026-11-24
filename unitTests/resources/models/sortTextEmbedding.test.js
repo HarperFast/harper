@@ -998,6 +998,81 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('a gate closed after its reader took a row closes that cursor and asks for no other', async () => {
+			if (!observesSnapshot) return;
+			let cursors = 0;
+			class OneCursor extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					const results = super.search(target);
+					return {
+						[Symbol.asyncIterator]() {
+							if (cursors++) throw new Error('one cursor only');
+							return results[Symbol.asyncIterator]();
+						},
+					};
+				}
+			}
+			const transaction = new DatabaseTransaction();
+			try {
+				const iterator = new OneCursor(null, { transaction, user: { username: 'reader' } })
+					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+					[Symbol.asyncIterator]();
+				assert.ok((await iterator.next()).value);
+				await iterator.return();
+				await waitFor(() => transaction.readTxnsUsed === 1, {
+					message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+				});
+				assert.equal(cursors, 1);
+			} finally {
+				transaction.abort();
+			}
+		});
+
+		it('a gate closed before its first step logs a cleanup that rejects instead of letting it escape', async () => {
+			const failure = new Error('cursor close failed');
+			const escaped = [];
+			const onUnhandled = (reason) => {
+				if (reason === failure) escaped.push(reason);
+			};
+			let searched = false;
+			let closed = false;
+			class Rejecting extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					searched = true;
+					const results = super.search(target);
+					return {
+						[Symbol.asyncIterator]: () => results[Symbol.asyncIterator](),
+						onDone: async () => {
+							closed = true;
+							results.onDone?.();
+							throw failure;
+						},
+					};
+				}
+			}
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				const iterator = new Rejecting(null, { user: { username: 'reader' } })
+					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+					[Symbol.asyncIterator]();
+				await waitFor(() => searched);
+				await iterator.return();
+				await waitFor(() => closed);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.deepEqual(escaped, []);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+		});
+
 		it('an asynchronously granted read embeds and searches', async () => {
 			class Granted extends Doc {
 				async allowRead() {
@@ -1218,7 +1293,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					await rejectsWith(shape.explain || shape.count ? result : fromAsync(result), (error) =>
 						assert.equal(error.statusCode, 499, JSON.stringify(shape))
 					);
-					// the request's own transaction is released from the context then; none is opened
 					assert.deepEqual(
 						context.installed.slice(installedAtAnswer).filter((txn) => !isReleasedTransaction(txn)),
 						[],
