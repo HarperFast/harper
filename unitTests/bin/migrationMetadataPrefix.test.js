@@ -14,7 +14,7 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { setupTestDBPath } = require('../testUtils');
 const copyDB = require('#src/bin/copyDb');
 const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
-const { RecordEncoder, RecordObject } = require('#src/resources/RecordEncoder');
+const { RecordEncoder, RecordObject, VERSION_REUSED, VERSION_REGRESSED } = require('#src/resources/RecordEncoder');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
 const isLMDB = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb';
@@ -22,6 +22,7 @@ const isLMDB = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAG
 describe('migration: records carry the version/metadata prefix (#2012)', function () {
 	let rootPath, targetPath, Tbl;
 	const sourceVersions = new Map();
+	let steppedBack;
 
 	before(async function () {
 		// this.skip() (not a bare return in the describe body) so the gate is visible as pending
@@ -39,6 +40,13 @@ describe('migration: records carry the version/metadata prefix (#2012)', functio
 		for (const id of ['a', 'b', 'c']) {
 			sourceVersions.set(id, Tbl.primaryStore.getEntry(id).version);
 		}
+		// an older write merged under its own version leaves the row flagged on LMDB
+		const now = Date.now() + 300;
+		const merge = { rank: { __op__: 'add', value: 1 } };
+		await Tbl.put({ id: 'd', name: 'delta', rank: 4 }, { timestamp: now - 100 });
+		await Tbl.patch('d', merge, { timestamp: now });
+		await Tbl.patch('d', merge, { timestamp: now - 50 });
+		steppedBack = Tbl.primaryStore.getEntry('d');
 
 		targetPath = path.join(rootPath, 'rocks-migrated-prefix', 'pgtest');
 		await fs.remove(targetPath);
@@ -79,6 +87,26 @@ describe('migration: records carry the version/metadata prefix (#2012)', functio
 				assert(entry.value instanceof RecordObject, `record ${id} decoded without the record prototype`);
 				assert.strictEqual(entry.version, sourceVersions.get(id), `record ${id} lost its source version`);
 			}
+		} finally {
+			cf.close();
+			root.close();
+		}
+	});
+
+	it('leaves the reused-version flags of the source store behind', function () {
+		assert.ok(steppedBack.metadataFlags & VERSION_REGRESSED, 'the source row stepped back');
+		const root = RocksDatabase.open(targetPath, {});
+		const cf = new PrimaryRocksDatabase(targetPath, {
+			name: 'PrefixGuard/',
+			encoder: { Encoder: RecordEncoder },
+			sharedStructuresKey: Symbol.for('structures'),
+		}).open();
+		cf.initStore(root);
+		try {
+			const entry = cf.getEntry('d');
+			assert.strictEqual(entry.version, steppedBack.version);
+			assert.strictEqual(entry.value.rank, 6);
+			assert.strictEqual(entry.metadataFlags & (VERSION_REUSED | VERSION_REGRESSED), 0);
 		} finally {
 			cf.close();
 			root.close();
