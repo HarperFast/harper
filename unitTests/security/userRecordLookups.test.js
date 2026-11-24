@@ -191,6 +191,33 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await new Promise((resolve) => setTimeout(resolve, 150));
 		});
 
+		it('applies a replicated role write that steps forward onto a version the role held before', async () => {
+			// harper#4483: on LMDB the older write steps the version back, so the tie no longer looks non-advancing
+			await testUtils.seedUsers([lookupUser()]);
+			const now = Date.now() + 100;
+			const role = { id: 'lookup_role', role: 'lookup_role', permission: { super_user: false }, merges: 0 };
+			const merge = { merges: { __op__: 'add', value: 1 } };
+			await databases.system.hdb_role.put(role, { timestamp: now - 100 });
+			await databases.system.hdb_role.patch('lookup_role', merge, { timestamp: now });
+			const found = user.getUserWithRole('lookup_user');
+			await databases.system.hdb_role.patch('lookup_role', merge, { timestamp: now - 50 });
+			await applyRoleFrom(`${server.hostname}-tie`, { ...role, permission: { super_user: true } }, now);
+			const store = databases.system.hdb_role.primaryStore;
+			const entry = store.getEntry('lookup_role');
+			assert.strictEqual(entry.version, now);
+			assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
+			assert.strictEqual(user.isCurrentUser(found), false, 'the role it was built from changed');
+			assert.strictEqual(user.getUserWithRole('lookup_user').role.permission.super_user, true);
+			await databases.system.hdb_role.put(role, { timestamp: now + 60 });
+			const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+			assert.strictEqual(
+				Boolean(store.getEntry('lookup_role').metadataFlags & VERSION_REUSED),
+				isLMDB,
+				'only a version that stepped back stays flagged past an advancing write'
+			);
+			await new Promise((resolve) => setTimeout(resolve, 210));
+		});
+
 		it('finds a super user from the current records, not one an earlier call returned', async () => {
 			const earlier = await user.getSuperUser();
 			const superUserRoleId = earlier.role.id;
