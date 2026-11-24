@@ -1,0 +1,69 @@
+/**
+ * Legacy SQL's walk over a statement: every value under `root`, depth first, in the order `recursive-iterator`
+ * gave, with no depth limit. A node's children are read only after the caller has seen the node, so a caller may
+ * replace them. Reaching an object a second time throws `Circular reference`, as before: legacy SQL refuses a
+ * statement that shares a node, such as a subquery or a named aggregate.
+ */
+export interface AstStep {
+	parent: any;
+	node: any;
+	key: string;
+	/** Keys from `root` down to `node`. */
+	readonly path: string[];
+}
+
+class Step implements AstStep {
+	parent: any;
+	node: any;
+	key: string;
+	up: Step | undefined;
+
+	constructor(parent: any, node: any, key: string, up: Step | undefined) {
+		this.parent = parent;
+		this.node = node;
+		this.key = key;
+		this.up = up;
+	}
+
+	get path(): string[] {
+		const path: string[] = [];
+		for (let step: Step | undefined = this; step; step = step.up) path.push(step.key);
+		return path.reverse();
+	}
+}
+
+export function* walkAst(root: any): Generator<AstStep> {
+	const expanded = new Set<object>();
+	const pending: Step[] = [];
+	let node = root;
+	let current: Step | undefined;
+	while (true) {
+		if (node !== null && typeof node === 'object') {
+			if (expanded.has(node)) throw new Error('Circular reference');
+			expanded.add(node);
+			const keys = childKeys(node);
+			for (let i = keys.length - 1; i >= 0; i--) pending.push(new Step(node, node[keys[i]], keys[i], current));
+		}
+		current = pending.pop();
+		if (current === undefined) return;
+		yield current;
+		node = current.node;
+	}
+}
+
+// Array and array-like keys in index order; other objects' keys sorted.
+function childKeys(node: object): string[] {
+	const keys = Object.keys(node);
+	if (Array.isArray(node)) return keys;
+	if (isArrayLike(node)) {
+		const length = keys.indexOf('length');
+		if (length > -1) keys.splice(length, 1);
+		return keys;
+	}
+	return keys.sort();
+}
+
+function isArrayLike(node: any): boolean {
+	const length = node.length;
+	return typeof length === 'number' && length > 0 && length - 1 in node;
+}

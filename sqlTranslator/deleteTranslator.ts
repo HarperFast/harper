@@ -24,12 +24,13 @@ export async function convertDelete({ statement, hdb_user }) {
 	let tableInfo = await pGetTableSchema(statement.table.databaseid, statement.table.tableid);
 
 	//convert this delete statement to a SQL search capable statement
-	hdbUtils.backtickASTSchemaItems(statement);
+	hdbUtils.backtickASTSchemaItems({ ...statement, where: undefined });
 	let { table: from, where } = statement;
 
-	let whereString = hdbUtils.isEmpty(where) ? '' : ` WHERE  ${where.toString()}`;
-	let selectString = `SELECT ${(tableInfo as any).hash_attribute} FROM ${from.toString()} ${whereString}`;
-	let searchStatement = (alasql as any).parse(selectString).statements[0];
+	let searchStatement = (alasql as any).parse(`SELECT ${(tableInfo as any).hash_attribute} FROM ${from.toString()}`)
+		.statements[0];
+	// the parsed WHERE, not its text: `IS NOT NULL` is written as `IS NOT(NULL)`, which reads back as `IS (NOT NULL)`
+	if (!hdbUtils.isEmpty(where)) searchStatement.where = new (alasql as any).yy.Expression({ expression: where });
 
 	let deleteObj: any = {
 		operation: terms.OPERATIONS_ENUM.DELETE,

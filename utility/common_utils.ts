@@ -6,7 +6,7 @@ import log from './logging/harper_logger.ts';
 import fsExtra from 'fs-extra';
 import * as os from 'node:os';
 import * as net from 'node:net';
-import RecursiveIterator from 'recursive-iterator';
+import { walkAst } from '../sqlTranslator/walkAst.ts';
 import * as terms from './hdbTerms.ts';
 import { PACKAGE_ROOT } from './packageUtils.js';
 export { PACKAGE_ROOT };
@@ -590,7 +590,7 @@ export function getLimitKey() {
  */
 export function backtickASTSchemaItems(statement: any) {
 	try {
-		let iterator = new RecursiveIterator(statement);
+		let iterator = walkAst(statement);
 		for (let { node } of iterator) {
 			if (node) {
 				if (node.columnid && typeof node.columnid !== 'string') {

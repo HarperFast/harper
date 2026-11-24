@@ -1,6 +1,6 @@
 'use strict';
 
-import RecursiveIterator from 'recursive-iterator';
+import { walkAst } from './walkAst.ts';
 import alasql from 'alasql';
 import clone from 'clone';
 import * as commonUtils from '../utility/common_utils.ts';
@@ -68,7 +68,7 @@ class SelectValidator {
 	 */
 	hasColumns() {
 		let hasColumns = false;
-		let iterator = new RecursiveIterator(this.statement);
+		let iterator = walkAst(this.statement);
 		for (let { node } of iterator) {
 			if (node && node.columnid) {
 				hasColumns = true;
@@ -133,7 +133,7 @@ class SelectValidator {
 	 * detects * in the select, if found adds all columns to the select
 	 */
 	checkColumnsForAsterisk() {
-		let iterator = new RecursiveIterator(this.statement.columns);
+		let iterator = walkAst(this.statement.columns);
 
 		for (let { node, path } of iterator) {
 			//we check the path to make sure the '*' is not wrapped in some form of expression like count(*)
@@ -185,7 +185,7 @@ class SelectValidator {
 			return;
 		}
 
-		let iterator = new RecursiveIterator(segment);
+		let iterator = walkAst(segment);
 		let attributes = [];
 		for (let { node } of iterator) {
 			if (!commonUtils.isEmpty(node) && !commonUtils.isEmpty(node.columnid) && node.columnid !== '*') {

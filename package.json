@@ -275,7 +275,6 @@
 		"pino": "8.21.0",
 		"pkijs": "3.4.3",
 		"properties-reader": "2.3.0",
-		"recursive-iterator": "3.3.0",
 		"semver": "7.8.5",
 		"send": "^1.2.0",
 		"ses": "^1.15.0",
