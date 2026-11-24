@@ -762,13 +762,19 @@ describe('bounded history readers', function () {
 	}
 	const replayed = (events) => events.map((event) => ({ id: event.id, value: event.value, time: event.localTime }));
 
-	const LINEAR_REPLAY_READS = { true: [8642, 8643], false: [14404, 14405] };
+	const LINEAR_REPLAY_READS = { true: 8642, false: 14404 };
 	for (const isCollection of [true, false]) {
 		it(`replays 2,880 patches with linear audit reads (${isCollection ? 'collection' : 'record'})`, async () => {
 			const T = newTable();
 			const startTime = Date.now() - 1;
 			await T.put({ id: 'a', n: 0, name: 'start' });
 			for (let n = 1; n <= 2880; n++) await T.patch('a', { n });
+			// An LMDB commit can land after its write resolves, and once it lands with a subscriber active
+			// its aftercommit pass reads the log, which the meter would count.
+			if (lmdb) {
+				await T.primaryStore.committed;
+				await new Promise(setImmediate);
+			}
 			const counter = meter(T);
 			let subscription;
 			try {
@@ -783,17 +789,7 @@ describe('bounded history readers', function () {
 					events.map((event) => event.value.n),
 					Array.from({ length: 2881 }, (_, n) => n)
 				);
-				const [rocksReads, lmdbReads] = LINEAR_REPLAY_READS[isCollection];
-				if (lmdb) {
-					// LMDB usually takes one more read than RocksDB, but not always: a run on main read
-					// 14404, RocksDB's count. Linear replay is the property; the last read can go either way.
-					assert.ok(
-						counter.logReads >= rocksReads && counter.logReads <= lmdbReads,
-						`${counter.logReads} log reads, expected ${rocksReads}-${lmdbReads}`
-					);
-				} else {
-					assert.strictEqual(counter.logReads, rocksReads);
-				}
+				assert.strictEqual(counter.logReads, LINEAR_REPLAY_READS[isCollection]);
 			} finally {
 				counter.close();
 				subscription?.end();

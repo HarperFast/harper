@@ -1415,6 +1415,7 @@ describe('Transactions are never aborted once durably written to the transaction
 
 		it('releases a deferred record lock via the hold-deadline timer when a native commit wedges and never settles', async function () {
 			this.timeout(20000);
+			const shedLimitMs = 1500;
 			await ensureSystemTables();
 			const analyticsTable = table({
 				table: 'hdb_analytics',
@@ -1432,7 +1433,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			const recordId = id('lock-wedged-commit');
 			await AuditedA.put({ id: recordId, writer: 'seed', count: 0 });
 
-			const prevMaxDuration = setMaxOutstandingTxnDuration(1500);
+			const prevMaxDuration = setMaxOutstandingTxnDuration(shedLimitMs);
 			pendingRestores.push(() => setMaxOutstandingTxnDuration(prevMaxDuration));
 
 			const targetDb = AuditedA.primaryStore.store.db;
@@ -1460,7 +1461,7 @@ describe('Transactions are never aborted once durably written to the transaction
 			});
 
 			const holder = await AuditedA.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS });
-			holder.getContext().transaction.timeoutBudget = 1500;
+			holder.getContext().transaction.timeoutBudget = shedLimitMs;
 			holder.set('writer', 'wedged-holder');
 			holder.set('count', 1);
 			const savePromise = holder.save();
@@ -1477,8 +1478,8 @@ describe('Transactions are never aborted once durably written to the transaction
 			try {
 				// The hold-deadline clock (commitStartedAt) starts before trackOutstandingCommit() stamps
 				// the outstanding-commit clock, so the contender can win the lock a few ms before the
-				// wedged commit's age passes the shed limit. Wait on the value checkOverloaded() reads.
-				await waitFor(() => getOutstandingCommits().oldestAgeMs > 1500, {
+				// wedged commit's age passes the shed limit.
+				await waitFor(() => getOutstandingCommits().oldestAgeMs > shedLimitMs, {
 					message: 'the wedged native commit should age past the shed limit',
 				});
 				const metricId = [Date.now(), 123];
