@@ -4819,6 +4819,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let restoreFullTextLiveState: (() => void) | undefined;
 	let armFullTextLiveStateRestore: (() => void) | undefined;
 	const attributesToIndex = [];
+	const indicesToUnregister: string[] = [];
 	let releaseResidencyFence: (() => void) | undefined;
 	try {
 		if (
@@ -5568,8 +5569,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				exclusiveLock();
 				hasChanges = true;
 				if (staleRow) attributesDbi.remove(key);
-				// Unregistered, never dropped: other threads write to the store until their reload unregisters it.
-				if (removeIndex) delete indices[attribute_name];
+				if (removeIndex) indicesToUnregister.push(attribute_name);
 			}
 		}
 		const hasHnswDeclaration = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
@@ -5788,7 +5788,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						}
 						// an index left unregistered while records changed still holds their old entries, and only a
 						// build clears them
-						if (!hasExistingData) for (const _entry of dbi.getRange({ limit: 1 })) hasExistingData = true;
+						if (!hasExistingData) for (const _key of dbi.getKeys({ limit: 1 })) hasExistingData = true;
 						if (hasExistingData) {
 							// When the index definition itself has structurally changed (different distance
 							// metric, M, quantization, etc.), any
@@ -6020,6 +6020,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		Table.fullTextIndexGenerations = fullTextIndexGenerationMap;
 		Table.fullTextIndexRetirements = fullTextIndexRetirementNames ?? [];
 	}
+	// Only once the declaration has succeeded, since a declaration that fails leaves the row indexed. Unregistered,
+	// never dropped: other threads write to the store until their reload unregisters it.
+	for (const name of indicesToUnregister) delete Table.indices[name];
 	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
 	const operationBeforeRefresh = Table.indexingOperation;
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
@@ -6819,9 +6822,9 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			// serent-canopy issue #135 fingerprint: a completed migration with transient errors
 			// (e.g. ERR_BUSY from RocksDB under load) leaving gaps while appearing successful.
 			for (const attribute of attributes) {
-				attribute.indexingFailed = true;
 				// Preserve lastIndexedKey so the retry resumes from the last checkpoint.
-				if (!writeBuildRow(attribute)) continue;
+				if (!writeBuildRow(attribute, { ...attribute, indexingFailed: true })) continue;
+				attribute.indexingFailed = true;
 				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
 				// in Table.indices (which may differ if resetDatabases() ran during this pass).
 				attribute.dbi.isIndexing = true;
@@ -6881,8 +6884,8 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 		// signal. Mirrors the hadIndexingErrors path. harper#843
 		try {
 			for (const attribute of attributes) {
+				if (!writeBuildRow(attribute, { ...attribute, indexingFailed: true })) continue;
 				attribute.indexingFailed = true;
-				if (!writeBuildRow(attribute)) continue;
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;

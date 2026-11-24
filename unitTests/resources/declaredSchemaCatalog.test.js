@@ -519,6 +519,38 @@ describe('A local schema declaration persists what it declares into the attribut
 			assert.deepStrictEqual(await searchIds(databases[DATABASE].Deindexed, 'tag', 'x'), ['d1', 'd2']);
 		});
 
+		it('keeps maintaining an index when the declaration that drops it fails', async function () {
+			const declare = (fields) =>
+				table({
+					table: 'FailedDeindex',
+					database: DATABASE,
+					schemaDefined: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'tag', type: 'String', ...fields },
+					],
+				});
+			declare({ indexed: true });
+			const { FailedDeindex } = databases[DATABASE];
+			await FailedDeindex.put('f1', { id: 'f1', tag: 'x' });
+			await committed('FailedDeindex');
+			const catalog = FailedDeindex.dbisDB;
+			const put = catalog.put;
+			catalog.put = function (key, ...rest) {
+				if (key === 'FailedDeindex/tag') throw new Error('injected catalog failure');
+				return put.call(this, key, ...rest);
+			};
+			try {
+				assert.throws(() => declare({}), /injected catalog failure/);
+			} finally {
+				catalog.put = put;
+			}
+			assert.ok(catalogRow('FailedDeindex', 'tag').indexed, 'the row still declares the index');
+			assert.ok(FailedDeindex.indices.tag, 'so this thread still maintains it');
+			await FailedDeindex.put('f2', { id: 'f2', tag: 'x' });
+			assert.deepStrictEqual(await searchIds(FailedDeindex, 'tag', 'x'), ['f1', 'f2']);
+		});
+
 		it('rebuilds an index added back after its records changed unindexed', async function () {
 			const declare = (directive) =>
 				loadGQLSchema(`
@@ -564,7 +596,7 @@ describe('A local schema declaration persists what it declares into the attribut
 			for (let i = 1; i <= 5; i++) await PlaneReadded.put(i, { vector: [i, i + 1, i + 2, i + 3] });
 			await committed('PlaneReadded');
 			const store = PlaneReadded.indices.vector;
-			// the plane publishes its mappings into the index store after the writes
+			// the plane applies committed writes, and records them in its store, asynchronously
 			await waitFor(() => [...store.getRange({})].length >= 5, {
 				timeout: 15_000,
 				message: 'the plane never published its mappings',
