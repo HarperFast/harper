@@ -2428,6 +2428,10 @@ function initStores(
 						copyFields(primaryKey, attribute, PRIMARY_KEY_DECLARED_FIELDS);
 						attributesUpdated = true;
 					}
+					if (primaryKey && attribute.type !== undefined && primaryKey.type !== attribute.type) {
+						primaryKey.type = attribute.type;
+						attributesUpdated = true;
+					}
 				}
 			} catch (error) {
 				logger
@@ -6654,6 +6658,8 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
 			// durably indexed: persisted once the writes it covers have settled and flushed, frozen after any
 			// record fails so the retry re-covers it, and stamped with its own key (see the trigger in table()).
+			// a later declaration took the row: the build stops rather than keep writing into the store
+			let ownershipLost = false;
 			const persistCheckpoint = async (key) => {
 				if (hadIndexingErrors) return;
 				try {
@@ -6667,7 +6673,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 						attribute.lastIndexedKey = key;
 						attribute.checkpointCertified = key;
 						attribute.checkpointAlgorithm = checkpointAlgorithmOf(i);
-						writeBuildRow(attribute);
+						if (!writeBuildRow(attribute)) ownershipLost = true;
 					}
 				} catch (error) {
 					logger.warn(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
@@ -6679,7 +6685,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			// before it are recomputed rather than sealed into the index.
 			for (;;) {
 				for (const attribute of attributesToClear) {
-					if (restarted && buildSuperseded(Table, attributes)) return;
+					if (buildSuperseded(Table, attributes)) return;
 					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
 					attribute.dbi.customIndex?.resetDerivedStorage?.();
 					if (attribute.dbi.clearAsync) {
@@ -6772,6 +6778,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 						nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 						nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
 						await checkpointing;
+						if (ownershipLost) return;
 						resolverStateCurrent = false;
 						checkpointing = persistCheckpoint(key);
 					}
@@ -6841,6 +6848,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			);
 		} else {
 			// update the attributes to indicate that we are finished
+			let completedAny = false;
 			for (let i = 0; i < attributesLength; i++) {
 				const attribute = attributes[i];
 				// `checkpointAlgorithm` survives completion, unlike the other build fields: without it an index built here is
@@ -6848,6 +6856,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 				// The attribute keeps its claim until the row is written, so a failed write still marks it failed.
 				const completed = { checkpointAlgorithm: checkpointAlgorithmOf(i) };
 				if (!writeBuildRow(attribute, completed)) continue;
+				completedAny = true;
 				copyFields(attribute, completed, INDEX_BUILD_FIELDS);
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
@@ -6856,6 +6865,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = false;
 			}
+			if (!completedAny) return;
 			// now notify all the threads that we are done and the index is ready to use
 			await signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName, undefined, branchPath)

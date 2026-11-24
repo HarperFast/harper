@@ -18,6 +18,7 @@ function run() {
 		const org = RelOrg && (await RelOrg.get({ id: 'o1', select: ['id', 'members'] }));
 		return {
 			primaryKeyNullable: attribute(PeerStamped, 'id')?.nullable,
+			primaryKeyType: attribute(PeerStamped, 'id')?.type,
 			createdTime: attribute(PeerStamped, 'createdAt')?.assignCreatedTime,
 			updatedTime: attribute(PeerStamped, 'updatedAt')?.assignUpdatedTime,
 			orgIndexRegistered: Boolean(RelMember?.indices.org),

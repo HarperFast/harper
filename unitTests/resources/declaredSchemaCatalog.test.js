@@ -4,7 +4,7 @@ const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { databases, resetDatabases, table } = require('#src/resources/databases');
+const { databases, resetDatabases, setIndexingCheckpointPeriod, table } = require('#src/resources/databases');
 const { defineTable, types } = require('#src/resources/defineTable');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
@@ -92,7 +92,7 @@ describe('A local schema declaration persists what it declares into the attribut
 		let warmReader;
 		before(async function () {
 			createFromPeer('PeerStamped', [
-				['id', 'ID', true],
+				['id', 'String', true],
 				['name', 'String'],
 				['createdAt', 'String'],
 				['updatedAt', 'String'],
@@ -203,6 +203,7 @@ describe('A local schema declaration persists what it declares into the attribut
 		it('reaches a thread that loaded the catalog before the declaration', async function () {
 			assert.deepStrictEqual(await warmReader.report(), {
 				primaryKeyNullable: false,
+				primaryKeyType: 'ID',
 				createdTime: true,
 				updatedTime: true,
 				orgIndexRegistered: false,
@@ -216,6 +217,7 @@ describe('A local schema declaration persists what it declares into the attribut
 			readers.push(coldReader);
 			assert.deepStrictEqual(await coldReader.report(), {
 				primaryKeyNullable: false,
+				primaryKeyType: 'ID',
 				createdTime: true,
 				updatedTime: true,
 				orgIndexRegistered: false,
@@ -465,14 +467,52 @@ describe('A local schema declaration persists what it declares into the attribut
 			await committed('DroppedWhileBuilding');
 			declare({ indexed: true });
 			const build = DroppedWhileBuilding.indexingOperation;
+			const store = DroppedWhileBuilding.indices.tag;
 			assert.ok(catalogRow('DroppedWhileBuilding', 'tag').indexingBuildId, 'a build is running');
 			declare({});
 			await build;
+			assert.strictEqual([...store.getRange({})].length, 0, 'the superseded build stopped before scanning');
 			await committed('DroppedWhileBuilding');
 			assert.strictEqual(catalogRow('DroppedWhileBuilding', 'tag').indexed, undefined);
 			assert.strictEqual(catalogRow('DroppedWhileBuilding', 'tag').indexingBuildId, undefined);
 			resetDatabases();
 			assert.strictEqual(databases[DATABASE].DroppedWhileBuilding.indices.tag, undefined);
+		});
+
+		it('stops a build at its next checkpoint once a declaration drops its index', async function () {
+			const ROWS = 20_000;
+			const declare = (fields) =>
+				table({
+					table: 'StoppedBuild',
+					database: DATABASE,
+					schemaDefined: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'tag', type: 'String', ...fields },
+					],
+				});
+			declare({});
+			const { StoppedBuild } = databases[DATABASE];
+			let last;
+			for (let i = 0; i < ROWS; i++) last = StoppedBuild.put(`s${i}`, { id: `s${i}`, tag: `t${i % 3}` });
+			await last;
+			await committed('StoppedBuild');
+			const previousPeriod = setIndexingCheckpointPeriod(0, 100);
+			try {
+				declare({ indexed: true });
+				const build = StoppedBuild.indexingOperation;
+				const store = StoppedBuild.indices.tag;
+				await waitFor(() => catalogRow('StoppedBuild', 'tag').lastIndexedKey !== undefined, {
+					timeout: 15_000,
+					message: 'the build never checkpointed',
+				});
+				declare({});
+				await build;
+				assert.ok([...store.getRange({})].length < ROWS, 'the build stopped before indexing every row');
+			} finally {
+				setIndexingCheckpointPeriod(previousPeriod.ms, previousPeriod.minRecords);
+			}
+			assert.strictEqual(catalogRow('StoppedBuild', 'tag').indexed, undefined);
 		});
 
 		it('keeps declared fields when a peer definition recovers an abandoned build', async function () {
