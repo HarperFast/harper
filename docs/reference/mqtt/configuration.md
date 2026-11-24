@@ -15,6 +15,8 @@ The `mqtt` section in `harper-config.yaml` controls Harper's built-in MQTT broke
 
 Harper must be restarted for configuration changes to take effect.
 
+Harper requires `mqtt.network` whenever the `mqtt` section is present (an `HDB_CONFIG` install template may leave it out; install adds it). The example under each option below shows only that option; a full section also carries `network`, as in the minimal example.
+
 ## Minimal Example
 
 ```yaml
@@ -112,31 +114,23 @@ Type: `boolean`
 
 Default: `false`
 
-When `true`, all incoming MQTT connections must provide a valid client certificate. Connections without a valid certificate are rejected. By default, clients can authenticate with either mTLS or standard username/password credentials.
+When `true`, every connection to the MQTT ports (`port` and `securePort`) must provide a valid client certificate. Connections without a valid certificate are rejected, which includes every client on the plain `port`, since it cannot present one. MQTT over WebSockets arrives on the HTTP port and follows [`http.mtls`](../http/configuration.md#httpmtls) instead. By default, clients can authenticate with either mTLS or standard username/password credentials.
 
 ### `mqtt.network.mtls.certificateAuthority`
 
-Type: `string`
+Type: `string | null`
 
-Default: Path from `tls.certificateAuthority`
-
-Path to the certificate authority (CA) file used to verify MQTT client certificates. By default, uses the CA configured in the root `tls` section. Set this if MQTT clients should be verified against a different CA than the one used for HTTP/TLS.
+Not applied yet ([harper#4497](https://github.com/HarperFast/harper/issues/4497)). Harper accepts this setting, but verifies MQTT client certificates against the same certificate authorities as its other TLS listeners, so it cannot restrict MQTT to a different CA.
 
 ### `mqtt.network.mtls.certificateVerification`
 
-Type: `boolean | object`
+Type: `boolean | object | null`
 
-Default: `true`
+Default: `false`
 
-When mTLS is enabled, Harper verifies the revocation status of client certificates using OCSP (Online Certificate Status Protocol). This ensures revoked certificates cannot be used for authentication.
+When mTLS is enabled, Harper can verify the revocation status of client certificates using CRL (Certificate Revocation List) and/or OCSP (Online Certificate Status Protocol). Disabled by default; `null` also disables it.
 
-Set to `false` to disable revocation checking, or configure as an object:
-
-| Property      | Type    | Default       | Description                                                                                            |
-| ------------- | ------- | ------------- | ------------------------------------------------------------------------------------------------------ |
-| `timeout`     | integer | `5000`        | Maximum milliseconds to wait for an OCSP response.                                                     |
-| `cacheTtl`    | integer | `3600000`     | Milliseconds to cache successful verification results (default 1h).                                    |
-| `failureMode` | string  | `'fail-open'` | Behavior when OCSP verification fails: `'fail-open'` (allow, log warning) or `'fail-closed'` (reject). |
+Set to `true` to enable with all defaults, or configure as an object with the same options as [`http.mtls.certificateVerification`](../http/configuration.md#httpmtlscertificateverification): a global `failureMode` (default `'fail-closed'`), and `crl` and `ocsp`, each a boolean or an object. Timeouts and cache lifetimes belong inside `crl` or `ocsp`. A `timeout` or `cacheTtl` placed directly under `certificateVerification` is invalid: Harper logs a validation error and does not check revocation. Unlike the HTTP options, these have no environment variable or `set_configuration` name of their own; set them in the config file, or pass the whole `mqtt_network_mtls` object.
 
 ```yaml
 mqtt:
@@ -145,8 +139,9 @@ mqtt:
       required: true
       certificateVerification:
         failureMode: fail-closed
-        timeout: 5000
-        cacheTtl: 3600000
+        ocsp:
+          timeout: 5000
+          cacheTtl: 3600000
 ```
 
 ## mTLS Examples
@@ -207,11 +202,11 @@ mqtt:
     securePort: 8883
     mtls:
       required: false
-      certificateAuthority: ~/hdb/keys/ca.pem
       certificateVerification:
         failureMode: fail-open
-        timeout: 5000
-        cacheTtl: 3600000
+        ocsp:
+          timeout: 5000
+          cacheTtl: 3600000
   webSocket: true
   requireAuthentication: true
   logging:

@@ -496,7 +496,7 @@ Type: `number`
 
 Default: `100000`
 
-Tunes the heuristic used to evict entries early when reclamation priority is high. The heuristic considers each entry's remaining time-to-expiration, record size, and how long ago it was last refreshed. Lowering this evicts more aggressively when free space is critical; raising it preserves entries longer.
+Tunes the heuristic used to evict entries early when reclamation priority is high. The heuristic considers each entry's remaining time-to-expiration, record size, and how long ago it was last refreshed. Raising this evicts more aggressively when free space is critical; lowering it preserves entries longer.
 
 ```yaml
 storage:
