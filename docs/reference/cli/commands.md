@@ -365,7 +365,7 @@ Setup never changes or deletes a policy. It creates none, and says what to chang
 
 - an Active policy for the workflow file leaves `pull_request_target` out of its Restrict events. A repository policy is yours to change; the owner of an organization or enterprise policy has to allow the event for this repository and file;
 - a repository policy that targets the workflow file is disabled or in evaluate mode. Make it Active with the workflow's events allowed, or delete it and run setup again;
-- the workflow file on the default branch runs on other events than the one in the checkout. Commit the checkout's, then run setup again;
+- the workflow file on the default branch differs from the one in the checkout, and fails the checks setup runs on the checkout's or runs on other events. Commit the checkout's, then run setup again;
 - the workflow file's name contains a character a policy reads as a pattern, such as `*`, `?`, `[` or `+`.
 
 An Active policy that already allows the event is reported and left as it is, with any event of the workflow it leaves out. When setup cannot create the policy, because `gh` is not installed or signed in, the account is not an admin of the repository (which a policy needs, more than the variable does), GitHub refuses, or you decline, it prints the steps below and the `gh api` command that creates the policy, and goes on. When it could not look up whether the repository is public, it prints only the steps.

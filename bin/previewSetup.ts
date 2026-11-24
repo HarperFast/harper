@@ -11,7 +11,6 @@ import {
 	resolveGithubRepository,
 	resolveSetupTarget,
 	setupGithubVariable,
-	workflowTriggerEvents,
 } from './deploySetupGithubActions.ts';
 import { ACTIONS_POLICY_DOCS, createActionsPolicy, prepareActionsPolicy } from './actionsEventPolicy.ts';
 import { fetchSecretsPublicKey, resolveDeployToken, sealDeployCredential } from './deploySetup.ts';
@@ -239,12 +238,14 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 					shared: dataMode === 'shared',
 				})
 			: undefined;
-	const workflowContent = starter ?? checkout?.content;
 	const actionsPolicy = await prepareActionsPolicy({
 		repository,
 		workflow,
-		branch,
-		checkoutEvents: workflowContent === undefined ? undefined : workflowTriggerEvents(workflowContent),
+		checkoutWorkflow: starter ?? checkout?.content,
+		workflowProblems: (content) => {
+			const check = checkPreviewWorkflowFile(content, branch, environment, PREVIEW_CLEANUP_ENVIRONMENT);
+			return [...check.problems, ...(check.unsafe ?? [])];
+		},
 		consent: typeof args.actions_policy === 'boolean' ? args.actions_policy : undefined,
 		interactive,
 	});

@@ -182,12 +182,11 @@ function checkEnvironmentJobs(workflow: any, environment: string, problems: stri
 
 function triggerEvents(triggers: unknown): { names: string[]; config: Record<string, any> } {
 	if (typeof triggers === 'string') return { names: [triggers], config: {} };
-	if (Array.isArray(triggers)) return { names: triggers.map(String), config: {} };
+	if (Array.isArray(triggers)) return { names: triggers.filter((name) => typeof name === 'string'), config: {} };
 	if (triggers && typeof triggers === 'object') return { names: Object.keys(triggers), config: triggers };
 	return { names: [], config: {} };
 }
 
-/** The events a workflow file runs on; undefined when it does not parse or names none. */
 export function workflowTriggerEvents(content: string): string[] | undefined {
 	const { workflow, error } = parseWorkflow(content);
 	if (error) return undefined;
@@ -519,7 +518,6 @@ interface RepositoryInfo {
 	private?: boolean;
 	/** Whether the account that looked it up can push; GitHub reports it only to a signed-in caller. */
 	canPush?: boolean;
-	/** Whether that account is an admin, which an Actions policy takes; reported the same way. */
 	canAdminister?: boolean;
 }
 

@@ -260,7 +260,10 @@ describe('harper preview setup (harper#3609)', () => {
 				text,
 				/✓ Created the Actions event policy "Allow Harper previews \(preview\.yaml\)" on acme\/shop: only pull_request_target can start \.github\/workflows\/preview\.yaml\./
 			);
-			assert.match(text, /organization or enterprise policy can still block it: Policy insights/);
+			assert.match(
+				text,
+				/Another Active policy, here or in an organization or enterprise, can still block it: Policy insights/
+			);
 			assert.ok(text.indexOf('can deploy previews of shop') < text.indexOf('Created the Actions event policy'));
 			assert.ok(text.indexOf('Created the Actions event policy') < text.indexOf('Set the HARPER_PREVIEW_TARGET'));
 		});
@@ -298,7 +301,10 @@ describe('harper preview setup (harper#3609)', () => {
 				printed(),
 				/✓ The Actions event policy "Allow Harper previews" on acme\/shop already allows pull_request_target for \.github\/workflows\/preview\.yaml\./
 			);
-			assert.match(printed(), /It leaves out workflow_dispatch, which \.github\/workflows\/preview\.yaml also runs on/);
+			assert.match(
+				printed(),
+				/The policy "Allow Harper previews" leaves out workflow_dispatch, which \.github\/workflows\/preview\.yaml also runs on, so those runs are blocked/
+			);
 		});
 
 		it('leaves a disabled policy for the file, or one that leaves the event out, as it is and says what to change', async () => {
@@ -317,7 +323,7 @@ describe('harper preview setup (harper#3609)', () => {
 			await setup({ actions_policy: true });
 			assert.match(
 				printed(),
-				/Policy "Previews" is Active for \.github\/workflows\/preview\.yaml, and its Restrict events leaves out pull_request_target: add pull_request_target to its allowed events, or exclude \.github\/workflows\/preview\.yaml from it\./
+				/Policy "Previews" is Active for \.github\/workflows\/preview\.yaml and its Restrict events leaves out pull_request_target: add pull_request_target to its allowed events, or exclude \.github\/workflows\/preview\.yaml from it\./
 			);
 			assert.strictEqual(await wasPosted(), false);
 			assert.ok((await policyCalls()).every((call) => !/POST|PUT|PATCH|DELETE/.test(call)));
@@ -335,12 +341,12 @@ describe('harper preview setup (harper#3609)', () => {
 			assert.strictEqual(await wasPosted(), false);
 			assert.match(
 				printed(),
-				/The organization policy "Previews" \(acme\) is Active for \.github\/workflows\/preview\.yaml, and its Restrict events leaves out pull_request_target: its owner has to allow pull_request_target for acme\/shop and \.github\/workflows\/preview\.yaml\./
+				/The organization policy "Previews" \(acme\) is Active for \.github\/workflows\/preview\.yaml, through a pattern, and its Restrict events leaves out pull_request_target: its owner has to allow pull_request_target for acme\/shop and \.github\/workflows\/preview\.yaml\./
 			);
 		});
 
-		it('reads every page of policies before it decides', async () => {
-			const unrelated = Array.from({ length: 100 }, (_, index) =>
+		it('reads every page of policies before it decides, even after a short page', async () => {
+			const unrelated = Array.from({ length: 30 }, (_, index) =>
 				policy({
 					id: index + 2,
 					conditions: { workflow_path: { include: [`.github/workflows/other-${index}.yaml`], exclude: [] } },
@@ -349,7 +355,7 @@ describe('harper preview setup (harper#3609)', () => {
 			const blocking = policy({
 				rules: [{ type: 'restrict_action_events', parameters: { allowed_events: ['push'] } }],
 			});
-			await fakeGh({ list: policyList(unrelated, 101), page2: policyList([blocking], 101) });
+			await fakeGh({ list: policyList(unrelated, 31), page2: policyList([blocking], 31) });
 			await setup({ actions_policy: true });
 			assert.strictEqual(await wasPosted(), false);
 			assert.match(printed(), /leaves out pull_request_target: add pull_request_target to its allowed events\./);
@@ -415,6 +421,88 @@ describe('harper preview setup (harper#3609)', () => {
 				/✓ The Actions event policy "Allow Harper previews \(preview\.yaml\)" on acme\/shop already allows/
 			);
 			assert.doesNotMatch(printed(), /could not create/);
+		});
+
+		it('says a policy may exist when a failed request leaves the policies unreadable', async () => {
+			await fakeGh({ create: 'echo "gh: context deadline exceeded" >&2; exit 1' });
+			const script = await fs.readFile(path.join(directory, 'bin', 'gh'), 'utf8');
+			await fs.writeFile(
+				path.join(directory, 'bin', 'gh'),
+				script.replace(
+					/(\*actions\/policies\*\) )cat '[^']*'/,
+					`$1if [ -f '${file('posted.json')}' ]; then ${forbidden}; else cat '${file('list.answer')}'; fi`
+				)
+			);
+			await setup({ actions_policy: true });
+			assert.match(
+				printed(),
+				/Setup could not create the policy \(gh: context deadline exceeded\)\. It may have been created anyway: look in Settings > Actions > Policies first\./
+			);
+		});
+
+		it('vouches for the default branch copy before it allows events for it', async () => {
+			const unsafe = starterPreviewWorkflow({ app: 'shop', branch: 'main' }).replace(
+				"    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				''
+			);
+			assert.notStrictEqual(unsafe, starterPreviewWorkflow({ app: 'shop', branch: 'main' }));
+			await fakeGh({ contents: unsafe });
+			await setup({ actions_policy: true });
+			assert.strictEqual(await wasPosted(), false);
+			assert.match(
+				printed(),
+				/preview\.yaml on main is not the copy here, and setup cannot vouch for it: job "deploy" runs for pull requests from forks.*Commit this copy to main, then run setup again\./
+			);
+			assert.doesNotMatch(printed(), /printf/);
+		});
+
+		it('reads the workflow from the default branch, whatever branch= says', async () => {
+			await setup({ branch: 'release', actions_policy: true });
+			const reads = (await ghCalls()).filter((call) => call.includes('contents/'));
+			assert.deepStrictEqual(
+				reads.map((call) => /\?ref=(\S+)/.exec(call)?.[1]),
+				['main']
+			);
+		});
+
+		it('creates its own policy beside one that covers the file through a pattern, naming the events that one blocks', async () => {
+			await writeCheckoutWorkflow(dispatchWorkflow());
+			await fakeGh({
+				contents: dispatchWorkflow(),
+				list: policyList([
+					policy({
+						name: 'Broad',
+						conditions: { workflow_path: { include: ['.github/workflows/*.yaml'], exclude: [] } },
+					}),
+				]),
+			});
+			await setup({ write_workflow: undefined, actions_policy: true });
+			assert.ok(await wasPosted());
+			assert.match(
+				printed(),
+				/The policy "Broad", through a pattern, leaves out workflow_dispatch, which \.github\/workflows\/preview\.yaml also runs on/
+			);
+		});
+
+		it('does not take an exclude pattern as leaving the file out of a blocking policy', async () => {
+			const pushOnly = [{ type: 'restrict_action_events', parameters: { allowed_events: ['push'] } }];
+			await fakeGh({
+				list: policyList([
+					policy({ conditions: { workflow_path: { include: [], exclude: ['**/preview.yaml'] } }, rules: pushOnly }),
+				]),
+			});
+			await setup({ actions_policy: true });
+			assert.strictEqual(await wasPosted(), false);
+			assert.match(printed(), /leaves out pull_request_target: add pull_request_target to its allowed events/);
+		});
+
+		it('creates none beside a turned-off policy for the file that comes without its rules', async () => {
+			const { rules, ...withoutRules } = policy({ name: 'Off', enforcement: 'disabled' });
+			assert.ok(rules);
+			await fakeGh({ list: policyList([withoutRules]) });
+			await setup({ actions_policy: true });
+			assert.strictEqual(await wasPosted(), false);
+			assert.match(printed(), /GitHub did not list the rules of policy "Off"/);
 		});
 
 		it('does not read or create a policy for a private repository', async () => {
