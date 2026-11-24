@@ -278,7 +278,7 @@ jobs:
 		const starter = starterPreviewWorkflow({ app: 'shop', branch: 'main' });
 		const check = (content, branch = 'main') => checkPreviewWorkflowFile(content, branch, 'preview', 'preview-cleanup');
 		const sameRepository = ' && github.event.pull_request.head.repo.full_name == github.repository';
-		const deployIf = `    if: github.event.action != 'closed'${sameRepository}\n`;
+		const deployIf = `    if: vars.HARPER_PREVIEW_TARGET != '' && github.event.action != 'closed'${sameRepository}\n`;
 		const withHeadEnv = starter
 			.replace('permissions: {}\n', 'permissions: {}\nenv:\n  PR: ${{ github.event.pull_request.number }}\n')
 			.replace(
@@ -361,7 +361,7 @@ jobs:
 		it('checks every job that holds the identity token, whatever its environment', () => {
 			const expression = starter.replace('    environment: preview-cleanup\n', '    environment: ${{ inputs.env }}\n');
 			const unguarded = expression.replace(
-				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				"    if: vars.HARPER_PREVIEW_TARGET != '' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
 				''
 			);
 			assert.match(problemsOf(unguarded), /job "cleanup" runs for pull requests from forks/);
@@ -555,7 +555,7 @@ jobs:
 
 		it('notes a cleanup job that cannot run when a pull request closes, or whose condition it cannot read', () => {
 			const cleanupIf =
-				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n";
+				"    if: vars.HARPER_PREVIEW_TARGET != '' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n";
 			const excluded = starter.replace(cleanupIf, deployIf);
 			assert.deepStrictEqual(check(excluded), {
 				problems: [],
@@ -584,12 +584,12 @@ jobs:
 
 		it('reads a test that the variable setup sets is set as true, and no other variable', () => {
 			const clean = { problems: [], unverified: [], unsafe: [] };
-			// create-harper's workflow stays dormant on this gate until setup sets the variable.
-			const createHarper = starter.replace(/^ {4}if: /gm, "    if: vars.HARPER_PREVIEW_TARGET != '' && ");
-			assert.strictEqual(createHarper.match(/HARPER_PREVIEW_TARGET != '' && /g).length, 2);
-			assert.deepStrictEqual(check(createHarper), clean);
+			// The starter, like create-harper's workflow, stays dormant on this gate until setup sets the variable.
+			assert.strictEqual(starter.match(/^ {4}if: vars\.HARPER_PREVIEW_TARGET != '' && /gm).length, 2);
+			assert.deepStrictEqual(check(starter), clean);
+			const ungated = starter.replace(/^ {4}if: vars\.HARPER_PREVIEW_TARGET != '' && /gm, '    if: ');
 			// In `${{ }}`, so YAML reads a leading quote or `!` as part of the condition.
-			const gatedWith = (gate, content = starter) =>
+			const gatedWith = (gate, content = ungated) =>
 				content.replace(/^ {4}if: (.*)$/gm, (_, condition) => `    if: \${{ ${gate} && ${condition} }}`);
 			for (const gate of [
 				"vars.HARPER_PREVIEW_TARGET != ''",
@@ -611,7 +611,8 @@ jobs:
 				assert.deepStrictEqual(check(gatedWith(gate)), { ...clean, unverified: [unknown] }, gate);
 			}
 			const cleanupIf = `    if: github.event.action == 'closed'${sameRepository}\n`;
-			const excluded = gatedWith("vars.HARPER_PREVIEW_TARGET != ''", starter.replace(cleanupIf, deployIf));
+			const ungatedDeployIf = `    if: github.event.action != 'closed'${sameRepository}\n`;
+			const excluded = gatedWith("vars.HARPER_PREVIEW_TARGET != ''", ungated.replace(cleanupIf, ungatedDeployIf));
 			assert.deepStrictEqual(check(excluded), {
 				...clean,
 				unverified: [

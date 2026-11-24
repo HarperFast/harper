@@ -465,7 +465,7 @@ describe('harper preview setup (harper#3609)', () => {
 
 		it('vouches for the default branch copy before it allows events for it', async () => {
 			const unsafe = starterPreviewWorkflow({ app: 'shop', branch: 'main' }).replace(
-				"    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				"    if: vars.HARPER_PREVIEW_TARGET != '' && github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
 				''
 			);
 			assert.notStrictEqual(unsafe, starterPreviewWorkflow({ app: 'shop', branch: 'main' }));

@@ -53,7 +53,8 @@ const DEPLOY_ACTION = 'HarperFast/deploy-action@a4a8af4e47add946657310b546f9e483
  * never checks out the PR, so a PR cannot change what runs with the identity, and the cluster fetches the PR's commit
  * itself. Cleanup runs in its own environment, which carries no required reviewers, so a closure never waits for an
  * approval. The action deploys only while the PR is open at its commit, and drops what it deployed if the PR closed
- * meanwhile.
+ * meanwhile. Both jobs stay skipped until setup has set the target variable, so a copy committed before setup finishes
+ * runs nothing.
  */
 export function starterPreviewWorkflow({
 	app,
@@ -66,7 +67,7 @@ export function starterPreviewWorkflow({
 	const sameRepository = 'github.event.pull_request.head.repo.full_name == github.repository';
 	const job = (name: string, condition: string, jobEnvironment: string, step: string, extra: string[]) => [
 		`  ${name}:`,
-		`    if: ${condition} && ${sameRepository}`,
+		`    if: vars.${PREVIEW_TARGET_VARIABLE} != '' && ${condition} && ${sameRepository}`,
 		'    runs-on: ubuntu-latest',
 		`    environment: ${jobEnvironment}`,
 		'    permissions:',
@@ -178,7 +179,12 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 					default: true,
 				})));
 	}
-	if (writeWorkflow && new URL(audience).protocol === 'http:') {
+	const target = new URL(audience);
+	if (
+		writeWorkflow &&
+		target.protocol === 'http:' &&
+		!/^(?:localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(target.hostname)
+	) {
 		notes.push(
 			`HarperFast/deploy-action, which ${workflow} runs, refuses an http:// target other than a loopback address, so ` +
 				`its runs cannot reach ${audience}. Set up previews against the cluster's https:// URL.`

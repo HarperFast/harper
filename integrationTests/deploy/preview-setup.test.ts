@@ -199,7 +199,7 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 		const workflow = await readFile(join(checkout, '.github', 'workflows', 'preview.yaml'), 'utf8');
 		match(
 			workflow,
-			/uses: HarperFast\/deploy-action@[0-9a-f]{40} # v\d+\.\d+\.\d+\n\s+with:\n\s+target: \$\{\{ vars\.HARPER_PREVIEW_TARGET \}\}\n\s+app: "shop"\n\s+preview: true\n\s+domain: "app\.qa\.invalid"\n/
+			/uses: HarperFast\/deploy-action@a4a8af4e47add946657310b546f9e483d44b5cc5 # v1\.0\.1\n\s+with:\n\s+target: \$\{\{ vars\.HARPER_PREVIEW_TARGET \}\}\n\s+app: "shop"\n\s+preview: true\n\s+domain: "app\.qa\.invalid"\n/
 		);
 
 		const policy = await policyOf('shop');
