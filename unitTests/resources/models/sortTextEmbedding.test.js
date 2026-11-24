@@ -8,7 +8,7 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { __setEmbedFnForTest } = require('#src/resources/models/embedHook');
 const { searchByValue, searchByConditions } = require('#src/dataLayer/search');
-const { isReleasedTransaction } = require('#src/resources/DatabaseTransaction');
+const { isReleasedTransaction, DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { Resources } = require('#src/resources/Resources');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
@@ -409,6 +409,28 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.deepEqual(await fromAsync(Doc.search(target)), [{ id: 1 }, { id: 3 }]);
 		});
 
+		it('refuses an undefined later sort level before it calls the model', () => {
+			assert.throws(
+				() => Doc.search({ sort: { attribute: 'embedding', text: 'red fruit', next: { attribute: 'nope' } } }),
+				(error) => error.statusCode === 404 && /nope is not a defined attribute/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+		});
+
+		it('beside only a filter that drives no index, refuses what the leading index refuses before it calls the model', async () => {
+			const sort = { attribute: 'embedding', text: 'red fruit', descending: true };
+			assert.throws(
+				() => Doc.search({ conditions: [{ attribute: 'content', comparator: 'contains', value: 'a' }], sort }),
+				(error) => error.statusCode === 400 && /descending sort order with HNSW/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+			// a condition that drives an index leads, so the vector sort orders its rows, descending included
+			const rows = await fromAsync(
+				Doc.search({ conditions: [{ attribute: 'tag', value: 'odd' }], sort, select: ['id'] })
+			);
+			assert.equal(rows.length, 2);
+		});
+
 		it('refuses a sort with more texts than one search embeds, before it calls the model', () => {
 			let sort;
 			for (let i = 0; i < 9; i++) sort = { attribute: 'embedding', text: 'red fruit', next: sort };
@@ -671,6 +693,31 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('answers a REST QUERY with the failure of either search a table concatenates', async () => {
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			try {
+				class TwoSearches extends Doc {
+					search(target) {
+						const first = super.search({ ...target, sort: { attribute: 'embedding', text: 'red fruit' } });
+						return first.concat(super.search({ ...target, sort: { attribute: 'embedding', text: 'unlucky' } }));
+					}
+				}
+				const response = await rest([TwoSearches])(
+					'QUERY',
+					'/SortTextEmbedDoc/',
+					{ select: ['content'] },
+					{ accept: 'application/json' }
+				).catch((error) => error);
+				assert.equal(response.statusCode ?? response.status, 502);
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
 		it('answers a REST QUERY with the failure as its status when the table maps its search', async () => {
 			failure = new Error('backend down');
 			class MappedDoc extends Doc {
@@ -723,6 +770,47 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				(error) => error.statusCode === 403 || error.statusCode === 401
 			);
 			assert.equal(embed.calls.length, 0);
+		});
+
+		it('a gate closed before its verdict never calls the model', async () => {
+			const verdict = Promise.withResolvers();
+			class Pending extends Doc {
+				allowRead() {
+					return verdict.promise;
+				}
+			}
+			const iterator = new Pending(null, { user: { username: 'reader' } })
+				.search({ sort: { attribute: 'embedding', text: 'red fruit' }, checkPermission: true })
+				[Symbol.asyncIterator]();
+			await iterator.return();
+			verdict.resolve(true);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.equal(embed.calls.length, 0);
+		});
+
+		it('a search the gate granted, closed before its first step, releases its snapshot', async () => {
+			// an LMDB search's snapshot is not counted on the transaction it reads through
+			if (!observesSnapshot) return;
+			class Granted extends Doc {
+				async allowRead() {
+					return true;
+				}
+			}
+			const transaction = new DatabaseTransaction();
+			try {
+				const iterator = new Granted(null, { transaction, user: { username: 'reader' } })
+					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+					[Symbol.asyncIterator]();
+				// the transaction holds a read of its own, beside the search's
+				await waitFor(() => transaction.readTxnsUsed > 1);
+				const held = transaction.readTxnsUsed;
+				await iterator.return();
+				await waitFor(() => transaction.readTxnsUsed === held - 1, {
+					message: () => `read snapshot still held (${transaction.readTxnsUsed} of ${held})`,
+				});
+			} finally {
+				transaction.abort();
+			}
 		});
 
 		it('an asynchronously granted read embeds and searches', async () => {
