@@ -714,8 +714,6 @@ let results = Document.search({
 });
 ```
 
-<VersionBadge type="changed" version="v5.5.0" /> A `target`, on a sort or a threshold condition, must have as many components as the vectors the index stores. One of another length, such as a vector from a different embedding model, is rejected with a 400 that names both lengths, where it used to rank by a meaningless distance. An empty index takes a target of any length.
-
 HNSW can be combined with filter conditions:
 
 ```javascript

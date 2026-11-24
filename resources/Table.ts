@@ -961,10 +961,13 @@ const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
-/** Two searches joined with concat open when both have. */
-function bothOpen(opening: Promise<unknown>, other: Promise<unknown>) {
+/** A failed joint opening releases both searches, since nothing will iterate the concatenation. */
+function bothOpen(opening: Promise<unknown>, other: Promise<unknown>, receiver: any, operand: any) {
 	const both = Promise.all([opening, other]);
-	both.catch(() => {});
+	both.catch(() => {
+		receiver?.onDone?.();
+		operand?.onDone?.();
+	});
 	return both;
 }
 
@@ -978,7 +981,7 @@ function carryThroughTransforms(
 	value: any,
 	wrapped: symbol,
 	inheritSelect: boolean,
-	combine?: (value: any, other: any) => any
+	combine?: (value: any, other: any, receiver: any, operand: any) => any
 ) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
 	iterable[key] = value;
@@ -996,7 +999,7 @@ function carryThroughTransforms(
 					if (this.getColumns && !derived.getColumns) derived.getColumns = this.getColumns;
 				}
 				const other = combine && methodName === 'concat' ? args[0]?.[key] : undefined;
-				const carried = other && other !== value ? combine(value, other) : value;
+				const carried = other && other !== value ? combine(value, other, this, args[0]) : value;
 				return carryThroughTransforms(derived, key, carried, wrapped, inheritSelect, combine);
 			},
 		});
@@ -1026,13 +1029,14 @@ function deferredIterator(
 		throw error;
 	};
 	const getIterator = () =>
-		(iteratorPromise ||= openResults().then(
-			(results: any) =>
-				(opened = results.iterate
-					? results.iterate(iterationOptions)
-					: results[Symbol.asyncIterator]
-						? results[Symbol.asyncIterator](iterationOptions)
-						: results[Symbol.iterator]())
+		(iteratorPromise ||= openResults().then((results: any) =>
+			returned
+				? undefined
+				: (opened = results.iterate
+						? results.iterate(iterationOptions)
+						: results[Symbol.asyncIterator]
+							? results[Symbol.asyncIterator](iterationOptions)
+							: results[Symbol.iterator]())
 		));
 	return {
 		next(value?: any) {
@@ -1069,8 +1073,8 @@ function deferredIterator(
 			finish();
 			const inner = opened;
 			if (inner) return Promise.resolve().then(() => inner.return?.(value) ?? { value, done: true });
-			// onFinish releases what has opened; a step still opening (a model can ignore the abort) is closed once it has
-			iteratorPromise?.then((iterator) => iterator.return?.(value)).catch(() => {});
+			// onFinish releases the search; a model can ignore the abort, so this never waits for the opening
+			iteratorPromise?.then((iterator) => iterator?.return?.(value)).catch(() => {});
 			return Promise.resolve({ value, done: true });
 		},
 		throw(error: any) {
@@ -1082,7 +1086,7 @@ function deferredIterator(
 					if (inner.throw) return inner.throw(error);
 					throw error;
 				});
-			iteratorPromise?.then((iterator) => iterator.return?.()).catch(() => {});
+			iteratorPromise?.then((iterator) => iterator?.return?.()).catch(() => {});
 			return Promise.reject(error);
 		},
 	};
@@ -8882,13 +8886,16 @@ export function makeTable(options): TableResourceClass {
 					const authorization = Promise.resolve(allowed).then(
 						async (resolved) => {
 							if (!resolved) return { allowed: false };
-							// closed before its verdict: nothing will read a search, and a text sort would call its model
 							if (gateClosed) return { allowed: true, results: [], gate: gatedResults };
 							target.checkPermission = false;
 							try {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
 								resolvedResults = await self.search(target);
+								if (gateClosed) {
+									resolvedResults?.onDone?.();
+									return { allowed: true, results: [], gate: gatedResults };
+								}
 								delete gatedResults.pendingAuth;
 								if (earlyColumns) {
 									const resolvedColumns = resolvedResults?.getColumns ? resolvedResults.getColumns() : getColumns();
@@ -8920,7 +8927,6 @@ export function makeTable(options): TableResourceClass {
 							() => gatedResults.onDone?.(),
 							'Can not synchronously iterate while allowRead is asynchronous'
 						);
-					// the granted search reserved its snapshot, which a close before its first step must release too
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;
 						gateClosed = true;
@@ -8949,10 +8955,12 @@ export function makeTable(options): TableResourceClass {
 		/** The search starts only after the model call, through `transaction()`: a model call has no deadline, so no read snapshot is reserved across it. */
 		#searchAfterEmbedding(target: RequestTarget, embedding: SortEmbedding, context: any, rowFilter: any): any {
 			const scope = context ?? {};
-			const search = (sort: any) =>
-				transaction(scope, () =>
+			const search = (sort: any) => {
+				if (context?.signal?.aborted) throw Object.assign(requestAbortedError(), { cause: context.signal.reason });
+				return transaction(scope, () =>
 					this.#searchSorted(target, sort, context, txnForContext(scope), rowFilter, embedding.conditions)
 				);
+			};
 			if (target.explain || countPageApplies(target)) return embedding.sort.then(search);
 			const deferred: any = new ExtendedIterable();
 			let results: any;
@@ -8961,7 +8969,6 @@ export function makeTable(options): TableResourceClass {
 				.then(
 					(sort) => {
 						if (discarded) return [];
-						if (context?.signal?.aborted) throw Object.assign(requestAbortedError(), { cause: context.signal.reason });
 						return search(sort);
 					},
 					(error) => {
@@ -9071,10 +9078,7 @@ export function makeTable(options): TableResourceClass {
 				if (order !== sort) assertSortAttribute(order.attribute);
 				if (typeof order.attribute !== 'string') continue;
 				const customIndex = indices[order.attribute]?.customIndex;
-				if (customIndex?.exactDistance) {
-					customIndex.exactDistance(order, null);
-					customIndex.assertSearchTarget?.(order.target);
-				}
+				if (customIndex?.exactDistance) customIndex.exactDistance(order, null);
 			}
 			let postOrdering;
 			if (sort) {
@@ -14199,13 +14203,16 @@ export function makeTable(options): TableResourceClass {
 		}
 		return false;
 	}
-	/** A later sort level on an attribute the table does not define would order by nothing, so it is refused. */
+	/** A later sort level on an undefined attribute would order by nothing. */
 	function assertSortAttribute(name: any): void {
 		if (name == null) throw new ClientError('Sort requires an attribute');
-		if (typeof name === 'string' && ENTRY_SORT_ATTRIBUTES.has(name)) return;
+		if (typeof name === 'string' && propertyResolvers?.[name]) return;
 		if (findAttribute(attributes, name)) return;
-		// a path into a plain object declares only its root, as for a condition
-		if (Array.isArray(name) && name.length > 1 && findAttribute(attributes, name[0])) return;
+		if (Array.isArray(name) && name.length > 1) {
+			// an untyped object declares only its root; a relationship or typed object declares its leaves too
+			const root = findAttribute(attributes, name[0]);
+			if (root && !root.properties && !root.definition?.tableClass && !root.elements?.definition?.tableClass) return;
+		}
 		throw new ClientError(`${Array.isArray(name) ? name.join('.') : name} is not a defined attribute`, 404);
 	}
 	function assertRecordField(name: unknown): void {
@@ -14615,7 +14622,6 @@ export function makeTable(options): TableResourceClass {
 			!headAttribute.isPrimaryKey
 		)
 			throw new ClientError(`${headName} is not indexed and not combined with any other conditions`, 404);
-		// no condition that can drive an index leaves the lead to the head of the sort (#searchSorted orderConditions)
 		if (
 			!target.explain &&
 			target.operator !== 'or' &&

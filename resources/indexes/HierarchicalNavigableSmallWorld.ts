@@ -2075,7 +2075,7 @@ export class HierarchicalNavigableSmallWorld {
 				// file — one malformed query costing a full reconstruction.
 				if (this.filePrimary && plane) this.assertPlaneVector(target, 'Search target');
 				// a non-file-primary query whose dimensionality differs from the graph's takes the JS
-				// path, which refuses it (assertSearchTarget), rather than disabling the healthy plane
+				// path, which tolerates the mismatch, rather than disabling the healthy plane
 				if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
 					const coverage = certified ?? (this.filePrimary ? this.queryCoverage(maxIndexLagMilliseconds) : undefined);
 					try {
@@ -2153,7 +2153,6 @@ export class HierarchicalNavigableSmallWorld {
 		if (native) return native;
 		let entryPoint = this.getEntryPoint(txnOptions);
 		if (!entryPoint) return withStats([], filterState);
-		this.assertSearchTarget(target, txnOptions, entryPoint);
 		let entryPointId = entryPoint.id;
 		let results: Candidate[] = [];
 		// For each level from top to bottom. The filter applies only at layer 0 (result admission);
@@ -2267,15 +2266,6 @@ export class HierarchicalNavigableSmallWorld {
 	 * A threshold's predicate on a record's vector, for when another condition leads (search.ts filterByType):
 	 * exact distance, after the checks search() makes.
 	 */
-	/**
-	 * A target of another length than the stored vectors would rank by a meaningless distance, since the distance
-	 * functions read a missing component as 0 (harper#4482). An empty index has no length yet, so it takes any target.
-	 */
-	assertSearchTarget(target: number[], options?: { transaction?: any }, entryPoint = this.getEntryPoint(options)) {
-		const dims = this.plane?.dims ?? entryPoint?.vector?.length;
-		if (dims !== undefined && target.length !== dims)
-			throw new ClientError(`Search target has ${target.length} components, but this index stores ${dims}.`);
-	}
 	thresholdFilter(
 		searchCondition: { attribute?: any; target: number[]; distance?: string; comparator?: string },
 		comparator: string,
@@ -2295,7 +2285,7 @@ export class HierarchicalNavigableSmallWorld {
 			// attached first, as search() does, so a cold worker checks the target's dimensions too
 			this.getPlane(target.length, false);
 			this.assertPlaneVector(target, 'Search target');
-		} else this.assertSearchTarget(target);
+		}
 		const inclusive = comparator === 'le';
 		return (recordVector) => {
 			if (recordVector == null) return false;

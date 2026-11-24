@@ -12,6 +12,7 @@ const { isReleasedTransaction, DatabaseTransaction } = require('#src/resources/D
 const { Resources } = require('#src/resources/Resources');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
+const { searchOpening } = require('#src/resources/Resource');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -424,7 +425,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				(error) => error.statusCode === 400 && /descending sort order with HNSW/.test(error.message)
 			);
 			assert.equal(embed.calls.length, 0);
-			// a condition that drives an index leads, so the vector sort orders its rows, descending included
 			const rows = await fromAsync(
 				Doc.search({ conditions: [{ attribute: 'tag', value: 'odd' }], sort, select: ['id'] })
 			);
@@ -718,6 +718,27 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('releases the search a failed concatenation opened', async () => {
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			try {
+				const context = recordingContext();
+				const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
+				await searchOpening(opened);
+				if (observesSnapshot) assert.ok(context.storeLinks().some((txn) => txn.readTxnsUsed > 0));
+				const failed = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {});
+				await assert.rejects(searchOpening(opened.concat(failed)), (error) => error.statusCode === 502);
+				await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
+					message: 'the opened search kept its snapshot',
+				});
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
 		it('answers a REST QUERY with the failure as its status when the table maps its search', async () => {
 			failure = new Error('backend down');
 			class MappedDoc extends Doc {
@@ -770,6 +791,38 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				(error) => error.statusCode === 403 || error.statusCode === 401
 			);
 			assert.equal(embed.calls.length, 0);
+		});
+
+		it('a gate closed while its granted search is handed over releases that search', async () => {
+			if (!observesSnapshot) return;
+			let close;
+			class Racing extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					// the gate's own search: close the gate before that search reaches it
+					if (target.checkPermission === false && close) {
+						const closeNow = close;
+						close = undefined;
+						closeNow();
+					}
+					return super.search(target);
+				}
+			}
+			const transaction = new DatabaseTransaction();
+			try {
+				const iterator = new Racing(null, { transaction, user: { username: 'reader' } })
+					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+					[Symbol.asyncIterator]();
+				close = () => iterator.return();
+				// the transaction keeps one read of its own
+				await waitFor(() => transaction.readTxnsUsed === 1, {
+					message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+				});
+			} finally {
+				transaction.abort();
+			}
 		});
 
 		it('a gate closed before its verdict never calls the model', async () => {

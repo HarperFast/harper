@@ -1086,7 +1086,7 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 				// greedy descent. Read it from a real query rather than efConstructionSearch, which is
 				// only the pre-change value when a schema configures one; this index takes the
 				// auto-scaled path.
-				const resolvedLayer0Ef = await captureLayer0Ef(T, { limit: 10 }, targets[0]);
+				const resolvedLayer0Ef = await captureLayer0Ef(T, { limit: 10 });
 				assert(resolvedLayer0Ef > 1, `expected an auto-scaled layer-0 ef, got ${resolvedLayer0Ef} (seed ${label})`);
 				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
 					return originalSearchLayer.call(this, v, epId, ep, level > 0 ? resolvedLayer0Ef : ef, level, ...rest);
@@ -1318,8 +1318,7 @@ describe('HNSW limit above the resolved search ef', () => {
 });
 
 /** Run a query and report the ef layer 0 was actually searched at. */
-/** The target must match the index's vector length (#4482). */
-async function captureLayer0Ef(T, query, target = [1, 0, 0]) {
+async function captureLayer0Ef(T, query) {
 	const customIndex = T.indices.vector.customIndex;
 	const originalSearchLayer = customIndex.searchLayer;
 	let layer0Ef = 0;
@@ -1328,7 +1327,9 @@ async function captureLayer0Ef(T, query, target = [1, 0, 0]) {
 		return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
 	};
 	try {
-		await fromAsync(T.search({ sort: { attribute: 'vector', target, distance: 'cosine' }, select: ['id'], ...query }));
+		await fromAsync(
+			T.search({ sort: { attribute: 'vector', target: [1, 0, 0], distance: 'cosine' }, select: ['id'], ...query })
+		);
 	} finally {
 		customIndex.searchLayer = originalSearchLayer;
 	}
