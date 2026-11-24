@@ -81,15 +81,19 @@ always a caller's measure.
 
 ## Retention cleanup resumes past its own deletes
 
-`cleanupExpiredAnalytics` deletes keys below `now - retention` starting from the end of the previous pass
-on the same store, not from the first key. Rows are keyed `[timestamp, nodeId]`, so the expired rows
-are a prefix, and a RocksDB delete leaves the row and its tombstone on disk until compaction: a scan
-from the first key steps over everything earlier passes deleted, a cost that grows without bound
-(#4570). A row written below the cursor after a pass is left until the next process starts.
+`cleanupExpiredAnalytics` (`cleanup.ts`, used by `hdb_raw_analytics`, `hdb_analytics` and the model-call
+writer) deletes keys below `now - retention` starting from the end of the previous pass on the same
+store, not from the first key. Keys start with a timestamp, so the expired rows are a prefix, and a
+RocksDB delete leaves the row and its tombstone on disk until compaction: a scan from the first key
+steps over everything earlier passes deleted, a cost that grows without bound (#4570). The cursor
+moves only after every removal in the pass settled successfully; a failed removal leaves it in place
+for the next pass to retry. A row written below the cursor is left until the next process starts.
 
-Passes are single-flight per store and yield between batches. Where the store has `compact()`, the
-expired range is compacted on a process's first pass and then at most hourly after a pass deletes
-rows, which drops the tombstones for restarts and range reads near the head.
+Passes are single-flight per store and yield between batches. Where the store has `compact()`, a
+process's first pass compacts the expired range before it scans (the scan from the first key would
+otherwise walk an earlier process's tombstones), and later passes compact at most hourly while any
+deletes are uncompacted; a failed compaction is retried on that cadence. Manual compaction is exclusive
+in rocksdb-js, so automatic compaction of the whole database waits while it runs.
 
 ## Full-text collection follows actual handle ownership
 

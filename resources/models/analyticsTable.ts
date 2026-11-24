@@ -1,6 +1,7 @@
 import { table, isReadOnlyMode } from '../databases.ts';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { cleanupExpiredAnalytics } from '../analytics/cleanup.ts';
 
 const log = harperLogger.forComponent('models').conditional;
 
@@ -181,13 +182,8 @@ export class ModelCallAnalyticsWriter {
 		}
 	}
 
-	async cleanup(): Promise<void> {
-		if (isReadOnlyMode()) return;
-		const end = Date.now() - this.#retentionMs;
-		const tbl = this.#getTable();
-		for (const key of tbl.primaryStore.getKeys({ start: false, end })) {
-			tbl.primaryStore.remove(key);
-		}
+	cleanup(): Promise<void> {
+		return cleanupExpiredAnalytics(this.#getTable(), this.#retentionMs);
 	}
 
 	/** Stop the periodic timers. After stop, `write()` is a no-op and `flush()` still works. */
