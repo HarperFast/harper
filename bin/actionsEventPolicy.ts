@@ -1,0 +1,402 @@
+// The GitHub Actions event policy `harper preview setup` creates for a public repository: from December 2, 2026,
+// GitHub blocks `pull_request_target` there unless an Active event policy allows it for the workflow, and every Active
+// event policy that applies to the workflow has to allow it.
+
+import chalk from 'chalk';
+import { spawnSync } from 'node:child_process';
+import { posix } from 'node:path';
+import _micromatch from 'micromatch';
+import { promptYesNo } from '../utility/interactivePrompts.ts';
+import { workflowTriggerEvents, type GithubRepository } from './deploySetupGithubActions.ts';
+
+const { isMatch } = _micromatch;
+
+export const ACTIONS_POLICY_DOCS = 'https://docs.github.com/actions/how-tos/administer/control-workflow-execution';
+const API_VERSION_HEADER = 'X-GitHub-Api-Version: 2026-03-10';
+const PULL_REQUEST_TARGET = 'pull_request_target';
+const GH_TIMEOUT_MS = 15_000;
+const PAGE_SIZE = 100;
+const MAX_PAGES = 10;
+// What a workflow path condition may read as a pattern rather than as one file.
+const PATTERN_CHARACTERS = /[*?[\]{}()!+@]/;
+
+export interface ActionsPolicyBody {
+	name: string;
+	enforcement: 'active';
+	conditions: { workflow_path: { include: string[]; exclude: string[] } };
+	rules: { type: 'restrict_action_events'; parameters: { allowed_events: string[] } }[];
+}
+
+type GhResult = { stdout: string } | { reason: string; status?: number };
+
+function gh(args: string[], input?: string): GhResult {
+	const result = spawnSync('gh', ['api', '--hostname', 'github.com', ...args], {
+		encoding: 'utf8',
+		timeout: GH_TIMEOUT_MS,
+		input,
+		stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+	});
+	if (result.error) {
+		const reason = (result.error as any).code === 'ENOENT' ? 'the gh CLI is not installed' : result.error.message;
+		return { reason };
+	}
+	if (result.status !== 0) {
+		return {
+			status: Number(/HTTP (\d{3})/.exec(result.stderr)?.[1]) || undefined,
+			reason: result.stderr.trim().split('\n')[0] || `gh exited with ${result.status ?? result.signal}`,
+		};
+	}
+	return { stdout: result.stdout };
+}
+
+function policyFailure(result: { reason: string; status?: number }): string {
+	return result.status === 403 || result.status === 404
+		? `${result.reason}, which GitHub answers to an account that is not an admin of the repository`
+		: result.reason;
+}
+
+export function listActionsPolicies(repository: string): { policies: any[] } | { reason: string } {
+	const policies: any[] = [];
+	for (let page = 1; page <= MAX_PAGES; page++) {
+		const result = gh([
+			'-H',
+			API_VERSION_HEADER,
+			`repos/${repository}/actions/policies?per_page=${PAGE_SIZE}&page=${page}`,
+		]);
+		if ('reason' in result) return { reason: policyFailure(result) };
+		let body: any;
+		try {
+			body = JSON.parse(result.stdout);
+		} catch {
+			return { reason: 'GitHub answered with something other than JSON' };
+		}
+		if (!Array.isArray(body?.policies)) return { reason: 'GitHub answered without a list of policies' };
+		policies.push(...body.policies);
+		const total = body.total_count;
+		if (body.policies.length < PAGE_SIZE || (Number.isSafeInteger(total) && policies.length >= total)) {
+			return { policies };
+		}
+	}
+	return { reason: `it lists more than ${MAX_PAGES * PAGE_SIZE} policies` };
+}
+
+/** `pull_request_target` runs the copy on the default branch, so that copy's triggers are the ones a policy must keep. */
+function readWorkflowOnBranch(
+	repository: string,
+	workflow: string,
+	branch: string
+): { content: string } | { absent: true } | { reason: string } {
+	const path = workflow.split('/').map(encodeURIComponent).join('/');
+	const result = gh([
+		'-H',
+		'Accept: application/vnd.github.raw+json',
+		`repos/${repository}/contents/${path}?ref=${encodeURIComponent(branch)}`,
+	]);
+	if ('stdout' in result) return { content: result.stdout };
+	if (result.status === 404) return { absent: true };
+	return { reason: result.reason };
+}
+
+const strings = (value: unknown): string[] =>
+	Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+
+function matchesWorkflow(pattern: string, workflow: string): 'path' | 'pattern' | undefined {
+	const path = pattern.trim().replace(/^\.?\//, '');
+	if (path === workflow) return 'path';
+	return PATTERN_CHARACTERS.test(path) && isMatch(workflow, path, { dot: true }) ? 'pattern' : undefined;
+}
+
+/** How a policy's workflow condition takes in the file: all workflows, the path itself, or a pattern read here. */
+function coverage(policy: any, workflow: string): 'every' | 'path' | 'pattern' | undefined {
+	const paths = policy?.conditions?.workflow_path;
+	if (strings(paths?.exclude).some((pattern) => matchesWorkflow(pattern, workflow))) return undefined;
+	const include = strings(paths?.include);
+	if (include.length === 0 || include.includes('~ALL')) return 'every';
+	const matches = include.map((pattern) => matchesWorkflow(pattern, workflow));
+	return matches.includes('path') ? 'path' : matches.includes('pattern') ? 'pattern' : undefined;
+}
+
+const isRepositoryLevel = (policy: any) => (policy?.source_type ?? 'Repository') === 'Repository';
+
+function policyLabel(policy: any): string {
+	if (isRepositoryLevel(policy)) return `policy "${policy?.name}"`;
+	return `${String(policy.source_type).toLowerCase()} policy "${policy?.name}"${policy.source ? ` (${policy.source})` : ''}`;
+}
+
+export type PolicyPlan =
+	| { action: 'create' }
+	| { action: 'allowed'; by: string[]; missing: string[] }
+	| { action: 'conflict'; problems: string[] }
+	| { action: 'unknown'; reason: string };
+
+/**
+ * Only an Active policy allows or blocks, and an event runs only if every Active event policy covering the file lists
+ * it. A pattern read here can differ from GitHub's reading, so it can block but never counts as allowing; a policy
+ * someone made for the file and turned off is theirs to change, so setup adds none beside it.
+ */
+export function planActionsPolicy(policies: any[], repository: string, workflow: string, events: string[]): PolicyPlan {
+	const blocking: string[] = [];
+	const inactive: string[] = [];
+	const unreadable: string[] = [];
+	const allowing: string[] = [];
+	const missing = new Set<string>();
+	for (const policy of policies) {
+		const covers = coverage(policy, workflow);
+		if (!covers) continue;
+		const active = policy?.enforcement === 'active';
+		if (!Array.isArray(policy?.rules)) {
+			if (active) unreadable.push(policyLabel(policy));
+			continue;
+		}
+		const eventRules = policy.rules.filter((rule: any) => rule?.type === 'restrict_action_events');
+		if (eventRules.length === 0) continue;
+		const allows = (event: string) =>
+			eventRules.every((rule: any) => strings(rule?.parameters?.allowed_events).includes(event));
+		if (active && !allows(PULL_REQUEST_TARGET)) {
+			blocking.push(
+				isRepositoryLevel(policy)
+					? `Policy "${policy.name}" is Active for ${workflow}, and its Restrict events leaves out pull_request_target: ` +
+							`add pull_request_target to its allowed events${covers === 'every' ? `, or exclude ${workflow} from it` : ''}.`
+					: `The ${policyLabel(policy)} is Active for ${workflow}, and its Restrict events leaves out ` +
+							`pull_request_target: its owner has to allow pull_request_target for ${repository} and ${workflow}.`
+			);
+		} else if (active) {
+			if (covers === 'pattern') continue;
+			allowing.push(policyLabel(policy));
+			for (const event of events) if (!allows(event)) missing.add(event);
+		} else if (isRepositoryLevel(policy) && covers === 'path') {
+			inactive.push(
+				`Policy "${policy.name}" targets ${workflow} but is ${policy.enforcement === 'evaluate' ? 'in evaluate mode' : 'disabled'}, ` +
+					`so it allows nothing. Make it Active with ${events.join(', ')} among its allowed events, or delete it and ` +
+					'run setup again.'
+			);
+		}
+	}
+	if (blocking.length > 0) return { action: 'conflict', problems: blocking };
+	if (unreadable.length > 0)
+		return { action: 'unknown', reason: `GitHub did not list the rules of ${unreadable.join(', ')}` };
+	if (allowing.length > 0) return { action: 'allowed', by: allowing, missing: [...missing] };
+	if (inactive.length > 0) return { action: 'conflict', problems: inactive };
+	return { action: 'create' };
+}
+
+export function previewActionsPolicy(workflow: string, events: string[]): ActionsPolicyBody {
+	return {
+		name: `Allow Harper previews (${posix.basename(workflow)})`,
+		enforcement: 'active',
+		conditions: { workflow_path: { include: [workflow], exclude: [] } },
+		rules: [{ type: 'restrict_action_events', parameters: { allowed_events: events } }],
+	};
+}
+
+const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+
+export function createPolicyCommand(repository: string, body: ActionsPolicyBody): string {
+	return (
+		`printf '%s' ${shellQuote(JSON.stringify(body))} | gh api --hostname github.com --method POST ` +
+		`-H ${shellQuote(API_VERSION_HEADER)} repos/${repository}/actions/policies --input -`
+	);
+}
+
+function blockNotice(repository: string, isPrivate: boolean | undefined): string {
+	return (
+		`${isPrivate === false ? `${repository} is public:` : `If ${repository} is public:`} from December 2, 2026, ` +
+		'GitHub Actions blocks pull_request_target in public repositories unless an Actions event policy allows it, ' +
+		'and previews stop.'
+	);
+}
+
+function manualSteps(repository: string, workflow: string): string {
+	return (
+		`  In the repository's Settings > Actions > Policies, make sure an Active policy targets only ${workflow} ` +
+		'and its Restrict events allows pull_request_target, plus any other event that workflow runs on. ' +
+		`An organization policy for it must target ${repository} too, and an organization or enterprise policy ` +
+		'can still block it: Policy insights shows what was blocked.\n' +
+		`  ${ACTIONS_POLICY_DOCS}`
+	);
+}
+
+function printFallback(repository: GithubRepository, workflow: string, why: string, body?: ActionsPolicyBody): void {
+	const lines = [`! ${blockNotice(repository.fullName, repository.private)}${why ? ` ${why}` : ''}`];
+	lines.push(manualSteps(repository.fullName, workflow));
+	if (body)
+		lines.push(`  Or, as an admin of ${repository.fullName}:\n  ${createPolicyCommand(repository.fullName, body)}`);
+	console.log(chalk.yellow(lines.join('\n')));
+}
+
+function printPlan(repository: GithubRepository, workflow: string, plan: PolicyPlan, body: ActionsPolicyBody): void {
+	if (plan.action === 'allowed') {
+		console.log(
+			chalk.green(
+				`✓ The Actions event ${plan.by.join(', ')} on ${repository.fullName} already allows pull_request_target for ${workflow}.`
+			)
+		);
+		if (plan.missing.length > 0) {
+			console.log(
+				chalk.yellow(
+					`  It leaves out ${plan.missing.join(', ')}, which ${workflow} also runs on, so those runs are blocked; ` +
+						'add them to its allowed events if they should run.'
+				)
+			);
+		}
+	} else if (plan.action === 'conflict') {
+		console.log(
+			chalk.yellow(
+				`! ${blockNotice(repository.fullName, repository.private)} Setup created no policy:\n` +
+					plan.problems.map((problem) => `  - ${problem}`).join('\n') +
+					`\n  Policy insights, under Settings > Actions > Policies, shows what was blocked. ${ACTIONS_POLICY_DOCS}`
+			)
+		);
+	} else if (plan.action === 'unknown') {
+		printFallback(repository, workflow, `Setup created none: ${plan.reason}.`, body);
+	}
+}
+
+function sameEvents(left: string[], right: string[]): boolean {
+	return left.length === right.length && left.every((event) => right.includes(event));
+}
+
+function verifiedEvents(
+	repository: GithubRepository,
+	workflow: string,
+	branch: string,
+	checkoutEvents: string[] | undefined
+): { events: string[] } | { reason: string } {
+	if (PATTERN_CHARACTERS.test(workflow)) {
+		return {
+			reason: `Setup created none: a policy reads ${workflow} as a pattern, which can take in other workflows.`,
+		};
+	}
+	if (!checkoutEvents?.includes(PULL_REQUEST_TARGET)) {
+		return {
+			reason: `Setup created none: it did not read ${workflow} here, and the policy has to allow every event that file runs on.`,
+		};
+	}
+	const onBranch = readWorkflowOnBranch(repository.fullName, workflow, branch);
+	if ('reason' in onBranch) {
+		return { reason: `Setup could not read ${workflow} on ${branch} (${onBranch.reason}), so it created none.` };
+	}
+	if ('absent' in onBranch) return { events: checkoutEvents };
+	const live = workflowTriggerEvents(onBranch.content);
+	if (!live || !sameEvents(live, checkoutEvents)) {
+		return {
+			reason:
+				`Setup created none: ${workflow} on ${branch} runs on ${live?.join(', ') ?? 'events setup cannot read'}, and ` +
+				`the copy here on ${checkoutEvents.join(', ')}. Commit this copy to ${branch}, then run setup again.`,
+		};
+	}
+	return { events: live };
+}
+
+export interface ActionsPolicySetup {
+	repository: GithubRepository;
+	workflow: string;
+	branch: string;
+	/** The events of the workflow setup checked or is about to write; undefined when it has neither. */
+	checkoutEvents?: string[];
+	/** `actions_policy=`: the policy lowers GitHub's default protection for the file, so creating it takes a yes. */
+	consent?: boolean;
+	interactive: boolean;
+}
+
+/**
+ * Before anything changes: says what a public repository's policies already do for the workflow, and returns the
+ * policy to create once previews are enabled, when there is none and the user agreed. Never throws for GitHub's part.
+ */
+export async function prepareActionsPolicy(setup: ActionsPolicySetup): Promise<ActionsPolicyBody | undefined> {
+	const { repository, workflow } = setup;
+	if (repository.private === true) return undefined;
+	if (repository.private !== false) {
+		printFallback(repository, workflow, '');
+		return undefined;
+	}
+	const verified = verifiedEvents(repository, workflow, setup.branch, setup.checkoutEvents);
+	if ('reason' in verified) {
+		printFallback(repository, workflow, verified.reason);
+		return undefined;
+	}
+	const body = previewActionsPolicy(workflow, verified.events);
+	const listed = listActionsPolicies(repository.fullName);
+	if ('reason' in listed) {
+		printFallback(
+			repository,
+			workflow,
+			`Setup could not read its Actions policies (${listed.reason}), so it created none.`,
+			body
+		);
+		return undefined;
+	}
+	const plan = planActionsPolicy(listed.policies, repository.fullName, workflow, verified.events);
+	if (plan.action !== 'create') {
+		printPlan(repository, workflow, plan, body);
+		return undefined;
+	}
+	if (repository.canAdminister === false) {
+		printFallback(
+			repository,
+			workflow,
+			`Setup created none: the gh account is not an admin of ${repository.fullName}, which a policy takes.`,
+			body
+		);
+		return undefined;
+	}
+	let consent = setup.consent;
+	if (consent === undefined && setup.interactive) {
+		consent = await promptYesNo({
+			message:
+				`${repository.fullName} is public, and from December 2, 2026 GitHub blocks pull_request_target there unless an ` +
+				`Actions event policy allows it. Create one that lets only ${verified.events.join(', ')} start ${workflow}?`,
+			default: true,
+		});
+	}
+	if (consent !== true) {
+		printFallback(
+			repository,
+			workflow,
+			setup.consent === undefined && !setup.interactive
+				? 'Setup creates the policy with actions_policy=true.'
+				: 'Setup did not create one.',
+			body
+		);
+		return undefined;
+	}
+	console.log(chalk.gray(`Setup will create the Actions event policy "${body.name}" once previews are enabled.`));
+	return body;
+}
+
+/** Create-only, after the cluster part; a failure prints the manual steps rather than failing setup. */
+export function createActionsPolicy(repository: GithubRepository, workflow: string, body: ActionsPolicyBody): void {
+	const events = body.rules[0].parameters.allowed_events;
+	const replan = () => {
+		const listed = listActionsPolicies(repository.fullName);
+		return 'reason' in listed ? undefined : planActionsPolicy(listed.policies, repository.fullName, workflow, events);
+	};
+	const before = replan();
+	if (before && before.action !== 'create') {
+		printPlan(repository, workflow, before, body);
+		return;
+	}
+	const result = gh(
+		['-H', API_VERSION_HEADER, '--method', 'POST', `repos/${repository.fullName}/actions/policies`, '--input', '-'],
+		JSON.stringify(body)
+	);
+	if ('stdout' in result) {
+		console.log(
+			chalk.green(
+				`✓ Created the Actions event policy "${body.name}" on ${repository.fullName}: only ${events.join(', ')} can start ${workflow}.`
+			) +
+				chalk.gray(
+					'\n  An organization or enterprise policy can still block it: Policy insights, under Settings > Actions > ' +
+						'Policies, shows what was blocked.'
+				)
+		);
+		return;
+	}
+	// A request that timed out may still have created it.
+	const after = replan();
+	if (after?.action === 'allowed') {
+		printPlan(repository, workflow, after, body);
+		return;
+	}
+	printFallback(repository, workflow, `Setup could not create the policy (${policyFailure(result)}).`, body);
+}

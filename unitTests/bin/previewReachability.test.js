@@ -133,5 +133,9 @@ describe('preview reachability (harper#3042)', () => {
 		assert.match(text, /shop-pr-1: a dropped\n {2}shop-pr-1: b did not hold it\n {2}shop-pr-1: c failed: unreachable/);
 		assert.match(text, /Removed user shop-ci-preview, role shop-ci-preview\./);
 		assert.match(text, /Still deploying when previews were revoked: shop-pr-2/);
+		assert.match(
+			text,
+			/GitHub side stays as it is, including an Actions event policy setup created in a public repository, "Allow Harper previews \(<workflow file>\)": delete it in the repository's Settings > Actions > Policies\./
+		);
 	});
 });

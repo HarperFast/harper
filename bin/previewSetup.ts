@@ -11,7 +11,9 @@ import {
 	resolveGithubRepository,
 	resolveSetupTarget,
 	setupGithubVariable,
+	workflowTriggerEvents,
 } from './deploySetupGithubActions.ts';
+import { ACTIONS_POLICY_DOCS, createActionsPolicy, prepareActionsPolicy } from './actionsEventPolicy.ts';
 import { fetchSecretsPublicKey, resolveDeployToken, sealDeployCredential } from './deploySetup.ts';
 import {
 	CI_PREVIEW_OPERATIONS,
@@ -24,7 +26,7 @@ import {
 	derivePreviewNames,
 } from '../utility/previewIdentity.ts';
 
-export const ACTIONS_POLICY_DOCS = 'https://docs.github.com/actions/how-tos/administer/control-workflow-execution';
+export { ACTIONS_POLICY_DOCS };
 
 function usageError(message: string): Error {
 	return Object.assign(new Error(message), { statusCode: 400 });
@@ -134,20 +136,6 @@ export function starterPreviewWorkflow({
 	].join('\n');
 }
 
-function pullRequestTargetPolicyWarning(repository: string, isPrivate: boolean | undefined, workflow: string) {
-	if (isPrivate === true) return undefined;
-	return (
-		`${isPrivate === false ? `${repository} is public:` : `If ${repository} is public:`} from December 2, 2026, ` +
-		`GitHub Actions blocks pull_request_target in public repositories unless an Actions event policy allows it, ` +
-		`and previews stop.\n` +
-		`  In the repository's Settings > Actions > Policies, make sure an Active policy targets only ${workflow} ` +
-		`and its Restrict events allows pull_request_target, plus any other event that workflow runs on. ` +
-		`An organization policy for it must target ${repository} too, and an organization or enterprise policy ` +
-		`can still block it: Policy insights shows what was blocked.\n` +
-		`  ${ACTIONS_POLICY_DOCS}`
-	);
-}
-
 function previewApp(args: Record<string, any>): string {
 	const app = rawStringArg(args, 'app');
 	if (!app) throw usageError('`app=<component>` names the application to set up previews for, e.g. app=shop');
@@ -240,8 +228,26 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			);
 		}
 	}
-	const policyWarning = pullRequestTargetPolicyWarning(repository.fullName, repository.private, workflow);
-	if (policyWarning) console.log(chalk.yellow(`! ${policyWarning}`));
+	const starter =
+		writeWorkflow && checkout
+			? starterPreviewWorkflow({
+					app,
+					branch,
+					environment,
+					domain: domain === defaultDomain ? undefined : domain,
+					credential,
+					shared: dataMode === 'shared',
+				})
+			: undefined;
+	const workflowContent = starter ?? checkout?.content;
+	const actionsPolicy = await prepareActionsPolicy({
+		repository,
+		workflow,
+		branch,
+		checkoutEvents: workflowContent === undefined ? undefined : workflowTriggerEvents(workflowContent),
+		consent: typeof args.actions_policy === 'boolean' ? args.actions_policy : undefined,
+		interactive,
+	});
 	assertGithubVariableSettable(repository, PREVIEW_TARGET_VARIABLE, audience, args.allow_unverified === true);
 	// Before anything is written: a cluster without secret custody cannot hold the credential.
 	const secretsKey = credential ? await fetchSecretsPublicKey(transport) : undefined;
@@ -300,21 +306,11 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 				chalk.gray('\n  `harper preview deploy credential=true` uses it.')
 		);
 	}
-	if (writeWorkflow && checkout) {
-		writeFileSync(
-			checkout.path,
-			starterPreviewWorkflow({
-				app,
-				branch,
-				environment,
-				domain: domain === defaultDomain ? undefined : domain,
-				credential,
-				shared: dataMode === 'shared',
-			}),
-			{ flag: 'wx' }
-		);
+	if (starter && checkout) {
+		writeFileSync(checkout.path, starter, { flag: 'wx' });
 		console.log(chalk.green(`✓ Wrote ${workflow}. Commit it to ${branch}: pull_request_target runs it from there.`));
 	}
+	if (actionsPolicy) createActionsPolicy(repository, workflow, actionsPolicy);
 	for (const note of notes) console.log(chalk.yellow(`  ${note}`));
 	setupGithubVariable(repository.fullName, PREVIEW_TARGET_VARIABLE, audience);
 }
@@ -332,6 +328,10 @@ export function formatTeardown(response: any): string {
 				'when it expires, or by `harper preview drop`.'
 		);
 	}
+	lines.push(
+		'  The GitHub side stays as it is, including an Actions event policy setup created in a public repository, ' +
+			'"Allow Harper previews (<workflow file>)": delete it in the repository\'s Settings > Actions > Policies.'
+	);
 	return lines.join('\n');
 }
 

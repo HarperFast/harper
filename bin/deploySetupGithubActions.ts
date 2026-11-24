@@ -187,6 +187,14 @@ function triggerEvents(triggers: unknown): { names: string[]; config: Record<str
 	return { names: [], config: {} };
 }
 
+/** The events a workflow file runs on; undefined when it does not parse or names none. */
+export function workflowTriggerEvents(content: string): string[] | undefined {
+	const { workflow, error } = parseWorkflow(content);
+	if (error) return undefined;
+	const names = [...new Set(triggerEvents(workflow?.on).names)];
+	return names.length > 0 ? names : undefined;
+}
+
 const HEAD_REPOSITORY = String.raw`github\.event\.pull_request\.head\.repo`;
 const BASE_REPOSITORY = String.raw`(?:github\.repository|github\.event\.pull_request\.base\.repo\.full_name)`;
 /**
@@ -511,6 +519,8 @@ interface RepositoryInfo {
 	private?: boolean;
 	/** Whether the account that looked it up can push; GitHub reports it only to a signed-in caller. */
 	canPush?: boolean;
+	/** Whether that account is an admin, which an Actions policy takes; reported the same way. */
+	canAdminister?: boolean;
 }
 
 function isPrivateRepository(data: any): boolean | undefined {
@@ -528,6 +538,7 @@ function parseRepositoryResponse(body: unknown): RepositoryInfo | undefined {
 		defaultBranch: typeof data.default_branch === 'string' ? data.default_branch : undefined,
 		private: isPrivateRepository(data),
 		canPush: data.permissions ? data.permissions.push === true || data.permissions.admin === true : undefined,
+		canAdminister: data.permissions ? data.permissions.admin === true : undefined,
 	};
 }
 
@@ -702,6 +713,7 @@ export interface GithubRepository {
 	private?: boolean;
 	lookedUp: boolean;
 	canPush?: boolean;
+	canAdminister?: boolean;
 }
 
 export async function resolveGithubRepository(
@@ -732,6 +744,7 @@ export async function resolveGithubRepository(
 		private: info?.private,
 		lookedUp: info !== undefined,
 		canPush: info?.canPush,
+		canAdminister: info?.canAdminister,
 	};
 }
 
