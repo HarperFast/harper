@@ -132,37 +132,32 @@ function markLoadedUnlessReported(componentStatusName: string, message: string):
 	if (current === undefined || current === STATUS.LOADING) componentLifecycle.loaded(componentStatusName, message);
 }
 
-// Keys the loader itself marked failed, unlike health a component reports through `statusForComponent`: only these send
-// a cached application back through a load, and only these are cleared then.
-const loaderFailures = new Map<string, Date>();
+// Failures the loader itself recorded, by the application whose load recorded them, unlike health a component reports
+// through `statusForComponent`: only these send a cached application back through a load, and only these are cleared
+// then. Each is remembered by its revision: every status write replaces `lastChecked`.
+const loaderFailures = new Map<string, Map<string, Date>>();
 
-function recordLoadFailure(componentStatusName: string, error: Error | string, message?: string): void {
+function recordLoadFailure(
+	application: string | undefined,
+	componentStatusName: string,
+	error: Error | string,
+	message?: string
+): void {
 	componentLifecycle.failed(componentStatusName, error, message);
-	// every status write replaces `lastChecked`, so it identifies this report
-	loaderFailures.set(componentStatusName, statusForComponent(componentStatusName).get()!.lastChecked);
-}
-
-// Application names can contain dots: `shop.eu` is an application of its own, not a component of `shop`.
-function belongsToApplication(key: string, appName: string): boolean {
-	if (key !== appName && !key.startsWith(appName + '.')) return false;
-	for (const other of applicationsInLastScan) {
-		if (other.length > appName.length && other.startsWith(appName + '.') && belongsToApplication(key, other)) {
-			return false;
-		}
-	}
-	return true;
+	if (application === undefined) return;
+	let failures = loaderFailures.get(application);
+	if (!failures) loaderFailures.set(application, (failures = new Map()));
+	failures.set(componentStatusName, statusForComponent(componentStatusName).get()!.lastChecked);
 }
 
 function clearLoaderFailures(appName: string): boolean {
-	let cleared = false;
-	for (const [key, recorded] of loaderFailures) {
-		if (!belongsToApplication(key, appName)) continue;
-		loaderFailures.delete(key);
-		// a report made over the loader's since belongs to whoever made it
+	const failures = loaderFailures.get(appName);
+	if (!failures) return false;
+	loaderFailures.delete(appName);
+	for (const [key, recorded] of failures) {
 		if (statusForComponent(key).get()?.lastChecked === recorded) componentLifecycle.cleared(key);
-		cleared = true;
 	}
-	return cleared;
+	return true;
 }
 
 function forgetLoadedPaths(appName: string): void {
@@ -172,8 +167,7 @@ function forgetLoadedPaths(appName: string): void {
 
 /**
  * `loadedPaths` outlives a reload cycle (the main thread reruns `loadComponentDirectories` without restarting), so an
- * application that failed would stay cached, with its failure reported, until the process restarts. Forgetting its
- * paths sends it through a fresh load that records its outcome again; an application that did not fail stays cached.
+ * application that failed would stay cached, with its failure reported, until the process restarts.
  */
 function retryIfFailed(appName: string): void {
 	// a root-config `package:` lives in the components root too, but only the root load may load it
@@ -334,7 +328,7 @@ function placementOf(appName: string): boolean {
 	try {
 		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
 	} catch (error) {
-		recordLoadFailure(appName, error, `Component '${appName}' failed to load`);
+		recordLoadFailure(appName, appName, error, `Component '${appName}' failed to load`);
 		noteBootFailure(appName, appName, error);
 		return false;
 	}
@@ -342,7 +336,7 @@ function placementOf(appName: string): boolean {
 		const error = new Error(
 			`Application '${appName}' is isolated, which needs a worker thread of its own, but threads.count is 0`
 		);
-		recordLoadFailure(appName, error, `Component '${appName}' failed to load`);
+		recordLoadFailure(appName, appName, error, `Component '${appName}' failed to load`);
 		noteBootFailure(appName, appName, error);
 		return false;
 	}
@@ -367,6 +361,7 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 		(error as Error).message = `Not loading '${appName}': invalid routing configured: ${(error as Error).message}`;
 		(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error as Error));
 		recordLoadFailure(
+			appName,
 			appName,
 			error as Error,
 			`Component '${appName}' failed to load due to invalid routing configuration`
@@ -507,8 +502,9 @@ export async function loadComponentDirectories(
 				.catch((error) => {
 					const recoveryError = error instanceof Error ? error : new Error(String(error));
 					noteBootFailure(appName, appName, recoveryError);
-					if (appWasVisible) {
+					if (appWasVisible || existsSync(appFolder)) {
 						recordLoadFailure(
+							appName,
 							appName,
 							recoveryError,
 							`Component '${appName}' failed to load after waiting for in-progress preparation`
@@ -523,7 +519,7 @@ export async function loadComponentDirectories(
 		const refusal = failClosed?.get(appName);
 		if (refusal) {
 			noteBootFailure(appName, appName, refusal);
-			recordLoadFailure(appName, refusal, refusal.message);
+			recordLoadFailure(appName, appName, refusal, refusal.message);
 			continue;
 		}
 		const recoveryError = failedRecoveries.get(appName);
@@ -536,6 +532,7 @@ export async function loadComponentDirectories(
 			unreportedFailedRecoveries.delete(appName);
 			noteBootFailure(appName, appName, recoveryError);
 			recordLoadFailure(
+				appName,
 				appName,
 				recoveryError,
 				`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
@@ -559,13 +556,14 @@ export async function loadComponentDirectories(
 			}).catch((error) => {
 				const loadError = error instanceof Error ? error : new Error(String(error));
 				noteBootFailure(appName, appName, loadError);
-				recordLoadFailure(appName, loadError, `Component '${appName}' failed to load`);
+				recordLoadFailure(appName, appName, loadError, `Component '${appName}' failed to load`);
 			})
 		);
 	}
 	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
 		noteBootFailure(appName, appName, recoveryError);
 		recordLoadFailure(
+			appName,
 			appName,
 			recoveryError,
 			`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
@@ -1082,7 +1080,7 @@ export async function loadComponent(
 						(message) => `Could not load component '${componentName}' due to: ${message}`
 					);
 					(getWorkerIndex() === 0 ? console : harperLogger).error(error);
-					recordLoadFailure(statusName, error, `Could not load component '${componentName}'`);
+					recordLoadFailure(loadingApplication, statusName, error, `Could not load component '${componentName}'`);
 					noteBootFailure(loadingApplication, statusName, error);
 					return undefined;
 				}
@@ -1123,7 +1121,7 @@ export async function loadComponent(
 			const refused = isRoot && componentConfig.package ? options.failClosed?.get(componentName) : undefined;
 			if (refused) {
 				harperLogger.error(refused.message);
-				recordLoadFailure(componentName, refused, refused.message);
+				recordLoadFailure(componentName, componentName, refused, refused.message);
 				noteBootFailure(componentName, componentName, refused);
 				continue;
 			}
@@ -1231,7 +1229,12 @@ export async function loadComponent(
 						'setupDirectory' in extensionModule)
 				) {
 					const error = new Error(`Plugin ${componentName} is exporting old extension APIs. Remove them.`);
-					recordLoadFailure(componentStatusName, error, `Component '${componentStatusName}' failed to load`);
+					recordLoadFailure(
+						entryApplication,
+						componentStatusName,
+						error,
+						`Component '${componentStatusName}' failed to load`
+					);
 					throw error;
 				}
 
@@ -1369,7 +1372,12 @@ export async function loadComponent(
 								', '
 							)}), but its deprecated 'start'/'startOnMainThread' extension API receives the bare, unmounted server — routes registered there would stay reachable unconstrained. Upgrade to the new Plugin API (handleApplication(scope)) or drop the mount.`
 					);
-					recordLoadFailure(componentStatusName, error, `Component '${componentStatusName}' failed to load`);
+					recordLoadFailure(
+						entryApplication,
+						componentStatusName,
+						error,
+						`Component '${componentStatusName}' failed to load`
+					);
 					throw error;
 				}
 
@@ -1432,7 +1440,12 @@ export async function loadComponent(
 				);
 				(getWorkerIndex() === 0 ? console : harperLogger).error(errorForLog(error));
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
-				recordLoadFailure(componentStatusName, error, `Could not load component '${componentStatusName}'`);
+				recordLoadFailure(
+					entryApplication,
+					componentStatusName,
+					error,
+					`Could not load component '${componentStatusName}'`
+				);
 				noteBootFailure(entryApplication, componentStatusName, error);
 			}
 		}
@@ -1496,7 +1509,7 @@ export async function loadComponent(
 		) {
 			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
 			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
-			recordLoadFailure(statusName, errorMessage);
+			recordLoadFailure(loadingApplication, statusName, errorMessage);
 			noteBootFailure(loadingApplication, statusName, errorMessage);
 		}
 
@@ -1511,7 +1524,7 @@ export async function loadComponent(
 		const error = loadFailure(thrown, (message) => `Could not load application due to ${message}`);
 		resources.set('', new ErrorResource(error));
 		if (!isRoot) {
-			recordLoadFailure(statusName, error, `Could not load ${statusName}`);
+			recordLoadFailure(loadingApplication, statusName, error, `Could not load ${statusName}`);
 			noteBootFailure(loadingApplication, statusName, error);
 		}
 	} finally {
