@@ -421,6 +421,7 @@ const ABSENT_ENTRY = Object.freeze({
 	},
 });
 const KEEP_STALE = Object.freeze({ allowStaleWhileRevalidate: () => true });
+const sourceInstanceHooks = new WeakMap<object, boolean>();
 // `$distance` is left out: it can fall back to the record
 const ENTRY_SORT_ATTRIBUTES = new Set(['$id', '$updatedtime', '$updatedTime', '$expiresAt', '$score', '$highlights']);
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
@@ -2277,6 +2278,8 @@ export function makeTable(options): TableResourceClass {
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
 	let expirationWarningChecked = false;
 	let writerResidencyWarned = false;
+	let staleWithoutEvictionWarned = false;
+	let asyncStaleHookWarned = false;
 	let propertyResolvers: any;
 	const warnedUnresolvedComputed = new Set<string>();
 	let hasRelationships = false;
@@ -9045,7 +9048,7 @@ export function makeTable(options): TableResourceClass {
 				// since those never run the ensureLoaded-gated freshness check this transform
 				// otherwise applies unconditionally to every read.
 				const includeExpired = (target as any).includeExpired === true;
-				const transformToRecord = TableResource.transformEntryForSelect(
+				const transformToRecord = (this.constructor as typeof TableResource).transformEntryForSelect(
 					select,
 					context,
 					readTxn,
@@ -10310,8 +10313,17 @@ export function makeTable(options): TableResourceClass {
 					if (!(entry.metadataFlags & (INVALIDATED | EVICTED)) || context?.onlyIfCached) return entry;
 					const id = entry.key;
 					if (hasSourceGet && !context?.noCache && !needsResidentLoad(entry, context)) {
-						const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(id)?.value;
-						if (record && staleResource(resourceClass, context, entry, record).allowStaleWhileRevalidate?.(entry, id)) {
+						let staleEntry = entry;
+						let record = entry.deref ? entry.deref() : entry.value;
+						if (record == null) {
+							// a collected lazy record: the hook reads the stale record from the entry it is given
+							staleEntry = primaryStore.getEntry(id);
+							record = staleEntry?.value;
+						}
+						if (
+							record &&
+							allowsStale(staleResource(resourceClass, context, entry, record), source, staleEntry, id, context)
+						) {
 							(staleKept ??= new WeakSet()).add(entry);
 							return selectionStopped ? SKIP : entry;
 						}
@@ -14270,7 +14282,8 @@ export function makeTable(options): TableResourceClass {
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
 			if (needsSourceData) {
-				const servesStale = Boolean(entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id));
+				// no resource means a forced load
+				const servesStale = Boolean(entry?.value && resource && allowsStale(resource, source, entry, id, context));
 				if (servesStale) {
 					let acquired: boolean;
 					try {
@@ -14538,6 +14551,54 @@ export function makeTable(options): TableResourceClass {
 		resourceClass._updateResource(resource, entry);
 		resource.setRecord(record);
 		return resource;
+	}
+	function allowsStale(resource, source, entry: Entry, id: Id, context: Context): boolean {
+		let allowed;
+		if (typeof resource.allowStaleWhileRevalidate === 'function')
+			allowed = resource.allowStaleWhileRevalidate(entry, id);
+		else if (context?.noCache || context?.mustRevalidate) allowed = false;
+		else if (typeof source?.allowStaleWhileRevalidate === 'function')
+			allowed = source.allowStaleWhileRevalidate(entry, id);
+		else if (typeof source === 'function' && sourceDefinesInstanceHook(source)) {
+			const sourceInstance = new source(id, context);
+			// an instance field can shadow an inherited hook
+			if (typeof sourceInstance.allowStaleWhileRevalidate === 'function')
+				allowed = sourceInstance.allowStaleWhileRevalidate(entry, id);
+		}
+		if (typeof allowed?.then === 'function') {
+			allowed.then(undefined, (error) => logger.warn?.(error));
+			allowed = false;
+			if (!asyncStaleHookWarned) {
+				asyncStaleHookWarned = true;
+				logger.warn?.(
+					`allowStaleWhileRevalidate for table "${tableName}" returned a promise, which does not allow serving a stale record; return a boolean synchronously.`
+				);
+			}
+		}
+		if (allowed && entry.expiresAt != undefined && !evictionMs && !staleWithoutEvictionWarned) {
+			staleWithoutEvictionWarned = true;
+			logger.warn?.(
+				`Table "${tableName}" allows stale-while-revalidate but has no eviction time, so its next cleanup scan removes expired records and later reads wait for the source. Set an eviction time (@table(eviction: ...) or the sourcedFrom eviction option) to keep serving stale records.`
+			);
+		}
+		return Boolean(allowed);
+	}
+	function sourceDefinesInstanceHook(source): boolean {
+		let defines = sourceInstanceHooks.get(source);
+		if (defines === undefined) {
+			defines = false;
+			// own properties only: reading through the Proxy at the end of a resource prototype chain runs its get trap
+			for (let prototype = source.prototype; prototype && prototype !== Object.prototype;) {
+				const descriptor = Object.getOwnPropertyDescriptor(prototype, 'allowStaleWhileRevalidate');
+				if (descriptor) {
+					defines = typeof descriptor.value === 'function';
+					break;
+				}
+				prototype = Object.getPrototypeOf(prototype);
+			}
+			sourceInstanceHooks.set(source, defines);
+		}
+		return defines;
 	}
 	function isPrimaryKeyAttribute(attribute) {
 		return (
