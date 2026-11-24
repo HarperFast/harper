@@ -208,17 +208,22 @@ describe('connectionRateLimit', () => {
 			gateConnectionEvents(server, () => false);
 			server.listen(0, '127.0.0.1');
 			await once(server, 'listening');
+			const client = connect(server.address().port, '127.0.0.1');
+			let deadline;
 			try {
-				const client = connect(server.address().port, '127.0.0.1');
 				// a FIN would end the stream cleanly; only an RST surfaces as ECONNRESET
 				client.resume();
 				const [error] = await Promise.race([
 					once(client, 'error'),
 					new Promise((resolve) => client.on('close', () => resolve([{ code: 'closed without an RST' }]))),
+					// mocha timeouts are off, so a connection the gate let through must fail here rather than hang
+					new Promise((resolve) => (deadline = setTimeout(() => resolve([{ code: 'still open after 2s' }]), 2000))),
 				]);
 				assert.equal(error.code, 'ECONNRESET');
 				assert.equal(connections, 0);
 			} finally {
+				clearTimeout(deadline);
+				client.destroy();
 				server.close();
 			}
 		});
