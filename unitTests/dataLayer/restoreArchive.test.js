@@ -49,6 +49,7 @@ const {
 const { acquireExtractionLock, extractionLockPath } = require('#src/dataLayer/archiveExtractionLock');
 const { mintStagingId, readStagedRecord, STAGED_SUFFIX, writeStagedRecord } = require('#src/dataLayer/archiveStaging');
 const { resumeRestartRestore } = require('#src/dataLayer/restoreIntent');
+const { pinBackup, readBackupPins } = require('#src/dataLayer/backupRepository');
 const env = require('#src/utility/environment/environmentManager');
 const {
 	RESTORE_META_DIR,
@@ -1291,6 +1292,27 @@ describeUnlessLmdb('restore_backup from a get_backup archive', function () {
 			assert.deepStrictEqual(inherited, [abandoned.staging_dir]);
 			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
 			assert.deepStrictEqual(stagingLeft(fixture.name), [], 'nothing owns the inherited staging any more');
+		});
+
+		it('retires the pins of a terminal receipt it takes over, when that receipt left no marker', async function () {
+			const fixture = await seededDatabase();
+			await interruptAfterEnginePart(fixture);
+			await requestRestore(fixture.name, { cancel: true });
+			rmSync(restoringMarkerPath(fixture.dir));
+			const backupDir = backupDirForDatabase(fixture.name);
+			const lock = acquireRestoreLock(fixture.dir);
+			try {
+				writeRestoreReceipt(lock, { ...receiptOf(fixture.dir), source_pin_id: 'restore-intent-earlier' });
+			} finally {
+				releaseRestoreLock(lock);
+			}
+			pinBackup(backupDir, 'restore-intent-earlier', 1, 'an earlier restore', fixture.dir);
+
+			await uploadAndRun(fixture.name, fixture.archive);
+
+			assert.strictEqual(readRestoreReceipt(fixture.dir).kind, 'absent');
+			assert.deepStrictEqual(await snapshot(loadedItems(fixture.name)), fixture.archived);
+			assert.deepStrictEqual(readBackupPins(backupDir), []);
 		});
 
 		it('is finished by a restart retry of the same swap after only the engine part was installed', async function () {

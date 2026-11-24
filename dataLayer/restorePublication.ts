@@ -367,7 +367,7 @@ async function claimStagedSource(request: PublishRestoreRequest): Promise<Claime
 	const record = readStagedRecord(staged.stagingDir, targetDatabase);
 	if (record.state !== 'proven') throw new Error('The staged archive has not been proven');
 	let receipt!: RestoreReceipt;
-	const lock = beginRestoreForDatabase(databaseDir, targetDatabase, staged.stagingDir, (preexisting, claimLock) => {
+	const lock = beginRestoreForDatabase(databaseDir, targetDatabase, staged.stagingDir, (_preexisting, claimLock) => {
 		if (staged.resume) {
 			const read = readRestoreReceipt(databaseDir);
 			const earlier = read.kind === 'valid' ? read.receipt : undefined;
@@ -393,12 +393,10 @@ async function claimStagedSource(request: PublishRestoreRequest): Promise<Claime
 				...(earlier?.superseded_pin_ids ?? []),
 			].filter(Boolean)
 		);
-		// retired once this attempt commits, as a managed restore retires them
-		const supersededPinIds = preexisting
-			? readBackupPins(backupDir)
-					.filter((pin) => inherited.has(pin.pin_id))
-					.map((pin) => pin.pin_id)
-			: [];
+		// retired once this attempt commits, marker or not: a terminal receipt left none and still holds pins
+		const supersededPinIds = readBackupPins(backupDir)
+			.filter((pin) => inherited.has(pin.pin_id))
+			.map((pin) => pin.pin_id);
 		receipt = writeRestoreReceipt(claimLock, {
 			...newRestoreReceipt({
 				route: request.route,
