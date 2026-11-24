@@ -33,14 +33,16 @@ async function updateData({ statement, hdb_user }: any) {
 	let update_record = createUpdateRecord(statement.columns);
 
 	//convert this update statement to a SQL search capable statement
-	hdbUtils.backtickASTSchemaItems({ ...statement, where: undefined });
-	let { table: from, where } = statement;
+	hdbUtils.backtickASTSchemaItems({ table: statement.table });
+	let { table: from, where, queries } = statement;
 	let tableClone = clone(from);
 
 	let searchStatement = (alasql as any).parse(`SELECT ${tableInfo.hash_attribute} FROM ${from.toString()}`)
 		.statements[0];
 	// the parsed WHERE, not its text: `IS NOT NULL` is written as `IS NOT(NULL)`, which reads back as `IS (NOT NULL)`
 	if (!hdbUtils.isEmpty(where)) searchStatement.where = new (alasql as any).yy.Expression({ expression: where });
+	// a subquery is listed here and in the WHERE, so the search refuses it as it refuses one in a SELECT
+	if (queries) searchStatement.queries = queries;
 	//let result = await transaction.writeTransaction(tableInfo.schema, tableInfo.name, async () => {
 	let records: any = await pSqlSelect({ statement: searchStatement, hdb_user });
 	let newRecords = buildUpdateRecords(update_record, records);

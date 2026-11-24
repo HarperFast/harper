@@ -1,14 +1,16 @@
 /**
- * Legacy SQL's walk over a statement: every value under `root`, depth first, in the order `recursive-iterator`
- * gave, with no depth limit. A node's children are read only after the caller has seen the node, so a caller may
- * replace them. Reaching an object a second time throws `Circular reference`, as before: legacy SQL refuses a
- * statement that shares a node, such as a subquery or a named aggregate.
+ * Legacy SQL's walk over a statement: every value under `root`, depth first, with no depth limit. A node's children
+ * are read only after the caller has seen the node, so a caller may replace them. Reaching an object a second time
+ * throws `Circular reference`, which is what refuses a statement that shares a node, such as a subquery or a named
+ * aggregate.
  */
 export interface AstStep {
 	parent: any;
 	node: any;
 	key: string;
-	/** Keys from `root` down to `node`. */
+	/** The key under `root` that this step descends from. */
+	root: string;
+	/** Keys from `root` down to `node`, built when read. */
 	readonly path: string[];
 }
 
@@ -16,12 +18,14 @@ class Step implements AstStep {
 	parent: any;
 	node: any;
 	key: string;
+	root: string;
 	up: Step | undefined;
 
 	constructor(parent: any, node: any, key: string, up: Step | undefined) {
 		this.parent = parent;
 		this.node = node;
 		this.key = key;
+		this.root = up ? up.root : key;
 		this.up = up;
 	}
 
@@ -51,7 +55,6 @@ export function* walkAst(root: any): Generator<AstStep> {
 	}
 }
 
-// Array and array-like keys in index order; other objects' keys sorted.
 function childKeys(node: object): string[] {
 	const keys = Object.keys(node);
 	if (Array.isArray(node)) return keys;

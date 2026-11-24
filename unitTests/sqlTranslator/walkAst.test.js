@@ -20,6 +20,12 @@ describe('walkAst', () => {
 		]);
 	});
 
+	it('reports the key under the root each step descends from', () => {
+		for (const step of walkAst({ where: { left: { columnid: 'a' } }, columns: [{ columnid: 'b' }] })) {
+			assert.strictEqual(step.root, step.path[0]);
+		}
+	});
+
 	it('walks an array-like object in index order, without its length', () => {
 		assert.deepStrictEqual(
 			steps({ 1: 'b', 0: 'a', length: 2 }).map(({ key }) => key),

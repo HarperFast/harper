@@ -135,9 +135,10 @@ class SelectValidator {
 	checkColumnsForAsterisk() {
 		let iterator = walkAst(this.statement.columns);
 
-		for (let { node, path } of iterator) {
+		for (let step of iterator) {
+			let node = step.node;
 			//we check the path to make sure the '*' is not wrapped in some form of expression like count(*)
-			if (node && node.columnid === '*' && path.indexOf('expression') < 0) {
+			if (node && node.columnid === '*' && step.path.indexOf('expression') < 0) {
 				this.setColumnsForTable(node.tableid);
 			}
 		}

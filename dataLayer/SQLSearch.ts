@@ -204,12 +204,12 @@ class SQLSearch {
 	 */
 	_getColumns() {
 		let iterator = walkAst(this.statement);
-		for (let { node, path } of iterator) {
+		for (let { node, root } of iterator) {
 			if (node && node.columnid) {
-				if (!this.columns[path[0]]) {
-					this.columns[path[0]] = [];
+				if (!this.columns[root]) {
+					this.columns[root] = [];
 				}
-				this.columns[path[0]].push(clone(node));
+				this.columns[root].push(clone(node));
 			}
 		}
 	}

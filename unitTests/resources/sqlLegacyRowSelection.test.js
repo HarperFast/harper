@@ -160,11 +160,15 @@ describe('legacy SQL row selection for deep and IS NOT NULL predicates', functio
 			);
 		});
 
-		it('still refuses a statement that uses one AST node twice', async () => {
-			await assert.rejects(
-				sql('legacy', `SELECT id FROM ${TABLE} WHERE id IN (SELECT id FROM ${TABLE})`),
-				/Circular reference/
-			);
+		it('still refuses a SELECT, UPDATE or DELETE whose WHERE holds a subquery, and writes nothing', async () => {
+			await reseed();
+			const subquery = `id IN (SELECT id FROM ${TABLE} WHERE id < 5)`;
+			await assert.rejects(sql('legacy', `SELECT id FROM ${TABLE} WHERE ${subquery}`), /Circular reference/);
+			await assert.rejects(sql('legacy', `UPDATE ${TABLE} SET note = 'hit' WHERE ${subquery}`), /Circular reference/);
+			await assert.rejects(sql('legacy', `DELETE FROM ${TABLE} WHERE ${subquery}`), /Circular reference/);
+			const notes = await storedNotes();
+			assert.deepStrictEqual(Object.keys(notes).length, ROWS);
+			assert.ok(Object.values(notes).every((note) => note === 'seed'));
 		});
 	});
 });
