@@ -385,7 +385,9 @@ console.log(target.loadedFromSource); // true = own foreground source request, f
 The flag settles as follows:
 
 - `true` — the get went to the source: either it fetched the record, or the source errored and a stale cached record was served as a fallback (`staleIfError`). `true` means a foreground source request was made, not necessarily that the returned data is fresh.
-- `false` — the get settled without its own foreground source request: fresh cache hits, `onlyIfCached` requests, stale-while-revalidate responses (the source fetch continues in the background), and requests that waited on another request's in-flight fetch of the same record. A waiter also reports `false` when it receives a shared source error or a table-retirement 404. Waiting for another request can still take as long as an upstream fetch.
+- `false` — the get settled without its own foreground source request: fresh cache hits, `onlyIfCached` cache hits, stale-while-revalidate responses (the source fetch continues in the background), and requests that waited on another request's in-flight fetch of the same record. A waiter also reports `false` when it receives a shared source error or a table-retirement 404. Waiting for another request can still take as long as an upstream fetch.
+
+An error raised before cache disposition is determined, such as a cache-only miss that returns 504, can leave this property unset or retain a reused target's earlier value.
 
 Note that `get()` returns a plain `RecordObject`, not a resource instance — the record itself does not carry cache disposition; the explicitly passed `RequestTarget` is the supported way to observe it. There is deliberately no request-`Context` mirror of this flag: a context is shared across every `get` in the request (including a caching table's internal gets), so a context-level value would be silently overwritten before the caller could read it.
 

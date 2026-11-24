@@ -259,13 +259,20 @@ describe('Concurrent source misses on one key', function () {
 			const warnings = [],
 				wakeups = [],
 				reads = [];
+			const nativeWaiters = new Set();
+			const nativeWakeups = new Set();
 			let wakeImmediately = retirement === 'drop-natural-wake';
 			store.tryLock = function (key, onUnlocked) {
 				const acquired = originalTryLock.call(this, key, () => {
-					if (wakeImmediately) onUnlocked();
-					else wakeups.push(onUnlocked);
+					if (wakeImmediately) {
+						onUnlocked();
+						nativeWakeups.add(onUnlocked);
+					} else wakeups.push(onUnlocked);
 				});
-				if (!acquired) parked++;
+				if (!acquired) {
+					parked++;
+					nativeWaiters.add(onUnlocked);
+				}
 				return acquired;
 			};
 			logger.warn = (...args) => warnings.push(args.join(' '));
@@ -295,7 +302,10 @@ describe('Concurrent source misses on one key', function () {
 				if (outcome === 'record') assert.equal(leader.name, 'leader result');
 				else assert.equal(leader, failure);
 				await dropping;
-				if (retirement === 'drop-natural-wake') this.timeout(2000);
+				if (retirement === 'drop-natural-wake') {
+					assert.equal(nativeWaiters.size, targets.length - 1);
+					await waitFor(() => [...nativeWaiters].every((wake) => nativeWakeups.has(wake)), 2000);
+				}
 				assert.deepEqual(
 					warnings.filter((warning) => warning.includes(name)),
 					[]
