@@ -14061,18 +14061,6 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 
-	function assertSourceRecordObject(record: any): void {
-		if (
-			typeof record !== 'object' ||
-			record === null ||
-			Array.isArray(record) ||
-			ArrayBuffer.isView(record) ||
-			utilTypes.isAnyArrayBuffer(record) ||
-			record instanceof Blob
-		)
-			throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
-	}
-
 	function validateFullTextLeaf(
 		leaf: any,
 		mode: string,
@@ -15050,7 +15038,7 @@ export function makeTable(options): TableResourceClass {
 						appendHeader(responseHeaders, 'Server-Timing', `cache-resolve;dur=${resolveDuration.toFixed(2)}`, true);
 					if (expirationMs && sourceContext.expiresAt == undefined) sourceContext.expiresAt = Date.now() + expirationMs;
 					if (updatedRecord) {
-						assertSourceRecordObject(updatedRecord);
+						if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
 						if (updatedRecord.status > 0 && updatedRecord.headers) {
 							// if the source has a status code and headers, treat it as a response
 							const status = updatedRecord.status;
@@ -15096,10 +15084,7 @@ export function makeTable(options): TableResourceClass {
 								if (status !== 200) updatedRecord.status = status;
 							}
 						}
-						if (typeof updatedRecord.toJSON === 'function') {
-							updatedRecord = updatedRecord.toJSON();
-							if (!reusedCachedRecord) assertSourceRecordObject(updatedRecord);
-						}
+						if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
 						// 5.2 record caching relies on it — so we must not write through the frozen object).

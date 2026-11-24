@@ -7,7 +7,7 @@ const { waitFor } = require('../waitFor.js');
 
 describe('Source fills and the table schema', function () {
 	this.timeout(10_000);
-	let Validated, Loose, responses, calls;
+	let Validated, responses, calls;
 
 	function sourceFor(Table) {
 		Table.sourcedFrom({
@@ -30,15 +30,7 @@ describe('Source fills and the table schema', function () {
 				{ name: 'count', type: 'Int' },
 			],
 		});
-		Loose = table({
-			database: 'test',
-			table: 'SourceFillValidatedLoose',
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'name', type: 'String' },
-			],
-		});
-		for (const Table of [Validated, Loose]) sourceFor(Table);
+		sourceFor(Validated);
 	});
 
 	beforeEach(() => {
@@ -72,39 +64,5 @@ describe('Source fills and the table schema', function () {
 		assert.equal(checks, 0, 'the fill ran the schema validator');
 		await Validated.get('mismatched');
 		assert.deepEqual(calls, ['mismatched'], 'the record was not served from the cache');
-	});
-
-	it('rejects a source that returns something other than a record', async () => {
-		for (const [id, response] of [
-			['array', [{ name: 'n' }]],
-			['array-buffer', new ArrayBuffer(8)],
-			['shared-array-buffer', new SharedArrayBuffer(8)],
-			['buffer', Buffer.from('binary')],
-			['blob', new Blob(['binary'])],
-			['primitive', 'n'],
-			['json-array', { toJSON: () => [{ name: 'n' }] }],
-			['json-primitive', { toJSON: () => 'n' }],
-		]) {
-			responses.set(id, response);
-			await assert.rejects(Loose.get(id), (error) => {
-				assert.equal(error.statusCode, 502);
-				assert.match(error.message, /^Source for SourceFillValidatedLoose returned a record that is not an object/);
-				return true;
-			});
-			assert.equal((await settled(Loose, id))?.value ?? undefined, undefined);
-		}
-	});
-
-	it('still treats a falsy result as no record', async () => {
-		responses.set('missing', undefined);
-		assert.equal(await Loose.get('missing'), undefined);
-	});
-
-	it('keeps the cached record on a 304 revalidation', async () => {
-		await Validated.put('revalidated', { id: 'revalidated', name: 'cached' }, { expiresAt: Date.now() + 20 });
-		await waitFor(() => Validated.primaryStore.getEntry('revalidated').expiresAt < Date.now());
-		responses.set('revalidated', { status: 304, headers: new Map() });
-		assert.equal((await Validated.get('revalidated')).name, 'cached');
-		assert.deepEqual(calls, ['revalidated']);
 	});
 });

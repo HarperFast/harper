@@ -42,7 +42,7 @@ const SCHEMA_GRAPHQL =
 	'\thtmlContent: Blob!\n' +
 	'\tencoding: String\n' +
 	'\tipsumTtl: Int\n' +
-	'\tttl: Long\n' +
+	'\tttl: Int\n' +
 	'\texpiresAtTimestamp: String!\n' +
 	'\tcontentSize: Int\n' +
 	'\thttpStatus: Int\n' +

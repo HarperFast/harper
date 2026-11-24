@@ -60,11 +60,4 @@ suite('sourcedFrom fills that do not match the schema, over REST', (ctx: Context
 		strictEqual((await request('GET', 'item')).status, 200);
 		strictEqual(originRequests.get('item'), 1, 'the record was not served from the cache');
 	});
-
-	test('a source that returns something other than a record fails with 502 and caches nothing', async () => {
-		originRecords.set('list', [{ id: 'list', name: 'n' }]);
-		strictEqual((await request('GET', 'list')).status, 502);
-		strictEqual((await request('GET', 'list')).status, 502);
-		strictEqual(originRequests.get('list'), 2);
-	});
 });
