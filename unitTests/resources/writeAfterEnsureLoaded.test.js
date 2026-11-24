@@ -114,19 +114,48 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		let releaseSource, otherRequest;
 		sourceGate = new Promise((resolve) => (releaseSource = resolve));
 		const fetching = new Promise((resolve) => (sourceStarted = resolve));
-		// this transaction's clock is fixed by its first read, before the other request starts fetching
-		await writerAfterLoad(undefined, async (resource) => {
-			await Target.get('warm', resource.getContext());
-			const other = {};
-			otherRequest = transaction(other, () => Target.get('waited', other));
-			await fetching;
-			const waiting = resource.ensureLoaded();
+		try {
+			// this transaction's clock is set by its first read, before the other request starts fetching
+			await writerAfterLoad(undefined, async (resource) => {
+				await Target.get('warm', resource.getContext());
+				const other = {};
+				otherRequest = transaction(other, () => Target.get('waited', other));
+				await fetching;
+				const waiting = resource.ensureLoaded();
+				releaseSource();
+				await waiting;
+			}).put('waited', { value: 8 });
+		} finally {
 			releaseSource();
-			await waiting;
-		}).put('waited', { value: 8 });
-		await otherRequest;
+			await otherRequest;
+		}
 		assert.equal(sourceGets, 2);
 		assert.equal(await settledValue('waited'), 8);
+	});
+
+	it('keeps a write when the transaction writes another record while its fill is in flight', async function () {
+		this.timeout(30_000);
+		await Target.get('warm');
+		await settledValue('warm');
+		let releaseSource;
+		sourceGate = new Promise((resolve) => (releaseSource = resolve));
+		const fetching = new Promise((resolve) => (sourceStarted = resolve));
+		try {
+			await writerAfterLoad(undefined, async (resource) => {
+				await Target.get('warm', resource.getContext());
+				const loading = resource.ensureLoaded();
+				await fetching;
+				sourceGate = undefined;
+				// this write reserves the transaction's clock before its fill resolves
+				await Target.put('pinned-other', { value: 1 }, resource.getContext());
+				releaseSource();
+				await loading;
+			}).put('pinned-mid-fill', { value: 8 });
+		} finally {
+			releaseSource();
+		}
+		assert.equal(await settledValue('pinned-mid-fill'), 8);
+		assert.equal(await settledValue('pinned-other'), 1);
 	});
 
 	async function fillAfterFirstRead(id, context) {
@@ -178,11 +207,12 @@ describe('Write after ensureLoaded() on a caching table', function () {
 	});
 
 	it('keeps the newer of two overlapping fills when the newer one has the older clock', async function () {
+		this.timeout(30_000);
 		setSourceFillLockTimeoutForTesting(50);
+		let releaseSource, olderFetch;
 		try {
 			await Target.get('warm');
 			await settledValue('warm');
-			let releaseSource, olderFetch;
 			sourceGate = new Promise((resolve) => (releaseSource = resolve));
 			const fetching = new Promise((resolve) => (sourceStarted = resolve));
 			sourceValue = 1;
@@ -199,9 +229,13 @@ describe('Write after ensureLoaded() on a caching table', function () {
 			});
 			releaseSource();
 			await olderFetch;
-			await delay(50); // the older fill's background commit
+			// a discarded older fill leaves nothing to wait for, so watch for it landing instead
 			assert.equal(await settledValue('overlapped'), 2);
+			for (const end = Date.now() + 300; Date.now() < end; await delay(10))
+				assert.equal(Target.primaryStore.getEntry('overlapped').value.value, 2);
 		} finally {
+			releaseSource?.();
+			await olderFetch;
 			setSourceFillLockTimeoutForTesting(undefined);
 		}
 	});

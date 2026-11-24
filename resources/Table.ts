@@ -14616,33 +14616,25 @@ export function makeTable(options): TableResourceClass {
 		};
 	}
 
-	function heldLink(context: Context): any {
+	// this database's open link, whose clock a fill may move or cap; none when the caller set the version
+	function clockLink(context: Context): any {
+		if (!isRocksDB || context?.timestamp) return;
 		for (let txn: any = context?.transaction; txn && !isReleasedTransaction(txn); txn = txn.next) {
 			if (txn.db?.path !== primaryStore.path) continue;
 			return txn.open === TRANSACTION_STATE.OPEN ? txn : undefined;
 		}
 	}
 
-	// the clock a write (or a caller's timestamp) has already fixed; an unfixed clock can still move
-	function fixedTransactionClock(context: Context): number | undefined {
-		const link = heldLink(context);
+	function pinnedClock(link: any): number | undefined {
 		return link && (link.timestamp || reservedLocalKey(link.transaction));
 	}
 
-	function unreservedClockHandle(context: Context): any {
-		if (!isRocksDB || context?.timestamp) return;
-		const link = heldLink(context);
-		const handle = link?.transaction;
-		if (handle && !link.timestamp && reservedLocalKey(handle) === undefined) return handle;
-	}
-
 	// A fill handed to a transaction from outside its snapshot can be versioned above its clock; a clock no write has
-	// reserved yet moves past it, so the transaction's own later write still supersedes the fill. A read never mints
+	// pinned yet moves past it, so the transaction's own later write still supersedes the fill. A read never mints
 	// the key: the write's reservation issues and covers it.
-	function advanceClockPast(context: Context, version: number): void {
-		if (!(version > 0)) return;
-		const handle = unreservedClockHandle(context);
-		if (!handle || handle.getTimestamp() > version) return;
+	function advanceClockPast(link: any, version: number): void {
+		const handle = link?.transaction;
+		if (!handle || !(version > 0) || pinnedClock(link) || handle.getTimestamp() > version) return;
 		const clock = (primaryStore as RocksDatabase).getMonotonicTimestamp();
 		if (clock > version) handle.setTimestamp(clock);
 	}
@@ -15229,21 +15221,11 @@ export function makeTable(options): TableResourceClass {
 		let inheritedTimestamp: number;
 		let fillKey: unknown;
 		let sourceTimestamp: number;
-		let versionCap: number;
 		let issuanceFailed = false;
 		try {
 			inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
 			fillKey = writeKeyId(id);
 			sourceTimestamp = inheritedTimestamp;
-			if (!context?.timestamp && isRocksDB) {
-				// A write the requesting transaction makes after reading this fill must supersede it. Once a write has
-				// fixed that transaction's clock, the fill orders below the clock; otherwise it keeps its fetch-time
-				// version, so successive fills stay in fetch order, and the clock moves past it (advanceClockPast).
-				// A refresh still advances past the version it replaces.
-				const requesterClock = fixedTransactionClock(context);
-				const cap = requesterClock > 0 ? timestampBelow(requesterClock) : undefined;
-				if (!(existingVersion >= cap)) versionCap = cap;
-			}
 			if (!sourceTimestamp) {
 				if (!isRocksDB) sourceTimestamp = getNextMonotonicTime();
 				else {
@@ -15304,7 +15286,7 @@ export function makeTable(options): TableResourceClass {
 					(outcome.value == null || (heldFill.sharable ??= isSharableRecord(outcome.value)))
 				) {
 					setLoadedFromSource(target, false);
-					advanceClockPast(context, outcome.version);
+					advanceClockPast(clockLink(context), outcome.version);
 					return outcome;
 				}
 				if (heldFill?.source === source && heldFill.failure) throw heldFill.failure;
@@ -15313,7 +15295,7 @@ export function makeTable(options): TableResourceClass {
 			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
-				advanceClockPast(context, entry.version);
+				advanceClockPast(clockLink(context), entry.version);
 				return entry;
 			}
 		}
@@ -15488,7 +15470,16 @@ export function makeTable(options): TableResourceClass {
 					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
-					if (sourceVersion > versionCap) sourceVersion = versionCap;
+					// The requester's later write must supersede this fill. Decided now, as a write during the source call
+					// can pin its clock: a pinned clock caps the fill just below it unless that would not advance past the
+					// record's version; an unpinned one moves past the fill, which keeps its fetch-time version so
+					// successive fills stay in fetch order.
+					const requesterLink = clockLink(context);
+					const requesterPin = pinnedClock(requesterLink);
+					if (requesterPin > 0) {
+						const cap = timestampBelow(requesterPin);
+						if (sourceVersion > cap && !(existingVersion >= cap)) sourceVersion = cap;
+					}
 					resolved = true;
 					const resolvedVersion =
 						isRocksDB && updatedRecord && existingVersion != null
@@ -15524,7 +15515,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (!issuanceFailed && !sourceContext.noCacheStore) {
 						sharedEntry = resolvedEntry;
-						if (!(resolvedVersion <= versionCap)) advanceClockPast(context, resolvedVersion);
+						if (!requesterPin) advanceClockPast(requesterLink, resolvedVersion);
 					}
 					resolve(resolvedEntry);
 				} catch (error) {
