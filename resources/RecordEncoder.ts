@@ -157,10 +157,11 @@ export const RECEIVED_IDENTITY_REF = 0x80000000;
 // copy it into an audit entry's previous refs, where it later reads as missing history. Each degrades that row to
 // the behavior before boundaries existed, and only rows that held a delete under a record-less or later write carry one.
 const COPIED_DELETE_REF = 0x40000000;
-// A resequenced write keeps the (newer) version it merged onto, so one version identifies two
-// different stored values and version equality proves nothing. The metadata word this is set in is
-// the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
-// byte its predicate requires — so the bit is what stops the native layer vouching for the version.
+// A resequenced write keeps the (newer) version it merged onto (RocksDB) or a version no newer than it
+// (LMDB), so one version can identify two different stored values and version equality proves nothing.
+// The metadata word this is set in is the same header word the RocksDB VerificationTable reads at value
+// offset 8 — ACTION_32_BIT is the tag byte its predicate requires — so the bit is what stops the native
+// layer vouching for the version.
 export const VERSION_REUSED = constants.VERSION_NOT_UNIQUE_FLAG;
 // The bit is persisted in every resequenced record, so a rocksdb-js that moved it down onto one of
 // the flags above (or up into the tag byte) would silently change what records already on disk
@@ -1130,8 +1131,9 @@ export function recordUpdater(
 		expiresAtNextEncoding = expiresAt;
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
 		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
+		// Both engines: LMDB stores the write's own time, so a tie keeps the version and an older one can
+		// return to a version an earlier state held (harper#4483)
 		if (
-			isRocksDB &&
 			record !== undefined &&
 			(options?.unchangedValue
 				? existingEntry?.metadataFlags & VERSION_REUSED

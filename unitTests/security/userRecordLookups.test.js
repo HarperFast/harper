@@ -12,6 +12,8 @@ const { authentication } = require('#src/security/auth');
 const { getDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { registerLiveSubscription } = require('#src/server/liveSubscriptionAuth');
 const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+const { transaction } = require('#src/resources/transaction');
 
 const PASSWORD = 'lookup-password';
 const hashOf = (plain) => password.hash(plain, password.HASH_FUNCTION.SHA256);
@@ -35,6 +37,20 @@ function deferred() {
 
 let userChanges = 0;
 user.onUserChange(() => userChanges++);
+
+// the context and options the source-apply handler passes for a replicated full write
+function applyRoleFrom(nodeName, role, version) {
+	const Role = databases.system.hdb_role;
+	const context = { source: {}, sourceApply: true, timestamp: version };
+	return transaction(context, async () => {
+		const resource = await Role.getResource(role.id, context);
+		await resource._writeUpdate(role.id, role, true, {
+			isNotification: true,
+			nodeId: getIdOfRemoteNode(nodeName, Role.auditStore),
+			version,
+		});
+	});
+}
 
 async function nextUserChange(write) {
 	const before = userChanges;
@@ -138,9 +154,7 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			});
 		}
 
-		it('returns a user a resequenced write left on a reused version, and compares it by value', async function () {
-			// only the RocksDB encoder keeps an out-of-order write under the existing version
-			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		it('returns a user a resequenced write left on a reused version, and compares it by value', async () => {
 			await testUtils.seedUsers([lookupUser({ logins: 0 })]);
 			const now = Date.now();
 			const login = { logins: { __op__: 'add', value: 1 } };
@@ -154,6 +168,26 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			assert.strictEqual(user.isCurrentUser(found), true, 'an unchanged value is still current');
 			await databases.system.hdb_user.patch('lookup_user', { active: false }, { timestamp: now + 25 });
 			assert.strictEqual(user.isCurrentUser(found), false, 'a changed value is not');
+			// later writes in this suite must not lose to the future timestamp
+			await new Promise((resolve) => setTimeout(resolve, 150));
+		});
+
+		it('applies a replicated role write that ties the role version to the next lookup', async () => {
+			// harper#4483: another node's full put at the same timestamp wins the tie by node name, so it is
+			// stored under the version the derived-role memo was keyed on
+			await testUtils.seedUsers([lookupUser()]);
+			const now = Date.now() + 100;
+			const role = { id: 'lookup_role', role: 'lookup_role', permission: { super_user: false } };
+			await databases.system.hdb_role.put(role, { timestamp: now });
+			const found = user.getUserWithRole('lookup_user');
+			assert.strictEqual(found.role.permission.super_user, false);
+			const before = databases.system.hdb_role.primaryStore.getEntry('lookup_role');
+			await applyRoleFrom(`${server.hostname}-tie`, { ...role, permission: { super_user: true } }, now);
+			const entry = databases.system.hdb_role.primaryStore.getEntry('lookup_role');
+			assert.strictEqual(entry.version, before.version, 'the write kept the version');
+			assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
+			assert.strictEqual(user.isCurrentUser(found), false, 'the role it was built from changed');
+			assert.strictEqual(user.getUserWithRole('lookup_user').role.permission.super_user, true);
 			// later writes in this suite must not lose to the future timestamp
 			await new Promise((resolve) => setTimeout(resolve, 150));
 		});
