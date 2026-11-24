@@ -986,13 +986,13 @@ function logCleanupFailure(error: unknown) {
  * A transform of a search result has no `onDone`; its opening's `release` reaches every search a concatenation
  * joined, where an iterator's return reaches only the first.
  */
-function closeUnread(results: any) {
+function closeUnread(results: any, openIterators = true) {
 	if (!results || typeof results !== 'object') return;
 	cleanUp(() => {
 		if (results.onDone !== undefined) return results.onDone?.();
 		const release = results[SEARCH_OPENING]?.release;
 		if (release) return release();
-		if (results.iterate || results[Symbol.asyncIterator] || results[Symbol.iterator])
+		if (openIterators && (results.iterate || results[Symbol.asyncIterator] || results[Symbol.iterator]))
 			return openIterator(results, { async: true }).return?.();
 	});
 }
@@ -8921,6 +8921,7 @@ export function makeTable(options): TableResourceClass {
 					let gateClosed = false;
 					let acquiring = false;
 					let handedOver = false;
+					let acquireFailed = false;
 					const acquire = (results: any, options: any) => {
 						// a closed gate has released its results
 						if (gateClosed) return undefined;
@@ -8930,8 +8931,9 @@ export function makeTable(options): TableResourceClass {
 							handedOver = true;
 							return iterator;
 						} catch (error) {
-							// a close during the factory left the results to this reader
-							if (gateClosed) closeUnread(results);
+							acquireFailed = true;
+							// a close during the factory left the results to this reader, unless another holds them
+							if (gateClosed && !handedOver) closeUnread(results, false);
 							throw error;
 						} finally {
 							acquiring = false;
@@ -8987,7 +8989,8 @@ export function makeTable(options): TableResourceClass {
 						gatedResults.onDone = null;
 						gateClosed = true;
 						// an iterator that read the results owns their cursor and closes it
-						if (!handedOver && !acquiring) closeUnread(resolvedResults);
+						// after a failed factory only the result's own disposer runs, never the factory again
+						if (!handedOver && !acquiring) closeUnread(resolvedResults, !acquireFailed);
 					};
 					return propagateSearchAuthorization(gatedResults, authorization);
 				}

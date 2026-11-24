@@ -1106,7 +1106,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 		});
 
 		describe('a granted result whose cursor is being opened', () => {
-			let disposed, factories, searched, factory, Wrapped;
+			let disposed, factories, searched, factory, withDisposer, Wrapped;
 			before(() => {
 				Wrapped = class extends Doc {
 					async allowRead() {
@@ -1116,20 +1116,23 @@ describe('Vector search by sort text on an @embed attribute', () => {
 						if (target.checkPermission !== false) return super.search(target);
 						searched = true;
 						const results = super.search(target);
-						return {
-							onDone() {
-								disposed++;
-								results.onDone?.();
-							},
+						const wrapper = {
 							[Symbol.asyncIterator]() {
 								factories++;
 								return factory(results);
 							},
 						};
+						if (withDisposer)
+							wrapper.onDone = () => {
+								disposed++;
+								results.onDone?.();
+							};
+						return wrapper;
 					}
 				};
 			});
-			const open = async (transaction) => {
+			const open = async (transaction, { withoutDisposer = false } = {}) => {
+				withDisposer = !withoutDisposer;
 				disposed = 0;
 				factories = 0;
 				searched = false;
@@ -1161,6 +1164,21 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				const gated = await open();
 				await assert.rejects(fromAsync(gated), /no cursor/);
 				assert.equal(disposed, 1);
+			});
+
+			it('without a disposer, is not asked for a cursor again after its factory throws', async () => {
+				if (!observesSnapshot) return;
+				factory = () => {
+					throw new Error('no cursor');
+				};
+				const transaction = new DatabaseTransaction();
+				try {
+					const gated = await open(transaction, { withoutDisposer: true });
+					await assert.rejects(fromAsync(gated), /no cursor/);
+					assert.equal(factories, 1);
+				} finally {
+					transaction.abort();
+				}
 			});
 
 			it('is disposed when its factory closes the gate and then throws', async () => {
