@@ -538,7 +538,7 @@
 			"properties": {
 				"enabled": {
 					"type": "boolean",
-					"description": "Enable local Harper Studio GUI. Default: true; off when the key is absent."
+					"description": "Enable local Harper Studio GUI. Default: true. Removing the key turns it off."
 				}
 			}
 		},
@@ -897,15 +897,21 @@
 					"properties": {
 						"threshold": {
 							"type": ["number", "null"],
-							"description": "Free-space ratio below which reclamation evicts from caching tables and demotes local replicas. Default: 0.4"
+							"minimum": 0,
+							"maximum": 1,
+							"description": "Free-space ratio below which reclamation evicts from caching tables and demotes local replicas; 0 turns reclamation off. Default: 0.4"
 						},
 						"interval": {
 							"type": ["string", "number", "null"],
-							"description": "Free-space check interval, as a duration such as '1h' or a number of seconds. Default: 1h"
+							"minimum": 1,
+							"maximum": 2147483,
+							"pattern": "^[1-9][0-9]*(\\.[0-9]+)?[smhHdD]?$",
+							"description": "Free-space check interval: a number of seconds, or a duration such as '30m', '1h' or '1d' (s, m, h or d, starting with a whole number). Between 1 second and about 24 days, the longest timer Node.js schedules; a longer one fires every millisecond. Default: 1h"
 						},
 						"evictionFactor": {
 							"type": ["number", "null"],
-							"description": "Heuristic factor for early eviction under disk pressure. Default: 100000"
+							"exclusiveMinimum": 0,
+							"description": "Heuristic factor for early eviction under disk pressure; a higher value evicts more entries early. Default: 100000"
 						}
 					}
 				},
