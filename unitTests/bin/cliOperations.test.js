@@ -2262,6 +2262,17 @@ describe('deploy by reference (by_ref)', () => {
 			);
 		});
 
+		it('throws, rather than exits, when the refresh token has expired', async () => {
+			saveCredentials(target, { operation_token: 'expired-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => true;
+			commonUtilsModule.httpRequest = async () => ({ statusCode: 401, body: '{}' });
+			await assert.rejects(
+				setSecret({ exit: false }),
+				/Refresh token expired or invalid\. Please run harper login again\./
+			);
+			assert.deepStrictEqual(exits, []);
+		});
+
 		it('throws a connection failure in the words it would have printed', async () => {
 			commonUtilsModule.httpRequest = async () => {
 				throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });

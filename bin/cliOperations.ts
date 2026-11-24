@@ -695,6 +695,9 @@ function resolveTarget(req, allCredentials) {
 	);
 }
 
+/** Raised in place of `process.exit(1)` when a caller asks `cliOperations` not to exit; the message is what it printed. */
+export class CliOperationFailure extends Error {}
+
 /**
  * Ensures `tokens.operation_token` is usable, minting a fresh one via `refresh_operation_token`
  * when it is expired — or absent entirely, which is the refresh-token-only shape a CI/CD runner
@@ -708,7 +711,8 @@ function resolveTarget(req, allCredentials) {
 async function refreshExpiredOperationToken(
 	options: any,
 	tokens: { operation_token?: string; refresh_token?: string },
-	persistKey: string | null
+	persistKey: string | null,
+	exit = true
 ): Promise<void> {
 	if (!tokens.refresh_token) return;
 	// Short-circuited so `isJWTExpired` never runs on an absent token.
@@ -741,12 +745,15 @@ async function refreshExpiredOperationToken(
 				console.error('Operation token refreshed successfully.');
 			}
 		} else if (refreshResponse.statusCode === 401) {
-			console.error('Refresh token expired or invalid. Please run harper login again.');
+			const message = 'Refresh token expired or invalid. Please run harper login again.';
+			if (!exit) throw new CliOperationFailure(message);
+			console.error(message);
 			process.exit(1);
 		} else {
 			console.error(`Failed to refresh operation token: ${refreshResponse.statusCode}`);
 		}
 	} catch (refreshErr) {
+		if (refreshErr instanceof CliOperationFailure) throw refreshErr;
 		console.error(`Error refreshing operation token: ${refreshErr.message}`);
 	}
 }
@@ -766,7 +773,7 @@ async function refreshExpiredOperationToken(
  * but Harper is not running or has no domain socket. Shared by `cliOperations` and the CLI's
  * streaming `get_backup` download so both reach local and remote servers the same way.
  */
-export async function resolveRequestOptions(req: any): Promise<{ options: any; target: any }> {
+export async function resolveRequestOptions(req: any, exit = true): Promise<{ options: any; target: any }> {
 	const allCredentials = loadCredentials();
 	const rawTarget = resolveTarget(req, allCredentials);
 	// Userinfo is a transport credential, and `normalizeTarget` strips it so the resolved target can
@@ -873,7 +880,7 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 		}
 
 		if (tokens?.operation_token || tokens?.refresh_token) {
-			await refreshExpiredOperationToken(options, tokens, persistKey);
+			await refreshExpiredOperationToken(options, tokens, persistKey, exit);
 			if (tokens.operation_token) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
@@ -944,13 +951,6 @@ async function followRollout(options: any, response: any, waitTimeout: unknown):
 	);
 }
 
-/** Raised in place of `process.exit(1)` when a caller asks `cliOperations` not to exit; the message is what it printed. */
-export class CliOperationFailure extends Error {}
-
-/**
- * Reports a failure and exits, unless `exit` is false: then it throws, so a caller with work left that does not depend
- * on this operation (`harper preview setup` after `enable_previews`) can finish it before reporting.
- */
 async function cliOperations(req: any, skipResponseLog = false, { exit = true }: { exit?: boolean } = {}) {
 	dotenv.config();
 	const fail = (message: string): never => {
@@ -965,7 +965,7 @@ async function cliOperations(req: any, skipResponseLog = false, { exit = true }:
 	// unhandled rejection. `target` is declared out here so the catch can still reference it.
 	let options: any, target: any;
 	try {
-		({ options, target } = await resolveRequestOptions(req));
+		({ options, target } = await resolveRequestOptions(req, exit));
 		await PREPARE_OPERATION[req.operation]?.(req);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.
 		// When deploying to a remote target, probe its version first and downgrade to the

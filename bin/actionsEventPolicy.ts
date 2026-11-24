@@ -151,8 +151,7 @@ function planActionsPolicy(policies: any[], repository: string, workflow: string
 		const active = policy?.enforcement === 'active';
 		const ownedForFile = isRepositoryLevel(policy) && covers === 'path';
 		if (!Array.isArray(policy?.rules)) {
-			// Listed without its rules, and maybe without the conditions that would show it is for another file.
-			if (active || ownedForFile || (isRepositoryLevel(policy) && !policy?.conditions)) {
+			if (active || ownedForFile || (isRepositoryLevel(policy) && !policy?.conditions?.workflow_path)) {
 				unreadable.push(policyLabel(policy));
 			}
 			continue;
@@ -275,7 +274,6 @@ function sameEvents(left: string[], right: string[]): boolean {
 export interface ActionsPolicySetup {
 	repository: GithubRepository;
 	workflow: string;
-	/** The workflow setup checked in the checkout, or the starter it is about to write. */
 	checkoutWorkflow?: string;
 	workflowProblems: (content: string) => string[];
 	/** The policy lowers GitHub's default protection for the file, so creating it takes a yes. */
@@ -333,12 +331,15 @@ function verifiedEvents(setup: ActionsPolicySetup): { events: string[] } | { rea
 	return { events: live };
 }
 
-/** Runs before anything changes, and returns the policy to create once previews are enabled. */
 export async function prepareActionsPolicy(setup: ActionsPolicySetup): Promise<ActionsPolicyBody | undefined> {
 	const { repository, workflow } = setup;
 	if (repository.private === true) return undefined;
 	if (repository.private !== false) {
 		printFallback(repository, workflow, '');
+		return undefined;
+	}
+	if (setup.consent === false) {
+		printFallback(repository, workflow, 'Setup did not create one (actions_policy=false).');
 		return undefined;
 	}
 	const verified = verifiedEvents(setup);
@@ -372,7 +373,7 @@ export async function prepareActionsPolicy(setup: ActionsPolicySetup): Promise<A
 		);
 		return undefined;
 	}
-	let consent = setup.consent;
+	let consent: boolean | undefined = setup.consent;
 	if (consent === undefined && setup.interactive) {
 		consent = await promptYesNo({
 			message:
@@ -396,7 +397,6 @@ export async function prepareActionsPolicy(setup: ActionsPolicySetup): Promise<A
 	return body;
 }
 
-/** Create-only, after the cluster part; a failure prints the manual steps rather than failing setup. */
 export function createActionsPolicy(repository: GithubRepository, workflow: string, body: ActionsPolicyBody): void {
 	const events = body.rules[0].parameters.allowed_events;
 	const replan = (): PolicyPlan | { listFailure: string } => {
@@ -436,14 +436,15 @@ export function createActionsPolicy(repository: GithubRepository, workflow: stri
 		printPlan(repository, workflow, after, body);
 		return;
 	}
-	const unverified =
-		'listFailure' in after || after.action !== 'create'
-			? ' It may have been created anyway: look in Settings > Actions > Policies first.'
-			: '';
-	printFallback(
-		repository,
-		workflow,
-		`Setup could not create the policy (${policyFailure(result)}).${unverified}`,
-		body
-	);
+	const unverified = 'listFailure' in after || after.action !== 'create';
+	const why = `Setup could not create the policy (${policyFailure(result)}).`;
+	if (unverified) {
+		printFallback(
+			repository,
+			workflow,
+			`${why} It may have been created anyway: look in Settings > Actions > Policies.`
+		);
+		return;
+	}
+	printFallback(repository, workflow, why, body);
 }

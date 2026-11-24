@@ -333,7 +333,7 @@ It checks everything it can before it changes anything, so a refusal before step
 9. Creates the Actions event policy, if step 3 said to. A failure here prints the policy to create and does not stop setup.
 10. Sets `HARPER_PREVIEW_TARGET` to the cluster's URL with `gh`, if the repository doesn't have it.
 
-Steps 7 to 10 each run even when an earlier one fails: setup then exits non-zero and names each step that did not finish, such as a credential the cluster refused to store or a workflow file that appeared while setup ran. <VersionBadge type="changed" version="v5.4.2" /> Run setup again with the same arguments to finish them.
+Steps 7 to 10 each run even when an earlier one fails: setup then exits non-zero and names each step that did not finish, such as a credential the cluster refused to store or a workflow file that appeared while setup ran. A policy that step 9 could not create is the exception: it prints the policy to create and does not change the exit code. When step 8 does not write the starter, step 9 creates no policy for it. <VersionBadge type="changed" version="v5.4.2" /> Run setup again with the same arguments to finish them.
 
 `enable_previews` only creates. Running setup again with the same arguments leaves the cluster as it is, and one whose records differ from what is already there stops with a `409` that names each difference. To change the limits, run `harper preview teardown`, then setup again.
 
@@ -367,7 +367,7 @@ Setup never changes or deletes a policy. It creates none, and says what to chang
 
 - an Active policy for the workflow file leaves `pull_request_target` out of its Restrict events. A repository policy is yours to change; the owner of an organization or enterprise policy has to allow the event for this repository and file;
 - a repository policy that targets the workflow file is disabled or in evaluate mode. Make it Active with the workflow's events allowed, or delete it and run setup again;
-- the workflow file on the default branch differs from the one in the checkout, and fails the checks setup runs on the checkout's or runs on other events. Commit the checkout's, then run setup again;
+- the workflow file on the default branch differs from the one in the checkout, and fails the checks setup runs on the checkout's or runs on other events. Make the two copies agree, then run setup again;
 - the workflow file's name contains a character a policy reads as a pattern, such as `*`, `?`, `[` or `+`.
 
 An Active policy that already allows the event is reported and left as it is, with any event of the workflow it leaves out. When setup cannot create the policy, because `gh` is not installed or signed in, the account is not an admin of the repository (which a policy needs, more than the variable does), GitHub refuses, or you decline, it prints the steps below and the `gh api` command that creates the policy, and goes on. When it could not look up whether the repository is public, it prints only the steps.

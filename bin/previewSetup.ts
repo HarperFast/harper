@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { accessSync, constants, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { prompts } from '../utility/interactivePrompts.ts';
 import { cliOperations, transportContext } from './cliOperations.ts';
@@ -176,6 +176,9 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 	if (dataMode !== undefined && dataMode !== 'branched' && dataMode !== 'shared') {
 		throw usageError('`dataMode=` is `branched` (the default: each preview gets its own database branch) or `shared`');
 	}
+	if (args.actions_policy !== undefined && typeof args.actions_policy !== 'boolean') {
+		throw usageError('`actions_policy=` is `true` or `false`');
+	}
 	const maxPreviews = positiveNumber(args, 'maxPreviews', true);
 	const maxTtlDays = positiveNumber(args, 'maxTtlDays', false);
 
@@ -246,7 +249,7 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			const check = checkPreviewWorkflowFile(content, branch, environment, PREVIEW_CLEANUP_ENVIRONMENT);
 			return [...check.problems, ...(check.unsafe ?? [])];
 		},
-		consent: typeof args.actions_policy === 'boolean' ? args.actions_policy : undefined,
+		consent: args.actions_policy,
 		interactive,
 	});
 	assertGithubVariableSettable(repository, PREVIEW_TARGET_VARIABLE, audience, args.allow_unverified === true);
@@ -294,8 +297,6 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 		)
 	);
 
-	// Every step from here only creates, and a rerun finishes one that failed, so a failure is reported at the end
-	// instead of leaving the steps after it undone.
 	const unfinished: string[] = [];
 	if (secretsKey) {
 		try {
@@ -318,11 +319,14 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			);
 		}
 	}
+	let workflowWritten = true;
 	if (starter && checkout) {
 		try {
 			writeFileSync(checkout.path, starter, { flag: 'wx' });
 			console.log(chalk.green(`✓ Wrote ${workflow}. Commit it to ${branch}: pull_request_target runs it from there.`));
 		} catch (error) {
+			workflowWritten = false;
+			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') rmSync(checkout.path, { force: true });
 			unfinished.push(
 				(error as NodeJS.ErrnoException).code === 'EEXIST'
 					? `The cluster is set up, but ${workflow} appeared while setup ran, so setup did not write it. Run setup again to check it.`
@@ -330,7 +334,12 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			);
 		}
 	}
-	if (actionsPolicy) createActionsPolicy(repository, workflow, actionsPolicy);
+	if (actionsPolicy && workflowWritten) createActionsPolicy(repository, workflow, actionsPolicy);
+	else if (actionsPolicy) {
+		unfinished.push(
+			`The Actions event policy was not created, since it allows the events of the ${workflow} setup did not write.`
+		);
+	}
 	for (const note of notes) console.log(chalk.yellow(`  ${note}`));
 	try {
 		setupGithubVariable(repository.fullName, PREVIEW_TARGET_VARIABLE, audience);

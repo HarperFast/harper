@@ -184,10 +184,6 @@ describe('harper preview setup (harper#3609)', () => {
 		});
 		const notFound = 'echo "gh: Not Found (HTTP 404)" >&2; exit 1';
 		const forbidden = 'echo "gh: Must have admin rights to Repository. (HTTP 403)" >&2; exit 1';
-		/**
-		 * A `gh` that records each call and answers from files, so a test sets an answer by writing JSON, or with
-		 * `{ script }` a shell command. `auth` fails, as with no login, or a token lookup would wait on a prompt.
-		 */
 		async function fakeGh({
 			repositoryAnswer = publicRepository(),
 			list = policyList([]),
@@ -437,8 +433,9 @@ describe('harper preview setup (harper#3609)', () => {
 			await setup({ actions_policy: true });
 			assert.match(
 				printed(),
-				/Setup could not create the policy \(gh: context deadline exceeded\)\. It may have been created anyway: look in Settings > Actions > Policies first\./
+				/Setup could not create the policy \(gh: context deadline exceeded\)\. It may have been created anyway: look in Settings > Actions > Policies\./
 			);
+			assert.doesNotMatch(printed(), /printf '%s'/);
 		});
 
 		it('vouches for the default branch copy before it allows events for it', async () => {
@@ -600,7 +597,7 @@ describe('harper preview setup (harper#3609)', () => {
 				}
 			});
 
-			it('still creates the policy and sets the variable when the workflow appeared during setup', async () => {
+			it('still sets the variable, and creates no policy for a starter it did not write, when the workflow appeared during setup', async () => {
 				const stub = cliOperationsModule.cliOperations;
 				cliOperationsModule.cliOperations = async (request, ...rest) => {
 					if (request.operation === 'enable_previews') await writeCheckoutWorkflow('someone else wrote this\n');
@@ -608,10 +605,10 @@ describe('harper preview setup (harper#3609)', () => {
 				};
 				await assert.rejects(
 					setup({ actions_policy: true }),
-					/The cluster is set up, but \.github\/workflows\/preview\.yaml appeared while setup ran, so setup did not write it\. Run setup again to check it\./
+					/The cluster is set up, but \.github\/workflows\/preview\.yaml appeared while setup ran, so setup did not write it\. Run setup again to check it\.\nThe Actions event policy was not created/
 				);
 				assert.strictEqual(await fs.readFile(path.join(directory, WORKFLOW), 'utf8'), 'someone else wrote this\n');
-				assert.ok(await wasPosted());
+				assert.strictEqual(await wasPosted(), false);
 				assert.ok(await variableCreated());
 			});
 
@@ -624,6 +621,18 @@ describe('harper preview setup (harper#3609)', () => {
 				);
 				assert.ok(await workflowPresent());
 			});
+		});
+
+		it('reads nothing from GitHub for the policy with actions_policy=false', async () => {
+			await setup({ actions_policy: false });
+			assert.deepStrictEqual(await policyCalls(), []);
+			assert.ok((await ghCalls()).every((call) => !call.includes('contents/')));
+			assert.match(printed(), /Setup did not create one \(actions_policy=false\)\./);
+		});
+
+		it('refuses an actions_policy= that is not true or false before it changes anything', async () => {
+			await assert.rejects(setup({ actions_policy: 'no' }), /`actions_policy=` is `true` or `false`/);
+			assert.strictEqual(enabled(), false);
 		});
 
 		it('does not read or create a policy for a private repository', async () => {

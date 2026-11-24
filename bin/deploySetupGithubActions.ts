@@ -903,7 +903,6 @@ export async function setupGithubActions(req: any, transport: any, component: st
 	if (plan.conflicts.length > 0) {
 		throw cliError(`Nothing was changed.\n${plan.conflicts.map((conflict) => `  - ${conflict}`).join('\n')}`);
 	}
-	// Only a variable that names another cluster stops setup here; one it cannot read is left for the last step.
 	assertGithubVariableSettable(repository, TARGET_VARIABLE, audience, true);
 
 	const created: string[] = [];
