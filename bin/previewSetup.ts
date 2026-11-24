@@ -294,26 +294,50 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 		)
 	);
 
+	// Every step from here only creates, and a rerun finishes one that failed, so a failure is reported at the end
+	// instead of leaving the steps after it undone.
+	const unfinished: string[] = [];
 	if (secretsKey) {
-		const { secretName } = await sealDeployCredential(
-			{ ...args, token },
-			transport,
-			'github',
-			names.components,
-			secretsKey
-		);
-		console.log(
-			chalk.green(`✓ Sealed a GitHub credential for every preview of ${app} as secret "${secretName}".`) +
-				chalk.gray('\n  `harper preview deploy credential=true` uses it.')
-		);
+		try {
+			const { secretName } = await sealDeployCredential(
+				{ ...args, token },
+				transport,
+				'github',
+				names.components,
+				secretsKey,
+				false
+			);
+			console.log(
+				chalk.green(`✓ Sealed a GitHub credential for every preview of ${app} as secret "${secretName}".`) +
+					chalk.gray('\n  `harper preview deploy credential=true` uses it.')
+			);
+		} catch (error) {
+			unfinished.push(
+				`The cluster is set up, but the GitHub credential was not sealed (${(error as Error).message}). ` +
+					'Run setup again with credential=true to seal it.'
+			);
+		}
 	}
 	if (starter && checkout) {
-		writeFileSync(checkout.path, starter, { flag: 'wx' });
-		console.log(chalk.green(`✓ Wrote ${workflow}. Commit it to ${branch}: pull_request_target runs it from there.`));
+		try {
+			writeFileSync(checkout.path, starter, { flag: 'wx' });
+			console.log(chalk.green(`✓ Wrote ${workflow}. Commit it to ${branch}: pull_request_target runs it from there.`));
+		} catch (error) {
+			unfinished.push(
+				(error as NodeJS.ErrnoException).code === 'EEXIST'
+					? `The cluster is set up, but ${workflow} appeared while setup ran, so setup did not write it. Run setup again to check it.`
+					: `The cluster is set up, but ${workflow} was not written (${(error as Error).message}). Run setup again with write_workflow=true to write it.`
+			);
+		}
 	}
 	if (actionsPolicy) createActionsPolicy(repository, workflow, actionsPolicy);
 	for (const note of notes) console.log(chalk.yellow(`  ${note}`));
-	setupGithubVariable(repository.fullName, PREVIEW_TARGET_VARIABLE, audience);
+	try {
+		setupGithubVariable(repository.fullName, PREVIEW_TARGET_VARIABLE, audience);
+	} catch (error) {
+		unfinished.push((error as Error).message);
+	}
+	if (unfinished.length > 0) throw usageError(unfinished.join('\n'));
 }
 
 export function formatTeardown(response: any): string {

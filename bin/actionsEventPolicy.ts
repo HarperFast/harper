@@ -73,8 +73,8 @@ function listActionsPolicies(repository: string): { policies: any[] } | { reason
 		policies.push(...body.policies);
 		// A page can come back shorter than asked, so the total decides when GitHub gives one.
 		const total = Number.isSafeInteger(body.total_count) ? body.total_count : undefined;
-		const done = total === undefined ? body.policies.length < PAGE_SIZE : policies.length >= total;
-		if (done || body.policies.length === 0) return { policies };
+		if (total === undefined ? body.policies.length < PAGE_SIZE : policies.length >= total) return { policies };
+		if (body.policies.length === 0) return { reason: `GitHub listed ${policies.length} of ${total} policies` };
 	}
 	return { reason: `it lists more than ${MAX_PAGES * PAGE_SIZE} policies` };
 }
@@ -106,12 +106,19 @@ const asPath = (pattern: string) => pattern.trim().replace(/^\.?\//, '');
  */
 function coverage(policy: any, workflow: string): 'every' | 'path' | 'pattern' | undefined {
 	const paths = policy?.conditions?.workflow_path;
-	if (strings(paths?.exclude).some((pattern) => asPath(pattern) === workflow)) return undefined;
+	const matches = (path: string) => PATTERN_CHARACTERS.test(path) && isMatch(workflow, path, { dot: true });
+	const exclude = strings(paths?.exclude).map(asPath);
+	if (exclude.includes(workflow)) return undefined;
 	const include = strings(paths?.include).map(asPath);
-	if (include.length === 0 || include.includes('~ALL')) return 'every';
-	if (include.includes(workflow)) return 'path';
-	const matches = include.some((path) => PATTERN_CHARACTERS.test(path) && isMatch(workflow, path, { dot: true }));
-	return matches ? 'pattern' : undefined;
+	const covered =
+		include.length === 0 || include.includes('~ALL')
+			? 'every'
+			: include.includes(workflow)
+				? 'path'
+				: include.some(matches)
+					? 'pattern'
+					: undefined;
+	return covered && exclude.some(matches) ? 'pattern' : covered;
 }
 
 const isRepositoryLevel = (policy: any) => (policy?.source_type ?? 'Repository') === 'Repository';
@@ -144,7 +151,10 @@ function planActionsPolicy(policies: any[], repository: string, workflow: string
 		const active = policy?.enforcement === 'active';
 		const ownedForFile = isRepositoryLevel(policy) && covers === 'path';
 		if (!Array.isArray(policy?.rules)) {
-			if (active || ownedForFile) unreadable.push(policyLabel(policy));
+			// Listed without its rules, and maybe without the conditions that would show it is for another file.
+			if (active || ownedForFile || (isRepositoryLevel(policy) && !policy?.conditions)) {
+				unreadable.push(policyLabel(policy));
+			}
 			continue;
 		}
 		const eventRules = policy.rules.filter((rule: any) => rule?.type === 'restrict_action_events');
@@ -265,11 +275,10 @@ function sameEvents(left: string[], right: string[]): boolean {
 export interface ActionsPolicySetup {
 	repository: GithubRepository;
 	workflow: string;
-	/** The workflow setup checked in the checkout, or the starter it is about to write; undefined when neither. */
+	/** The workflow setup checked in the checkout, or the starter it is about to write. */
 	checkoutWorkflow?: string;
-	/** What makes a copy of the workflow unsafe for the preview identity, as setup checks the checkout's. */
 	workflowProblems: (content: string) => string[];
-	/** `actions_policy=`: the policy lowers GitHub's default protection for the file, so creating it takes a yes. */
+	/** The policy lowers GitHub's default protection for the file, so creating it takes a yes. */
 	consent?: boolean;
 	interactive: boolean;
 }
@@ -299,7 +308,7 @@ function verifiedEvents(setup: ActionsPolicySetup): { events: string[] } | { rea
 		return { reason: `Setup could not read ${workflow} on ${branch} (${onBranch.reason}), so it created none.` };
 	}
 	if ('absent' in onBranch) return { events: checkoutEvents };
-	const commitAndRerun = `Commit this copy to ${branch}, then run setup again.`;
+	const commitAndRerun = `Make the copy here and the one on ${branch} agree, then run setup again.`;
 	if (normalized(onBranch.content) !== normalized(checkoutWorkflow)) {
 		let problems: string[];
 		try {
@@ -324,10 +333,7 @@ function verifiedEvents(setup: ActionsPolicySetup): { events: string[] } | { rea
 	return { events: live };
 }
 
-/**
- * Before anything changes: says what a public repository's policies already do for the workflow, and returns the
- * policy to create once previews are enabled, when there is none and the user agreed. Never throws for GitHub's part.
- */
+/** Runs before anything changes, and returns the policy to create once previews are enabled. */
 export async function prepareActionsPolicy(setup: ActionsPolicySetup): Promise<ActionsPolicyBody | undefined> {
 	const { repository, workflow } = setup;
 	if (repository.private === true) return undefined;
@@ -393,12 +399,18 @@ export async function prepareActionsPolicy(setup: ActionsPolicySetup): Promise<A
 /** Create-only, after the cluster part; a failure prints the manual steps rather than failing setup. */
 export function createActionsPolicy(repository: GithubRepository, workflow: string, body: ActionsPolicyBody): void {
 	const events = body.rules[0].parameters.allowed_events;
-	const replan = () => {
+	const replan = (): PolicyPlan | { listFailure: string } => {
 		const listed = listActionsPolicies(repository.fullName);
-		return 'reason' in listed ? undefined : planActionsPolicy(listed.policies, repository.fullName, workflow, events);
+		if ('reason' in listed) return { listFailure: listed.reason };
+		return planActionsPolicy(listed.policies, repository.fullName, workflow, events);
 	};
 	const before = replan();
-	if (before && before.action !== 'create') {
+	if ('listFailure' in before) {
+		const why = `Setup could not read its Actions policies again (${before.listFailure}), so it created none.`;
+		printFallback(repository, workflow, why, body);
+		return;
+	}
+	if (before.action !== 'create') {
 		printPlan(repository, workflow, before, body);
 		return;
 	}
@@ -420,11 +432,14 @@ export function createActionsPolicy(repository: GithubRepository, workflow: stri
 	}
 	// A request that timed out may still have created it.
 	const after = replan();
-	if (after?.action === 'allowed') {
+	if (!('listFailure' in after) && after.action === 'allowed') {
 		printPlan(repository, workflow, after, body);
 		return;
 	}
-	const unverified = after ? '' : ' It may have been created anyway: look in Settings > Actions > Policies first.';
+	const unverified =
+		'listFailure' in after || after.action !== 'create'
+			? ' It may have been created anyway: look in Settings > Actions > Policies first.'
+			: '';
 	printFallback(
 		repository,
 		workflow,

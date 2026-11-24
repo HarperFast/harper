@@ -944,8 +944,20 @@ async function followRollout(options: any, response: any, waitTimeout: unknown):
 	);
 }
 
-async function cliOperations(req: any, skipResponseLog = false) {
+/** Raised in place of `process.exit(1)` when a caller asks `cliOperations` not to exit; the message is what it printed. */
+export class CliOperationFailure extends Error {}
+
+/**
+ * Reports a failure and exits, unless `exit` is false: then it throws, so a caller with work left that does not depend
+ * on this operation (`harper preview setup` after `enable_previews`) can finish it before reporting.
+ */
+async function cliOperations(req: any, skipResponseLog = false, { exit = true }: { exit?: boolean } = {}) {
 	dotenv.config();
+	const fail = (message: string): never => {
+		if (!exit) throw new CliOperationFailure(message.replace(/^error: /, ''));
+		console.error(message);
+		process.exit(1);
+	};
 
 	// Resolve target/auth inside the try so a credential or connection error (e.g. an incomplete
 	// `auth_username=`/`auth_password=` pair, which resolveRequestOptions throws on) is mapped to the
@@ -1077,8 +1089,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 			}
 			if (sseError) {
 				const errMsg = sseError.message ?? (typeof sseError === 'object' ? JSON.stringify(sseError) : sseError);
-				console.error(`error: ${errMsg}`);
-				process.exit(1);
+				fail(`error: ${errMsg}`);
 			}
 			if (finalResult === undefined && !terminated && lastUnnamedData !== undefined) {
 				try {
@@ -1130,17 +1141,13 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		if (failedStatus) {
 			const errorPrefix = responseLog.startsWith('error:') ? '' : 'error: ';
-			console.error(`${errorPrefix}${responseLog}`);
-			process.exit(1);
+			fail(`${errorPrefix}${responseLog}`);
 		}
 
 		if (!skipResponseLog) {
 			console.log(responseLog);
 		}
-		if (rollout?.failure) {
-			console.error(`error: ${rollout.failure}`);
-			process.exit(1);
-		}
+		if (rollout?.failure) fail(`error: ${rollout.failure}`);
 
 		if (target) {
 			responseData.resolvedTarget = target.resolvedTarget;
@@ -1148,6 +1155,7 @@ async function cliOperations(req: any, skipResponseLog = false) {
 
 		return responseData;
 	} catch (err) {
+		if (err instanceof CliOperationFailure) throw err;
 		let code, message, hostname;
 		try {
 			code = err?.code;
@@ -1156,16 +1164,15 @@ async function cliOperations(req: any, skipResponseLog = false) {
 		} catch {}
 		const isConnectionFailure = code === 'ENOENT' || code === 'ECONNREFUSED';
 		if (isConnectionFailure && !target) {
-			console.error(LOCAL_NOT_RUNNING_MESSAGE);
+			fail(LOCAL_NOT_RUNNING_MESSAGE);
 		} else if (isConnectionFailure) {
-			console.error(`error: Failed to connect to Harper (${code}): ${message}`);
+			fail(`error: Failed to connect to Harper (${code}): ${message}`);
 		} else if (code === 'EACCES') {
-			console.error(`error: Permission denied accessing the domain socket: ${message}`);
+			fail(`error: Permission denied accessing the domain socket: ${message}`);
 		} else if (code === 'ENOTFOUND') {
-			console.error(`error: Host not found: "${hostname}" ${message}`);
+			fail(`error: Host not found: "${hostname}" ${message}`);
 		} else {
-			console.error(`error: ${message ?? err}`);
+			fail(`error: ${message ?? err}`);
 		}
-		process.exit(1);
 	}
 }

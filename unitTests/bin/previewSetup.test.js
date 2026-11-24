@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { stripVTControlCharacters } = require('node:util');
+const { generateKeyPairSync } = require('node:crypto');
 const { ACTIONS_POLICY_DOCS, previewSetup, starterPreviewWorkflow } = require('#src/bin/previewSetup');
 const { prompts } = require('#src/utility/interactivePrompts');
 const cliOperationsModule = require('#js/bin/cliOperations');
@@ -286,7 +287,7 @@ describe('harper preview setup (harper#3609)', () => {
 			assert.strictEqual(await wasPosted(), false);
 			assert.match(
 				printed(),
-				/preview\.yaml on main runs on workflow_dispatch, pull_request_target, and the copy here on pull_request_target\. Commit this copy to main, then run setup again\./
+				/preview\.yaml on main runs on workflow_dispatch, pull_request_target, and the copy here on pull_request_target\. Make the copy here and the one on main agree, then run setup again\./
 			);
 			assert.doesNotMatch(printed(), /printf/);
 			assert.strictEqual(enabled(), true);
@@ -451,7 +452,7 @@ describe('harper preview setup (harper#3609)', () => {
 			assert.strictEqual(await wasPosted(), false);
 			assert.match(
 				printed(),
-				/preview\.yaml on main is not the copy here, and setup cannot vouch for it: job "deploy" runs for pull requests from forks.*Commit this copy to main, then run setup again\./
+				/preview\.yaml on main is not the copy here, and setup cannot vouch for it: job "deploy" runs for pull requests from forks.*Make the copy here and the one on main agree, then run setup again\./
 			);
 			assert.doesNotMatch(printed(), /printf/);
 		});
@@ -503,6 +504,126 @@ describe('harper preview setup (harper#3609)', () => {
 			await setup({ actions_policy: true });
 			assert.strictEqual(await wasPosted(), false);
 			assert.match(printed(), /GitHub did not list the rules of policy "Off"/);
+		});
+
+		it('does not count a policy for every workflow as allowing the file when an exclude pattern may leave it out', async () => {
+			await fakeGh({
+				list: policyList([
+					policy({
+						name: 'All but previews',
+						conditions: { workflow_path: { include: ['~ALL'], exclude: ['**/preview.yaml'] } },
+					}),
+				]),
+			});
+			await setup({ actions_policy: true });
+			assert.ok(await wasPosted());
+			assert.doesNotMatch(printed(), /already allows/);
+		});
+
+		it('creates none on a partial list, when a page comes back empty before the total', async () => {
+			const unrelated = Array.from({ length: 30 }, (_, index) =>
+				policy({
+					id: index + 2,
+					conditions: { workflow_path: { include: [`.github/workflows/other-${index}.yaml`], exclude: [] } },
+				})
+			);
+			await fakeGh({ list: policyList(unrelated, 40), page2: policyList([], 40) });
+			await setup({ actions_policy: true });
+			assert.strictEqual(await wasPosted(), false);
+			assert.match(printed(), /Setup could not read its Actions policies \(GitHub listed 30 of 40 policies\)/);
+		});
+
+		it('creates none beside a repository policy listed without its conditions or rules', async () => {
+			const { rules, conditions, ...summary } = policy({ name: 'Summary', enforcement: 'disabled' });
+			assert.ok(rules && conditions);
+			await fakeGh({ list: policyList([summary]) });
+			await setup({ actions_policy: true });
+			assert.strictEqual(await wasPosted(), false);
+			assert.match(printed(), /GitHub did not list the rules of policy "Summary"/);
+		});
+
+		it('does not create the policy when it cannot read the policies again just before', async () => {
+			await fakeGh();
+			const script = await fs.readFile(path.join(directory, 'bin', 'gh'), 'utf8');
+			const seen = file('listed-once');
+			await fs.writeFile(
+				path.join(directory, 'bin', 'gh'),
+				script.replace(
+					/(\*actions\/policies\*\) )cat '[^']*'/,
+					`$1if [ -f '${seen}' ]; then ${forbidden}; else touch '${seen}'; cat '${file('list.answer')}'; fi`
+				)
+			);
+			await setup({ actions_policy: true });
+			assert.strictEqual(await wasPosted(), false);
+			assert.match(printed(), /Setup could not read its Actions policies again \(gh: Must have admin rights/);
+		});
+
+		describe('a step after enable_previews that fails (harper#3806)', () => {
+			const { publicKey } = generateKeyPairSync('rsa', {
+				modulusLength: 2048,
+				publicKeyEncoding: { type: 'spki', format: 'pem' },
+				privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+			});
+			let failOn;
+			const variableCreated = async () =>
+				(await ghCalls()).some((call) => call.includes('POST') && call.includes('actions/variables'));
+
+			beforeEach(() => {
+				failOn = undefined;
+				prompts.password = async () => 'a-token';
+				const stub = cliOperationsModule.cliOperations;
+				cliOperationsModule.cliOperations = async (request, skipLog, options) => {
+					if (request.operation === failOn) {
+						assert.deepStrictEqual(options, { exit: false });
+						throw new cliOperationsModule.CliOperationFailure('the secrets store is read-only');
+					}
+					if (request.operation === 'get_secrets_public_key') return { public_key: publicKey, fingerprint: 'kid' };
+					if (request.operation === 'grant_secret') return { grants: ['shop-pr-*'] };
+					return stub(request, skipLog, options);
+				};
+			});
+
+			it('still writes the workflow, creates the policy and sets the variable when the credential fails to seal', async () => {
+				for (const operation of ['set_secret', 'grant_secret']) {
+					failOn = operation;
+					output.length = 0;
+					await fs.rm(path.join(directory, WORKFLOW), { force: true });
+					await fs.rm(file('posted.json'), { force: true });
+					await fs.rm(file('gh.log'), { force: true });
+					await assert.rejects(
+						setup({ credential: true, actions_policy: true }),
+						/The cluster is set up, but the GitHub credential was not sealed \(the secrets store is read-only\)\. Run setup again with credential=true to seal it\./
+					);
+					assert.ok(await workflowPresent(), operation);
+					assert.ok(await wasPosted(), operation);
+					assert.ok(await variableCreated(), operation);
+				}
+			});
+
+			it('still creates the policy and sets the variable when the workflow appeared during setup', async () => {
+				const stub = cliOperationsModule.cliOperations;
+				cliOperationsModule.cliOperations = async (request, ...rest) => {
+					if (request.operation === 'enable_previews') await writeCheckoutWorkflow('someone else wrote this\n');
+					return stub(request, ...rest);
+				};
+				await assert.rejects(
+					setup({ actions_policy: true }),
+					/The cluster is set up, but \.github\/workflows\/preview\.yaml appeared while setup ran, so setup did not write it\. Run setup again to check it\./
+				);
+				assert.strictEqual(await fs.readFile(path.join(directory, WORKFLOW), 'utf8'), 'someone else wrote this\n');
+				assert.ok(await wasPosted());
+				assert.ok(await variableCreated());
+			});
+
+			it('reports every step that did not finish', async () => {
+				failOn = 'set_secret';
+				await fakeGh({ variableCreate: 'echo "gh: HTTP 403" >&2; exit 1' });
+				await assert.rejects(
+					setup({ credential: true, actions_policy: true }),
+					/credential was not sealed[\s\S]*repository variable was not set/
+				);
+				assert.ok(await workflowPresent());
+			});
 		});
 
 		it('does not read or create a policy for a private repository', async () => {

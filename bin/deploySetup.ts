@@ -140,12 +140,16 @@ export async function storeSealedSecret(
 	transport: any,
 	secretName: string,
 	envelope: string,
-	component: string
+	component: string,
+	exit = true
 ): Promise<string[]> {
-	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope, processEnv: false }, true);
+	await cliOperations({ ...transport, operation: 'set_secret', name: secretName, envelope, processEnv: false }, true, {
+		exit,
+	});
 	const granted: any = await cliOperations(
 		{ ...transport, operation: 'grant_secret', name: secretName, component },
-		true
+		true,
+		{ exit }
 	);
 	return Array.isArray(granted?.grants) ? granted.grants : [component];
 }
@@ -246,7 +250,8 @@ export async function sealDeployCredential(
 	transport: any,
 	provider: 'github' | 'npm',
 	component: string,
-	{ publicKey, fingerprint }: { publicKey: string; fingerprint: string }
+	{ publicKey, fingerprint }: { publicKey: string; fingerprint: string },
+	exit = true
 ): Promise<{ secretName: string; grants: string[]; credentialKey: string; credentialEntry: Record<string, string> }> {
 	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
 	let credentialEntry: Record<string, string>;
@@ -271,7 +276,7 @@ export async function sealDeployCredential(
 		provider === 'github'
 			? deriveGitSecretName(component, credentialKey)
 			: deriveRegistrySecretName(component, credentialKey);
-	const grants = await storeSealedSecret(transport, secretName, envelope, component);
+	const grants = await storeSealedSecret(transport, secretName, envelope, component, exit);
 	credentialEntry.secret = secretName;
 	return { secretName, grants, credentialKey, credentialEntry };
 }
