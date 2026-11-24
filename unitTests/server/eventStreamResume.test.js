@@ -7,7 +7,7 @@ const { Resource } = require('#src/resources/Resource');
 const { Resources } = require('#src/resources/Resources');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { transaction } = require('#src/resources/transaction');
-const { persistOriginClosedFloor } = require('#src/resources/auditStore');
+const { persistOriginClosedFloor, raiseAuditFloor } = require('#src/resources/auditStore');
 const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
 const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const { membersDigest } = require('#src/resources/subscriptionCheckpoint');
@@ -83,11 +83,12 @@ async function connect(request, url, lastEventId) {
 		}
 	});
 	response.body.on('error', () => {});
-	stream.ended = new Promise((resolve) => response.body.on('close', resolve));
+	const ended = new Promise((resolve) => response.body.on('close', resolve));
+	stream.ended = () => waitFor(() => response.body.destroyed, 15_000).then(() => ended);
 	stream.close = () => response.body.destroy();
 	stream.values = () => stream.frames.map((frame) => frame.data?.value?.value).filter((value) => value !== undefined);
 	stream.frameOf = (value) => stream.frames.find((frame) => frame.data?.value?.value === value);
-	stream.tokens = () => stream.frames.filter((frame) => frame.data === undefined && TOKEN_ID.test(frame.id ?? ''));
+	stream.tokens = () => stream.frames.filter((frame) => frame.event === 'harper-checkpoint');
 	open.push(stream);
 	return stream;
 }
@@ -233,7 +234,7 @@ describe('Table event stream resume (harper#515)', function () {
 		}
 		const url = served(Feed);
 		const stream = await connect(request, url, 'turn-0');
-		await stream.ended;
+		await stream.ended();
 		assert.deepStrictEqual(stream.frames, [{ event: 'turn', data: { n: 1 }, id: 'turn-1' }]);
 		// an Accept list negotiates the event stream for an ordinary GET
 		const response = await request(url, {
@@ -397,7 +398,10 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual(cursor.holdsToken, false);
 			const event = { id: 'a', localTime: 7, value: {} };
 			assert.strictEqual(serializeEvent(event), serialize({ data: event, id: '7' }));
-			assert.match(serializeEvent({ type: 'checkpoint', checkpoint: { v: 1 } }), /^id: [A-Za-z0-9_-]+\n\n$/);
+			assert.strictEqual(
+				serializeEvent({ type: 'checkpoint', checkpoint: { v: 1 } }),
+				serialize({ event: 'harper-checkpoint', data: {}, id: encodeToken({ v: 1 }) })
+			);
 			assert.strictEqual(cursor.holdsToken, true);
 			assert.strictEqual(serializeEvent(event), serialize(event));
 		});
@@ -469,13 +473,16 @@ describe('Table event stream resume (harper#515)', function () {
 	describe('on RocksDB', function () {
 		if (!isRocksDB) return;
 
-		it('issues the checkpoint token as a frame with only an id, then no scalar id', async () => {
+		it('issues the checkpoint token as a harper-checkpoint event with data, then no scalar id', async () => {
 			const T = tableInOwnDatabase();
 			const stream = await connect(request, served(T));
 			await T.put('a', { value: 'a' });
 			await waitFor(() => stream.frameOf('a'));
 			const id = await certifiedToken(T, stream);
 			assert.strictEqual(decodeToken(id).v, 1);
+			// Firefox and WebKit record an id only from a block that has data
+			assert.deepStrictEqual(stream.tokens().at(-1), { event: 'harper-checkpoint', data: {}, id });
+			assert.match(id, TOKEN_ID);
 			assert.strictEqual(stream.lastEventId, id);
 			await T.put('b', { value: 'b' });
 			await waitFor(() => stream.frameOf('b'));
@@ -579,7 +586,7 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.match(stream.lastEventId, SCALAR_ID);
 			// a base copy back-fills rows with no history, so no position can pass its marker
 			await T.writeReloadMarker();
-			await stream.ended;
+			await stream.ended();
 			const last = stream.frames.at(-1);
 			assert.strictEqual(last.event, 'harper-error');
 			assert.strictEqual(last.data.status, 410);
@@ -613,6 +620,29 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual((await connect(request, url, token)).status, 409);
 			// a RocksDB log key names a database generation, which this engine has none of
 			assert.strictEqual((await connect(request, url, `1@${'a'.repeat(32)}.${'b'.repeat(16)}`)).status, 409);
+		});
+
+		it('refuses a log position whose history was pruned with 410, and resumes a retained one', async () => {
+			const T = tableInOwnDatabase();
+			const url = served(T);
+			const stream = await connect(request, url);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => stream.frameOf('a'));
+			const pruned = stream.frameOf('a').id;
+			await T.put('b', { value: 'b' });
+			await waitFor(() => stream.frameOf('b'));
+			const retained = stream.frameOf('b').id;
+			stream.close();
+			// a prune records how far it reaches before it removes anything: here through a, short of b
+			raiseAuditFloor(T.auditStore, (Number(pruned) + Number(retained)) / 2);
+			await T.put('c', { value: 'c' });
+			const refused = await connect(request, url, pruned);
+			assert.strictEqual(refused.status, 410);
+			assert.strictEqual(refused.frames[0].data.code, 'RESUME_HISTORY_UNAVAILABLE');
+			const resumed = await connect(request, url, retained);
+			assert.strictEqual(resumed.status, 200);
+			await waitFor(() => resumed.frameOf('c'));
+			assert.deepStrictEqual(resumed.values(), ['b', 'c']);
 		});
 	});
 });

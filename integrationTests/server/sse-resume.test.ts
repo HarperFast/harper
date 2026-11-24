@@ -163,16 +163,17 @@ suite(
 			stream.close();
 		});
 
-		test('the stream issues a checkpoint token as an id-only frame and resumes from it', { skip: isLMDB }, async () => {
+		test('the stream issues a token as a harper-checkpoint event and resumes from it', { skip: isLMDB }, async () => {
 			const first = await connect('/ResumeFeed/');
 			await put('before-token');
 			await waitFor(() => frameOf(first, 'before-token'), 'a live event');
 			// the server certifies its own log position on its maintenance cadence
 			const token = await waitFor(
-				() => first.frames().find((frame) => frame.data === undefined && TOKEN_ID.test(frame.id ?? ''))?.id,
+				() => first.frames().find((frame) => frame.event === 'harper-checkpoint' && frame.data === '{}')?.id,
 				'a checkpoint token',
-				120_000
+				60_000
 			);
+			match(token, TOKEN_ID);
 			strictEqual(JSON.parse(Buffer.from(token, 'base64url').toString()).v, 1);
 			await put('after-token');
 			await waitFor(() => frameOf(first, 'after-token'), 'an event after the token');

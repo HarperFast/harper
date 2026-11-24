@@ -7,6 +7,7 @@ import {
 	captureCertifiedFloors,
 	positionBefore,
 	readOriginStateEpoch,
+	sameCertifiedFloors,
 	type CertifiedFloors,
 } from './subscriptionCheckpoint.ts';
 import { keyArrayToString } from './Resources.ts';
@@ -200,7 +201,10 @@ function startOriginTracking(databaseSubscriptions: any, dbisDb: any) {
 			return;
 		}
 		try {
-			databaseSubscriptions.capturedFloors = captureCertifiedFloors(auditStore, dbisDb) ?? null;
+			const captured = captureCertifiedFloors(auditStore, dbisDb);
+			// equal floors keep their object, so a subscription tells an unchanged capture by identity
+			if (!sameCertifiedFloors(captured, databaseSubscriptions.capturedFloors))
+				databaseSubscriptions.capturedFloors = captured ?? null;
 		} catch (error) {
 			warn('Could not read the origin floors for subscription checkpoints', error);
 			databaseSubscriptions.capturedFloors = null;

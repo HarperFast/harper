@@ -11,7 +11,9 @@ under its 1000-line budget; no note's content changed in the move.
 resuming below the retention horizon is silently handed a short replay. The floor records what
 pruning removed (harper#2447); it is internal, with deliberately no public accessor. **A resume is
 not checked against it** but against the database generation (next section): this floor also steers
-reconciliation, survives a restore, and absorbs at `Infinity`.
+reconciliation, survives a restore, and absorbs at `Infinity`. The exception is `checkRetention`, for LMDB, which has
+no generation: `resumeRefusal` compares the cursor with this floor alone. It is sound for a position issued by a
+binary that tracks the floor (it postdates the bootstrap guess below), and it cannot tell a restored database.
 
 **Its consumers are not resumes.** Where the out-of-order walk cannot reach a replicated write's own entry (missing
 history, the depth cap, the fully-superseded early-out), `isReDeliveredDuplicate` runs the keyed duplicate

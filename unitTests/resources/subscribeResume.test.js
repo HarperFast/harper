@@ -604,3 +604,85 @@ describe('Resuming a subscription in a database generation on LMDB', () => {
 		subscription.end();
 	});
 });
+
+describe('Resuming a subscription with a retention check and no generation', function () {
+	this.timeout(60_000);
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+
+	async function resumeChecked(T, startTime, { onEvent, ...request } = {}) {
+		const events = [];
+		const subscription = await T.subscribe({
+			checkRetention: true,
+			startTime,
+			listener: (event) => {
+				events.push(event);
+				onEvent?.(event, events);
+			},
+			...request,
+		});
+		return { subscription, events };
+	}
+
+	it('replays everything after a retained position and verifies it', async () => {
+		const T = tableInOwnDatabase();
+		const positions = await writeEach(T, 3);
+		const { subscription, events } = await resumeChecked(T, positions[0]);
+		assert.strictEqual(await subscription.resumeVerified, true);
+		assert.deepStrictEqual(valuesOf(events), [1, 2]);
+		assert.strictEqual(subscription.closed, false, 'a verified resume stays live');
+		subscription.end();
+	});
+
+	it('passes a position at the audit floor and refuses one below it with 410', async () => {
+		const T = tableInOwnDatabase();
+		const positions = await writeEach(T, 3);
+		raiseAuditFloor(T.auditStore, positions[1]);
+		const { subscription, events } = await resumeChecked(T, positions[1]);
+		assert.strictEqual(await subscription.resumeVerified, true);
+		assert.deepStrictEqual(valuesOf(events), [2]);
+		subscription.end();
+		await assert.rejects(
+			resumeChecked(T, positions[0]),
+			(error) => error instanceof ResumeHistoryUnavailableError && error.statusCode === 410
+		);
+	});
+
+	it('ends with the 410 when a prune reaches history the replay has not read', async () => {
+		const T = tableInOwnDatabase();
+		const positions = await writeEach(T, 250);
+		const { subscription, events } = await resumeChecked(T, positions[0], {
+			onEvent: (_event, events) => {
+				if (events.length === 1) raiseAuditFloor(T.auditStore, positions[200]);
+			},
+		});
+		assert.strictEqual(await subscription.resumeVerified, false);
+		assert.ok(events.at(-1) instanceof ResumeHistoryUnavailableError, `ended with ${events.at(-1)}`);
+		assert.ok(events.length < 200, 'the replay stopped at the first check after the prune');
+		assert.strictEqual(subscription.closed, true);
+	});
+
+	it('leaves a record subscription to its history walk, which the floor alone does not refuse', async () => {
+		const T = tableInOwnDatabase();
+		const positions = await writeEach(T, 3, () => 'r');
+		raiseAuditFloor(T.auditStore, positions[1]);
+		const { subscription, events } = await resumeChecked(T, positions[0], { id: 'r', includeSuperseded: true });
+		assert.strictEqual(await subscription.resumeVerified, true);
+		assert.deepStrictEqual(valuesOf(events), [1, 2]);
+		subscription.end();
+	});
+
+	it('requires a finite startTime', async () => {
+		const T = tableInOwnDatabase();
+		await writeEach(T, 1);
+		for (const startTime of [undefined, NaN, Infinity]) {
+			await assert.rejects(
+				resumeChecked(T, startTime),
+				(error) => error instanceof ClientError && error.statusCode === 400,
+				`startTime ${startTime}`
+			);
+		}
+	});
+});

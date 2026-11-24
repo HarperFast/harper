@@ -23,6 +23,7 @@ export const EVENT_STREAM_CURSOR = Symbol('event-stream-cursor');
 const MAX_EVENT_ID_LENGTH = 4096;
 const LOG_KEY_ID = /^(\d+(?:\.\d+)?)((?:@[0-9a-f]{32}\.[0-9a-f]{16})?)$/;
 const TOKEN_ID = /^[A-Za-z0-9_-]+$/;
+const CHECKPOINT_EVENT = 'harper-checkpoint';
 
 function unrecognizedEventId(): ClientError {
 	return new ClientError(
@@ -53,8 +54,9 @@ function encodeCheckpointId(checkpoint: SubscriptionCheckpoint): string | undefi
 
 /**
  * The per-event serializer of a built-in Table event stream. A checkpoint event, which the subscription queues
- * behind every event it covers, becomes a frame with only an `id`. Until the client holds one, each logged
- * event carries its own log key as the id; a snapshot row never does, since it is state and not a position.
+ * behind every event it covers, becomes a `harper-checkpoint` event whose `id` is the token. Until the client
+ * holds one, each logged event carries its own log key as the id; a snapshot row never does, since it is state
+ * and not a position.
  */
 export function tableEventSerializer(
 	subscription: any,
@@ -70,7 +72,8 @@ export function tableEventSerializer(
 			// too long to come back in a request header, so the client keeps the id it has
 			if (!id) return ':\n\n';
 			cursor.holdsToken = true;
-			return `id: ${id}\n\n`;
+			// Firefox and WebKit record an id only from a block that has data
+			return serialize({ event: CHECKPOINT_EVENT, data: {}, id });
 		}
 		const key = message?.localTime;
 		if (typeof key !== 'number' || message.fromScan || cursor.holdsToken || !verified) return serialize(message);

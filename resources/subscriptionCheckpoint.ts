@@ -378,7 +378,6 @@ function knownLogNames(auditStore: any): string[] {
 export interface CertifiedFloors {
 	/** By local origin node id. */
 	origins: Map<number, OriginState>;
-	capturedAt: number;
 	/** The origin-state epoch read before the capture: a qualifier or copy bound committed since may void it. */
 	epoch: number;
 }
@@ -395,7 +394,21 @@ export function captureCertifiedFloors(auditStore: any, dbisDb: any): CertifiedF
 	const byName = new Map<string, OriginState>();
 	for (const state of states.values()) byName.set(state.name, state);
 	for (const name of knownLogNames(auditStore)) if (!byName.has(name)) return;
-	return { origins: states, capturedAt: Date.now(), epoch };
+	return { origins: states, epoch };
+}
+
+/** Whether two captures certify the same checkpoint: one epoch, and the same origins with equal name, floor and generation. */
+export function sameCertifiedFloors(
+	a: CertifiedFloors | null | undefined,
+	b: CertifiedFloors | null | undefined
+): boolean {
+	if (!a || !b || a.epoch !== b.epoch || a.origins.size !== b.origins.size) return false;
+	for (const [nodeId, state] of a.origins) {
+		const other = b.origins.get(nodeId);
+		if (other?.floor !== state.floor || other.generation !== state.generation || other.name !== state.name)
+			return false;
+	}
+	return true;
 }
 
 const KEY_SCRATCH = new Float64Array(1);

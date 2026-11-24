@@ -305,6 +305,13 @@ export interface SubscriptionRequest extends RequestTarget {
 	 */
 	databaseGeneration?: string;
 	/**
+	 * Resume from `startTime` and refuse with a 410 when the history after that position is no longer retained,
+	 * at admission and while the replay runs; exposes `resumeVerified`. The retention half of
+	 * `databaseGeneration`, for LMDB, which has no generation: a restored or replaced database is not detected.
+	 * Requires a finite `startTime` and no `previousCount`.
+	 */
+	checkRetention?: boolean;
+	/**
 	 * Certify delivery progress (RocksDB): the subscription carries `progress()` and `sentCount`, a reload
 	 * marker or a failure to build a live event ends it, and its snapshot keeps every event buffered during the scan.
 	 */
@@ -386,7 +393,7 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	/** The generation of the database this subscription reads; undefined on LMDB. */
 	databaseGeneration?: string;
 	/**
-	 * Present only when subscribed with `databaseGeneration`. Resolves `true` once the replay after the
+	 * Present only when subscribed with `databaseGeneration` or `checkRetention`. Resolves `true` once the replay after the
 	 * position is complete and checked, or `false` if it was refused, cut short or closed first; never rejects.
 	 * Events delivered before it resolves `true` are not safe to checkpoint. It does not detect a transaction
 	 * that commits after the position was recorded with a key below it.

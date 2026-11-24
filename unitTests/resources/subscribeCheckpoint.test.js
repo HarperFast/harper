@@ -7,7 +7,7 @@ const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { getThisNodeName } = require('#src/server/nodeName');
 const { transaction } = require('#src/resources/transaction');
-const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
+const { certifiedFloors, setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const {
 	COPY_BOUND_KEY,
 	MAX_OVERLAP_MS,
@@ -17,6 +17,7 @@ const {
 	readCopyBounds,
 	readOriginStateEpoch,
 	resolveMembership,
+	sameCertifiedFloors,
 	validateCheckpoint,
 	writeCopyBounds,
 } = require('#src/resources/subscriptionCheckpoint');
@@ -443,6 +444,92 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			await waitFor(() => listener.events.some((event) => event.type === 'checkpoint'), 10_000);
 			subscription.end();
 			tracking.end();
+		});
+
+		it('sends no checkpoint event while a resumed replay is still running', async () => {
+			const T = tableInOwnDatabase();
+			const tracked = collector();
+			const tracking = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: tracked });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => tracked.values().includes('a'));
+			const checkpoint = await certifiedCheckpoint(T, tracking);
+			await T.put('b', { value: 'b' });
+			const events = [];
+			let duringReplay;
+			const resumed = await T.subscribe({
+				resume: checkpoint,
+				omitCurrent: true,
+				checkpointInterval: 3_600_000,
+				listener(event) {
+					events.push(event);
+					if (event.value?.value !== 'b' || duringReplay !== undefined) return;
+					// a tick of the interval that lands inside the replay
+					this.progressState.emitCheckpoint();
+					duringReplay = events.filter((sent) => sent.type === 'checkpoint').length;
+				},
+			});
+			assert.strictEqual(await resumed.resumeVerified, true);
+			await waitFor(() => events.some((event) => event.type === 'checkpoint'), 10_000);
+			assert.strictEqual(duringReplay, 0, 'the replay plan was not offered as a token');
+			resumed.end();
+			tracking.end();
+		});
+
+		it('builds no token on a tick whose floors are the ones it last sent', async () => {
+			const T = tableInOwnDatabase();
+			const listener = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				checkpointInterval: 3_600_000,
+				listener,
+			});
+			await T.put('a', { value: 'a' });
+			await waitFor(() => listener.values().includes('a'));
+			await certifiedCheckpoint(T, subscription);
+			const tick = subscription.progressState.emitCheckpoint;
+			const sent = () => listener.events.filter((event) => event.type === 'checkpoint').length;
+			tick();
+			const afterFirst = sent();
+			assert.ok(afterFirst > 0);
+			let built = 0;
+			const checkpoint = subscription.checkpoint;
+			subscription.checkpoint = (...args) => (built++, checkpoint(...args));
+			// no capture can run between synchronous ticks
+			tick();
+			tick();
+			assert.strictEqual(built, 0);
+			assert.strictEqual(sent(), afterFirst);
+			subscription.checkpoint = checkpoint;
+			await T.put('b', { value: 'b' });
+			await waitFor(() => listener.values().includes('b'));
+			await certifiedCheckpoint(T, subscription);
+			tick();
+			assert.strictEqual(sent(), afterFirst + 1, 'an advanced floor is a new token');
+			subscription.end();
+		});
+
+		it('keeps the certified floors object across captures that find the same floors', async () => {
+			const T = tableInOwnDatabase();
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: collector() });
+			await T.put('a', { value: 'a' });
+			await certifiedCheckpoint(T, subscription);
+			// the store's own certification moves the floor every few seconds, so look for a quiet stretch of captures
+			await waitFor(async () => {
+				const floors = certifiedFloors(subscription);
+				await sleep(350);
+				return floors !== undefined && certifiedFloors(subscription) === floors;
+			}, 20_000);
+			const floors = certifiedFloors(subscription);
+			const [nodeId, state] = floors.origins.entries().next().value;
+			const copy = (change) => ({ epoch: floors.epoch, origins: new Map([[nodeId, { ...state, ...change }]]) });
+			assert.strictEqual(sameCertifiedFloors(floors, copy({})), true);
+			assert.strictEqual(sameCertifiedFloors(floors, copy({ floor: state.floor + 1 })), false);
+			assert.strictEqual(sameCertifiedFloors(floors, copy({ generation: 'other' })), false);
+			assert.strictEqual(sameCertifiedFloors(floors, { ...copy({}), epoch: floors.epoch + 1 }), false);
+			assert.strictEqual(sameCertifiedFloors(floors, { epoch: floors.epoch, origins: new Map() }), false);
+			assert.strictEqual(sameCertifiedFloors(floors, null), false);
+			subscription.end();
 		});
 
 		it('refuses another scope with 409, a malformed checkpoint with 400 and a foreign member set with 410', async () => {

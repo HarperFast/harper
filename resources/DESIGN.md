@@ -235,7 +235,7 @@ A bare `<table>/` row may lack `name` and `isPrimaryKey` (#3225), so use `isPrim
 
 ## Per-origin subscription checkpoints
 
-`checkpoint()` encodes one boundary per origin. **If any known origin lacks a qualifying floor, there is no checkpoint.** A floor publishes only after its pass drains; a live certified subscription is `ungated`: the `startTime` gate drops late lower-key commits. Only `updateRecordedSequenceId` writes `[seq, P]` rows. A `checkpointInterval` event is queued behind what it covers, the first at `goLive` (`subscribeCheckpoint.test.js`).
+`checkpoint()` encodes one boundary per origin. **If any known origin lacks a qualifying floor, there is no checkpoint.** A floor publishes only after its pass drains; a live certified subscription is `ungated`: the `startTime` gate drops late lower-key commits. Only `updateRecordedSequenceId` writes `[seq, P]` rows. A `checkpointInterval` event is queued behind what it covers, the first at `goLive` and none before it: a replay's boundaries can name origins the client's token did not. A capture of equal floors keeps its object (`sameCertifiedFloors`), so an idle tick is one identity check (`subscribeCheckpoint.test.js`).
 
 ## Subscription version selection
 

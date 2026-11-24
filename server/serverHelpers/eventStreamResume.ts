@@ -45,6 +45,8 @@ function prepareTableSubscription(resource: any, target: any, request: any): voi
 			// every record of a transaction can share the key, and the replay starts after its position
 			target.startTime = positionBefore(id.key);
 			if (id.scope) target.databaseGeneration = id.scope.slice(1, 33);
+			// LMDB has no generation to name, but it records what it prunes
+			else target.checkRetention = true;
 		}
 	}
 	request[EVENT_STREAM_CURSOR] = cursor;

@@ -133,6 +133,7 @@ import {
 	readOriginStateEpoch,
 	validateCheckpoint,
 	withReplacedGeneration,
+	type CertifiedFloors,
 	type MemberBoundary,
 	type ResumePlan,
 	type SubscriptionCheckpoint,
@@ -2131,7 +2132,10 @@ function unreadableLogRefusal(range: any): Error | undefined {
 	}
 }
 
-function resumeRefusal(auditStore: any, generationId: string, cursor: number): Error | undefined {
+function resumeRefusal(auditStore: any, generationId: string | undefined, cursor: number): Error | undefined {
+	// no generation to compare (checkRetention): every prune raises the audit floor before it removes anything
+	if (generationId === undefined)
+		return cursor >= getAuditFloor(auditStore) ? undefined : new ResumeHistoryUnavailableError();
 	if (isResumablePosition(auditStore, generationId, cursor)) return;
 	return getDatabaseGeneration(auditStore)?.id === generationId
 		? new ResumeHistoryUnavailableError()
@@ -10426,10 +10430,10 @@ export function makeTable(options): TableResourceClass {
 				if (!request.reportProgress) throw new ClientError('checkpointInterval requires reportProgress');
 			}
 			const resumeGeneration = request.databaseGeneration;
-			const resuming = resumeGeneration !== undefined;
+			const resuming = resumeGeneration !== undefined || request.checkRetention === true;
 			if (resuming) {
 				if (typeof request.startTime !== 'number' || !Number.isFinite(request.startTime)) {
-					throw new ClientError('Resuming in a database generation requires a finite startTime');
+					throw new ClientError('A checked resume requires a finite startTime');
 				}
 				if (request.previousCount != null) {
 					throw new ClientError('previousCount can not be combined with a resume position');
@@ -10438,7 +10442,7 @@ export function makeTable(options): TableResourceClass {
 				const refusal =
 					(request.isCollection ?? thisId == null)
 						? resumeRefusal(auditStore, resumeGeneration, request.startTime)
-						: getDatabaseGeneration(auditStore)?.id === resumeGeneration
+						: resumeGeneration === undefined || getDatabaseGeneration(auditStore)?.id === resumeGeneration
 							? undefined
 							: new DatabaseGenerationChangedError();
 				if (refusal) throw refusal;
@@ -13047,13 +13051,22 @@ export function makeTable(options): TableResourceClass {
 		subscription.checkpointFloor = (holds?: Map<number, number>) => subscriptionCheckpointFloor(subscription, holds);
 		if (request.checkpointInterval !== undefined) {
 			let lastEmitted: string | undefined;
+			// the certified floors the last emitted checkpoint equals: a capture of equal floors keeps their object
+			let emittedFloors: CertifiedFloors | undefined;
 			progress.emitCheckpoint = () => {
+				// a replay's boundaries can name origins the client's token did not, so they wait for the replay to be verified
+				if (!progress.live) return;
 				try {
+					// with nothing queued the boundaries are the certified floors themselves
+					const floors = subscription.queue?.length ? undefined : certifiedFloors(subscription);
+					if (floors !== undefined && floors === emittedFloors) return;
 					const checkpoint = subscription.checkpoint!();
 					if (!checkpoint) return;
 					const encoded = JSON.stringify(checkpoint);
-					if (encoded === lastEmitted) return;
-					if (subscription.send({ type: 'checkpoint', checkpoint })) lastEmitted = encoded;
+					if (encoded === lastEmitted || subscription.send({ type: 'checkpoint', checkpoint })) {
+						lastEmitted = encoded;
+						emittedFloors = floors;
+					}
 				} catch (error) {
 					failSubscription(subscription, error);
 				}
