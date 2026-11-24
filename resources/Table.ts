@@ -2530,6 +2530,7 @@ export function makeTable(options): TableResourceClass {
 			const range = auditStore.getRange({
 				start: ref.version,
 				exactStart: true,
+				onlyStartKey: true,
 				log: ref.nodeId,
 				readUncommitted: true,
 			});
@@ -7512,6 +7513,7 @@ export function makeTable(options): TableResourceClass {
 												for (const entry of auditStore.getRange({
 													start: localTime,
 													exactStart: true,
+													onlyStartKey: true,
 													readUncommitted: true,
 												})) {
 													if (entry.txnLogKey !== localTime) break;
@@ -7557,6 +7559,7 @@ export function makeTable(options): TableResourceClass {
 											for (const entry of auditStore.getRange({
 												start: localTime,
 												exactStart: true,
+												onlyStartKey: true,
 												log: nodeId,
 												readUncommitted: true,
 											})) {

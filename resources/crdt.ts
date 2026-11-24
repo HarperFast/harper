@@ -337,6 +337,7 @@ export function readAuditFrame(
 		start: key,
 		end: Infinity,
 		exactStart: true,
+		onlyStartKey: true,
 		log: origin,
 		readUncommitted: followingCommittedRef,
 	});

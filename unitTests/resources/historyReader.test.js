@@ -512,26 +512,25 @@ describe('bounded history readers', function () {
 				if (lmdb) this.skip();
 				const T = newTable();
 				await T.put({ id: 'seed', n: 0 });
+				const earlierOrigin =
+					linked && !reverseOrder ? getIdOfRemoteNode(`history-control-${sequence}-earlier`, T.auditStore) : undefined;
 				const origins = ['a', 'b'].map((name) =>
 					getIdOfRemoteNode(`history-control-${sequence}-${name}`, T.auditStore)
 				);
 				origins.sort((a, b) => a - b);
 				if (reverseOrder) origins.reverse();
 				let previousKey, sharedKey;
-				const write = (txn, nodeId, type, n, previousVersion) =>
+				const write = (txn, nodeId, type, n, previousVersion, recordId = 'a') =>
 					T.auditStore.put(
 						undefined,
 						{
 							tableId: T.tableId,
-							recordId: 'a',
+							recordId,
 							type,
 							nodeId,
 							version: txn.getTimestamp(),
 							previousVersion,
-							previousAdditionalAuditRefs: previousVersion
-								? [{ version: previousVersion, nodeId: origins[0] }]
-								: undefined,
-							encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ id: 'a', n })),
+							encodedRecord: Buffer.from(T.primaryStore.encoder.encode({ id: recordId, n })),
 						},
 						{ transaction: txn, nodeId }
 					);
@@ -540,6 +539,24 @@ describe('bounded history readers', function () {
 					txn.setTimestamp(previousKey);
 					write(txn, origins[0], 'put', 7);
 				});
+				if (earlierOrigin !== undefined) {
+					for (const key of [previousKey, previousKey - 50])
+						T.primaryStore.rootStore.transactionSync((txn) => {
+							txn.setTimestamp(key);
+							write(txn, earlierOrigin, 'put', 0, undefined, 'other');
+						});
+					const interleaved = [
+						...T.auditStore.getRange({ start: previousKey, exactStart: true, readUncommitted: true }),
+					]
+						.filter((entry) => entry.tableId === T.tableId)
+						.slice(0, 3)
+						.map(({ txnLogKey, nodeId }) => [txnLogKey, nodeId]);
+					assert.deepStrictEqual(interleaved, [
+						[previousKey, earlierOrigin],
+						[previousKey - 50, earlierOrigin],
+						[previousKey, origins[0]],
+					]);
+				}
 				const writers = [
 					(txn) => write(txn, origins[0], 'invalidate', 0, linked ? previousKey : undefined),
 					(txn) => write(txn, origins[1], 'put', 99),
@@ -575,6 +592,10 @@ describe('bounded history readers', function () {
 						id: 'a',
 						n: 99,
 					});
+				}
+				if (earlierOrigin !== undefined) {
+					assert.strictEqual(T.auditStore.getSync(previousKey, T.tableId, 'a', undefined, true)?.nodeId, origins[0]);
+					assert.strictEqual(T.auditStore.getSync(previousKey, T.tableId, 'a', earlierOrigin, true), undefined);
 				}
 			});
 		}

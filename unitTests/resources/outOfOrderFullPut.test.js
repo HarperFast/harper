@@ -845,6 +845,32 @@ for (const loadAsInstance of [true, false]) {
 			}
 		});
 
+		it('replays newer patches when another log appends below the predecessor key', async function () {
+			if (isLMDB) return this.skip();
+			const timestamp = (nextTimestamp += 1000);
+			const target = 'full-put-after-late-append';
+			const otherOrigin = getIdOfRemoteNode('earlier-full-put-log', T.auditStore);
+			const targetOrigin = getIdOfRemoteNode('target-full-put-log', T.auditStore);
+			async function apply(id, value, offset, nodeId, fullUpdate = false) {
+				const version = timestamp + offset;
+				const context = { source: {}, sourceApply: true, timestamp: version };
+				await transaction(context, async () => {
+					const resource = await T.getResource(id, context);
+					await resource._writeUpdate(id, value, fullUpdate, { isNotification: true, nodeId, version });
+				});
+			}
+			await apply(target, { id: target, stale: true }, 0, targetOrigin, true);
+			await apply(target, { first: true }, 20, targetOrigin);
+			await apply(target, { second: true }, 30, targetOrigin);
+			await apply('other-at-key', { id: 'other-at-key' }, 20, otherOrigin, true);
+			await apply('other-below-key', { id: 'other-below-key' }, 15, otherOrigin, true);
+			await apply(target, { id: target, replacement: true }, 10, targetOrigin, true);
+			assert.deepStrictEqual(
+				{ ...(await T.get(target)) },
+				{ id: target, replacement: true, first: true, second: true }
+			);
+		});
+
 		it('replays newer patches collected from separate origin branches', async function () {
 			if (isLMDB) return this.skip();
 			const timestamp = (nextTimestamp += 1000);
