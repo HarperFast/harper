@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795511266955,
+  "lastUpdate": 1795511271666,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -37559,6 +37559,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 497.6,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "81208766bc80ada486d40ef95668c1931b5e378d",
+          "message": "Tell preview setup users of public repos to allow pull_request_target (#4549)\n\n* Tell preview setup users of public repos to allow pull_request_target\n\nFrom December 2, 2026 GitHub Actions blocks pull_request_target in public\nrepositories unless an Actions event policy allows it. `harper preview setup`\nnow prints, right after enable_previews succeeds, where to add that policy for\nthe preview workflow alone (Settings > Actions > Policies, repository or\norganization) with GitHub's doc link, worded as conditional when the\nrepository's visibility is unknown and omitted for private/internal ones. The\nstarter workflow carries a one-line comment saying the same. The trigger and the\ntrust policies' event_name are unchanged.\n\nDispatch-Task: harper-preview-prt-policy\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Scope the org-level policy to the repository and read repo visibility\n\nThe advisory leads with the repository's own policy and says an organization\npolicy must target the repository as well as the workflow path, so it cannot\nlift the block for sibling repos with the same file. It now says \"make sure\"\nrather than \"add\", since a policy may already allow the event. The repository\nlookup reads `visibility` when GitHub sends it, so an internal repository is\nnever reported as public. The operations-API previews section points to the new\nCLI subsection.\n\nDispatch-Task: harper-preview-prt-policy\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Print the policy advisory before setup can refuse, and parse only known visibilities\n\nThe advisory now prints before the HARPER_PREVIEW_TARGET check, so a run that\nstops there with nothing changed still names the policy. Only GitHub's three\ndocumented visibility values override `private`; anything else falls back to it.\nThe CLI reference says the owner of a blocking organization or enterprise policy\nhas to allow the event.\n\nDispatch-Task: harper-preview-prt-policy\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Scope the starter workflow's policy comment to the repository and file\n\nDispatch-Task: harper-preview-prt-policy\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Treat a repository response without visibility or private as unknown\n\nA payload with neither `visibility` nor `private: true` now leaves visibility\nunknown, so setup prints the conditional advisory rather than calling a\nrepository public on a guess.\n\nDispatch-Task: harper-preview-prt-policy\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Date the starter workflow's policy comment and split the docs' reasons\n\nDispatch-Task: harper-preview-prt-policy\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n* Badge the public-repository policy guidance as changed in v5.5.0\n\nDispatch-Task: harper-preview-prt-policy\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-24T04:51:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/81208766bc80ada486d40ef95668c1931b5e378d"
+        },
+        "date": 1795511270288,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 30201.56,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 30201.56,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 168.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 437.1,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 560.1,
             "unit": "ms"
           }
         ]
