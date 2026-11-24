@@ -329,7 +329,7 @@ It checks everything it can before it changes anything, so a refusal before step
 5. With `credential=true`, asks for the token and checks that the cluster can hold a sealed secret.
 6. Calls [`enable_previews`](../operations-api/operations.md#enable_previews), which creates the role, the user and the two trust policies, and stores the application's preview limits.
 7. With `credential=true`, seals the token on your machine and grants it to every preview of the application, as the secret `deploy.<app>-pr-_.git.github.com`.
-8. Writes the starter workflow, if step 2 said to. Commit it to the default branch: GitHub runs `pull_request_target` workflows from there.
+8. Writes the starter workflow, if step 2 said to. <VersionBadge type="changed" version="v5.4.2" /> Its `deploy` and `cleanup` jobs run [`HarperFast/deploy-action`](https://github.com/HarperFast/deploy-action), pinned by commit, with `credential: true`, `domain:` and `branched_databases: false` on the deploy when setup was given `credential=true`, `domain=` or `dataMode=shared`; before v5.4.2 it ran `harper preview deploy` and `drop` itself. Commit it to the default branch: GitHub runs `pull_request_target` workflows from there.
 9. Sets `HARPER_PREVIEW_TARGET` to the cluster's URL with `gh`, if the repository doesn't have it.
 10. Creates the Actions event policy, if step 3 said to. A failure here prints the policy to create and does not stop setup.
 
@@ -347,7 +347,7 @@ Steps 7 to 10 each run even when an earlier one fails: setup then exits non-zero
 | `workflow=<path>`            | `.github/workflows/preview.yaml`             | The workflow file, a `.yml` or `.yaml` file in `.github/workflows/`.                                                                                                                                                                    |
 | `environment=<name>`         | `preview`                                    | The GitHub environment of the deploy job. The cleanup job's is always `preview-cleanup`.                                                                                                                                                |
 | `domain=<domain>`            | `app.<target host>`                          | The domain every preview host sits one label under. Required when the target is an IP address or `localhost`.                                                                                                                           |
-| `dataMode=branched\|shared`  | `branched`                                   | `branched` requires each preview to run on its own branch of the databases. `shared` lets previews use the cluster's databases, and the starter workflow then deploys with `branchedDatabases=false`.                                   |
+| `dataMode=branched\|shared`  | `branched`                                   | `branched` requires each preview to run on its own branch of the databases. `shared` lets previews use the cluster's databases, and the starter workflow then sets the action's `branched_databases: false`.                            |
 | `maxPreviews=<n>`            | `deployment.previews.maxPerApplication`      | How many previews of the application each node keeps live at once. A deploy past it is refused. Without it, the node's [`deployment.previews.maxPerApplication`](../configuration/options.md#deployment) applies, which has no default. |
 | `maxTtlDays=<days>`          | `7`                                          | The longest a preview may live after its last deploy. A later expiry is lowered to it.                                                                                                                                                  |
 | `credential=true`            | asked, for a private repository              | Seal a GitHub token for the cluster to fetch each PR's commit with.                                                                                                                                                                     |
@@ -406,7 +406,7 @@ Calls [`disable_previews`](../operations-api/operations.md#disable_previews): it
 
 #### `harper preview deploy`
 
-Deploys or updates the preview of one PR. This is what [`HarperFast/deploy-action`](https://github.com/HarperFast/deploy-action) and the starter workflow run, as the preview user:
+Deploys or updates the preview of one PR. This is what [`HarperFast/deploy-action`](https://github.com/HarperFast/deploy-action), and so the starter workflow, runs as the preview user:
 
 ```bash
 harper preview deploy app=my-app pr=42 branch=fix/cart by_ref=true ref=<head commit>
@@ -442,7 +442,7 @@ After the deploy, it checks for up to 30 seconds that `https://<host>/` answers 
 harper preview drop app=my-app pr=42
 ```
 
-Sends [`drop_component`](../components/applications.md#drop_component) for `<app>-pr-<pr>`, whether or not the preview is listed, since a drop also stops a leftover worker and removes branches a failed drop left behind. `restart=` and `keepBranches=` are passed through. A drop of a preview that a deploy is still activating answers `409`; the starter workflow's cleanup job retries it.
+Sends [`drop_component`](../components/applications.md#drop_component) for `<app>-pr-<pr>`, whether or not the preview is listed, since a drop also stops a leftover worker and removes branches a failed drop left behind. `restart=` and `keepBranches=` are passed through. A drop of a preview that a deploy is still activating answers `409`; deploy-action, which the starter workflow runs, retries it.
 
 #### `harper preview list`
 
