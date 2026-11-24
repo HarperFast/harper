@@ -549,6 +549,13 @@ export class RocksTransactionLogStore extends EventEmitter {
 				}
 			};
 			const startKey = options.onlyStartKey && options.exactStart ? options.start : undefined;
+			const closeSources =
+				startKey === undefined
+					? undefined
+					: () => {
+							for (const iterator of iterators) iterator.close();
+							return { done: true as const, value: undefined };
+						};
 			const readSource = peekAhead ? safePeek : safeNext;
 			const read =
 				startKey === undefined
@@ -641,7 +648,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								done: false,
 							};
 						}
-						if (startKey !== undefined) break;
+						if (closeSources) return closeSources();
 						// All current entries are done; force the retry pass to re-poll
 						nextEntries.length = 0;
 					}
@@ -684,11 +691,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					return iterators.some((iterator, i) => !safePeek(iterator, logs[i]).done);
 				},
 			};
-			if (startKey !== undefined)
-				aggregateIterator.return = () => {
-					for (const iterator of iterators) iterator.close();
-					return { done: true, value: undefined };
-				};
+			if (closeSources) aggregateIterator.return = closeSources;
 			iterable.iterate = () => aggregateIterator;
 		}
 		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn, logName }: NamedTransactionEntry) => {
