@@ -392,8 +392,6 @@ const loggedMessagesByTransaction = new WeakMap<object, Map<string, Set<string> 
 const messageIdentity = (tableId: number, id: Id, version: number) =>
 	`${tableId}:${version}:${toBufferKey(id).toString('latin1')}`;
 const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
-// what BigInt() accepts once trimmed, so a check-only pass can report a value it would throw on without building one
-const BIGINT_LITERAL = /^(?:[+-]?\d+|0[xX][\da-fA-F]+|0[oO][0-7]+|0[bB][01]+)?$/;
 // declared types `validate` holds to one value on validated writes: `ID` admits an array of strings
 const SCALAR_TYPES = new Set(['String', 'Int', 'Long', 'Float', 'Boolean', 'Date', 'BigInt']);
 const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
@@ -1172,7 +1170,7 @@ interface TableResourceInstance<Record extends object = any> {
 	 */
 	publish(target: RequestTarget, message: Record, options?: any): void | Promise<void>;
 	_writePublish(id: Id, message: any, options?: any): void | Promise<void>;
-	validate(record: any, patch?: boolean, checkOnlySkipping?: readonly string[]): void;
+	validate(record: any, patch?: boolean): void;
 	getUpdatedTime(): number;
 	[ASSERT_TRACKED_WRITABLE](generation?: WriteGeneration): void;
 	[GET_TRACKED_WRITE_GENERATION](): WriteGeneration;
@@ -2216,7 +2214,6 @@ export function makeTable(options): TableResourceClass {
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let lastIssuanceFailureWarn = -Infinity;
 	let lastSourceFillWaitersWarn = -Infinity;
-	let lastSourceSchemaMismatchWarn = -Infinity;
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let sourceFills: Map<unknown, SourceFill> | undefined;
@@ -11529,9 +11526,8 @@ export function makeTable(options): TableResourceClass {
 			return lockCoordinator;
 		}
 		// #section: validation
-		validate(record: any, patch?: boolean, checkOnlySkipping?: readonly string[]) {
+		validate(record: any, patch?: boolean) {
 			if (fullTextFieldNames) assertFullTextWrite(record);
-			const convert = checkOnlySkipping === undefined;
 			// Accumulate structured per-field issues so the 400 carries `{ path, code,
 			// message }[]` matching the emitted OpenAPI, instead of a single joined string. The joined
 			// message is still built for the HTTP title, preserving back-compat for callers that read it.
@@ -11627,26 +11623,20 @@ export function makeTable(options): TableResourceClass {
 								break;
 							case 'Date':
 								if (!(value instanceof Date)) {
-									if (typeof value === 'string' || typeof value === 'number')
-										return convert ? new Date(value) : undefined;
+									if (typeof value === 'string' || typeof value === 'number') return new Date(value);
 									else addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a Date`);
 								}
 								break;
 							case 'BigInt':
 								if (typeof value !== 'bigint') {
 									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
-									if (typeof value === 'string' || typeof value === 'number') {
-										if (convert) return BigInt(value);
-										if (typeof value === 'number' ? !Number.isInteger(value) : !BIGINT_LITERAL.test(value.trim()))
-											addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
-										return;
-									}
+									if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a bigint`);
 								}
 								break;
 							case 'Bytes':
 								if (!(value instanceof Uint8Array)) {
-									if (typeof value === 'string') return convert ? Buffer.from(value) : undefined;
+									if (typeof value === 'string') return Buffer.from(value);
 									addError(
 										name,
 										'type',
@@ -11656,12 +11646,9 @@ export function makeTable(options): TableResourceClass {
 								break;
 							case 'Blob':
 								if (!(value instanceof Blob)) {
-									if (typeof value === 'string') {
-										if (!convert) return;
-										value = Buffer.from(value);
-									}
+									if (typeof value === 'string') value = Buffer.from(value);
 									if (value instanceof Buffer) {
-										return convert ? createBlob(value, { type: 'text/plain' }) : undefined;
+										return createBlob(value, { type: 'text/plain' });
 									}
 									addError(name, 'type', `Value ${stringify(value)} in property ${name} must be a Blob`);
 								}
@@ -11697,7 +11684,6 @@ export function makeTable(options): TableResourceClass {
 					}
 					continue;
 				}
-				if (checkOnlySkipping?.includes(attribute.name)) continue;
 				if (!patch || attribute.name in record) {
 					const name = attribute.name;
 					const value = record[name];
@@ -14087,35 +14073,6 @@ export function makeTable(options): TableResourceClass {
 			throw new ServerError(`Source for ${tableName} returned a record that is not an object`, 502);
 	}
 
-	/**
-	 * The source is the record's source of truth, so a record that does not match the schema is cached as
-	 * returned and the disagreement is only reported, for whoever owns the schema. Validation messages quote
-	 * the source's values, and an undeclared property's name is the source's too, so neither is logged.
-	 */
-	function reportSourceSchemaMismatch(id: Id, record: any, skipping: readonly string[]): void {
-		// a drifted source mismatches on every fill
-		if (!logger.trace && (!logger.warn || performance.now() - lastSourceSchemaMismatchWarn < 60_000)) return;
-		let detail: string;
-		try {
-			TableResource.prototype.validate(record, false, skipping);
-			return;
-		} catch (error) {
-			if (error instanceof ValidationError) {
-				const declared = error.errors.filter((issue) => issue.code !== 'unknown_property');
-				const undeclared = error.errors.length - declared.length;
-				detail = declared.map((issue) => issue.path).join(', ');
-				if (undeclared > 0)
-					detail += `${detail ? '; ' : ''}${undeclared} undeclared propert${undeclared === 1 ? 'y' : 'ies'}`;
-			} else detail = error?.name ?? 'an error';
-		}
-		const message = `The source for ${tableName} returned record ${inspectForLog(id, KEY_FOR_LOG)}, which does not match the schema (invalid: ${detail}); it is cached as returned`;
-		logger.trace?.(message);
-		const now = performance.now();
-		if (now - lastSourceSchemaMismatchWarn < 60_000) return;
-		lastSourceSchemaMismatchWarn = now;
-		logger.warn?.(`${message}. Fix the schema to match the source, or the source to match the schema`);
-	}
-
 	function validateFullTextLeaf(
 		leaf: any,
 		mode: string,
@@ -15182,6 +15139,7 @@ export function makeTable(options): TableResourceClass {
 					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
+					resolved = true;
 					const resolvedVersion =
 						isRocksDB && updatedRecord && existingVersion != null
 							? Math.max(sourceVersion, existingVersion)
@@ -15195,13 +15153,7 @@ export function makeTable(options): TableResourceClass {
 							updatedRecord[createdTimeToAssign.name] =
 								existingRecord?.[createdTimeToAssign.name] ?? timestampValue(createdTimeToAssign, resolvedVersion);
 						}
-						if (!reusedCachedRecord) {
-							const harperOwned = [primaryKey, updatedTimeProperty?.name, createdTimeProperty?.name];
-							for (const attribute of TableResource.embedAttributes) harperOwned.push(attribute.name);
-							reportSourceSchemaMismatch(id, updatedRecord, harperOwned);
-						}
 					}
-					resolved = true;
 					const resolvedEntry: Entry = {
 						key: id,
 						version: resolvedVersion,
@@ -15272,6 +15224,8 @@ export function makeTable(options): TableResourceClass {
 					return;
 				}
 				const dbTxn = txnForContext(sourceContext);
+				// No validate hook: the source is the record's source of truth, so a fill stores what it returned
+				// even where the table's schema disagrees (that schema is what is wrong), unlike a put of the same record.
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
