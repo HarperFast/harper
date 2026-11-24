@@ -48,9 +48,9 @@ export async function cleanupExpiredAnalytics(
 		const end = now - retentionMs;
 		if (end > state.completedEnd) {
 			if (state.needsCompaction && state.compactAttemptedAt === 0) await compactExpired(store, end, now, state);
-			if (!(await removeExpired(store, end, state))) return;
+			await removeExpired(store, end, state);
 		}
-		if (state.needsCompaction && now - state.compactAttemptedAt >= COMPACT_INTERVAL) {
+		if (state.needsCompaction && state.completedEnd > -Infinity && now - state.compactAttemptedAt >= COMPACT_INTERVAL) {
 			await compactExpired(store, state.completedEnd, now, state);
 		}
 	} finally {
@@ -58,37 +58,38 @@ export async function cleanupExpiredAnalytics(
 	}
 }
 
-async function removeExpired(store: any, end: number, state: CleanupState): Promise<boolean> {
+async function removeExpired(store: any, end: number, state: CleanupState): Promise<void> {
 	for (;;) {
 		let failure: unknown;
-		const removals = [];
+		const onFailure = (error: unknown) => {
+			failure ??= error ?? new Error('Removal failed');
+		};
+		const pending: Promise<unknown>[] = [];
+		let count = 0;
 		let last: unknown;
 		for (const key of store.getKeys({ start: state.from, end, limit: BATCH_SIZE })) {
-			removals.push(
-				Promise.resolve(store.remove(key)).then(
-					() => {},
-					(error) => {
-						failure ??= error ?? new Error('Removal failed');
-					}
-				)
-			);
+			count++;
 			last = key;
-		}
-		if (removals.length > 0) {
-			await Promise.all(removals);
-			state.needsCompaction = state.canCompact;
-			if (failure) {
-				log.warn?.('Removing expired analytics failed', failure);
-				return false;
+			try {
+				const result = store.remove(key);
+				if (typeof result?.then === 'function') pending.push(result.then(undefined, onFailure));
+			} catch (error) {
+				onFailure(error);
+				break;
 			}
 		}
-		if (removals.length < BATCH_SIZE) break;
+		await Promise.all(pending);
+		if (count > 0) state.needsCompaction = state.canCompact;
+		if (failure) {
+			log.warn?.('Removing expired analytics failed', failure);
+			return;
+		}
+		if (count < BATCH_SIZE) break;
 		state.from = last;
 		await rest();
 	}
 	state.from = end;
 	state.completedEnd = end;
-	return true;
 }
 
 async function compactExpired(store: any, end: number, now: number, state: CleanupState): Promise<void> {

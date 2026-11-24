@@ -92,9 +92,11 @@ until the next process starts.
 
 Passes are single-flight per store and yield between batches. Where the store has `compact()`, a
 process's first pass compacts the expired range before it scans (the scan from the first key would
-otherwise walk an earlier process's tombstones), and later passes compact at most hourly while any
-deletes are uncompacted; a failed compaction is retried on that cadence. Manual compaction is exclusive
-in rocksdb-js, so automatic compaction of the whole database waits while it runs.
+otherwise walk an earlier process's tombstones; if that compaction fails, the scan runs anyway, since
+deletion must not wait on compaction), and later passes compact at most hourly while any deletes are
+uncompacted, including after a failed removal; a failed compaction is retried on that cadence. Manual
+compaction is exclusive in rocksdb-js, so automatic compaction of the whole database waits while it
+runs.
 
 ## Full-text collection follows actual handle ownership
 

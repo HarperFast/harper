@@ -18,7 +18,6 @@ describe('analytics retention cleanup', () => {
 		setupTestDBPath();
 	});
 
-	// The cleanup keeps its cursor per store.
 	beforeEach(function () {
 		Analytics = table({
 			table: `AnalyticsCleanup${tableCount++}`,
@@ -74,26 +73,36 @@ describe('analytics retention cleanup', () => {
 		assert.deepStrictEqual(remainingTimes(), [5000, 6000]);
 	});
 
-	it('keeps its place when a removal fails, so the next pass retries it', async function () {
-		await seed([100, 200, 5000]);
-		const remove = store.remove;
-		let failNext = true;
-		store.remove = function (key) {
-			if (failNext && key[0] === 200) {
-				failNext = false;
-				return Promise.reject(new Error('disk full'));
-			}
-			return remove.call(this, key);
-		};
-		const starts = [];
-		record(starts, 'getKeys');
-		await cleanupExpiredAnalytics(Analytics, RETENTION, 5500);
-		assert.strictEqual(store.get([100, 'node-1']), undefined);
-		assert.ok(store.get([200, 'node-1']));
-		await cleanupExpiredAnalytics(Analytics, RETENTION, 5600);
-		assert.deepStrictEqual(starts, [false, false]);
-		assert.deepStrictEqual(remainingTimes(), [5000]);
-	});
+	for (const [failureStyle, fail] of [
+		['rejects', () => Promise.reject(new Error('disk full'))],
+		[
+			'throws',
+			() => {
+				throw new Error('disk full');
+			},
+		],
+	]) {
+		it(`keeps its place when a removal ${failureStyle}, so the next pass retries it`, async function () {
+			await seed([100, 200, 5000]);
+			const remove = store.remove;
+			let failNext = true;
+			store.remove = function (key) {
+				if (failNext && key[0] === 200) {
+					failNext = false;
+					return fail();
+				}
+				return remove.call(this, key);
+			};
+			const starts = [];
+			record(starts, 'getKeys');
+			await cleanupExpiredAnalytics(Analytics, RETENTION, 5500);
+			assert.strictEqual(store.get([100, 'node-1']), undefined);
+			assert.ok(store.get([200, 'node-1']));
+			await cleanupExpiredAnalytics(Analytics, RETENTION, 5600);
+			assert.deepStrictEqual(starts, [false, false]);
+			assert.deepStrictEqual(remainingTimes(), [5000]);
+		});
+	}
 
 	it('keeps the batches that settled when a later batch fails', async function () {
 		this.timeout(20000);
@@ -115,7 +124,6 @@ describe('analytics retention cleanup', () => {
 		withoutCompaction();
 		const times = Array.from({ length: 2500 }, (_, index) => index + 1);
 		await seed([...times, 100000]);
-		// Synchronous removals, so only the cleanup's own yield can let the event loop turn between batches.
 		const remove = store.remove;
 		let removingSync = false;
 		store.remove = function (key) {
@@ -132,7 +140,7 @@ describe('analytics retention cleanup', () => {
 		record(order, 'getKeys', () => 'batch');
 		setImmediate(() => order.push('event loop'));
 		await cleanupExpiredAnalytics(Analytics, RETENTION, 50000);
-		assert.deepStrictEqual(order.slice(0, 3), ['batch', 'event loop', 'batch']);
+		assert.deepStrictEqual(order, ['batch', 'event loop', 'batch', 'batch']);
 		assert.deepStrictEqual(remainingTimes(), [100000]);
 	});
 
