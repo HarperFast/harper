@@ -864,6 +864,16 @@ for (const loadAsInstance of [true, false]) {
 			await apply(target, { second: true }, 30, targetOrigin);
 			await apply('other-at-key', { id: 'other-at-key' }, 20, otherOrigin, true);
 			await apply('other-below-key', { id: 'other-below-key' }, 15, otherOrigin, true);
+			const predecessorKey = timestamp + 20;
+			const successor = T.auditStore.getSync(timestamp + 30, T.tableId, target, targetOrigin, true);
+			assert.strictEqual(successor.previousVersion, predecessorKey);
+			assert.strictEqual(successor.previousNodeId, undefined);
+			assert(!successor.previousAdditionalAuditRefs?.length);
+			const interleaved = [...T.auditStore.getRange({ start: predecessorKey, exactStart: true, readUncommitted: true })]
+				.filter((entry) => entry.tableId === T.tableId)
+				.slice(0, 3)
+				.map((entry) => entry.recordId);
+			assert.deepStrictEqual(interleaved, ['other-at-key', 'other-below-key', target]);
 			await apply(target, { id: target, replacement: true }, 10, targetOrigin, true);
 			assert.deepStrictEqual(
 				{ ...(await T.get(target)) },

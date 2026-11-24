@@ -641,6 +641,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								done: false,
 							};
 						}
+						if (startKey !== undefined) break;
 						// All current entries are done; force the retry pass to re-poll
 						nextEntries.length = 0;
 					}
