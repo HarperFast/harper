@@ -60,10 +60,9 @@ describe('Table.stripAttributeValues', () => {
 			assert.deepStrictEqual(entry.additionalAuditRefs, previous.additionalAuditRefs);
 			assert.strictEqual(entry.metadataFlags & ~VERSION_REUSED, previous.metadataFlags & ~FULL_WRITE_HEAD);
 			assert.strictEqual(entry.metadataFlags & FULL_WRITE_HEAD, 0);
-			if (isRocksDB) {
-				// the same version now names a different value, so no cache may vouch for the old one
-				assert.ok(entry.metadataFlags & VERSION_REUSED);
-			} else {
+			// the same version now names a different value, so no cache may vouch for the old one
+			assert.ok(entry.metadataFlags & VERSION_REUSED);
+			if (!isRocksDB) {
 				assert.ok(previous.localTime > 0);
 				assert.strictEqual(entry.localTime, previous.localTime);
 			}
