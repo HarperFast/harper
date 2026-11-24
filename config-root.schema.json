@@ -975,7 +975,7 @@
 										},
 										"certificateAuthority": {
 											"type": ["string", "null"],
-											"description": "Override CA path for MQTT. Default: tls.certificateAuthority"
+											"description": "Not applied yet (harper#4497): Harper accepts this setting, but verifies MQTT client certificates against the same certificate authorities as its other TLS listeners."
 										},
 										"certificateVerification": {
 											"description": "Enable certificate revocation checking (CRL/OCSP). Default: false",

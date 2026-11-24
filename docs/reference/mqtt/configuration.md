@@ -120,9 +120,7 @@ When `true`, every connection to the MQTT ports (`port` and `securePort`) must p
 
 Type: `string | null`
 
-Default: Path from `tls.certificateAuthority`
-
-Path to the certificate authority (CA) file used to verify MQTT client certificates. By default, uses the CA configured in the root `tls` section. Set this if MQTT clients should be verified against a different CA than the one used for HTTP/TLS.
+Not applied yet ([harper#4497](https://github.com/HarperFast/harper/issues/4497)). Harper accepts this setting, but verifies MQTT client certificates against the same certificate authorities as its other TLS listeners, so it cannot restrict MQTT to a different CA.
 
 ### `mqtt.network.mtls.certificateVerification`
 
@@ -204,7 +202,6 @@ mqtt:
     securePort: 8883
     mtls:
       required: false
-      certificateAuthority: ~/hdb/keys/ca.pem
       certificateVerification:
         failureMode: fail-open
         ocsp:
