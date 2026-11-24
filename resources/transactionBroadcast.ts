@@ -438,7 +438,6 @@ class Subscription extends IterableEventQueue {
 	declare resumeVerified?: Promise<boolean>;
 	declare reportsProgress?: boolean;
 	declare registeredThrough?: number;
-	/** With `reportsProgress` on RocksDB: the key at or below which this subscription is issued no resume position. */
 	declare unresumableThrough?: number;
 	/**
 	 * With no `registeredThrough`: an exclusive start that skips no local key reserved (LMDB: committed) when it

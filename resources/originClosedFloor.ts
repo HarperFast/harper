@@ -616,7 +616,6 @@ export function raiseUnresumableThrough(rootStore: RocksDatabase, key: number | 
 	storeMax(registryFor(rootStore).words, WORD_UNRESUMABLE, key);
 }
 
-/** The key at or below which a subscription registering now is issued no resume position. */
 export function unresumableThrough(rootStore: RocksDatabase): number {
 	if (typeof rootStore?.getUserSharedBuffer !== 'function') return 0;
 	return fromBits(Atomics.load(registryFor(rootStore).words, WORD_UNRESUMABLE));

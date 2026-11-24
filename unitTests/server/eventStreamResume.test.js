@@ -366,6 +366,24 @@ describe('Table event stream resume (harper#515)', function () {
 		assert.deepStrictEqual(resumed.values(), ['a', 'b']);
 	});
 
+	it('resumes on a route whose own parameter asks for a replay, which the id replaces', async () => {
+		const T = tableInOwnDatabase();
+		const path = `Served${++sequence}`;
+		resources.set(`${path}/:id/last/:previousCount`, T, { rest: true, sse: true });
+		const url = `/${path}/r1/last/2`;
+		const stream = await connect(request, url);
+		assert.strictEqual(stream.status, 200);
+		await T.put('r1', { value: 'a' });
+		await waitFor(() => stream.frameOf('a'));
+		const id = stream.lastEventId;
+		assert.match(id, SCALAR_ID);
+		stream.close();
+		await T.put('r1', { value: 'b' });
+		const resumed = await connect(request, url, id);
+		assert.strictEqual(resumed.status, 200);
+		await waitFor(() => resumed.frameOf('b'));
+	});
+
 	it('leaves a stream alone when the path chooses another format than the event stream', async () => {
 		const T = tableInOwnDatabase();
 		const url = served(T);
@@ -509,7 +527,7 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.ok(resumed.frameOf('late'), 'the token waited for the open transaction');
 			assert.ok(resumed.frameOf('late').data.localTime < resumed.frameOf('early').data.localTime);
 			assert.ok(
-				resumed.frames.every((frame) => frame.data === undefined || frame.id === undefined),
+				resumed.frames.every((frame) => frame.event === 'harper-checkpoint' || frame.id === undefined),
 				'a stream resumed from a token issues no scalar id'
 			);
 
@@ -714,6 +732,12 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual(resumed.status, 200);
 			await waitFor(() => resumed.frameOf('c'));
 			assert.deepStrictEqual(resumed.values(), ['b', 'c']);
+			// a prune that stops at b's own key has removed nothing from b on
+			raiseAuditFloor(T.auditStore, Number(retained));
+			const atFloor = await connect(request, url, retained);
+			assert.strictEqual(atFloor.status, 200);
+			await waitFor(() => atFloor.frameOf('c'));
+			assert.deepStrictEqual(atFloor.values(), ['b', 'c']);
 		});
 	});
 });

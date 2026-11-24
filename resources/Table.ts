@@ -2141,9 +2141,10 @@ function unreadableLogRefusal(range: any): Error | undefined {
 }
 
 function resumeRefusal(auditStore: any, generationId: string | undefined, cursor: number): Error | undefined {
-	// no generation to compare (checkRetention): every prune raises the audit floor before it removes anything
+	// no generation to compare (checkRetention): every prune raises the audit floor before it removes anything, and
+	// the cursor is exclusive, so a floor on the next key has removed nothing after it
 	if (generationId === undefined)
-		return cursor >= getAuditFloor(auditStore) ? undefined : new ResumeHistoryUnavailableError();
+		return cursor >= positionBefore(getAuditFloor(auditStore)) ? undefined : new ResumeHistoryUnavailableError();
 	if (isResumablePosition(auditStore, generationId, cursor)) return;
 	return getDatabaseGeneration(auditStore)?.id === generationId
 		? new ResumeHistoryUnavailableError()

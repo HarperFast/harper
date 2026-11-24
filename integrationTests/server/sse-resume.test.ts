@@ -184,6 +184,8 @@ suite(
 			const resumed = await connect('/ResumeFeed/', token);
 			strictEqual(resumed.status, 200);
 			await waitFor(() => frameOf(resumed, 'missed-after-token'), 'the event committed while disconnected');
+			// a server that ignored the token would answer 200 too, with a snapshot
+			ok(!resumed.values().includes('seed'), 'a resume replays the log and takes no snapshot');
 			resumed.close();
 		});
 	}

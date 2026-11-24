@@ -37,7 +37,10 @@ function prepareTableSubscription(resource: any, target: any, request: any): voi
 	target.checkpointInterval = checkpointInterval;
 	if (request.lastEventId) {
 		const id = parseEventId(request.lastEventId);
+		// the id is where the client is now, whatever replay a parameter of the route first asked for
+		target.previousCount = undefined;
 		if ('checkpoint' in id) {
+			target.startTime = target.databaseGeneration = undefined;
 			target.resume = id.checkpoint;
 			cursor.holdsToken = true;
 		} else {
