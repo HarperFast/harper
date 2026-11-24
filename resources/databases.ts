@@ -802,7 +802,7 @@ const PEER_REDEFINABLE_FIELDS = [
 // `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
 // discard warn would blame the peer for a field it did not write.
 const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !== 'indexNulls');
-// The declared fields `changed` checks beyond the structural ones. None of them reindexes.
+// Declared fields that change no index structure, so a difference rewrites the row without a rebuild.
 const DECLARED_METADATA_FIELDS = [
 	'assignCreatedTime',
 	'assignUpdatedTime',
@@ -844,6 +844,7 @@ function applyDurableDeclaration(attribute: any, descriptor: any) {
 		if (field in descriptor) attribute[field] = descriptor[field];
 		else delete attribute[field];
 	}
+	copyFields(attribute, descriptor, DECLARED_METADATA_FIELDS);
 }
 
 function persistedFullTextIndexGenerations(
@@ -2415,7 +2416,7 @@ function initStores(
 						attributesUpdated = true;
 					}
 				} else {
-					// the live primary key object stays, so its declared fields are refreshed in place
+					// the class keeps its primary key object across reloads
 					const primaryKey = existingAttributes.find(
 						(existing) => existing.isPrimaryKey && existing.name === attribute.name
 					);
@@ -5781,6 +5782,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							hasExistingData = true;
 							break;
 						}
+						// an index left unregistered while records changed still holds their old entries, and only a
+						// build clears them
+						if (!hasExistingData) for (const _entry of dbi.getRange({ limit: 1 })) hasExistingData = true;
 						if (hasExistingData) {
 							// When the index definition itself has structurally changed (different distance
 							// metric, M, quantization, etc.), any
@@ -5860,18 +5864,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						// backfill is in progress: we did NOT re-trigger indexing, so carry over the in-progress
 						// indexing state instead of persisting a descriptor that looks complete — otherwise other
 						// workers / a reload would treat the still-partial index as ready and return incomplete results.
-						attribute.indexingPID = attributeDescriptor.indexingPID;
-						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
-						if (attributeDescriptor.checkpointCertified !== undefined) {
-							attribute.checkpointCertified = attributeDescriptor.checkpointCertified;
-							attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
-						}
-						// Carry the in-progress restart generation too, so persisting this metadata-only
-						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
-						attribute.restartNumber = attributeDescriptor.restartNumber;
-						attribute.indexingIncarnation = attributeDescriptor.indexingIncarnation;
-						attribute.indexingBuildId = attributeDescriptor.indexingBuildId;
-						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
+						copyFields(attribute, attributeDescriptor, INDEX_BUILD_FIELDS);
 					}
 					// The declared attribute never carries the stamp or the null handling its build chose, so a
 					// rewrite that drops them makes a completed index look like a pre-stamp build, and reopens it
@@ -6318,14 +6311,31 @@ function generationSuperseded(Table: any): boolean {
 		Table.primaryStore.rootStore.status === 'closed'
 	);
 }
-// A declaration that started no rebuild keeps the build's id, so the build still owns the row, and writes
-// only its own fields over what that declaration persisted.
-function indexBuildRow(Table: any, attribute: any, buildId: string | undefined) {
-	const current = buildId === undefined ? undefined : Table.dbisDB.getSync(attribute.key);
-	if (current?.indexingBuildId !== buildId) return attribute;
-	const row = { ...current };
-	copyFields(row, attribute, INDEX_BUILD_FIELDS);
-	return row;
+// A build owns its row only while the row carries its id: a declaration that starts no rebuild keeps the id, and
+// one that rebuilds, de-indexes or removes the attribute does not. An owner writes only its own fields, under the
+// lock declarations take, so the declaration the row holds stays.
+function putIndexBuildRow(Table: any, attribute: any, buildId: string | undefined): boolean {
+	let written = false;
+	const writeIfOwned = () => {
+		const current = Table.dbisDB.getSync(attribute.key);
+		if (buildId === undefined || current?.indexingBuildId !== buildId) return;
+		const row = { ...current };
+		copyFields(row, attribute, INDEX_BUILD_FIELDS);
+		Table.dbisDB.putSync(attribute.key, row);
+		written = true;
+	};
+	const rootStore = Table.primaryStore.rootStore;
+	if (rootStore instanceof RocksDatabase) {
+		acquireUpdateAttributesLock(rootStore, `index build '${Table.tableName}.${attribute.name}'`);
+		try {
+			writeIfOwned();
+		} finally {
+			releaseUpdateAttributesLock(rootStore);
+		}
+	} else {
+		rootStore.transactionSync(writeIfOwned);
+	}
+	return written;
 }
 function launchIndexing(Table: any, attributes: any[], branchPath?: string) {
 	// captured before the backfill can rewrite the attributes
@@ -6554,7 +6564,7 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 	}
 }
 async function runIndexing(Table, attributes, buildIds: Map<any, string>, branchPath?: string) {
-	const buildRow = (attribute) => indexBuildRow(Table, attribute, buildIds.get(attribute));
+	const writeBuildRow = (attribute) => putIndexBuildRow(Table, attribute, buildIds.get(attribute));
 	let checkpointing;
 	let hadIndexingErrors = false;
 	const attributeErrorReported = {};
@@ -6570,7 +6580,6 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
-		let lastResolution;
 		// The checkpoint and completion barriers have to cover every mutation still in flight: any of them
 		// may reject after those barriers read hadIndexingErrors.
 		const pendingMutations = new Set();
@@ -6642,15 +6651,13 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 					const failed = await drainMutations();
 					if (failed) return;
 					await flushIndexStores(Table.primaryStore.rootStore);
-					const puts = [];
 					for (let i = 0; i < attributesLength; i++) {
 						const attribute = attributes[i];
 						attribute.lastIndexedKey = key;
 						attribute.checkpointCertified = key;
 						attribute.checkpointAlgorithm = checkpointAlgorithmOf(i);
-						puts.push(Table.dbisDB.put(attribute.key, buildRow(attribute)));
+						writeBuildRow(attribute);
 					}
-					await Promise.all(puts);
 				} catch (error) {
 					logger.warn(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
 				}
@@ -6784,32 +6791,18 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 				if (!restart && !resolverArrived()) break;
 				if (buildSuperseded(Table, attributes)) return;
 				// The checkpoint goes before the clear, so a crash in between cannot resume past cleared entries.
-				const puts = [];
 				for (let i = 0; i < attributesLength; i++) {
 					const attribute = attributes[i];
 					delete attribute.lastIndexedKey;
 					delete attribute.checkpointCertified;
 					resolvedThroughout[i] = !applicationComputed[i] || isRealResolver(Table.userResolvers?.[attribute.name]);
-					puts.push(Table.dbisDB.put(attribute.key, buildRow(attribute)));
+					writeBuildRow(attribute);
 				}
-				await Promise.all(puts);
 				if (buildSuperseded(Table, attributes)) return;
 				// every index restarts, since a custom index is not known to accept a key indexed twice
 				attributesToClear = attributes;
 				start = undefined;
 				restarted = true;
-			}
-		}
-		if (attributesLength === 0) {
-			await checkpointing;
-			await drainMutations();
-		}
-		if (attributesLength === 0 && !hadIndexingErrors) {
-			try {
-				await flushIndexStores(Table.primaryStore.rootStore);
-			} catch (error) {
-				hadIndexingErrors = true;
-				logger.error(`Could not flush the indexes of ${Table.tableName} before marking them complete`, error);
 			}
 		}
 		if (hadIndexingErrors) {
@@ -6823,14 +6816,13 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			for (const attribute of attributes) {
 				attribute.indexingFailed = true;
 				// Preserve lastIndexedKey so the retry resumes from the last checkpoint.
-				lastResolution = Table.dbisDB.put(attribute.key, buildRow(attribute));
+				if (!writeBuildRow(attribute)) continue;
 				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
 				// in Table.indices (which may differ if resetDatabases() ran during this pass).
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;
 			}
-			await lastResolution;
 			logger.warn(
 				`Indexing of ${Table.tableName} encountered errors on some records - index will remain incomplete. ` +
 					`On next restart the migration will be retried from the last checkpoint (indexingFailed=true). ` +
@@ -6850,15 +6842,14 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 				delete attribute.restartNumber;
 				delete attribute.indexingIncarnation;
 				delete attribute.indexingBuildId;
+				if (!writeBuildRow(attribute)) continue;
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration
 				// opened a new dbi and registered it there.
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = false;
-				lastResolution = Table.dbisDB.put(attribute.key, buildRow(attribute));
 			}
-			await lastResolution;
 			// now notify all the threads that we are done and the index is ready to use
 			await signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName, undefined, branchPath)
@@ -6889,15 +6880,13 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 		// but indexingFailed is never set, leaving isIndexing stuck with no recovery
 		// signal. Mirrors the hadIndexingErrors path. harper#843
 		try {
-			const puts: Promise<unknown>[] = [];
 			for (const attribute of attributes) {
 				attribute.indexingFailed = true;
-				puts.push(Table.dbisDB.put(attribute.key, buildRow(attribute)));
+				if (!writeBuildRow(attribute)) continue;
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;
 			}
-			await Promise.all(puts);
 		} catch (persistError) {
 			logger.warn('Failed to persist indexing failure state', persistError);
 		}

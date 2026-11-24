@@ -43,7 +43,6 @@ async function searchIds(Table, attribute, value) {
 	return ids.sort();
 }
 
-// another thread that only ever reads the catalog; each report() reloads it, as a schema-change signal does
 function startCatalogReader() {
 	const worker = new Worker(__dirname + '/declaredSchemaCatalog-thread.js', { workerData: { database: DATABASE } });
 	const failure = new Promise((_, reject) => worker.once('error', reject));
@@ -356,10 +355,10 @@ describe('A local schema declaration persists what it declares into the attribut
 			}`;
 			await loadGQLSchema(schema);
 			await committed('Unchanged');
+			// a restart: the catalog loads, then the schema is declared over it
 			resetDatabases();
-			await loadGQLSchema(schema);
-			await committed('Unchanged');
 			const schemaVersion = databases[DATABASE].Unchanged.schemaVersion;
+			await loadGQLSchema(schema);
 			await loadGQLSchema(schema);
 			assert.strictEqual(databases[DATABASE].Unchanged.schemaVersion, schemaVersion);
 		});
@@ -447,6 +446,59 @@ describe('A local schema declaration persists what it declares into the attribut
 			assert.deepStrictEqual(await searchIds(databases[DATABASE].Building, 'tag', 't3'), tagged);
 		});
 
+		it('keeps an index dropped from the declaration while it builds dropped', async function () {
+			const declare = (fields) =>
+				table({
+					table: 'DroppedWhileBuilding',
+					database: DATABASE,
+					schemaDefined: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'tag', type: 'String', ...fields },
+					],
+				});
+			declare({});
+			const { DroppedWhileBuilding } = databases[DATABASE];
+			for (let i = 0; i < 200; i++) await DroppedWhileBuilding.put(`b${i}`, { id: `b${i}`, tag: `t${i % 7}` });
+			await committed('DroppedWhileBuilding');
+			declare({ indexed: true });
+			const build = DroppedWhileBuilding.indexingOperation;
+			assert.ok(catalogRow('DroppedWhileBuilding', 'tag').indexingBuildId, 'a build is running');
+			declare({});
+			await build;
+			await committed('DroppedWhileBuilding');
+			assert.strictEqual(catalogRow('DroppedWhileBuilding', 'tag').indexed, undefined);
+			assert.strictEqual(catalogRow('DroppedWhileBuilding', 'tag').indexingBuildId, undefined);
+			resetDatabases();
+			assert.strictEqual(databases[DATABASE].DroppedWhileBuilding.indices.tag, undefined);
+		});
+
+		it('keeps declared fields when a peer definition recovers an abandoned build', async function () {
+			const attributes = [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'tag', type: 'String', indexed: true, description: 'the tag', assignUpdatedTime: true },
+			];
+			table({ table: 'Recovered', database: DATABASE, schemaDefined: true, attributes });
+			const { Recovered } = databases[DATABASE];
+			await Recovered.put('r1', { id: 'r1', tag: 'x' });
+			await committed('Recovered');
+			Recovered.dbisDB.putSync('Recovered/tag', { ...catalogRow('Recovered', 'tag'), indexingFailed: true });
+			// a thread whose live table predates the attribute, so the peer's object is the one persisted
+			Recovered.attributes.splice(
+				Recovered.attributes.findIndex((attribute) => attribute.name === 'tag'),
+				1
+			);
+			createFromPeer('Recovered', [
+				['id', 'ID', true],
+				['tag', 'String'],
+			]);
+			await committed('Recovered');
+			const row = catalogRow('Recovered', 'tag');
+			assert.strictEqual(row.indexingFailed, undefined, 'the recovered build completed');
+			assert.strictEqual(row.description, 'the tag');
+			assert.strictEqual(row.assignUpdatedTime, true);
+		});
+
 		it('stops maintaining an index the declaration no longer has', async function () {
 			const declare = (directive) =>
 				loadGQLSchema(`
@@ -463,6 +515,30 @@ describe('A local schema declaration persists what it declares into the attribut
 			assert.strictEqual(databases[DATABASE].Deindexed.indices.tag, undefined);
 			await databases[DATABASE].Deindexed.put('d2', { id: 'd2', tag: 'x' });
 			assert.deepStrictEqual(await searchIds(databases[DATABASE].Deindexed, 'tag', 'x'), ['d1', 'd2']);
+		});
+
+		it('rebuilds an index added back after its records changed unindexed', async function () {
+			const declare = (directive) =>
+				loadGQLSchema(`
+				type Readded @table(database: "${DATABASE}") {
+					id: ID @primaryKey
+					tag: String ${directive}
+				}`);
+			await declare('@indexed');
+			await databases[DATABASE].Readded.put('a1', { id: 'a1', tag: 'x' });
+			await committed('Readded');
+			await declare('');
+			await databases[DATABASE].Readded.delete('a1');
+			// as the cleanup scan purges a tombstone once audit retention passes, leaving the table empty
+			await databases[DATABASE].Readded.primaryStore.remove('a1');
+			await committed('Readded');
+			await declare('@indexed');
+			await committed('Readded');
+			const { Readded } = databases[DATABASE];
+			let entries = 0;
+			for (const _entry of Readded.indices.tag.getRange({})) entries++;
+			assert.strictEqual(entries, 0, 'the deleted record left no entry behind');
+			assert.deepStrictEqual(await searchIds(Readded, 'tag', 'x'), []);
 		});
 	});
 });
