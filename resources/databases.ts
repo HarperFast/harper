@@ -6662,7 +6662,6 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			// still complete, since the settle handler marks one left unfinished as failed.
 			const lostRows = new Set();
 			const ownsNoRow = () =>
-				generationSuperseded(Table) ||
 				attributes.every(
 					(attribute) => Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildIds.get(attribute)
 				);
