@@ -493,17 +493,18 @@ function releaseParser(reading) {
 
 let addingMetrics,
 	numberOfConnections = 0;
+function reportConnections(metrics) {
+	if (numberOfConnections > 0)
+		metrics.push({
+			metric: 'mqtt-connections',
+			connections: numberOfConnections,
+			byThread: true,
+		});
+}
 function onSocket(socket, send, request, user, mqttSettings, userProvenance?: UserProvenance) {
 	if (!addingMetrics) {
 		addingMetrics = true;
-		addAnalyticsListener((metrics) => {
-			if (numberOfConnections > 0)
-				metrics.push({
-					metric: 'mqtt-connections',
-					connections: numberOfConnections,
-					byThread: true,
-				});
-		});
+		addAnalyticsListener(reportConnections);
 	}
 	// What a connection keeps lives in this scope for as long as it is open, so helpers that need nothing of it are
 	// module functions, and what only some connections need (a stall timer's callback) is built when they do.
@@ -582,7 +583,8 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		// The parser consumes a packet's fixed header before its body arrives, so holding no bytes does not
 		// mean it is between packets; its state counter returns to 0 only once a packet is complete.
 		midPacket = !(remaining === 0 && reading._stateCounter === 0 && !reading.error);
-		if (midPacket || lastReadStraddled) parser = reading;
+		// uWS runs the close handler inside parse() when a DISCONNECT closes the socket
+		if (midPacket || lastReadStraddled) parser = disconnected ? undefined : reading;
 		else {
 			releaseParser(reading);
 			parser = undefined;
@@ -590,6 +592,8 @@ function onSocket(socket, send, request, user, mqttSettings, userProvenance?: Us
 		lastReadStraddled = midPacket;
 	}
 	function onClose() {
+		// not pooled: one held mid-packet has that packet's bytes, which a socket outliving its close would also keep
+		parser = undefined;
 		numberOfConnections--;
 		liveConnections.delete(connection);
 		if (!disconnected) {

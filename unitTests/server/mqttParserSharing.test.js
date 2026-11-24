@@ -73,6 +73,9 @@ describe('MQTT packet parsing across connections', function () {
 		listener = mqttWebSocketListener();
 	});
 
+	// polled: a WeakRef keeps its target to the end of the turn it was made or read in
+	const collected = (ref, message) => waitFor(() => (global.gc(), ref.deref() === undefined), { message });
+
 	it('parses a packet split across reads as its own, while other connections parse theirs in between', async () => {
 		const v4 = client(listener, 4);
 		const v5 = client(listener, 5);
@@ -162,25 +165,28 @@ describe('MQTT packet parsing across connections', function () {
 	});
 
 	/** Counts the parsers mqtt-packet makes while `run` runs, and records each one parsing. */
-	async function watchParsers(run) {
+	function watchParsers(run) {
 		const makeParser = Parser.parser;
 		const parse = Parser.prototype.parse;
-		const watched = { made: 0, parsing: [] };
+		const result = { made: 0, parsing: [] };
+		let watched = result;
 		Parser.parser = function (options) {
-			if (this instanceof Parser) watched.made++;
+			if (this instanceof Parser && watched) watched.made++;
 			return makeParser.call(this, options);
 		};
 		Parser.prototype.parse = function (data) {
-			watched.parsing.push(this);
+			watched?.parsing.push(this);
 			return parse.call(this, data);
 		};
 		try {
-			await run(watched);
+			run(result);
 		} finally {
 			Parser.parser = makeParser;
 			Parser.prototype.parse = parse;
+			// a parser made while watching keeps the patched factory as its own, which must not keep what was seen
+			watched = null;
 		}
-		return watched;
+		return result;
 	}
 
 	// More connections than the idle parsers kept, so a parser given back at each packet's end would be remade.
@@ -207,7 +213,7 @@ describe('MQTT packet parsing across connections', function () {
 			for (const connection of connections) connection.read(ping.subarray(1));
 		};
 		round();
-		const { made } = await watchParsers(() => {
+		const { made } = watchParsers(() => {
 			for (let i = 0; i < 5; i++) round();
 		});
 		assert.strictEqual(made, 0, `${made} parsers made for streams already under way`);
@@ -232,7 +238,7 @@ describe('MQTT packet parsing across connections', function () {
 		}
 		await waitFor(() => connections.every((connection) => connection.received('connack').length === 1));
 		const ping = connections[0].encode({ cmd: 'pingreq' });
-		const { made } = await watchParsers(() => {
+		const { made } = watchParsers(() => {
 			for (let i = 0; i < 5; i++) for (const connection of connections) connection.read(ping);
 		});
 		assert.strictEqual(made, 0, `${made} parsers made for reads of whole packets`);
@@ -253,7 +259,7 @@ describe('MQTT packet parsing across connections', function () {
 		}
 		await waitFor(() => streaming.received('connack').length === 1 && other.received('connack').length === 1);
 		const ping = streaming.encode({ cmd: 'pingreq' });
-		const { parsing } = await watchParsers(() => {
+		const { parsing } = watchParsers(() => {
 			// it ends a read mid-packet, then completes the packet: it keeps the parser for its stream
 			streaming.read(ping.subarray(0, 1));
 			streaming.read(ping.subarray(1));
@@ -279,7 +285,7 @@ describe('MQTT packet parsing across connections', function () {
 			password: Buffer.from('a secret'),
 		});
 		const ping = connection.encode({ cmd: 'pingreq' });
-		const { parsing } = await watchParsers(() => connection.read(Buffer.concat([connect, ping.subarray(0, 1)])));
+		const { parsing } = watchParsers(() => connection.read(Buffer.concat([connect, ping.subarray(0, 1)])));
 		const held = parsing.at(-1);
 		assert.strictEqual(held.settings.password, undefined);
 		assert.strictEqual(held.settings.protocolVersion, 4);
@@ -292,11 +298,10 @@ describe('MQTT packet parsing across connections', function () {
 			global.gc?.();
 			return v8.queryObjects(Parser, { format: 'count' });
 		};
-		const clients = [];
-		for (let i = 0; i < 20; i++) {
-			const connection = client(listener, 4);
-			connection.read(
-				connection.encode({
+		const clients = Array.from({ length: 20 }, () => client(listener, 4));
+		const connect = (i) =>
+			clients[i].read(
+				clients[i].encode({
 					cmd: 'connect',
 					protocolId: 'MQTT',
 					protocolVersion: 4,
@@ -304,18 +309,70 @@ describe('MQTT packet parsing across connections', function () {
 					clean: true,
 				})
 			);
-			clients.push(connection);
-		}
+		// The counts are the thread's, which holds parsers other suites left alive, so each assertion counts across
+		// synchronous reads only, where nothing else runs. The first read leaves the thread an idle parser.
+		connect(0);
+		const before = parsers();
+		let idle;
+		const { made, parsing } = watchParsers(() => {
+			for (let i = 1; i < clients.length; i++) connect(i);
+			idle = parsers();
+		});
+		assert.strictEqual(idle - before, 0, `${idle - before} parsers for 19 connections between packets`);
+		// the count alone would miss each connection taking one of the idle parsers other suites left
+		assert.strictEqual(made, 0);
+		assert.strictEqual(new Set(parsing).size, 1, 'the connections between packets parse with one parser');
 		await waitFor(() => clients.every((connection) => connection.received('connack').length === 1));
-		const idle = parsers();
-		assert.ok(idle <= 2, `${idle} parsers for 20 connections between packets`);
 		// one with a packet half read keeps a parser until it has the rest
 		const ping = clients[0].encode({ cmd: 'pingreq' });
+		const beforeHalfRead = parsers();
 		clients[0].read(ping.subarray(0, 1));
 		clients[1].read(ping);
-		assert.ok(parsers() <= idle + 1);
+		assert.ok(parsers() <= beforeHalfRead + 1);
 		clients[0].read(ping.subarray(1));
 		await waitFor(() => clients[0].received('pingresp').length === 1 && clients[1].received('pingresp').length === 1);
 		for (const connection of clients) connection.socket.handlers.close();
+	});
+
+	async function connected(clientId) {
+		const connection = client(listener, 4);
+		connection.read(
+			connection.encode({ cmd: 'connect', protocolId: 'MQTT', protocolVersion: 4, clientId, clean: true })
+		);
+		await waitFor(() => connection.received('connack').length === 1);
+		return connection;
+	}
+	function heldParser(read) {
+		return new WeakRef(watchParsers(read).parsing.at(-1));
+	}
+
+	// each holds its socket to the end, as whatever outlives a close would
+	it('gives up the parser of a connection closed mid-packet', async function () {
+		if (typeof global.gc !== 'function') this.skip();
+		const connection = await connected('closed-mid-packet');
+		const ping = connection.encode({ cmd: 'pingreq' });
+		const parser = heldParser(() => connection.read(ping.subarray(0, 1)));
+		connection.socket.handlers.close();
+		await collected(parser, 'a connection closed mid-packet still holds its parser');
+		assert.strictEqual(typeof connection.socket.handlers.message, 'function');
+	});
+
+	// uWS runs the close handler inside close(). Collected because a closed connection's parser is dropped, not
+	// pooled; pooling a clean one (harper#4543) would make this check the pool instead.
+	it('gives up the parser of a connection that closes while its read parses', async function () {
+		if (typeof global.gc !== 'function') this.skip();
+		const connection = await connected('closed-while-parsing');
+		let closed = false;
+		connection.socket.close = () => {
+			closed = true;
+			connection.socket.handlers.close();
+		};
+		// split, so the parser is held for a stream when the read completing it closes the connection
+		const disconnect = connection.encode({ cmd: 'disconnect' });
+		const parser = heldParser(() => connection.read(disconnect.subarray(0, 1)));
+		connection.read(disconnect.subarray(1));
+		assert.ok(closed, 'the DISCONNECT closed the connection while it parsed');
+		await collected(parser, 'a connection that closed while its read parsed still holds its parser');
+		assert.strictEqual(typeof connection.socket.handlers.message, 'function');
 	});
 });
