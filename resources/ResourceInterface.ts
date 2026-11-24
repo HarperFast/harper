@@ -305,10 +305,12 @@ export interface SubscriptionRequest extends RequestTarget {
 	 */
 	databaseGeneration?: string;
 	/**
-	 * Resume from `startTime` and refuse with a 410 when the history after that position is no longer retained,
-	 * at admission and while the replay runs; exposes `resumeVerified`. The retention half of
-	 * `databaseGeneration`, for LMDB, which has no generation: a restored or replaced database is not detected.
-	 * Requires a finite `startTime` and no `previousCount`; refused with a 400 on RocksDB without `databaseGeneration`.
+	 * Resume from `startTime` and refuse with a 410 when the history after that position is no longer retained:
+	 * a collection once the audit floor has passed the position, at admission and while the replay runs; a single
+	 * record only when its history walk finds one of its versions missing. Exposes `resumeVerified`. The retention
+	 * half of `databaseGeneration`, for LMDB, which has no generation: a restored or replaced database is not
+	 * detected. Requires a finite `startTime` and no `previousCount`; refused with a 400 on RocksDB without
+	 * `databaseGeneration`.
 	 */
 	checkRetention?: boolean;
 	/**

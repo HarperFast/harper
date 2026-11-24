@@ -43,8 +43,8 @@ Last-Event-ID: eyJ2IjoxLCJzY29wZSI6...
 
 Treat the id as opaque: store it and send it back unchanged. There are two kinds.
 
-- **A checkpoint token** arrives as the `id` of an event named `harper-checkpoint`, whose `data` is an empty object. An `EventSource` records the id; the event fires no `message` event and needs no listener. A client that parses the stream itself must skip this event, since its `data` is not a change. The token marks a position in each node's transaction log, so another node of the cluster can resume it too, as long as that node retains the history of every node the token names, and it accounts for transactions that were still open when it was issued. Tokens are issued on RocksDB, by a database whose log positions are certified; the first usually arrives within ten seconds of connecting, and later ones as those positions advance. A stream that resumed from an id sends none until it has replayed what the client missed.
-- **A log position** arrives on each change event until the stream has issued a token (the current records a collection's stream sends first carry none), and for the whole stream when it cannot issue one: on LMDB, and while a cluster node's history is not certified. It names a position in this node's log only. A transaction that commits after the event the id came from, but took its place in the log before it, is not delivered on resume. On RocksDB the id also names the database and the table, so another node, a restored database or a table that was dropped and created again refuses it. LMDB checks only that the history after the position is still retained, so it does not notice a restored database. A single record's stream that resumes from a log position does not notice another node's data having been copied into the database while it was away, which a collection's stream refuses with `410`.
+- **A checkpoint token** arrives as the `id` of an event named `harper-checkpoint`, whose `data` is an empty object. An `EventSource` records the id; the event fires no `message` event and needs no listener. A client that parses the stream itself must skip this event, since its `data` is not a change. The token marks a position in each node's transaction log, so another node of the cluster can resume it too when that node can certify and serve the history of every node the token names (it refuses the token with `409` or `410` otherwise), and it accounts for transactions that were still open when it was issued. Tokens are issued on RocksDB, by a database whose log positions are certified; the first usually arrives within ten seconds of connecting, and later ones as those positions advance. A stream that resumed from an id sends none until it has replayed what the client missed.
+- **A log position** arrives on each change event until the stream has issued a token (the current records a collection's stream sends first carry none), and for the whole stream when it cannot issue one: on LMDB, and while a cluster node's history is not certified. It names a position in this node's log only. A transaction that commits after the event the id came from, but took its place in the log before it, is not delivered on resume. On RocksDB the id also names the database and the table, so another node, a restored database or a table that was dropped and created again refuses it. LMDB checks only that the history after the position is still retained, so it does not notice a restored database. On both engines that check depends on the stream: a collection's stream is refused with `410` once the database has pruned history after the position, while a single record's stream is refused only when one of that record's own versions after the position is missing. A single record's stream that resumes from a log position does not notice another node's data having been copied into the database while it was away, which a collection's stream refuses with `410`.
 
 Once a stream has issued a token, its events carry no id of their own, so the client keeps the token.
 
@@ -62,8 +62,10 @@ Harper never answers a reconnect it cannot resume by silently starting from now.
 In both cases the events in between are lost to this client, so it must load the current state again rather than keep what it has: a new subscription to a collection sends each current record, but not the records deleted in the meantime.
 
 ```javascript
+let failures = 0;
 function subscribe() {
 	const eventSource = new EventSource('https://server/my-resource/');
+	eventSource.onopen = () => (failures = 0);
 	// apply() ignores an event whose version is older than the record it holds
 	eventSource.onmessage = (event) => apply(JSON.parse(event.data));
 	// an empty id means the position is gone and the stream restarts from the current state
@@ -73,15 +75,15 @@ function subscribe() {
 	eventSource.onerror = () => {
 		if (eventSource.readyState !== EventSource.CLOSED) return; // reconnecting by itself
 		clearLocalState();
-		// a refusal that repeats, such as 403 or 404, would otherwise reconnect in a tight loop
-		setTimeout(subscribe, 5000);
+		// a refusal that repeats, such as 403 or 404, must not reconnect forever
+		if (++failures <= 5) setTimeout(subscribe, 5000);
 	};
 }
 ```
 
 On RocksDB a stream also ends with `harper-error` and an empty `id` when another node's data is copied into the database underneath it, since the copied records have no events to resume from.
 
-On LMDB retention is recorded for the whole database, so pruning another table's history can also refuse a position with `410`.
+On LMDB retention is recorded for the whole database, so pruning another table's history can also refuse a collection stream's position with `410`.
 
 ### In a Custom Resource
 
