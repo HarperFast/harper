@@ -8,6 +8,8 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { setSourceFillLockTimeoutForTesting } = require('#src/resources/Table');
+const { setTimeout: delay } = require('node:timers/promises');
 
 describe('Write after ensureLoaded() on a caching table', function () {
 	let Target, sourceGets, reportLastModified, sourceGate, sourceStarted, sourceValue;
@@ -27,11 +29,12 @@ describe('Write after ensureLoaded() on a caching table', function () {
 				async get() {
 					sourceGets++;
 					if (reportLastModified) this.getContext().lastModified = Date.now() + 5;
+					const value = sourceValue;
 					if (sourceGate) {
 						sourceStarted();
 						await sourceGate;
 					}
-					return { id: this.getId(), value: sourceValue };
+					return { id: this.getId(), value };
 				}
 				put() {}
 			}
@@ -172,6 +175,35 @@ describe('Write after ensureLoaded() on a caching table', function () {
 			await Target.put('successive-refresh', { value: 8 }, context);
 		});
 		assert.equal(await settledValue('successive-refresh'), 8);
+	});
+
+	it('keeps the newer of two overlapping fills when the newer one has the older clock', async function () {
+		setSourceFillLockTimeoutForTesting(50);
+		try {
+			await Target.get('warm');
+			await settledValue('warm');
+			let releaseSource, olderFetch;
+			sourceGate = new Promise((resolve) => (releaseSource = resolve));
+			const fetching = new Promise((resolve) => (sourceStarted = resolve));
+			sourceValue = 1;
+			const context = {};
+			await transaction(context, async () => {
+				await Target.getResource('warm', context); // fixes this transaction's clock before the other fetch
+				const other = {};
+				olderFetch = transaction(other, () => Target.get('overlapped', other));
+				await fetching;
+				sourceGate = undefined;
+				sourceValue = 2;
+				await delay(120); // past the fill lock tenure, so this transaction fetches too
+				assert.equal((await Target.get('overlapped', context)).value, 2);
+			});
+			releaseSource();
+			await olderFetch;
+			await delay(50); // the older fill's background commit
+			assert.equal(await settledValue('overlapped'), 2);
+		} finally {
+			setSourceFillLockTimeoutForTesting(undefined);
+		}
 	});
 
 	it('still caches a fill made by a plain read', async function () {

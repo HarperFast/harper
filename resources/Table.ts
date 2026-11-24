@@ -14623,9 +14623,10 @@ export function makeTable(options): TableResourceClass {
 		}
 	}
 
-	function heldTransactionClock(context: Context): number | undefined {
+	// the clock a write (or a caller's timestamp) has already fixed; an unfixed clock can still move
+	function fixedTransactionClock(context: Context): number | undefined {
 		const link = heldLink(context);
-		return link && (link.timestamp || link.transaction?.getTimestamp());
+		return link && (link.timestamp || reservedLocalKey(link.transaction));
 	}
 
 	function unreservedClockHandle(context: Context): any {
@@ -14633,16 +14634,6 @@ export function makeTable(options): TableResourceClass {
 		const link = heldLink(context);
 		const handle = link?.transaction;
 		if (handle && !link.timestamp && reservedLocalKey(handle) === undefined) return handle;
-	}
-
-	// The requester's snapshot can predate a fill committed since, which a first fill capped below it would lose to.
-	function committedVersionReaches(id: Id, version: number): boolean {
-		try {
-			return primaryStore.getEntry(id)?.version >= version;
-		} catch {
-			// a store closing under the source call keeps the cap, which still serves the source's answer
-			return false;
-		}
 	}
 
 	// A fill handed to a transaction from outside its snapshot can be versioned above its clock; a clock no write has
@@ -15245,10 +15236,11 @@ export function makeTable(options): TableResourceClass {
 			fillKey = writeKeyId(id);
 			sourceTimestamp = inheritedTimestamp;
 			if (!context?.timestamp && isRocksDB) {
-				// The requesting transaction read this fill, so the fill orders before that transaction's clock,
-				// which RocksDB fixed when it opened: a write the transaction then makes must supersede it.
+				// A write the requesting transaction makes after reading this fill must supersede it. Once a write has
+				// fixed that transaction's clock, the fill orders below the clock; otherwise it keeps its fetch-time
+				// version, so successive fills stay in fetch order, and the clock moves past it (advanceClockPast).
 				// A refresh still advances past the version it replaces.
-				const requesterClock = heldTransactionClock(context);
+				const requesterClock = fixedTransactionClock(context);
 				const cap = requesterClock > 0 ? timestampBelow(requesterClock) : undefined;
 				if (!(existingVersion >= cap)) versionCap = cap;
 			}
@@ -15496,14 +15488,6 @@ export function makeTable(options): TableResourceClass {
 					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
-					if (
-						sourceVersion > versionCap &&
-						updatedRecord &&
-						existingVersion == null &&
-						unreservedClockHandle(context) &&
-						committedVersionReaches(id, versionCap)
-					)
-						versionCap = undefined;
 					if (sourceVersion > versionCap) sourceVersion = versionCap;
 					resolved = true;
 					const resolvedVersion =
