@@ -9,6 +9,7 @@ const COMPACT_INTERVAL = 3600000;
 interface CleanupState {
 	from: unknown;
 	completedEnd: number;
+	deletedBelow: number;
 	canCompact: boolean;
 	compactAttemptedAt: number;
 	needsCompaction: boolean;
@@ -35,6 +36,7 @@ export async function cleanupExpiredAnalytics(
 		state = {
 			from: false,
 			completedEnd: -Infinity,
+			deletedBelow: -Infinity,
 			canCompact,
 			compactAttemptedAt: 0,
 			needsCompaction: canCompact,
@@ -50,8 +52,8 @@ export async function cleanupExpiredAnalytics(
 			if (state.needsCompaction && state.compactAttemptedAt === 0) await compactExpired(store, end, now, state);
 			await removeExpired(store, end, state);
 		}
-		if (state.needsCompaction && state.completedEnd > -Infinity && now - state.compactAttemptedAt >= COMPACT_INTERVAL) {
-			await compactExpired(store, state.completedEnd, now, state);
+		if (state.needsCompaction && now - state.compactAttemptedAt >= COMPACT_INTERVAL) {
+			await compactExpired(store, Math.max(end, state.deletedBelow), now, state);
 		}
 	} finally {
 		state.running = false;
@@ -67,19 +69,25 @@ async function removeExpired(store: any, end: number, state: CleanupState): Prom
 		const pending: Promise<unknown>[] = [];
 		let count = 0;
 		let last: unknown;
-		for (const key of store.getKeys({ start: state.from, end, limit: BATCH_SIZE })) {
-			count++;
-			last = key;
-			try {
-				const result = store.remove(key);
-				if (typeof result?.then === 'function') pending.push(result.then(undefined, onFailure));
-			} catch (error) {
-				onFailure(error);
-				break;
+		try {
+			for (const key of store.getKeys({ start: state.from, end, limit: BATCH_SIZE })) {
+				count++;
+				last = key;
+				try {
+					const result = store.remove(key);
+					if (typeof result?.then === 'function') pending.push(result.then(undefined, onFailure));
+				} catch (error) {
+					onFailure(error);
+					break;
+				}
+			}
+		} finally {
+			await Promise.all(pending);
+			if (count > 0) {
+				state.needsCompaction = state.canCompact;
+				state.deletedBelow = Math.max(state.deletedBelow, end);
 			}
 		}
-		await Promise.all(pending);
-		if (count > 0) state.needsCompaction = state.canCompact;
 		if (failure) {
 			log.warn?.('Removing expired analytics failed', failure);
 			return;

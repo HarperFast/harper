@@ -189,6 +189,23 @@ describe('analytics retention cleanup', () => {
 			]);
 		});
 
+		it('still compacts hourly while a removal keeps failing', async function () {
+			const start = 10 * HOUR;
+			await seed([start - 3 * RETENTION, start - 2 * RETENTION]);
+			const remove = store.remove;
+			store.remove = function (key) {
+				if (key[0] === start - 2 * RETENTION) return Promise.reject(new Error('disk full'));
+				return remove.call(this, key);
+			};
+			const compactions = [];
+			record(compactions, 'compact', (options) => options.end);
+
+			await cleanupExpiredAnalytics(Analytics, RETENTION, start);
+			await cleanupExpiredAnalytics(Analytics, RETENTION, start + HOUR);
+
+			assert.deepStrictEqual(compactions, [start - RETENTION, start + HOUR - RETENTION]);
+		});
+
 		it('retries a failed compaction an hour later even when nothing more was deleted', async function () {
 			const start = 10 * HOUR;
 			const compact = store.compact;
