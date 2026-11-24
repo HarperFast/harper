@@ -14222,7 +14222,7 @@ export function makeTable(options): TableResourceClass {
 		// an open table can store attributes it does not declare, and they order its records
 		if (!sealed) return;
 		const root = String(Array.isArray(name) ? name[0] : name);
-		if (!propertyResolvers?.[root] && !findAttribute(attributes, root))
+		if (!propertyResolvers?.[root] && !declaredAttributeNames.has(root))
 			throw new ClientError(`${Array.isArray(name) ? name.join('.') : name} is not a defined attribute`, 404);
 	}
 	function assertRecordField(name: unknown): void {
