@@ -34,7 +34,7 @@ async function buildPayload(version: number, changedValue: string, includeNewKey
 	try {
 		await writeFile(
 			join(dir, 'config.yaml'),
-			"rest: true\nloadEnv:\n  files: '.env'\njsResource:\n  files: 'resources.js'\nfastifyRoutes:\n  files: 'routes/*.js'\n"
+			"rest:\n  webSocket: false\nloadEnv:\n  files: '.env'\njsResource:\n  files: 'resources.js'\nfastifyRoutes:\n  files: 'routes/*.js'\n"
 		);
 		await writeFile(
 			join(dir, '.env'),
@@ -64,7 +64,10 @@ suite(
 		let client: ReturnType<typeof createApiClient>;
 
 		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: {}, env: {} });
+			// With the fixture's `rest.webSocket: false`, nothing registers a WebSocket listener on the
+			// application port. One would put Bun's port on node:http, where the legacy fastifyRoutes
+			// fallback is unreachable (#2355); without it Bun serves the port through Bun.serve.
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: { mqtt: { webSocket: false } }, env: {} });
 			client = createApiClient(ctx.harper);
 
 			const deadline = Date.now() + 120_000;
