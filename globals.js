@@ -11,13 +11,11 @@ global.server = exports.server = {};
 global.tables = exports.tables = {};
 global.threads = exports.threads = [];
 global.transaction = exports.transaction = undefined;
-// The package entry (index.ts) copies these exports when it loads. Linking it keeps a later assignment, such as an
-// isolated application's worker taking its branch view of `databases` and `tables`, visible to code that imported it.
+// The package entry (index.ts) copies these exports when it loads, so it links its copy to follow later assignments.
 const packageEntries = new Set();
 exports._assignPackageExport = (name, value) => {
 	global[name] = exports[name] = value;
 	for (const entry of packageEntries) entry[name] = value;
 };
-exports._linkPackageEntry = (entry) => {
-	packageEntries.add(entry);
-};
+// Not enumerable, so the entry's copy of these exports leaves it out of the public package.
+Object.defineProperty(exports, '_linkPackageEntry', { value: (entry) => packageEntries.add(entry) });

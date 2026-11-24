@@ -81,8 +81,9 @@ describe('componentLoader branch scope ownership', () => {
 	});
 
 	describe('the bare databases and tables globals (harper#3053)', () => {
-		// What `require('harper')` hands code Harper does not load itself, such as a Next.js or Vite server bundle.
 		const packageExports = require('#src/globals');
+		// The published entry is compiled CommonJS; under type stripping this resolves to index.ts, whose exports are constant.
+		const compiledEntry = !require.resolve('#src/index').endsWith('.ts');
 		let savedGlobals;
 		let savedPackageExports;
 		beforeEach(() => {
@@ -91,7 +92,6 @@ describe('componentLoader branch scope ownership', () => {
 		});
 		afterEach(() => {
 			if (savedGlobals) Object.assign(globalThis, savedGlobals);
-			// Through the setter, so a package entry linked to these exports is restored too.
 			if (savedPackageExports) {
 				for (const [name, value] of Object.entries(savedPackageExports))
 					packageExports._assignPackageExport(name, value);
@@ -125,19 +125,17 @@ describe('componentLoader branch scope ownership', () => {
 		(isLMDB ? it.skip : it)(
 			"reach the branch through the harper package's exports in the application's own dedicated worker",
 			async () => {
+				// What a native `require('harper')` from a server bundle gets, loaded before the binding.
+				const entry = compiledEntry ? require('#src/index') : undefined;
 				const { applicationScope, Records } = await loadBranched('isolated-package');
-				// A bundle's `import { tables } from 'harper'` resolves natively, through node_modules/harper, to the
-				// package entry, which copies these exports when it loads. Stand in for one loaded before the binding.
-				const loadedEarlier = { ...packageExports };
-				packageExports._linkPackageEntry?.(loadedEarlier);
 
 				assert.strictEqual(bindIsolatedApplicationGlobals(applicationScope, 'isolated-package'), true);
 				// assert.ok on identity: a failing strictEqual would print a table class, which this harness cannot survive.
-				const views = { 'the package exports': packageExports, 'an entry loaded earlier': loadedEarlier };
-				views['an entry loaded afterwards'] = { ...packageExports };
+				const views = { 'the globals module': packageExports, 'a copy taken after the binding': { ...packageExports } };
+				if (entry) views['the package entry'] = entry;
 				for (const [name, exports] of Object.entries(views)) {
 					assert.ok(exports.databases[BASE].Records === Records, `${name} must reach the branch`);
-					assert.ok(exports.databases.system === databases.system, `${name} keep the base for an unbranched name`);
+					assert.ok(exports.databases.system === databases.system, `${name} must keep the base for an unbranched name`);
 					assert.ok(exports.databases === globalThis.databases, `${name} must match the databases global`);
 					assert.ok(exports.tables === globalThis.tables, `${name} must match the tables global`);
 				}

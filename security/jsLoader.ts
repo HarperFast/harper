@@ -1060,12 +1060,11 @@ function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 /**
  * An isolated application's own worker loads nothing else, so its global object belongs to that application, and the
  * bare `databases` and `tables` globals can take its branch view — the only way to reach them under
- * `vm-current-context`, whose modules share the thread's global. So do the `harper` package's exports: code Harper
- * does not load, such as a Next.js or Vite server bundle, imports `harper` natively through the application's
- * `node_modules/harper` link, and without this would read and write the base. Harper's own modules import `databases`
- * rather than read the global or the package, and a name the application did not branch, `system` included, still
- * resolves to the base. Replication places nothing on a dedicated worker (harper-pro#974), so no peer's writes land
- * in the branch. Returns whether it bound them.
+ * `vm-current-context`, whose modules share the thread's global. So do the `harper` package's exports, which code
+ * outside Harper's component loader, such as a Next.js server bundle, imports natively through `node_modules/harper`.
+ * Harper's own modules import `databases` rather than read the global or the package, and a name the application did
+ * not branch, `system` included, still resolves to the base. Replication places nothing on a dedicated worker
+ * (harper-pro#974), so no peer's writes land in the branch. Returns whether it bound them.
  */
 export function bindIsolatedApplicationGlobals(
 	scope: ApplicationScope,
