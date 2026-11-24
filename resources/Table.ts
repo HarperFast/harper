@@ -961,14 +961,22 @@ const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
-/** A failed joint opening releases both searches, since nothing will iterate the concatenation. */
-function bothOpen(opening: Promise<unknown>, other: Promise<unknown>, receiver: any, operand: any) {
-	const both = Promise.all([opening, other]);
-	both.catch(() => {
-		receiver?.onDone?.();
-		operand?.onDone?.();
-	});
+function bothOpen(opening: any, other: any) {
+	const both: any = Promise.all([opening, other]);
+	both.catch(() => {});
+	both.release = () => {
+		try {
+			opening.release?.();
+		} finally {
+			other.release?.();
+		}
+	};
 	return both;
+}
+/** Closes a search result nothing has read; a transform of one has no `onDone`, but its iterator's return reaches the search's. */
+function closeUnread(results: any) {
+	if (results?.onDone !== undefined) results.onDone?.();
+	else results?.[Symbol.asyncIterator]?.().return?.();
 }
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>) {
@@ -981,7 +989,7 @@ function carryThroughTransforms(
 	value: any,
 	wrapped: symbol,
 	inheritSelect: boolean,
-	combine?: (value: any, other: any, receiver: any, operand: any) => any
+	combine?: (value: any, other: any) => any
 ) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
 	iterable[key] = value;
@@ -999,7 +1007,7 @@ function carryThroughTransforms(
 					if (this.getColumns && !derived.getColumns) derived.getColumns = this.getColumns;
 				}
 				const other = combine && methodName === 'concat' ? args[0]?.[key] : undefined;
-				const carried = other && other !== value ? combine(value, other, this, args[0]) : value;
+				const carried = other && other !== value ? combine(value, other) : value;
 				return carryThroughTransforms(derived, key, carried, wrapped, inheritSelect, combine);
 			},
 		});
@@ -1074,7 +1082,6 @@ function deferredIterator(
 			const inner = opened;
 			if (inner) return Promise.resolve().then(() => inner.return?.(value) ?? { value, done: true });
 			// onFinish releases the search; a model can ignore the abort, so this never waits for the opening
-			iteratorPromise?.then((iterator) => iterator?.return?.(value)).catch(() => {});
 			return Promise.resolve({ value, done: true });
 		},
 		throw(error: any) {
@@ -1086,7 +1093,6 @@ function deferredIterator(
 					if (inner.throw) return inner.throw(error);
 					throw error;
 				});
-			iteratorPromise?.then((iterator) => iterator?.return?.()).catch(() => {});
 			return Promise.reject(error);
 		},
 	};
@@ -8893,7 +8899,7 @@ export function makeTable(options): TableResourceClass {
 								// the same stable read snapshot as a synchronously-authorized search.
 								resolvedResults = await self.search(target);
 								if (gateClosed) {
-									resolvedResults?.onDone?.();
+									closeUnread(resolvedResults);
 									return { allowed: true, results: [], gate: gatedResults };
 								}
 								delete gatedResults.pendingAuth;
@@ -8930,7 +8936,7 @@ export function makeTable(options): TableResourceClass {
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;
 						gateClosed = true;
-						resolvedResults?.onDone?.();
+						closeUnread(resolvedResults);
 					};
 					return propagateSearchAuthorization(gatedResults, authorization);
 				}
@@ -8965,7 +8971,7 @@ export function makeTable(options): TableResourceClass {
 			const deferred: any = new ExtendedIterable();
 			let results: any;
 			let discarded = false;
-			const opening = embedding.sort
+			const opening: any = embedding.sort
 				.then(
 					(sort) => {
 						if (discarded) return [];
@@ -8982,6 +8988,7 @@ export function makeTable(options): TableResourceClass {
 					return searched;
 				});
 			opening.catch(() => {});
+			opening.release = () => deferred.onDone?.();
 			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false, bothOpen);
 			deferred.iterate = (options: any = {}) =>
 				deferredIterator(
@@ -14203,17 +14210,25 @@ export function makeTable(options): TableResourceClass {
 		}
 		return false;
 	}
-	/** A later sort level on an undefined attribute would order by nothing. */
 	function assertSortAttribute(name: any): void {
 		if (name == null) throw new ClientError('Sort requires an attribute');
-		if (typeof name === 'string' && propertyResolvers?.[name]) return;
-		if (findAttribute(attributes, name)) return;
-		if (Array.isArray(name) && name.length > 1) {
-			// an untyped object declares only its root; a relationship or typed object declares its leaves too
-			const root = findAttribute(attributes, name[0]);
-			if (root && !root.properties && !root.definition?.tableClass && !root.elements?.definition?.tableClass) return;
+		if (!sortPathDefined(Array.isArray(name) ? name : [name]))
+			throw new ClientError(`${Array.isArray(name) ? name.join('.') : name} is not a defined attribute`, 404);
+	}
+	function sortPathDefined(path: any[]): boolean {
+		let fields = attributes;
+		for (let i = 0; i < path.length; i++) {
+			const step = String(path[i]);
+			const field = fields?.find((attribute) => attribute.name === step);
+			// record metadata resolves from the entry, which a path into a related record does not carry
+			if (!field) return path.length === 1 && Boolean(propertyResolvers?.[step]);
+			const related = field.definition?.tableClass || field.elements?.definition?.tableClass;
+			if (related) fields = related.attributes;
+			else if (field.properties) fields = field.properties;
+			// the schema stops at an untyped field, which can hold any object
+			else return i === path.length - 1 || !SCALAR_TYPES.has(field.type);
 		}
-		throw new ClientError(`${Array.isArray(name) ? name.join('.') : name} is not a defined attribute`, 404);
+		return true;
 	}
 	function assertRecordField(name: unknown): void {
 		const field = Array.isArray(name) ? name[0] : name;
@@ -14597,19 +14612,12 @@ export function makeTable(options): TableResourceClass {
 		const head = sort.attribute;
 		const headName = Array.isArray(head) ? head.join('.') : head;
 		if (head == null && target.operator !== 'or') throw new ClientError('Sort requires an attribute');
-		if (
-			head != null &&
-			target.operator !== 'or' &&
-			!findAttribute(attributes, head) &&
-			!prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
-		)
+		// a condition on the sort's own attribute orders the search in its place
+		const headConditioned =
+			target.operator !== 'or' && prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head));
+		if (head != null && target.operator !== 'or' && !findAttribute(attributes, head) && !headConditioned)
 			throw new ClientError(`${headName} is not a defined attribute`, 404);
-		// a condition on the sort's own attribute would order the search in its place
-		if (
-			sort.text !== undefined &&
-			target.operator !== 'or' &&
-			prepared.some((condition) => flattenKey(condition.attribute) === flattenKey(head))
-		)
+		if (sort.text !== undefined && headConditioned)
 			throw new ClientError(
 				`A sort with text on "${headName}" can not be combined with a condition on "${headName}"; sort by the condition's target`
 			);
@@ -14626,6 +14634,7 @@ export function makeTable(options): TableResourceClass {
 			!target.explain &&
 			target.operator !== 'or' &&
 			!target.enforceExecutionOrder &&
+			!headConditioned &&
 			!prepared.some((condition) => conditionDrivesIndex(TableResource, condition))
 		) {
 			const leading = Array.isArray(head) && head.length === 1 ? head[0] : head;

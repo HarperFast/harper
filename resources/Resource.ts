@@ -53,6 +53,18 @@ export function searchOpening(result: any): Promise<unknown> | undefined {
 	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
 }
 
+/** For a caller that answers an opening's failure instead of reading the result, which is released on that failure. */
+export function awaitSearchOpening(opening: any): Promise<unknown> {
+	return opening.catch((error: unknown) => {
+		try {
+			opening.release?.();
+		} catch (releaseError) {
+			logger.error?.('Releasing a search whose opening failed:', releaseError);
+		}
+		throw error;
+	});
+}
+
 const EXTENSION_TYPES = {
 	json: 'application/json',
 	cbor: 'application/cbor',
@@ -1119,7 +1131,7 @@ function authorizeSearchResult(result: any, user: any) {
 							const opening = searchOpening(state.results);
 							const derived = result.headers ? result.data : result;
 							if (opening && derived && typeof derived === 'object') {
-								if (!Object.isExtensible(derived)) return opening.then(() => result);
+								if (!Object.isExtensible(derived)) return awaitSearchOpening(opening).then(() => result);
 								derived[SEARCH_OPENING] ??= opening;
 							}
 						}

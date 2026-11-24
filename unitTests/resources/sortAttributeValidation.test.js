@@ -20,12 +20,9 @@ describe('A sort level after the first', () => {
 		Owners = table({
 			table: 'SortAttributeOwner',
 			database: 'test',
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'name', type: 'String' },
-			],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name', type: 'String' }, { name: 'profile' }],
 		});
-		await Owners.put('o1', { name: 'first' });
+		await Owners.put('o1', { name: 'first', profile: { level: 1 } });
 		Items = table({
 			table: 'SortAttributeValidation',
 			database: 'test',
@@ -68,6 +65,24 @@ describe('A sort level after the first', () => {
 			async () => fromAsync(Items.search({ sort: { attribute: 'tag', next: { attribute: ['owner', 'nmae'] } } })),
 			(error) => error.statusCode === 404 && /owner\.nmae is not a defined attribute/.test(error.message)
 		);
+		// record metadata resolves only on the searched table: through a relationship it read a missing entry
+		await assert.rejects(
+			async () =>
+				fromAsync(Items.search({ sort: { attribute: 'tag', next: { attribute: ['owner', '$updatedtime'] } } })),
+			(error) => error.statusCode === 404
+		);
+	});
+
+	it('is refused when a path continues past a declared scalar', async () => {
+		for (const attribute of [
+			['rank', 'x'],
+			['owner', 'name', 'x'],
+		]) {
+			await assert.rejects(
+				async () => fromAsync(Items.search({ sort: { attribute: 'tag', next: { attribute } } })),
+				(error) => error.statusCode === 404 && error.message.includes(`${attribute.join('.')} is not a defined`)
+			);
+		}
 	});
 
 	it('orders by $distance after a threshold condition drives the search', async () => {
@@ -81,12 +96,13 @@ describe('A sort level after the first', () => {
 		assert.equal(rows.length, 4);
 	});
 
-	it('orders by a defined attribute, record metadata, or a path into a plain object', async () => {
+	it('orders by a defined attribute, record metadata, or a path into an untyped field, here or on a related table', async () => {
 		for (const next of [
 			{ attribute: 'rank' },
 			{ attribute: '$updatedtime' },
 			{ attribute: ['details', 'score'] },
 			{ attribute: ['owner', 'name'] },
+			{ attribute: ['owner', 'profile', 'level'] },
 		]) {
 			const rows = await fromAsync(Items.search({ sort: { attribute: 'tag', next }, select: ['id'] }));
 			assert.equal(rows.length, 4, JSON.stringify(next));

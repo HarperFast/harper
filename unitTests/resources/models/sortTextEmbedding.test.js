@@ -12,7 +12,7 @@ const { isReleasedTransaction, DatabaseTransaction } = require('#src/resources/D
 const { Resources } = require('#src/resources/Resources');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-const { searchOpening } = require('#src/resources/Resource');
+const { searchOpening, awaitSearchOpening } = require('#src/resources/Resource');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -431,6 +431,23 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.equal(rows.length, 2);
 		});
 
+		it('leaves a descending sort to the in-memory order when a filter on its attribute takes the lead', async () => {
+			const search = (next) =>
+				fromAsync(
+					Doc.search({
+						conditions: [{ attribute: 'embedding', comparator: 'ne', value: [9, 9, 9] }],
+						allowFullScan: true,
+						sort: { attribute: 'embedding', target: queryVector('red fruit'), descending: true, next },
+						select: ['id'],
+					})
+				);
+			const ids = (rows) => rows.map((row) => row.id);
+			assert.deepEqual(
+				ids(await search({ attribute: 'embedding', text: 'orchard fruit' })),
+				ids(await search({ attribute: 'embedding', target: queryVector('orchard fruit') }))
+			);
+		});
+
 		it('refuses a sort with more texts than one search embeds, before it calls the model', () => {
 			let sort;
 			for (let i = 0; i < 9; i++) sort = { attribute: 'embedding', text: 'red fruit', next: sort };
@@ -718,22 +735,56 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
-		it('releases the search a failed concatenation opened', async () => {
-			__setEmbedFnForTest((input, opts) =>
-				opts.inputType === 'query' && input.includes('unlucky')
-					? Promise.reject(new Error('backend down'))
-					: embed(input, opts)
-			);
+		for (const [side, join] of [
+			['first', (opened, failed) => opened.concat(failed)],
+			['second', (opened, failed) => failed.concat(opened)],
+		])
+			it(`a caller that answers a failed concatenation releases the search that opened ${side}`, async () => {
+				__setEmbedFnForTest((input, opts) =>
+					opts.inputType === 'query' && input.includes('unlucky')
+						? Promise.reject(new Error('backend down'))
+						: embed(input, opts)
+				);
+				try {
+					const context = recordingContext();
+					const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
+					await searchOpening(opened);
+					if (observesSnapshot) assert.ok(context.storeLinks().some((txn) => txn.readTxnsUsed > 0));
+					const failed = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {});
+					await assert.rejects(
+						awaitSearchOpening(searchOpening(join(opened, failed).map((row) => row))),
+						(error) => error.statusCode === 502
+					);
+					await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
+						message: 'the opened search kept its snapshot',
+					});
+				} finally {
+					__setEmbedFnForTest(failingEmbed);
+				}
+			});
+
+		it('a direct reader of a concatenation reads the search that opens though the other failed first', async () => {
+			const firstModel = Promise.withResolvers();
+			__setEmbedFnForTest((input, opts) => {
+				if (opts.inputType !== 'query') return embed(input, opts);
+				if (input.includes('unlucky')) return Promise.reject(new Error('backend down'));
+				return firstModel.promise.then(() => embed(input, opts));
+			});
 			try {
-				const context = recordingContext();
-				const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
-				await searchOpening(opened);
-				if (observesSnapshot) assert.ok(context.storeLinks().some((txn) => txn.readTxnsUsed > 0));
-				const failed = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {});
-				await assert.rejects(searchOpening(opened.concat(failed)), (error) => error.statusCode === 502);
-				await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
-					message: 'the opened search kept its snapshot',
-				});
+				const failed = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } });
+				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select: ['content'] }).concat(
+					failed
+				);
+				await assert.rejects(searchOpening(joined), (error) => error.statusCode === 502);
+				firstModel.resolve();
+				const rows = [];
+				await assert.rejects(
+					async () => {
+						for await (const row of joined) rows.push(row);
+					},
+					(error) => error.statusCode === 502
+				);
+				assert.ok(rows.length > 0, 'the first search was discarded');
 			} finally {
 				__setEmbedFnForTest(failingEmbed);
 			}
@@ -793,38 +844,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.equal(embed.calls.length, 0);
 		});
 
-		it('a gate closed while its granted search is handed over releases that search', async () => {
-			if (!observesSnapshot) return;
-			let close;
-			class Racing extends Doc {
-				async allowRead() {
-					return true;
-				}
-				search(target) {
-					// the gate's own search: close the gate before that search reaches it
-					if (target.checkPermission === false && close) {
-						const closeNow = close;
-						close = undefined;
-						closeNow();
-					}
-					return super.search(target);
-				}
-			}
-			const transaction = new DatabaseTransaction();
-			try {
-				const iterator = new Racing(null, { transaction, user: { username: 'reader' } })
-					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
-					[Symbol.asyncIterator]();
-				close = () => iterator.return();
-				// the transaction keeps one read of its own
-				await waitFor(() => transaction.readTxnsUsed === 1, {
-					message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
-				});
-			} finally {
-				transaction.abort();
-			}
-		});
-
 		it('a gate closed before its verdict never calls the model', async () => {
 			const verdict = Promise.withResolvers();
 			class Pending extends Doc {
@@ -841,30 +860,98 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.equal(embed.calls.length, 0);
 		});
 
-		it('a search the gate granted, closed before its first step, releases its snapshot', async () => {
-			// an LMDB search's snapshot is not counted on the transaction it reads through
-			if (!observesSnapshot) return;
-			class Granted extends Doc {
-				async allowRead() {
-					return true;
+		for (const [shape, project] of [
+			['', (results) => results],
+			[' and mapped', (results) => results.map((row) => row)],
+		]) {
+			it(`a gate closed while its granted search${shape} is handed over releases that search`, async () => {
+				if (!observesSnapshot) return;
+				let close;
+				class Racing extends Doc {
+					async allowRead() {
+						return true;
+					}
+					search(target) {
+						if (target.checkPermission === false && close) {
+							const closeNow = close;
+							close = undefined;
+							closeNow();
+						}
+						return target.checkPermission === false ? project(super.search(target)) : super.search(target);
+					}
 				}
-			}
-			const transaction = new DatabaseTransaction();
-			try {
-				const iterator = new Granted(null, { transaction, user: { username: 'reader' } })
-					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
-					[Symbol.asyncIterator]();
-				// the transaction holds a read of its own, beside the search's
-				await waitFor(() => transaction.readTxnsUsed > 1);
-				const held = transaction.readTxnsUsed;
-				await iterator.return();
-				await waitFor(() => transaction.readTxnsUsed === held - 1, {
-					message: () => `read snapshot still held (${transaction.readTxnsUsed} of ${held})`,
-				});
-			} finally {
-				transaction.abort();
-			}
-		});
+				const transaction = new DatabaseTransaction();
+				try {
+					const iterator = new Racing(null, { transaction, user: { username: 'reader' } })
+						.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+						[Symbol.asyncIterator]();
+					close = () => iterator.return();
+					// the transaction keeps one read of its own
+					await waitFor(() => transaction.readTxnsUsed === 1, {
+						message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+					});
+				} finally {
+					transaction.abort();
+				}
+			});
+
+			it(`a search the gate granted${shape}, closed before its first step, releases its snapshot`, async () => {
+				// an LMDB search's snapshot is not counted on the transaction it reads through
+				if (!observesSnapshot) return;
+				class Granted extends Doc {
+					async allowRead() {
+						return true;
+					}
+					search(target) {
+						return target.checkPermission === false ? project(super.search(target)) : super.search(target);
+					}
+				}
+				const transaction = new DatabaseTransaction();
+				try {
+					const iterator = new Granted(null, { transaction, user: { username: 'reader' } })
+						.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+						[Symbol.asyncIterator]();
+					// the transaction holds a read of its own, beside the search's
+					await waitFor(() => transaction.readTxnsUsed > 1);
+					const held = transaction.readTxnsUsed;
+					await iterator.return();
+					await waitFor(() => transaction.readTxnsUsed === held - 1, {
+						message: () => `read snapshot still held (${transaction.readTxnsUsed} of ${held})`,
+					});
+				} finally {
+					transaction.abort();
+				}
+			});
+			it(`a search the gate granted${shape}, read to its end, releases its snapshot and keeps it released`, async () => {
+				if (!observesSnapshot) return;
+				class Granted extends Doc {
+					async allowRead() {
+						return true;
+					}
+					search(target) {
+						return target.checkPermission === false ? project(super.search(target)) : super.search(target);
+					}
+				}
+				const transaction = new DatabaseTransaction();
+				try {
+					const rows = await fromAsync(
+						new Granted(null, { transaction, user: { username: 'reader' } }).search({
+							conditions: [{ attribute: 'tag', value: 'odd' }],
+							checkPermission: true,
+						})
+					);
+					assert.ok(rows.length > 0);
+					await waitFor(() => transaction.readTxnsUsed === 1, {
+						message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+					});
+					// closing the gate must not reopen the results to close them
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					assert.equal(transaction.readTxnsUsed, 1);
+				} finally {
+					transaction.abort();
+				}
+			});
+		}
 
 		it('an asynchronously granted read embeds and searches', async () => {
 			class Granted extends Doc {
