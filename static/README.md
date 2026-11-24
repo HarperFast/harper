@@ -11,4 +11,4 @@ This directory contains the files used by a local Harper installation.
 - `keys/` - Private keys and certificates used for PKI/TLS.
 - `log/` - Harper log output.
 
-For installation, configuration, and API documentation, see https://docs.harperdb.io/.
+For installation, configuration, and API documentation, see https://docs.harper.fast/.

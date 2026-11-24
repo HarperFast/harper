@@ -2,7 +2,7 @@
 
 ## Directory Structure
 
-Directory structure mirrors the [Harper v5 reference docs](https://docs.harperdb.io/reference/v5):
+Directory structure mirrors the [Harper v5 reference docs](https://docs.harper.fast/reference/v5):
 
 | Directory         | Coverage                                                      |
 | ----------------- | ------------------------------------------------------------- |
