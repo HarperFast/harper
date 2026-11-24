@@ -31,7 +31,7 @@ Text `SQLSearch` builds after the check names columns only as `[<name>]`. `_proc
 
 Enforced by `unitTests/sqlTranslator/legacySqlText.test.js` and the quoted-string case in `integrationTests/security/sql-attribute-perms.test.ts`.
 
-UPDATE and DELETE give `SQLSearch` their parsed WHERE and subquery list (`queries`) rather than the WHERE's text, so they select the rows the same SELECT returns and refuse the subqueries it refuses: AlaSQL writes `IS NOT NULL` as `IS NOT(NULL)`, which reads back as `IS (NOT NULL)`, true only for `1` and `true`. `_buildSQL()` and `_processJoins()` rewrite `NOT(NULL)` in their text for the same reason. Enforced by `unitTests/resources/sqlLegacyRowSelection.test.js`.
+UPDATE and DELETE give `SQLSearch` their parsed WHERE and subquery lists (`queries`, `exists`) rather than the WHERE's text, so they select the rows the same SELECT returns and refuse the subqueries it refuses: AlaSQL writes `IS NOT NULL` as `IS NOT(NULL)`, which reads back as `IS (NOT NULL)`, true only for `1` and `true`. `_buildSQL()` and `_processJoins()` rewrite `NOT(NULL)` in their text for the same reason. Enforced by `unitTests/resources/sqlLegacyRowSelection.test.js`.
 
 ## Legacy LIKE
 
