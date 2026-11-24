@@ -10432,6 +10432,12 @@ export function makeTable(options): TableResourceClass {
 			const resumeGeneration = request.databaseGeneration;
 			const resuming = resumeGeneration !== undefined || request.checkRetention === true;
 			if (resuming) {
+				// the floor alone cannot tell a replaced database, which a generation does
+				if (resumeGeneration === undefined && isRocksDB) {
+					throw new ClientError(
+						'checkRetention without databaseGeneration is for LMDB; name the generation on RocksDB'
+					);
+				}
 				if (typeof request.startTime !== 'number' || !Number.isFinite(request.startTime)) {
 					throw new ClientError('A checked resume requires a finite startTime');
 				}
@@ -13051,22 +13057,32 @@ export function makeTable(options): TableResourceClass {
 		subscription.checkpointFloor = (holds?: Map<number, number>) => subscriptionCheckpointFloor(subscription, holds);
 		if (request.checkpointInterval !== undefined) {
 			let lastEmitted: string | undefined;
-			// the certified floors the last emitted checkpoint equals: a capture of equal floors keeps their object
+			// What the last checkpoint was computed from. A capture of equal floors keeps their object, and a queue
+			// that nothing entered or left holds what it held, so the same three mean the same checkpoint.
 			let emittedFloors: CertifiedFloors | undefined;
+			let emittedQueued = 0;
+			let emittedSent = 0;
 			progress.emitCheckpoint = () => {
 				// a replay's boundaries can name origins the client's token did not, so they wait for the replay to be verified
 				if (!progress.live) return;
 				try {
-					// with nothing queued the boundaries are the certified floors themselves
-					const floors = subscription.queue?.length ? undefined : certifiedFloors(subscription);
-					if (floors !== undefined && floors === emittedFloors) return;
+					const floors = certifiedFloors(subscription);
+					const queued = subscription.queue?.length ?? 0;
+					if (
+						floors !== undefined &&
+						floors === emittedFloors &&
+						queued === emittedQueued &&
+						(queued === 0 || subscription.sentCount === emittedSent)
+					)
+						return;
 					const checkpoint = subscription.checkpoint!();
 					if (!checkpoint) return;
 					const encoded = JSON.stringify(checkpoint);
-					if (encoded === lastEmitted || subscription.send({ type: 'checkpoint', checkpoint })) {
-						lastEmitted = encoded;
-						emittedFloors = floors;
-					}
+					if (encoded !== lastEmitted && !subscription.send({ type: 'checkpoint', checkpoint })) return;
+					lastEmitted = encoded;
+					emittedFloors = floors;
+					emittedQueued = subscription.queue?.length ?? 0;
+					emittedSent = subscription.sentCount;
 				} catch (error) {
 					failSubscription(subscription, error);
 				}

@@ -71,9 +71,10 @@ export function tableEventSerializer(
 			const id = encodeCheckpointId(message.checkpoint);
 			// too long to come back in a request header, so the client keeps the id it has
 			if (!id) return ':\n\n';
-			cursor.holdsToken = true;
 			// Firefox and WebKit record an id only from a block that has data
-			return serialize({ event: CHECKPOINT_EVENT, data: {}, id });
+			const frame = serialize({ event: CHECKPOINT_EVENT, data: {}, id });
+			cursor.holdsToken = true;
+			return frame;
 		}
 		const key = message?.localTime;
 		if (typeof key !== 'number' || message.fromScan || cursor.holdsToken || !verified) return serialize(message);

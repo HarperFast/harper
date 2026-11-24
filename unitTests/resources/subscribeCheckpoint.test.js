@@ -509,6 +509,41 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			subscription.end();
 		});
 
+		it('builds no token on a tick whose reader took nothing from an unchanged queue', async () => {
+			const T = tableInOwnDatabase();
+			// no listener and no reader: every event stays queued
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				checkpointInterval: 3_600_000,
+			});
+			await T.put('a', { value: 'a' });
+			await waitFor(() => subscription.queue?.length > 0);
+			// the queued event holds its boundary below the floor certified now
+			certify(T);
+			await waitFor(() => subscription.checkpoint() !== undefined, 10_000);
+			const tick = subscription.progressState.emitCheckpoint;
+			tick();
+			let built = 0;
+			const checkpoint = subscription.checkpoint;
+			subscription.checkpoint = (...args) => (built++, checkpoint(...args));
+			tick();
+			tick();
+			assert.strictEqual(built, 0);
+			await T.put('b', { value: 'b' });
+			await waitFor(() => subscription.queue.some((event) => event.value?.value === 'b'));
+			tick();
+			assert.strictEqual(built, 1, 'an event that entered the queue can lower a boundary');
+			const length = subscription.queue.length;
+			subscription.queue.shift();
+			await T.put('c', { value: 'c' });
+			await waitFor(() => subscription.queue.some((event) => event.value?.value === 'c'));
+			assert.strictEqual(subscription.queue.length, length, 'precondition: one event left and one entered');
+			tick();
+			assert.strictEqual(built, 2, 'a queue of the same length is not the same queue');
+			subscription.end();
+		});
+
 		it('keeps the certified floors object across captures that find the same floors', async () => {
 			const T = tableInOwnDatabase();
 			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: collector() });

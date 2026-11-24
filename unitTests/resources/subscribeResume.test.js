@@ -626,6 +626,23 @@ describe('Resuming a subscription with a retention check and no generation', fun
 		return { subscription, events };
 	}
 
+	if (isRocksDB) {
+		it('is refused on RocksDB, where a position names its database generation', async () => {
+			const T = tableInOwnDatabase();
+			const positions = await writeEach(T, 1);
+			await assert.rejects(
+				resumeChecked(T, positions[0]),
+				(error) => error instanceof ClientError && error.statusCode === 400
+			);
+			const { subscription } = await resumeChecked(T, positions[0], {
+				databaseGeneration: getDatabaseGeneration(T.auditStore).id,
+			});
+			assert.strictEqual(await subscription.resumeVerified, true);
+			subscription.end();
+		});
+		return;
+	}
+
 	it('replays everything after a retained position and verifies it', async () => {
 		const T = tableInOwnDatabase();
 		const positions = await writeEach(T, 3);

@@ -83,8 +83,9 @@ async function connect(request, url, lastEventId) {
 		}
 	});
 	response.body.on('error', () => {});
-	const ended = new Promise((resolve) => response.body.on('close', resolve));
-	stream.ended = () => waitFor(() => response.body.destroyed, 15_000).then(() => ended);
+	let closed = false;
+	response.body.on('close', () => (closed = true));
+	stream.ended = () => waitFor(() => closed, 15_000);
 	stream.close = () => response.body.destroy();
 	stream.values = () => stream.frames.map((frame) => frame.data?.value?.value).filter((value) => value !== undefined);
 	stream.frameOf = (value) => stream.frames.find((frame) => frame.data?.value?.value === value);

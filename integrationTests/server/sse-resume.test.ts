@@ -1,7 +1,7 @@
 /**
  * A table's event stream over real HTTP (harper#515): the stream issues ids, a reconnect that sends the last
- * one in Last-Event-ID receives what was committed in between, the stream issues a checkpoint token as a frame
- * with only an id and resumes from it, and an id the table did not issue is refused before the stream starts.
+ * one in Last-Event-ID receives what was committed in between, the stream issues a checkpoint token as a
+ * harper-checkpoint event and resumes from it, and an id the table did not issue is refused before the stream starts.
  * The checkpoint semantics themselves (a transaction that commits below the token, the refusals) are pinned
  * against the same REST handler in unitTests/server/eventStreamResume.test.js, where the test controls
  * certification; this suite covers the wire and the server's own certification.
