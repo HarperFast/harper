@@ -13,7 +13,7 @@ sidebar_label: 'Certificate Verification'
 
 <VersionBadge type="changed" version="v4.7.0" /> (OCSP support added)
 
-Certificate verification (also called certificate revocation checking) ensures that revoked certificates cannot be used for mTLS authentication, even if they are otherwise valid and trusted. This is a critical security control for environments where certificates may need to be revoked before their expiration date — due to compromise, employee departure, or other security concerns.
+Certificate verification (also called certificate revocation checking) ensures that revoked certificates cannot be used to authenticate new mTLS connections or HTTP requests, even if they are otherwise valid and trusted. This is a critical security control for environments where certificates may need to be revoked before their expiration date — due to compromise, employee departure, or other security concerns.
 
 ## Overview
 
@@ -30,6 +30,17 @@ When a client presents a certificate for mTLS authentication, Harper performs tw
    - Uses CRL and/or OCSP
 
 Revocation checking is **disabled by default**.
+
+## When Revocation Is Checked
+
+Harper verifies a client certificate's revocation status (via CRL or OCSP) when a connection or request is admitted:
+
+- **HTTP, Server-Sent Events (SSE), and WebSockets:** Checked once per HTTP request during authentication — on each incoming HTTP request, including the request that opens an SSE stream and the HTTP `Upgrade` request that establishes a WebSocket connection (for REST WebSockets or MQTT over WebSockets).
+- **MQTT over TLS:** Checked once per TLS socket when the client connects. A certificate that fails verification supplies no identity, but Harper does not close the socket: the client is refused at MQTT `CONNECT` only if nothing else authenticates it and `requireAuthentication` is `true` (the default).
+
+Harper does not re-check certificate revocation on an established connection. Long-lived connections admitted before a certificate is revoked — such as MQTT sessions, SSE streams, and WebSocket connections — keep running, including their live subscriptions, until the connection closes. Live-subscription re-authorization re-checks the subscriber's Harper user, role permissions, and resource `allowRead` rules, not certificate state.
+
+For new connections and HTTP requests, per-certificate verification verdicts are cached for `crl.cacheTtl` or `ocsp.cacheTtl`. A revoked certificate is rejected only once a verdict refresh sees the revocation: its cached verdict must expire (`cacheTtl` after the verdict was last refreshed) and the CA's CRL or OCSP responder must already report it, otherwise the refresh stores a new `good` verdict for another `cacheTtl`. Until then it can still be admitted. To refuse new connections and terminate active sessions or subscriptions after revoking a certificate, see [Ending Existing Sessions After a Revocation](#ending-existing-sessions-after-a-revocation).
 
 ## Revocation Checking Methods
 
@@ -323,6 +334,18 @@ http:
         cacheTtl: 7200000 # 2 hours
         errorCacheTtl: 600000
 ```
+
+### Ending Existing Sessions After a Revocation
+
+Because revocation is checked only when a connection or HTTP request is admitted, revoking a certificate at your CA does not terminate connections that are already open, and a client that reconnects is still admitted until its cached verdict expires. To cut off a revoked client certificate, refuse its new connections first, then end its open ones:
+
+1. **Refuse new connections:** When each client certificate maps to its own Harper user (the default `CN` mapping), deactivate that user ([`alter_user`](../users-and-roles/operations.md#alter-user) with `active: false`). Harper then answers new HTTP requests that present that certificate with `401` on its built-in routes, such as REST and the operations API, even while the certificate's `good` verdict is cached. A new MQTT-over-TLS socket gets no identity from the certificate, so its `CONNECT` is refused unless the client supplies other credentials, `requireAuthentication` is `false`, or `authorizeLocal` trusts the connection as local; a socket opened before the deactivation is an existing connection (step 2). Deactivation also triggers live-subscription re-authorization, which stops delivery on that client's active subscriptions.
+
+   Other changes do not refuse new connections. [`drop_user`](../users-and-roles/operations.md#drop-user) ends the live subscriptions of a connection admitted under that user, but a certificate whose name has no `hdb_user` record is admitted afresh with no role: role-governed tables answer `403`, while a resource whose `allowRead` grants by user name still serves it. Removing read permission on a role dedicated to that user ([`alter_role`](../users-and-roles/operations.md#alter-role)) stops that user's live subscriptions and makes new read requests for role-governed tables answer `403`, but the connection is still admitted, and a resource whose `allowRead` grants by user name ignores the role change.
+
+   Avoid deactivating a fixed `mtls.user` or modifying a shared role unless you intend to cut off every certificate client mapped to it. When clients share an `mtls.user`, step 1 refuses nothing for the revoked client: block its certificate at your fronting proxy or load balancer, because closing its connections alone lets it reconnect until its cached verdict expires. If the certificate names no Harper user and is authorized by a custom `Resource.allowRead` method, withdrawing read access in `allowRead` refuses its new read requests and stops its live subscriptions on the next re-check pass.
+
+2. **Close the client's open connections:** Drop the client's connections at your fronting proxy or load balancer, or restart Harper ([`restart`](../operations-api/operations.md#restart), or [`restart_service`](../operations-api/operations.md#restart_service) with `service: "http_workers"` when running worker threads). A restart affects only the node that receives it, so in a cluster restart every node, for example with [`restart_service` and `replicated: true`](../operations-api/operations.md#restart_service-replicated), and poll its `job_id`: a node that failed to restart is reported only there. In a cluster, do this once the deactivation in step 1 has replicated to every node. `good` verification verdicts are cached in `system.hdb_certificate_cache` across restarts for `crl.cacheTtl` or `ocsp.cacheTtl`, so a client that reconnects after a restart while its verdict is still cached is admitted, and because Harper does not re-check established connections, it keeps that connection after the verdict expires. Ending an MQTT subscription stops message delivery without closing the underlying MQTT connection, so you should still close the connection to terminate the session completely.
 
 ## Troubleshooting
 
