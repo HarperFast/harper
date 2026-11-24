@@ -1,5 +1,4 @@
-// harper#4552: legacy SQL lost WHERE terms nested more than 100 levels deep, and UPDATE and DELETE re-parsed their
-// WHERE from text, which turned `IS NOT NULL` into `IS (NOT NULL)`.
+// harper#4552: legacy SQL row selection for a WHERE nested past depth 100, and for IS NOT NULL in UPDATE and DELETE.
 
 require('../testUtils');
 const assert = require('node:assert');
@@ -109,6 +108,10 @@ describe('legacy SQL row selection for deep and IS NOT NULL predicates', functio
 				await assertMatches(engine, "grp = 'nullish' AND NOT v IS NULL", NOT_NULL);
 			});
 
+			it('NOT (IS NOT NULL) matches only the null and omitted values', async () => {
+				await assertMatches(engine, "grp = 'nullish' AND NOT (v IS NOT NULL)", [1, 7]);
+			});
+
 			it('IS NOT NULL in a statement auto hands to the legacy engine', async () => {
 				await assertMatches(
 					engine,
@@ -124,6 +127,16 @@ describe('legacy SQL row selection for deep and IS NOT NULL predicates', functio
 						.map((id) => `id = ${id}`)
 						.join(' OR '),
 					range(1, 150)
+				);
+			});
+
+			it('a NOT of that OR keeps only the other keys', async () => {
+				await assertMatches(
+					engine,
+					`NOT (${range(1, 150)
+						.map((id) => `id = ${id}`)
+						.join(' OR ')})`,
+					range(151, ROWS)
 				);
 			});
 

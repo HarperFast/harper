@@ -32,6 +32,7 @@ const range = (from: number, to: number) => Array.from({ length: to - from + 1 }
 const CASES: { name: string; where: string; expected: number[] }[] = [
 	{ name: 'IS NOT NULL', where: `grp = 'nullish' AND v IS NOT NULL`, expected: NOT_NULL },
 	{ name: 'NOT IS NULL', where: `grp = 'nullish' AND NOT v IS NULL`, expected: NOT_NULL },
+	{ name: 'NOT (IS NOT NULL)', where: `grp = 'nullish' AND NOT (v IS NOT NULL)`, expected: [1, 7] },
 	{
 		name: 'IS NOT NULL beside a CASE',
 		where: `grp = 'nullish' AND v IS NOT NULL AND (CASE WHEN id > 0 THEN 1 ELSE 0 END) = 1`,
@@ -43,6 +44,13 @@ const CASES: { name: string; where: string; expected: number[] }[] = [
 			.map((id) => `id = ${id}`)
 			.join(' OR '),
 		expected: range(1, 150),
+	},
+	{
+		name: 'NOT of that OR',
+		where: `NOT (${range(1, 150)
+			.map((id) => `id = ${id}`)
+			.join(' OR ')})`,
+		expected: range(151, ROWS),
 	},
 	{
 		name: 'AND of 120 inequalities',
