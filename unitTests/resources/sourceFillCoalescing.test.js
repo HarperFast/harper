@@ -322,12 +322,12 @@ describe('Concurrent source misses on one key', function () {
 				assert.equal(calls, 1);
 				assert.ok(warnings.includes('unrelated source-fill warning'));
 			} finally {
+				logger.warn = originalWarn;
 				answer(undefined);
 				wakeImmediately = true;
 				store.tryLock = originalTryLock;
 				for (const wake of wakeups.splice(0)) wake();
 				await Promise.all(reads);
-				logger.warn = originalWarn;
 				if (dropping) await dropping;
 				else await RetiredTable.dropTable();
 			}
