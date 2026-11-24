@@ -1,0 +1,4 @@
+type LifecycleNote @table @export {
+	id: ID @primaryKey
+	owner: String
+}

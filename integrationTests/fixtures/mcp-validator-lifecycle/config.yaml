@@ -1,0 +1,9 @@
+# The two plugins are wired in through HARPER_BUILTIN_COMPONENTS; componentLoader loads one only when
+# its name is also a top-level key here.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
+mcpLifecycleLoads: true
+mcpLifecycleFails: true
