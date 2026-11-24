@@ -15,7 +15,7 @@ The `mqtt` section in `harper-config.yaml` controls Harper's built-in MQTT broke
 
 Harper must be restarted for configuration changes to take effect.
 
-Harper requires `mqtt.network` whenever the `mqtt` section is present. The example under each option below shows only that option; a full section also carries `network`, as in the minimal example.
+Harper requires `mqtt.network` whenever the `mqtt` section is present (an `HDB_CONFIG` install template may leave it out; install adds it). The example under each option below shows only that option; a full section also carries `network`, as in the minimal example.
 
 ## Minimal Example
 
@@ -114,7 +114,7 @@ Type: `boolean`
 
 Default: `false`
 
-When `true`, all incoming MQTT connections must provide a valid client certificate. Connections without a valid certificate are rejected. By default, clients can authenticate with either mTLS or standard username/password credentials.
+When `true`, every connection to the MQTT ports (`port` and `securePort`) must provide a valid client certificate. Connections without a valid certificate are rejected, which includes every client on the plain `port`, since it cannot present one. MQTT over WebSockets arrives on the HTTP port and follows [`http.mtls`](../http/configuration.md#httpmtls) instead. By default, clients can authenticate with either mTLS or standard username/password credentials.
 
 ### `mqtt.network.mtls.certificateAuthority`
 

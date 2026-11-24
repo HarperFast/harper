@@ -7,6 +7,7 @@ const YAML = require('yaml');
 const { CONFIG_PARAM_MAP, STUDIO_CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { getCachedCertificateVerificationConfig } = require('#src/security/certificateVerification/verificationConfig');
 const { configValidator } = require('#src/validation/configValidator');
+const { convertToMS } = require('#src/utility/common_utils');
 const schema = require('../../config-root.schema.json');
 
 const defaults = YAML.parse(readFileSync(join(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));
@@ -152,12 +153,25 @@ describe('config-root.schema.json matches the configuration Harper reads', () =>
 		assert.strictEqual(configValidator({ ...config, mqtt: defaults.mqtt }, true).error, undefined);
 	});
 
+	it('bounds storage.reclamation to values its scheduler and eviction heuristic handle', () => {
+		const { threshold, interval, evictionFactor } = schema.properties.storage.properties.reclamation.properties;
+		assert.deepStrictEqual([threshold.minimum, threshold.maximum], [0, 1]);
+		assert.strictEqual(evictionFactor.exclusiveMinimum, 0);
+		assert.ok(convertToMS(interval.minimum) >= 1000);
+		assert.ok(convertToMS(interval.maximum) <= 2 ** 31 - 1, 'setTimeout limit');
+		const duration = new RegExp(interval.pattern);
+		for (const accepted of ['1', '90', '30m', '1.5h', '1d'])
+			assert.ok(duration.test(accepted) && convertToMS(accepted) >= 1000, accepted);
+		for (const rejected of ['-1h', '0.001', '0.5', '10ms', '1M', '1y', 'soon'])
+			assert.ok(!duration.test(rejected), rejected);
+	});
+
 	it('states the default for every setting defaultConfig.yaml sets, wherever a description names one', () => {
 		const mismatched = [];
 		let compared = 0;
 		for (const { node, path } of schemaNodes(schema)) {
 			const description = node.description ?? resolveRef(node).description ?? '';
-			const documented = /Default: '?([^\s;,']+)'?[.;,]?(?:\s|$)/.exec(description)?.[1];
+			const documented = /Default: '?([^\s;,']+?)'?[.;,]?(?:\s|$)/.exec(description)?.[1];
 			const installed = path.reduce((value, key) => value?.[key], defaults);
 			if (documented === undefined || installed == null || typeof installed === 'object') continue;
 			compared++;

@@ -200,7 +200,7 @@ operationsApi:
 
 - `componentFile.maxSize` — Maximum file size in bytes returned by `get_component_file`. Requests for files larger than this limit are rejected with HTTP 413. _Default_: `5242880` (5 MB)
 - `network.cors` / `network.corsAccessList` — CORS settings. `network.corsAccessList` takes the same entries as [`http.corsAccessList`](../http/configuration.md#httpcorsaccesslist)
-- `network.domainSocket` — Unix socket path for CLI communication; _Default_: `<rootPath>/hdb/operations-server`
+- `network.domainSocket` — Unix socket path for CLI communication; _Default_: `<rootPath>/operations-server`
 - `network.headersTimeout` / `network.keepAliveTimeout` / `network.timeout` — Timeout settings (ms)
 - `network.port` — Operations API port; _Default_: `9925`
 - `network.securePort` — HTTPS port; _Default_: `null`
