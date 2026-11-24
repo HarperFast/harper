@@ -760,15 +760,23 @@ describe('bounded history readers', function () {
 			counter.close();
 		}
 	}
+	// An LMDB commit can land after its write resolves, and once it lands with a subscriber active its
+	// aftercommit pass reads the log, which the meter would count.
+	async function commitsLanded(T) {
+		if (!lmdb) return;
+		await T.primaryStore.committed;
+		await new Promise(setImmediate);
+	}
 	const replayed = (events) => events.map((event) => ({ id: event.id, value: event.value, time: event.localTime }));
 
-	const LINEAR_REPLAY_READS = { true: [8642, 8643], false: [14404, 14405] };
+	const LINEAR_REPLAY_READS = { true: 8642, false: 14404 };
 	for (const isCollection of [true, false]) {
 		it(`replays 2,880 patches with linear audit reads (${isCollection ? 'collection' : 'record'})`, async () => {
 			const T = newTable();
 			const startTime = Date.now() - 1;
 			await T.put({ id: 'a', n: 0, name: 'start' });
 			for (let n = 1; n <= 2880; n++) await T.patch('a', { n });
+			await commitsLanded(T);
 			const counter = meter(T);
 			let subscription;
 			try {
@@ -783,7 +791,7 @@ describe('bounded history readers', function () {
 					events.map((event) => event.value.n),
 					Array.from({ length: 2881 }, (_, n) => n)
 				);
-				assert.strictEqual(counter.logReads, LINEAR_REPLAY_READS[isCollection][lmdb ? 1 : 0]);
+				assert.strictEqual(counter.logReads, LINEAR_REPLAY_READS[isCollection]);
 			} finally {
 				counter.close();
 				subscription?.end();
@@ -798,6 +806,7 @@ describe('bounded history readers', function () {
 			for (let n = 1; n <= 60; n++) for (let r = 0; r < 40; r++) await T.patch(`r${r}`, { n });
 			const startTime = entries(T).at(-1).txnLogKey;
 			for (let n = 61; n <= 60 + later; n++) for (let r = 0; r < 40; r++) await T.patch(`r${r}`, { n });
+			await commitsLanded(T);
 			const plain = plainEvents(T, startTime);
 			const counter = meter(T);
 			const { subscription, events } = await replay(T, { startTime });
