@@ -378,7 +378,7 @@ export function tryAdmitStateless(
 	clientIdentity?: string
 ): RateLimitDecision {
 	sweepStatelessClients();
-	let key = `${profile}\n${username}\n${clientIdentity ? initializeIdentity(clientIdentity) : SHARED_IDENTITY}`;
+	let key = `${profile}\n${username}\n${clientIdentity ? sourceAddressKey(clientIdentity) : SHARED_IDENTITY}`;
 	// past the cap, a fixed set of shared buckets keeps the map bounded and spreads a flood over few of them
 	if (!statelessClients.has(key) && statelessClients.size >= MAX_STATELESS_CLIENTS) {
 		key = `\n${profile}\n${overflowSlot(key)}`;
