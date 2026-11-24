@@ -148,6 +148,24 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
+	 * Remove one component's status, leaving its sub-components'
+	 */
+	public remove(componentName: string): void {
+		this.statusMap.delete(componentName);
+	}
+
+	/**
+	 * Remove a component's status along with its sub-components' (`name.*`), for a component that no longer exists
+	 */
+	public retire(componentName: string): void {
+		this.statusMap.delete(componentName);
+		const prefix = componentName + '.';
+		for (const key of this.statusMap.keys()) {
+			if (key.startsWith(prefix)) this.statusMap.delete(key);
+		}
+	}
+
+	/**
 	 * Get all components with a specific status level
 	 */
 	public getComponentsByStatus(statusLevel: ComponentStatusLevel): Array<{ name: string; status: ComponentStatus }> {

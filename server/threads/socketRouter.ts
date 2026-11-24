@@ -259,7 +259,13 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 			).unref()
 		),
 	])
-		.then(() => true)
+		.then(() => {
+			// the worker's own registry reports its components; this thread's entry is only the start outcome
+			if (isolatedSlots.get(application) === slot) {
+				componentLifecycle.loaded(application, `Dedicated worker for '${application}' is running`);
+			}
+			return true;
+		})
 		.catch(async (error) => {
 			if (isolatedSlots.get(application) !== slot) return false;
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
