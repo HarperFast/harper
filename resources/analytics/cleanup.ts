@@ -19,10 +19,7 @@ const states = new WeakMap<object, CleanupState>();
 
 const rest = () => new Promise(setImmediate);
 
-/**
- * Removes rows keyed below `now - retentionMs` from a table whose primary keys start with a timestamp, so the
- * expired rows are always a key prefix. See resources/analytics/DESIGN.md.
- */
+/** Requires primary keys that start with a timestamp. See resources/analytics/DESIGN.md. */
 export async function cleanupExpiredAnalytics(
 	table: { primaryStore: any },
 	retentionMs: number,
@@ -46,12 +43,15 @@ export async function cleanupExpiredAnalytics(
 	}
 	if (state.running) return;
 	state.running = true;
+	const current = () => !isReadOnlyMode() && table.primaryStore === store;
 	try {
 		const end = now - retentionMs;
 		if (end > state.completedEnd) {
 			if (state.needsCompaction && state.compactAttemptedAt === 0) await compactExpired(store, end, now, state);
-			await removeExpired(store, end, state);
+			if (!current()) return;
+			await removeExpired(store, end, state, current);
 		}
+		if (!current()) return;
 		if (state.needsCompaction && now - state.compactAttemptedAt >= COMPACT_INTERVAL) {
 			await compactExpired(store, Math.max(end, state.deletedBelow), now, state);
 		}
@@ -60,7 +60,7 @@ export async function cleanupExpiredAnalytics(
 	}
 }
 
-async function removeExpired(store: any, end: number, state: CleanupState): Promise<void> {
+async function removeExpired(store: any, end: number, state: CleanupState, current: () => boolean): Promise<void> {
 	for (;;) {
 		let failure: unknown;
 		const onFailure = (error: unknown) => {
@@ -81,6 +81,8 @@ async function removeExpired(store: any, end: number, state: CleanupState): Prom
 					break;
 				}
 			}
+		} catch (error) {
+			onFailure(error);
 		} finally {
 			await Promise.all(pending);
 			if (count > 0) {
@@ -95,6 +97,7 @@ async function removeExpired(store: any, end: number, state: CleanupState): Prom
 		if (count < BATCH_SIZE) break;
 		state.from = last;
 		await rest();
+		if (!current()) return;
 	}
 	state.from = end;
 	state.completedEnd = end;

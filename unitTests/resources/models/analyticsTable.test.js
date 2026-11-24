@@ -3,7 +3,7 @@
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ModelCallAnalyticsWriter } = require('#src/resources/models/analyticsTable');
-const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { getWorkerIndex, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 /**
  * Mock primaryStore that records put/remove operations in an in-memory Map.
@@ -239,8 +239,12 @@ describe('ModelCallAnalyticsWriter', () => {
 
 	describe('cleanup', () => {
 		// The main thread maintains shared stores only when it is the worker (threads: 0).
-		before(() => setMainIsWorker(true));
-		after(() => setMainIsWorker(false));
+		let mainWasWorker;
+		before(() => {
+			mainWasWorker = getWorkerIndex() === 0;
+			setMainIsWorker(true);
+		});
+		after(() => setMainIsWorker(mainWasWorker));
 
 		it('leaves the table alone on a thread that does not own store maintenance', async () => {
 			setMainIsWorker(false);
