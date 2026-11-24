@@ -350,7 +350,14 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			`The Actions event policy was not created, since it allows the events of the ${workflow} setup did not write.`
 		);
 	}
-	if (unfinished.length > 0) throw usageError(unfinished.join('\n'));
+	if (unfinished.length > 0) {
+		if (starter && workflowWritten) {
+			unfinished.push(
+				`Setup wrote ${workflow}: commit it only once the steps above are done, since its runs fail until then.`
+			);
+		}
+		throw usageError(unfinished.join('\n'));
+	}
 }
 
 export function formatTeardown(response: any): string {

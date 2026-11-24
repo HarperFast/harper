@@ -100,6 +100,16 @@ describe('harper preview setup (harper#3609)', () => {
 		assert.strictEqual(enabled(), true);
 	});
 
+	it('keeps a starter it wrote when a later step fails, and says not to commit it until that step is done', async () => {
+		await assert.rejects(
+			setup(),
+			/repository variable was not set[\s\S]*\nSetup wrote \.github\/workflows\/preview\.yaml: commit it only once the steps above are done, since its runs fail until then\.$/
+		);
+		assert.ok(await workflowPresent());
+
+		await assert.rejects(setup({ write_workflow: undefined }), (error) => !/Setup wrote/.test(error.message));
+	});
+
 	it('does not take a 404 for an absent variable on a repository it could not see', async () => {
 		await writeGh(absentVariable, absentVariable);
 		await assert.rejects(setup(), /could not read the HARPER_PREVIEW_TARGET variable on acme\/shop/);
