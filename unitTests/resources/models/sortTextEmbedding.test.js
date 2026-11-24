@@ -14,6 +14,7 @@ const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 const { searchOpening, awaitSearchOpening } = require('#src/resources/Resource');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
+const { ClientError } = require('#src/utility/errors/hdbError');
 require('#src/server/serverHelpers/serverUtilities');
 
 const admin = { role: { permission: { super_user: true } } };
@@ -778,6 +779,26 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				}
 			});
 
+		it('a caller that answers a failed opening logs a release that rejects instead of letting it escape', async () => {
+			const failure = new Error('release failed');
+			const escaped = [];
+			const onUnhandled = (reason) => {
+				if (reason === failure) escaped.push(reason);
+			};
+			const opening = Promise.reject(new ClientError('backend down', 502));
+			opening.release = async () => {
+				throw failure;
+			};
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				await assert.rejects(awaitSearchOpening(opening), (error) => error.statusCode === 502);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.deepEqual(escaped, []);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+		});
+
 		it('a direct reader of a concatenation reads the search that opens though the other failed first', async () => {
 			const firstModel = Promise.withResolvers();
 			__setEmbedFnForTest((input, opts) => {
@@ -878,6 +899,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 		for (const [shape, project] of [
 			['', (results) => results],
 			[' and mapped', (results) => results.map((row) => row)],
+			[' behind iterate()', (results) => ({ iterate: (options) => results.iterate(options) })],
 		]) {
 			it(`a gate closed while its granted search${shape} is handed over releases that search`, async () => {
 				if (!observesSnapshot) return;
@@ -1018,10 +1040,13 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 			const transaction = new DatabaseTransaction();
 			try {
-				const iterator = new OneCursor(null, { transaction, user: { username: 'reader' } })
-					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
-					[Symbol.asyncIterator]();
+				const gated = new OneCursor(null, { transaction, user: { username: 'reader' } }).search({
+					conditions: [{ attribute: 'tag', value: 'odd' }],
+					checkPermission: true,
+				});
+				const iterator = gated[Symbol.asyncIterator]();
 				assert.ok((await iterator.next()).value);
+				gated.onDone();
 				await iterator.return();
 				await waitFor(() => transaction.readTxnsUsed === 1, {
 					message: () => `read snapshot still held (${transaction.readTxnsUsed})`,

@@ -57,12 +57,15 @@ export function searchOpening(result: any): Promise<unknown> | undefined {
 export function awaitSearchOpening(opening: any): Promise<unknown> {
 	return opening.catch((error: unknown) => {
 		try {
-			opening.release?.();
+			opening.release?.()?.then?.(null, logReleaseFailure);
 		} catch (releaseError) {
-			logger.error?.('Releasing a search whose opening failed:', releaseError);
+			logReleaseFailure(releaseError);
 		}
 		throw error;
 	});
+}
+function logReleaseFailure(error: unknown) {
+	logger.error?.('Releasing a search whose opening failed:', error);
 }
 
 const EXTENSION_TYPES = {

@@ -983,16 +983,24 @@ function logCleanupFailure(error: unknown) {
 	harperLogger.warn?.('Closing a search result failed:', error);
 }
 /**
- * Closes a search result nothing has read. A transform of one has no `onDone`; its opening's `release` reaches
- * every search a concatenation joined, where an iterator's return reaches only the first.
+ * A transform of a search result has no `onDone`; its opening's `release` reaches every search a concatenation
+ * joined, where an iterator's return reaches only the first.
  */
 function closeUnread(results: any) {
+	if (!results || typeof results !== 'object') return;
 	cleanUp(() => {
-		if (results?.onDone !== undefined) return results.onDone?.();
-		const release = results?.[SEARCH_OPENING]?.release;
+		if (results.onDone !== undefined) return results.onDone?.();
+		const release = results[SEARCH_OPENING]?.release;
 		if (release) return release();
-		return (results?.[Symbol.asyncIterator] ?? results?.[Symbol.iterator])?.call(results).return?.();
+		return openIterator(results, { async: true }).return?.();
 	});
+}
+function openIterator(results: any, options: any) {
+	return results.iterate
+		? results.iterate(options)
+		: results[Symbol.asyncIterator]
+			? results[Symbol.asyncIterator](options)
+			: results[Symbol.iterator]();
 }
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>) {
@@ -1033,8 +1041,9 @@ function carryThroughTransforms(
 function deferredIterator(
 	options: any,
 	openResults: () => Promise<any>,
-	onFinish: (iterated: boolean) => void,
-	synchronousIterationMessage: string
+	onFinish: () => void,
+	synchronousIterationMessage: string,
+	onOpen?: () => void
 ) {
 	const asynchronous = options === true || options?.async;
 	const iterationOptions = options === true ? { async: true } : { ...options, async: true };
@@ -1045,7 +1054,7 @@ function deferredIterator(
 	const finish = () => {
 		if (completed) return;
 		completed = true;
-		onFinish(opened !== undefined);
+		onFinish();
 	};
 	const failStep = (error: any) => {
 		if (returned) return { value: undefined, done: true };
@@ -1053,15 +1062,12 @@ function deferredIterator(
 		throw error;
 	};
 	const getIterator = () =>
-		(iteratorPromise ||= openResults().then((results: any) =>
-			returned
-				? undefined
-				: (opened = results.iterate
-						? results.iterate(iterationOptions)
-						: results[Symbol.asyncIterator]
-							? results[Symbol.asyncIterator](iterationOptions)
-							: results[Symbol.iterator]())
-		));
+		(iteratorPromise ||= openResults().then((results: any) => {
+			if (returned) return undefined;
+			opened = openIterator(results, iterationOptions);
+			onOpen?.();
+			return opened;
+		}));
 	return {
 		next(value?: any) {
 			if (!asynchronous) {
@@ -8947,11 +8953,9 @@ export function makeTable(options): TableResourceClass {
 									if (!state.allowed) throw new AccessViolation((context as any).user);
 									return state.results;
 								}),
-							(iterated) => {
-								handedOver ||= iterated;
-								gatedResults.onDone?.();
-							},
-							'Can not synchronously iterate while allowRead is asynchronous'
+							() => gatedResults.onDone?.(),
+							'Can not synchronously iterate while allowRead is asynchronous',
+							() => (handedOver = true)
 						);
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;
@@ -9102,7 +9106,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			for (let order = sort; order; order = order.next) {
 				if (fullTextFieldNames) assertRecordField(order.attribute);
-				// the head is checked below, where a condition on it can stand in for its definition
+				// a condition on the head can stand in for its definition
 				if (order !== sort) assertSortAttribute(order.attribute);
 				if (typeof order.attribute !== 'string') continue;
 				const customIndex = indices[order.attribute]?.customIndex;
