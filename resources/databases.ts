@@ -6022,7 +6022,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	// Only once the declaration has succeeded, since a declaration that fails leaves the row indexed. Unregistered,
 	// never dropped: other threads write to the store until their reload unregisters it.
-	for (const name of indicesToUnregister) delete Table.indices[name];
+	for (const name of indicesToUnregister) {
+		if (!attributes.some((attribute) => attribute.name === name && attribute.indexed && !attribute.relationship))
+			delete Table.indices[name];
+	}
 	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
 	const operationBeforeRefresh = Table.indexingOperation;
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();

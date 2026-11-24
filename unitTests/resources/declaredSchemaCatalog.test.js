@@ -357,7 +357,7 @@ describe('A local schema declaration persists what it declares into the attribut
 			}`;
 			await loadGQLSchema(schema);
 			await committed('Unchanged');
-			// a restart: the catalog loads, then the schema is declared over it
+			// baseline at the reload, so a rewrite by the first declaration after a restart counts
 			resetDatabases();
 			const schemaVersion = databases[DATABASE].Unchanged.schemaVersion;
 			await loadGQLSchema(schema);
