@@ -695,7 +695,7 @@ function resolveTarget(req, allCredentials) {
 	);
 }
 
-/** Raised in place of `process.exit(1)` when a caller asks `cliOperations` not to exit; the message is what it printed. */
+/** Thrown in place of `process.exit(1)` when a caller asks `cliOperations` not to exit; the message is what it would have printed. */
 export class CliOperationFailure extends Error {}
 
 /**

@@ -326,7 +326,11 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			console.log(chalk.green(`✓ Wrote ${workflow}. Commit it to ${branch}: pull_request_target runs it from there.`));
 		} catch (error) {
 			workflowWritten = false;
-			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') rmSync(checkout.path, { force: true });
+			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+				try {
+					rmSync(checkout.path, { force: true });
+				} catch {}
+			}
 			unfinished.push(
 				(error as NodeJS.ErrnoException).code === 'EEXIST'
 					? `The cluster is set up, but ${workflow} appeared while setup ran, so setup did not write it. Run setup again to check it.`
@@ -334,17 +338,17 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			);
 		}
 	}
-	if (actionsPolicy && workflowWritten) createActionsPolicy(repository, workflow, actionsPolicy);
-	else if (actionsPolicy) {
-		unfinished.push(
-			`The Actions event policy was not created, since it allows the events of the ${workflow} setup did not write.`
-		);
-	}
 	for (const note of notes) console.log(chalk.yellow(`  ${note}`));
 	try {
 		setupGithubVariable(repository.fullName, PREVIEW_TARGET_VARIABLE, audience);
 	} catch (error) {
 		unfinished.push((error as Error).message);
+	}
+	if (actionsPolicy && workflowWritten) createActionsPolicy(repository, workflow, actionsPolicy);
+	else if (actionsPolicy) {
+		unfinished.push(
+			`The Actions event policy was not created, since it allows the events of the ${workflow} setup did not write.`
+		);
 	}
 	if (unfinished.length > 0) throw usageError(unfinished.join('\n'));
 }

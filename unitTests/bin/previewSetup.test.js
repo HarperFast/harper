@@ -262,7 +262,7 @@ describe('harper preview setup (harper#3609)', () => {
 				/Another Active policy, here or in an organization or enterprise, can still block it: Policy insights/
 			);
 			assert.ok(text.indexOf('can deploy previews of shop') < text.indexOf('Created the Actions event policy'));
-			assert.ok(text.indexOf('Created the Actions event policy') < text.indexOf('Set the HARPER_PREVIEW_TARGET'));
+			assert.ok(text.indexOf('Set the HARPER_PREVIEW_TARGET') < text.indexOf('Created the Actions event policy'));
 		});
 
 		it('allows every event the workflow runs on, read from the default branch', async () => {
@@ -721,7 +721,7 @@ describe('harper preview setup (harper#3609)', () => {
 			assert.deepStrictEqual(await policyCalls(), []);
 		});
 
-		it('is created before the repository variable, so a variable that fails afterwards does not skip it', async () => {
+		it('is created after the repository variable, even when setting the variable fails', async () => {
 			await fakeGh({ variableCreate: 'echo "gh: HTTP 403" >&2; exit 1' });
 			await assert.rejects(setup({ actions_policy: true }), /repository variable was not set/);
 			assert.ok(await wasPosted());
