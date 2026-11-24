@@ -6658,8 +6658,14 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
 			// durably indexed: persisted once the writes it covers have settled and flushed, frozen after any
 			// record fails so the retry re-covers it, and stamped with its own key (see the trigger in table()).
-			// a later declaration took the row: the build stops rather than keep writing into the store
-			let ownershipLost = false;
+			// Rows later declarations took. The build stops once it owns none: an attribute it still owns must
+			// still complete, since the settle handler marks one left unfinished as failed.
+			const lostRows = new Set();
+			const ownsNoRow = () =>
+				generationSuperseded(Table) ||
+				attributes.every(
+					(attribute) => Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildIds.get(attribute)
+				);
 			const persistCheckpoint = async (key) => {
 				if (hadIndexingErrors) return;
 				try {
@@ -6673,7 +6679,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 						attribute.lastIndexedKey = key;
 						attribute.checkpointCertified = key;
 						attribute.checkpointAlgorithm = checkpointAlgorithmOf(i);
-						if (!writeBuildRow(attribute)) ownershipLost = true;
+						if (!writeBuildRow(attribute)) lostRows.add(attribute);
 					}
 				} catch (error) {
 					logger.warn(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
@@ -6685,7 +6691,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			// before it are recomputed rather than sealed into the index.
 			for (;;) {
 				for (const attribute of attributesToClear) {
-					if (buildSuperseded(Table, attributes)) return;
+					if (restarted ? buildSuperseded(Table, attributes) : ownsNoRow()) return;
 					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
 					attribute.dbi.customIndex?.resetDerivedStorage?.();
 					if (attribute.dbi.clearAsync) {
@@ -6778,7 +6784,7 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 						nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 						nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
 						await checkpointing;
-						if (ownershipLost) return;
+						if (lostRows.size === attributesLength) return;
 						resolverStateCurrent = false;
 						checkpointing = persistCheckpoint(key);
 					}

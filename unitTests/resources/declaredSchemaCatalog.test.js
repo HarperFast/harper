@@ -479,6 +479,42 @@ describe('A local schema declaration persists what it declares into the attribut
 			assert.strictEqual(databases[DATABASE].DroppedWhileBuilding.indices.tag, undefined);
 		});
 
+		it('completes the index a build still owns when a declaration drops another it builds', async function () {
+			const declare = (indexedFields) =>
+				table({
+					table: 'PartlyDropped',
+					database: DATABASE,
+					schemaDefined: true,
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'a', type: 'String', ...(indexedFields.includes('a') ? { indexed: true } : {}) },
+						{ name: 'b', type: 'String', ...(indexedFields.includes('b') ? { indexed: true } : {}) },
+					],
+				});
+			declare([]);
+			const { PartlyDropped } = databases[DATABASE];
+			for (let i = 0; i < 200; i++) await PartlyDropped.put(`p${i}`, { id: `p${i}`, a: `a${i % 5}`, b: `b${i % 5}` });
+			await committed('PartlyDropped');
+			declare(['a', 'b']);
+			const build = PartlyDropped.indexingOperation;
+			assert.ok(
+				catalogRow('PartlyDropped', 'a').indexingBuildId && catalogRow('PartlyDropped', 'b').indexingBuildId,
+				'one build claims both'
+			);
+			declare(['b']);
+			await build;
+			await committed('PartlyDropped');
+			const row = catalogRow('PartlyDropped', 'b');
+			assert.strictEqual(row.indexingFailed, undefined);
+			assert.strictEqual(row.indexingBuildId, undefined, 'the build completed b');
+			assert.strictEqual(catalogRow('PartlyDropped', 'a').indexed, undefined);
+			const expected = Array.from({ length: 200 }, (_, i) => i)
+				.filter((i) => i % 5 === 3)
+				.map((i) => `p${i}`)
+				.sort();
+			assert.deepStrictEqual(await searchIds(PartlyDropped, 'b', 'b3'), expected);
+		});
+
 		it('stops a build at its next checkpoint once a declaration drops its index', async function () {
 			const ROWS = 20_000;
 			const declare = (fields) =>
