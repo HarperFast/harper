@@ -180,18 +180,21 @@ describe('REST over HTTP/2 without content-length', function () {
 	});
 
 	after(async function () {
+		const waitClose = (emitter) =>
+			once(emitter, 'close', { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }).catch(() => {});
 		if (h2Client && !h2Client.closed) {
 			h2Client.close();
-			await once(h2Client, 'close').catch(() => {});
+			await waitClose(h2Client);
+			if (!h2Client.closed) h2Client.destroy();
 		}
 		if (h2Server) {
 			h2Server.close();
-			await once(h2Server, 'close').catch(() => {});
+			await waitClose(h2Server);
 		}
 		if (h1Server) {
 			h1Server.closeAllConnections?.();
 			h1Server.close();
-			await once(h1Server, 'close').catch(() => {});
+			await waitClose(h1Server);
 		}
 	});
 
@@ -280,7 +283,6 @@ describe('REST over HTTP/2 without content-length', function () {
 		assert.strictEqual(echoDelete.status, 200, echoDelete.text);
 		assert.deepStrictEqual(echoDelete.json(), { deleted: 'probe', hadData: false });
 
-		// Explicitly bodyless POST (END_STREAM on HEADERS) must leave request.data undefined.
 		const emptyPost = await h2Request(
 			h2Client,
 			{ ':method': 'POST', ':path': '/H2Echo/', 'content-type': 'application/json' },

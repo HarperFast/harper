@@ -1,8 +1,5 @@
 /**
- * End-to-end HTTP/2 REST request-path regressions over direct TLS (`http.http2: true`) and the
- * per-worker cleartext h2c UDS mirror (`HARPER_H2C_UDS=1`): request bodies without `content-length`
- * (POST, PATCH, PUT, QUERY, custom Resource post()), bodyless GET/DELETE, and `GET /openapi`
- * emitting the real `:authority` host instead of `undefined`.
+ * HTTP/2 REST request bodies without content-length and OpenAPI authority host.
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
@@ -13,8 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
-// Bun uses Bun.serve() and uWS uses uWebSockets.js rather than Node's node:http2 server;
-// Windows skips the component-deploy restart path (#549).
+// Only Node's native node:http2 listener path is exercised here; Windows skips component-deploy restarts (#549).
 const skipSuite =
 	process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun' || Boolean(process.env.HARPER_UWS_HTTP);
 
@@ -268,8 +264,8 @@ suite(
 			const socketsDir = join(ctx.harper.dataRootDir, 'sockets');
 			const entries = await readdir(socketsDir);
 			const h2Socket =
-				entries.find((name) => name.endsWith('-9927-h2.sock')) ?? entries.find((name) => name.endsWith('-h2.sock'));
-			assert.ok(h2Socket, `expected an *-9927-h2.sock mirror in ${socketsDir}, found: ${entries.join(', ')}`);
+				entries.find((name) => name.endsWith('9927-h2.sock')) ?? entries.find((name) => name.endsWith('-h2.sock'));
+			assert.ok(h2Socket, `expected a *9927-h2.sock mirror in ${socketsDir}, found: ${entries.join(', ')}`);
 			const socketPath = join(socketsDir, h2Socket);
 			const authority = 'h2c-uds.internal:9927';
 			const session = connect(`http://${authority}`, {

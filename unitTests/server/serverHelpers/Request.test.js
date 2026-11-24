@@ -271,11 +271,9 @@ describe('Request class', function () {
 		it('should return correct hostname from authority or host header', function () {
 			assert.strictEqual(request.hostname, 'example.com:443');
 
-			// HTTP/2 sends :authority and omits Host
 			delete mockNodeRequest.headers.host;
 			assert.strictEqual(request.hostname, 'example.com:443');
 
-			// HTTP/1.1 omits authority and sends Host
 			delete mockNodeRequest.authority;
 			mockNodeRequest.headers.host = 'example.com';
 			assert.strictEqual(request.hostname, 'example.com');
