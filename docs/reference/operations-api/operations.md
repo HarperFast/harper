@@ -2219,7 +2219,7 @@ Valid attribute names are `system`, `time`, `cpu`, `memory`, `disk`, `network`, 
 
 ### `server_info`
 
-<VersionBadge version="v5.4.2" />
+<VersionBadge version="v5.5.0" />
 
 Returns the instance's Harper `version` and its `capabilities`: what it does that a client cannot infer from the version number. Any authenticated user may call it.
 
@@ -2234,7 +2234,7 @@ Returns the instance's Harper `version` and its `capabilities`: what it does tha
 ```
 
 ```json
-{ "version": "5.4.2", "capabilities": ["restore_backup_archive"] }
+{ "version": "5.5.0", "capabilities": ["restore_backup_archive"] }
 ```
 
 ### `set_status` / `get_status` / `clear_status`
@@ -2570,7 +2570,7 @@ Deletes all but the newest `keep_count` managed backups.
 
 Restores a database in place from a managed backup, as a background [job](#jobs). `backup_id` defaults to the latest backup. Restoring the `system` database requires the server to be stopped. A database a loaded component keeps open can be restored with the server stopped, or, from v5.4.0, with `"on_restart": true`, which restores it at the next startup — see [when can a database be restored?](../backups/overview.md#when-can-a-database-be-restored)
 
-From v5.4.2 it also restores a [`get_backup`](#get_backup) archive sent as a multipart `payload` (`harper restore_backup database=dev file=./dev.tar.gz` from the CLI) — see [restoring a `get_backup` archive](../backups/operations.md#restoring-a-get_backup-archive).
+From v5.5.0 it also restores a [`get_backup`](#get_backup) archive sent as a multipart `payload` (`harper restore_backup database=dev file=./dev.tar.gz` from the CLI) — see [restoring a `get_backup` archive](../backups/operations.md#restoring-a-get_backup-archive).
 
 ```json
 { "operation": "restore_backup", "database": "dev", "backup_id": 1 }
