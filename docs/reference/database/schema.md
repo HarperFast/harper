@@ -141,7 +141,7 @@ Eviction removes non-indexed record data, but it does _not_ remove a record from
 
 #### `replicaExpiration` and `replicaRefreshFraction`
 
-<VersionBadge version="v5.4.0" />
+<VersionBadge version="v5.4.0" /> <VersionBadge type="changed" version="v5.5.0" />
 
 <EngineBadge engines="RocksDB" />
 
@@ -155,6 +155,8 @@ On a table whose records live on specific nodes (see [sharding](../replication/s
 - **`replicaRefreshFraction`** — A read of a replica after this fraction of `replicaExpiration` has passed renews the lifetime, so records that stay in use stay local. Must be greater than `0` and at most `1`; `1` gives every replica a fixed lifetime.
 
 [Schema-defined sharding](../replication/residency.md#ownership-reads-and-writes) tables with secondary indexes can retain replicas for key-derived slots. With positive `replicaExpiration`, a non-owner writer also keeps its complete write as a temporary replica under the same expiry and replacement rules. This local copy never counts as owner confirmation. Setting the lifetime to `0` does not drain existing replicas; see the [rollback procedure](../replication/residency.md#rollback).
+
+Before rolling back to a build that predates replica header deadlines, drain the replicas on each node while it still runs the newer build. Pause reads and writes that admit or renew replicas, leave a positive replica lifetime configured, and wait for cleanup. For each eligible table, verify that `describe_table` with `exact_count: true` reports `replica_count: 0` before starting the older executable. For a table that formerly had indexes or used explicit row residency, describe can omit the replica count. If you cannot verify that all replicas have drained, restore a backup taken before the upgrade for the rollback. The older decoder cannot read a row carrying the deadline field. A legacy deadline column family, if present, retains its old entries until the table is dropped.
 
 ```graphql
 # Keep fetched records for a day; a read after six hours renews them

@@ -1123,25 +1123,6 @@ export function isPrimaryCatalogRow(key: unknown, value: any): boolean {
 		key.indexOf('/') === key.length - 1
 	);
 }
-export const REPLICA_DEADLINES_STORE = '@replicas';
-export function replicaDeadlinesCatalogKey(tableName: string): string {
-	return `${tableName}/${REPLICA_DEADLINES_STORE}`;
-}
-function isAuxiliaryCatalogRow(value: any): boolean {
-	return value?.auxiliary === REPLICA_DEADLINES_STORE;
-}
-/**
- * Open (creating when absent) a table's replica-deadline store: an unversioned msgpack store keyed
- * by record id, so a RecordEncoder write here never consumes metadata staged for a primary row
- * (harper#1307). The caller writes the catalog row; RocksDB handles are registered with the owner.
- */
-export function openReplicaDeadlineStore(rootStore: any, tableName: string, generation: string | undefined): any {
-	const dbiInit = createOpenDBIObject(false);
-	const key = replicaDeadlinesCatalogKey(tableName);
-	const store = openRocksDatabase(rootStore.path, { ...dbiInit, name: storeNameFor(key, generation) } as any);
-	ownedStoresFor(rootStore)?.push(store);
-	return markInternalDbiNonVersioned(store);
-}
 /** The primary catalog row of a live table, under either key layout. */
 function primaryCatalogRowFor(table: {
 	dbisDB: any;
@@ -1909,7 +1890,6 @@ interface CatalogTable {
 	attributes: any[];
 	primary?: any;
 	tombstone?: any;
-	replicaDeadlines?: boolean;
 }
 
 /** The catalogue rows of a database, grouped per table the way `initStores` loads them. */
@@ -1937,10 +1917,7 @@ function collectCatalogTables(attributesDbi: any, defaultTable?: string): Map<st
 		if (!tableDef) catalogTables.set(tableName, (tableDef = { attributes: [] }));
 		if (isPrimaryCatalogRow(key, value)) tableDef.primary = value;
 		if (value.dropping) tableDef.tombstone = value;
-		if (isAuxiliaryCatalogRow(value)) {
-			tableDef.replicaDeadlines = true;
-			continue;
-		}
+		if (value.auxiliary) continue;
 		if (attribute_name != null) tableDef.attributes.push(value);
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
 	}
@@ -1959,8 +1936,7 @@ function catalogPrimary({ primary, attributes }: CatalogTable): any {
  * Every column family `initStores` opens for this catalogue, by the same rules it opens them with:
  * a table mid-drop or without a primary-key row is never loaded, and only indexed attributes have a
  * store. A restore checks these against the families the engine already has, because `initStores`
- * would otherwise create a missing one empty and report the table as loaded. A replica-deadline store
- * is not required: a table load rebuilds its entries from the REPLICA rows.
+ * would otherwise create a missing one empty and report the table as loaded.
  */
 export function requiredStoreNames(attributesDbi: any, defaultTable?: string): Map<string, string[]> {
 	const required = new Map<string, string[]>();
@@ -2080,6 +2056,17 @@ function initStores(
 	rootStore.databaseName ??= storeName ?? databaseName;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const attributesDbi = openCatalogStore(rootStore, openedStores);
+	const residencyIds = Symbol.for('residency_by_id');
+	// Explicit-residency stubs can be fetched only in a database with a resident-node mapping.
+	const hasExplicitResidency =
+		rootStore instanceof RocksDatabase &&
+		Array.from(
+			attributesDbi.getKeys({
+				start: [residencyIds, 0],
+				end: [residencyIds, Infinity],
+				limit: 1,
+			})
+		).length > 0;
 
 	let auditStore = rootStore.auditStore;
 	if (!auditStore) {
@@ -2432,7 +2419,7 @@ function initStores(
 					evictionMS: eviction && eviction * 1000,
 					replicaExpirationMS: replicaExpirationMsOf(replicaExpiration),
 					replicaRefreshFraction: replicaRefreshFractionOf(replicaRefreshFraction),
-					replicaDeadlines: Boolean(tableDef.replicaDeadlines),
+					catalogMayHaveReplicas: Boolean(primaryAttribute.residency || hasExplicitResidency),
 					expiryScan: primaryAttribute.expiryScan === true,
 					cacheControl,
 					trackDeletes,
@@ -4533,7 +4520,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		const liveByName = liveAttributes && new Map(liveAttributes.map((attribute) => [attribute.name, attribute]));
 		const durableAttributes: any[] = [];
 		for (const { key, value } of catalog.getRange({ start: tableName + '/', end: tableName + '0' })) {
-			if (!value || value.dropping || isAuxiliaryCatalogRow(value)) continue;
+			if (!value || value.dropping || value?.auxiliary) continue;
 			const name = value.name || key.toString().slice(tableName.length + 1);
 			if (!name) continue;
 			const live = liveByName?.get(name);
@@ -5416,7 +5403,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		for (const { key, value } of reconcileRemovals
 			? attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })
 			: []) {
-			if (value == null || isAuxiliaryCatalogRow(value)) continue;
+			if (value == null || value?.auxiliary) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
 			if (attribute_name) {
@@ -7251,9 +7238,7 @@ function completeInterruptedDrop(
 				isPrimaryCatalogRow(key, value) || (value?.indexed?.type && CUSTOM_INDEXES[value.indexed.type]?.useObjectStore);
 			const store = (rootStore as any).openDB(
 				key,
-				(isAuxiliaryCatalogRow(value)
-					? createOpenDBIObject(false)
-					: createOpenDBIObject(!objectStorage, objectStorage)) as any
+				(value?.auxiliary ? createOpenDBIObject(false) : createOpenDBIObject(!objectStorage, objectStorage)) as any
 			);
 			try {
 				// dropSync (not drop): this function is synchronous, and its callers rely on

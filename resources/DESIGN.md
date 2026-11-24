@@ -249,6 +249,8 @@ A bare `<table>/` row may lack `name` and `isPrimaryKey` (#3225), so use `isPrim
 
 `put` can resolve before the commit saves the blob: finalize source-derived state after `storageInfo.saving` settles.
 
+**On RocksDB a write is encoded before its stream ends**, record and log entry both without the size, and a staged log entry cannot be replaced. So once a commit has waited for a blob `save()` noted as unsized (`blobsAwaitingSize`), it re-stages that handle's writes on a fresh one (`stagedBeforeBlobSizes`, `openReplayTransaction`) and aborts the original unsubmitted. A copy decoded from the first staging is a separate instance: `withRestagedBlobSizes` sizes it by file id, in the re-stage and in the replacement's retry rounds (`streamedBlobDescriptorSize.test.js`). Nested blobs, which no commit waits for, stay unsized, and a `sourceApply` is never re-staged, a policy until harper#4329: most of its writes do not await their blobs.
+
 ## Table drops, the `dropping` tombstone, ghost tables, and lifecycle stamps
 
 Nothing spans column families and catalog rows, so `dropTable()` writes a `dropping` tombstone first; boot (`completeInterruptedDrop`) or a same-name create finishes it. A dead peer generation 409s before any store opens (`isDeadGeneration`). Names with history get a generation suffix (#3102; `dropTableLifecycle.test.js`).
@@ -310,7 +312,7 @@ Each reused wrapper is recorded in `ownedRocksStores` and closed before the root
 
 ## A read keeps a fetched record as a local replica and never relocates it
 
-Replicas are RocksDB-only audit-free `REPLICA` rows with the stub's identity (`_storeReplica`, harper-pro#436). **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, #3640). Demote all replicas before a downgrade (`residencyReplicas.test.js`); window and budget bound reclamation (`replicaStorageReclamation.test.js`).
+Replicas are RocksDB-only audit-free `REPLICA` rows with the stub's identity (`_storeReplica`, harper-pro#436). **Admission keeps only the stub's own head write, and only when no later fold can change it** (`answersStub`, #3640). The header deadline slides independently of record expiry. Cleanup demotes overdue or undated replicas. Demote all replicas before downgrade (`residencyReplicas.test.js`). Pressure reclaim visits keys within the cutoff in primary-key order (formerly oldest deadline first), with a 30 s age floor (`replicaStorageReclamation.test.js`).
 
 ## `replicatedConfirmation` counts only the residents of each written record
 

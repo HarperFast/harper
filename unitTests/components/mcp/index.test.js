@@ -8,6 +8,7 @@ const {
 	_restoreGetConfigObj,
 } = indexMod;
 const { _setSessionTableForTest } = require('#src/components/mcp/session');
+const { _resetApplicationInfoForTest } = require('#src/components/mcp/applicationInfo');
 const { Readable } = require('node:stream');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 
@@ -63,6 +64,7 @@ describe('components/mcp/index', () => {
 	afterEach(() => {
 		_setSessionTableForTest(undefined);
 		_resetApplicationStartedForTest();
+		_resetApplicationInfoForTest();
 	});
 
 	describe('registerMcpProfile (operations side, Fastify)', () => {
@@ -144,14 +146,20 @@ describe('components/mcp/index', () => {
 			assert.equal(scope.calls.length, 0);
 		});
 
-		it('registers via scope.server.http when mcp.application is present', () => {
+		it('registers via scope.server.http when mcp.application is present, with a public server-card route (#4347)', () => {
 			configReturn = { mcp: { application: {} } };
 			const scope = makeFakeScope();
 			handleApplication(scope);
-			assert.equal(scope.calls.length, 1);
+			assert.equal(scope.calls.length, 2);
 			assert.equal(scope.calls[0].options.urlPath, '/mcp');
 			assert.equal(scope.calls[0].options.after, 'authentication');
 			assert.equal(typeof scope.calls[0].handler, 'function');
+			assert.deepEqual(
+				scope.calls[1].options,
+				{ urlPath: '/mcp/server-card' },
+				'no authentication runs before the card'
+			);
+			assert.equal(typeof scope.calls[1].handler, 'function');
 		});
 
 		it('registers on enabled: true and skips on enabled: false', () => {
@@ -162,7 +170,7 @@ describe('components/mcp/index', () => {
 			configReturn = { mcp: { application: { enabled: true } } };
 			const on = makeFakeScope();
 			handleApplication(on);
-			assert.equal(on.calls.length, 1);
+			assert.equal(on.calls.length, 2);
 		});
 
 		it('honors a custom mountPath', () => {
@@ -170,6 +178,7 @@ describe('components/mcp/index', () => {
 			const scope = makeFakeScope();
 			handleApplication(scope);
 			assert.equal(scope.calls[0].options.urlPath, '/agent');
+			assert.equal(scope.calls[1].options.urlPath, '/agent/server-card');
 		});
 
 		it('is idempotent on repeated invocations', () => {
@@ -178,7 +187,7 @@ describe('components/mcp/index', () => {
 			const scopeB = makeFakeScope();
 			handleApplication(scopeA);
 			handleApplication(scopeB);
-			assert.equal(scopeA.calls.length, 1);
+			assert.equal(scopeA.calls.length, 2);
 			assert.equal(scopeB.calls.length, 0);
 		});
 
@@ -230,6 +239,53 @@ describe('components/mcp/index', () => {
 				const result = await anonymousInitialize({ required: true, resourceMetadata: 'https://x.example/"' });
 				assert.equal(result.status, 401);
 				assert.equal(result.headers.get('WWW-Authenticate'), 'Bearer realm="Harper"');
+			});
+		});
+
+		describe('stateless (#4346) and instructions (#4362) from config', () => {
+			async function initialize(stateless, instructions) {
+				configReturn = { mcp: { application: { stateless, instructions } } };
+				const scope = makeFakeScope();
+				handleApplication(scope);
+				const result = await scope.calls[0].handler(
+					{
+						method: 'POST',
+						headers: makeHeaders({ 'content-type': 'application/json', 'accept': 'application/json' }),
+						body: Readable.from([
+							Buffer.from(
+								JSON.stringify({
+									jsonrpc: '2.0',
+									id: 1,
+									method: 'initialize',
+									params: { protocolVersion: '2025-06-18' },
+								})
+							),
+						]),
+					},
+					async () => undefined
+				);
+				_resetApplicationStartedForTest();
+				return result;
+			}
+
+			it('mints no session id when stateless is the boolean true', async () => {
+				const result = await initialize(true);
+				assert.equal(result.status, 200);
+				assert.equal(result.headers['Mcp-Session-Id'], undefined);
+			});
+
+			it('keeps sessions otherwise', async () => {
+				for (const stateless of [undefined, false, 'true']) {
+					const result = await initialize(stateless);
+					assert.match(result.headers['Mcp-Session-Id'], /^[0-9a-f-]{36}$/, String(stateless));
+				}
+			});
+
+			it('returns mcp.application.instructions on initialize, and omits them once unset (#4362)', async () => {
+				const configured = await initialize(true, 'Use list_organizations first.');
+				assert.equal(JSON.parse(configured.body).result.instructions, 'Use list_organizations first.');
+				const unset = await initialize(true, undefined);
+				assert.equal('instructions' in JSON.parse(unset.body).result, false);
 			});
 		});
 	});

@@ -100,6 +100,7 @@ export type Entry = {
 	version: number;
 	localTime: number;
 	expiresAt: number;
+	replicaDeadline?: number;
 	metadataFlags: number;
 	nodeId: number;
 	residencyId: number;
@@ -177,6 +178,10 @@ if (
 // changed the body since, so no older write can (set in Table.ts). RocksDB, audited tables; clear proves
 // nothing. Record-only: harper-pro's copy walk masks it from the audit flags it mirrors.
 export const FULL_WRITE_HEAD = 0x40000;
+// Primary rows only. createAuditEntry strips this bit when a copy sender forwards row flags.
+export const HAS_REPLICA_DEADLINE = 0x200000;
+const PAYLOAD_FLAGS = HAS_EXPIRATION | HAS_RESIDENCY_ID | HAS_RESIDENCY_SLOT | HAS_NODE_ID | HAS_ADDITIONAL_AUDIT_REFS;
+if (VERSION_REUSED === HAS_REPLICA_DEADLINE) throw new Error('VERSION_REUSED collides with HAS_REPLICA_DEADLINE');
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
@@ -211,6 +216,7 @@ export let lastValueEncoding: Buffer | undefined;
 let timestampNextEncoding = 0,
 	metadataInNextEncoding = -1,
 	expiresAtNextEncoding = -1,
+	replicaDeadlineNextEncoding: number | undefined,
 	residencyIdAtNextEncoding = 0,
 	residencySlotAtNextEncoding: number | undefined,
 	nodeIdAtNextEncoding = -1,
@@ -414,6 +420,7 @@ export class RecordEncoder extends StructonEncoder {
 				}
 				let metadata = metadataInNextEncoding;
 				const expiresAt = expiresAtNextEncoding;
+				let replicaDeadline: number | undefined;
 				const residencyId = residencyIdAtNextEncoding;
 				const residencySlot = residencySlotAtNextEncoding;
 				const nodeId = nodeIdAtNextEncoding;
@@ -426,19 +433,28 @@ export class RecordEncoder extends StructonEncoder {
 				let auditRefsToEncode = 0;
 				let logKeyRefsToDrop = 0;
 				let identityRefsToDrop = 0;
+				let writtenPayloadFlags = 0;
 				if (metadata >= 0) {
 					valueStart += 4; // make room for metadata bytes
 					metadataInNextEncoding = -1; // reset indicator to mean no metadata
 					if (expiresAt >= 0) {
 						valueStart += 8; // make room for expiration timestamp
 						expiresAtNextEncoding = -1; // reset indicator to mean no expiration
+						writtenPayloadFlags |= HAS_EXPIRATION;
 						if (!(metadata & HAS_EXPIRATION)) {
 							throw new Error('Expiration included, but not in metadata flags');
 						}
 					}
+					if (metadata & HAS_REPLICA_DEADLINE) {
+						replicaDeadline = replicaDeadlineNextEncoding;
+						if (!Number.isFinite(replicaDeadline)) throw new Error('Replica deadline missing from flagged record');
+						valueStart += 8;
+						replicaDeadlineNextEncoding = undefined;
+					}
 					if (residencyId) {
 						valueStart += 4; // make room for residency id
 						residencyIdAtNextEncoding = 0; // reset indicator to mean no residency id
+						writtenPayloadFlags |= HAS_RESIDENCY_ID;
 						if (!(metadata & HAS_RESIDENCY_ID)) {
 							throw new Error('Residency id included, but not in metadata flags');
 						}
@@ -446,11 +462,13 @@ export class RecordEncoder extends StructonEncoder {
 					if (residencySlot !== undefined) {
 						valueStart += 2;
 						residencySlotAtNextEncoding = undefined;
+						writtenPayloadFlags |= HAS_RESIDENCY_SLOT;
 						if (!(metadata & HAS_RESIDENCY_SLOT)) throw new Error('Residency slot missing its metadata flag');
 					}
 					if (nodeId >= 0) {
 						valueStart += 4; // make room for node id
 						nodeIdAtNextEncoding = -1; // reset indicator to mean no node id
+						writtenPayloadFlags |= HAS_NODE_ID;
 						if (!(metadata & HAS_NODE_ID)) {
 							throw new Error('Node id included, but not in metadata flags');
 						}
@@ -474,11 +492,19 @@ export class RecordEncoder extends StructonEncoder {
 						additionalAuditRefsNextEncoding = undefined;
 						receivedIdentityRefsNextEncoding = undefined;
 						copiedDeleteBoundaryNextEncoding = undefined;
+						writtenPayloadFlags |= HAS_ADDITIONAL_AUDIT_REFS;
 					}
+					// decode reads a payload for each of these flags, so a bare flag would shift the body into the header
+					const missingPayloadFlags = metadata & PAYLOAD_FLAGS & ~writtenPayloadFlags;
+					if (missingPayloadFlags)
+						throw new Error(
+							`Record metadata flags 0x${missingPayloadFlags.toString(16)} are set without their payload`
+						);
 				}
 				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
-				lastValueEncoding = encoded.subarray((encoded.start || 0) + valueStart, encoded.end);
 				let position = encoded.start || 0;
+				const bodyStart = position + valueStart;
+				lastValueEncoding = encoded.subarray(bodyStart, encoded.end);
 				const dataView =
 					encoded.dataView || (encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
 				if (timestamp) {
@@ -498,8 +524,13 @@ export class RecordEncoder extends StructonEncoder {
 				if (metadata >= 0) {
 					dataView.setUint32(position, metadata | (ACTION_32_BIT << 24)); // use the extended action byte
 					position += 4;
+					if (position === bodyStart) return encoded;
 					if (expiresAt >= 0) {
 						dataView.setFloat64(position, expiresAt);
+						position += 8;
+					}
+					if (metadata & HAS_REPLICA_DEADLINE) {
+						dataView.setFloat64(position, replicaDeadline);
 						position += 8;
 					}
 					if (residencyId) {
@@ -690,6 +721,7 @@ export class RecordEncoder extends StructonEncoder {
 					nextByte = buffer[position];
 				}
 				let expiresAt,
+					replicaDeadline,
 					residencyId,
 					residencySlot,
 					nodeId,
@@ -706,11 +738,17 @@ export class RecordEncoder extends StructonEncoder {
 						metadataFlags = nextByte | (buffer[position + 1] << 5);
 						position += 2;
 					}
-					if (metadataFlags & HAS_EXPIRATION) {
+					if (metadataFlags & (HAS_EXPIRATION | HAS_REPLICA_DEADLINE)) {
 						const dataView =
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-						expiresAt = dataView.getFloat64(position);
-						position += 8;
+						if (metadataFlags & HAS_EXPIRATION) {
+							expiresAt = dataView.getFloat64(position);
+							position += 8;
+						}
+						if (metadataFlags & HAS_REPLICA_DEADLINE) {
+							replicaDeadline = dataView.getFloat64(position);
+							position += 8;
+						}
 					}
 					if (metadataFlags & HAS_RESIDENCY_ID) {
 						// we need to read the residency id
@@ -771,6 +809,7 @@ export class RecordEncoder extends StructonEncoder {
 					size: end - start,
 					value,
 				} as any;
+				if (replicaDeadline !== undefined) lastMetadata.replicaDeadline = replicaDeadline;
 				if (residencySlot !== undefined) lastMetadata.residencySlot = residencySlot;
 				if (this.isRocksDB) return lastMetadata;
 				return value;
@@ -843,6 +882,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.metadataFlags = lastMetadata[METADATA];
 			entry.localTime = lastMetadata.localTime;
 			entry.residencyId = lastMetadata.residencyId;
+			if (lastMetadata.replicaDeadline !== undefined) entry.replicaDeadline = lastMetadata.replicaDeadline;
 			if (lastMetadata.residencySlot !== undefined) entry.residencySlot = lastMetadata.residencySlot;
 			entry.nodeId = lastMetadata.nodeId;
 			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
@@ -901,6 +941,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				entry.metadataFlags = lastMetadata[METADATA];
 				entry.localTime = lastMetadata.localTime;
 				entry.residencyId = lastMetadata.residencyId;
+				if (lastMetadata.replicaDeadline !== undefined) entry.replicaDeadline = lastMetadata.replicaDeadline;
 				if (lastMetadata.residencySlot !== undefined) entry.residencySlot = lastMetadata.residencySlot;
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
@@ -997,8 +1038,16 @@ export function setNextEncoding(
 	expiresAt = -1,
 	nodeId = -1,
 	residencyId = 0,
-	residencySlot?: number
+	residencySlot?: number,
+	replicaDeadline?: number,
+	auditRefs?: Pick<Entry, 'additionalAuditRefs' | 'receivedIdentityRefs' | 'copiedDeleteBoundary'>
 ) {
+	replicaDeadlineNextEncoding = replicaDeadline;
+	additionalAuditRefsNextEncoding =
+		auditRefs?.additionalAuditRefs?.length > 0 ? auditRefs.additionalAuditRefs : undefined;
+	receivedIdentityRefsNextEncoding =
+		auditRefs?.receivedIdentityRefs?.length > 0 ? auditRefs.receivedIdentityRefs : undefined;
+	copiedDeleteBoundaryNextEncoding = auditRefs?.copiedDeleteBoundary;
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
 	expiresAtNextEncoding = expiresAt;
@@ -1017,6 +1066,7 @@ export function clearNextEncoding() {
 	timestampNextEncoding = 0;
 	metadataInNextEncoding = -1;
 	expiresAtNextEncoding = -1;
+	replicaDeadlineNextEncoding = undefined;
 	nodeIdAtNextEncoding = -1;
 	residencyIdAtNextEncoding = 0;
 	residencySlotAtNextEncoding = undefined;
@@ -1074,6 +1124,8 @@ export function recordUpdater(
 				: NO_TIMESTAMP;
 		const expiresAt = options?.expiresAt;
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
+		replicaDeadlineNextEncoding = options?.replicaDeadline;
+		if (replicaDeadlineNextEncoding !== undefined) assignMetadata |= HAS_REPLICA_DEADLINE;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;

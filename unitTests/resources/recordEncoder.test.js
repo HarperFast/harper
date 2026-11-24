@@ -634,3 +634,108 @@ describe('PrimaryRocksDatabase non-initStore transactional saveStructures (__dbi
 		assert.strictEqual(errors.length, 0, `expected zero decode errors, got: ${JSON.stringify(errors)}`);
 	});
 });
+
+describe('Replica deadline header', () => {
+	const {
+		setNextEncoding,
+		HAS_REPLICA_DEADLINE,
+		HAS_EXPIRATION,
+		HAS_RESIDENCY_ID,
+	} = require('#src/resources/RecordEncoder');
+	const { REPLICA } = require('#src/resources/Table');
+	const { encodeBlobsWithFilePath } = require('#src/resources/blob');
+	const version = 1750000000000;
+	const deadline = version + 2000;
+	for (const [expiry, golden] of [
+		[-1, '427977420dc000000e0000200000007ba3726f77'],
+		[version + 1000, '427977420dc000000e000030427977420dfe80000000007ba3726f77'],
+	]) {
+		it(`places the deadline at offset ${expiry < 0 ? 12 : 20} and preserves ordinary row bytes`, () => {
+			const encoder = new RecordEncoder({ useRecords: false, randomAccessStructure: false });
+			encoder.isRocksDB = true;
+			const encodeRow = () => Buffer.from(encodeBlobsWithFilePath(() => encoder.encode('row'), 1, undefined));
+			const flags = HAS_RESIDENCY_ID | (expiry < 0 ? 0 : HAS_EXPIRATION);
+			setNextEncoding(version, flags | REPLICA | HAS_REPLICA_DEADLINE, expiry, -1, 123, undefined, deadline);
+			const bytes = encodeRow();
+			assert.equal(bytes.readDoubleBE(expiry < 0 ? 12 : 20), deadline);
+			const entry = encoder.decode(bytes);
+			assert.equal(entry.replicaDeadline, deadline);
+			assert.equal(entry.expiresAt, expiry < 0 ? undefined : expiry);
+			assert.equal(entry.residencyId, 123);
+			assert.equal(entry.value, 'row');
+			setNextEncoding(version, flags, expiry, -1, 123);
+			const ordinary = encodeRow();
+			assert.equal(ordinary.toString('hex'), golden);
+			assert.equal(encoder.decode(ordinary).replicaDeadline, undefined);
+		});
+	}
+});
+
+describe('Header payload flags', () => {
+	const {
+		setNextEncoding,
+		clearNextEncoding,
+		HAS_EXPIRATION,
+		HAS_RESIDENCY_ID,
+		HAS_RESIDENCY_SLOT,
+		HAS_NODE_ID,
+		HAS_ADDITIONAL_AUDIT_REFS,
+	} = require('#src/resources/RecordEncoder');
+	const { encodeBlobsWithFilePath } = require('#src/resources/blob');
+	const version = 1750000000000;
+	const makeRowEncoder = () => {
+		const encoder = new RecordEncoder({ useRecords: false, randomAccessStructure: false });
+		encoder.isRocksDB = true;
+		return encoder;
+	};
+	const encodeRow = (encoder, row = 'row') =>
+		Buffer.from(encodeBlobsWithFilePath(() => encoder.encode(row), 1, undefined));
+	afterEach(() => clearNextEncoding());
+
+	for (const [name, flag] of Object.entries({
+		HAS_EXPIRATION,
+		HAS_RESIDENCY_ID,
+		HAS_RESIDENCY_SLOT,
+		HAS_NODE_ID,
+		HAS_ADDITIONAL_AUDIT_REFS,
+	})) {
+		it(`refuses ${name} without its payload, and the next encode is unaffected`, () => {
+			const encoder = makeRowEncoder();
+			setNextEncoding(version, flag);
+			assert.throws(() => encodeRow(encoder), /set without their payload/);
+			setNextEncoding(version, 0);
+			const entry = encoder.decode(encodeRow(encoder));
+			assert.equal(entry.value, 'row');
+			assert.equal(entry.version, version);
+		});
+	}
+
+	it('writes zero-valued payloads of an expiration, node id and residency slot', () => {
+		const encoder = makeRowEncoder();
+		setNextEncoding(version, HAS_EXPIRATION | HAS_NODE_ID | HAS_RESIDENCY_SLOT, 0, 0, 0, 0);
+		const entry = encoder.decode(encodeRow(encoder));
+		assert.equal(entry.expiresAt, 0);
+		assert.equal(entry.nodeId, 0);
+		assert.equal(entry.residencySlot, 0);
+		assert.equal(entry.value, 'row');
+	});
+
+	it('carries every kind of audit ref passed to setNextEncoding', () => {
+		const encoder = makeRowEncoder();
+		const auditRefs = {
+			additionalAuditRefs: [{ version: version - 3, nodeId: 2 }],
+			receivedIdentityRefs: [
+				{ version: version - 2, nodeId: 3 },
+				{ version: version - 1, nodeId: 4 },
+			],
+			copiedDeleteBoundary: { version: version - 4, nodeId: 5 },
+		};
+		setNextEncoding(version, HAS_ADDITIONAL_AUDIT_REFS | HAS_NODE_ID, -1, 1, 0, undefined, undefined, auditRefs);
+		const entry = encoder.decode(encodeRow(encoder, { counter: 7 }));
+		assert.deepStrictEqual(entry.additionalAuditRefs, auditRefs.additionalAuditRefs);
+		assert.deepStrictEqual(entry.receivedIdentityRefs, auditRefs.receivedIdentityRefs);
+		assert.deepStrictEqual(entry.copiedDeleteBoundary, auditRefs.copiedDeleteBoundary);
+		assert.equal(entry.nodeId, 1);
+		assert.equal(entry.value.counter, 7);
+	});
+});

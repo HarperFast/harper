@@ -39,6 +39,7 @@ import {
 	clearNextEncoding,
 	lastMetadata,
 	METADATA,
+	HAS_ADDITIONAL_AUDIT_REFS,
 } from '../resources/RecordEncoder.ts';
 
 export async function compactOnStart() {
@@ -195,6 +196,26 @@ function getRootStores(database): Set<any> {
 const BLOB_COPY_SUFFIX = '-blobs';
 
 const STRUCTURES_KEY = Symbol.for('structures');
+// The catalog's Symbol-keyed rows that hold without the source's transaction log. The rest (`seq`, `copyBound`)
+// certify coverage of that log, which a migration does not carry.
+const LOG_INDEPENDENT_CATALOG_KEYS = new Set(['residency_by_id', 'residency_by_set', 'next-table-id']);
+
+function describeKey(key: unknown): string {
+	if (typeof key === 'symbol') return 'symbol';
+	return JSON.stringify(key, (_, part) =>
+		typeof part === 'bigint' ? `${part}n` : typeof part === 'symbol' ? 'symbol' : part
+	);
+}
+
+function catalogSymbolName(key: unknown): string | undefined {
+	const head = Array.isArray(key) ? key[0] : key;
+	if (typeof head === 'symbol') return Symbol.keyFor(head) ?? head.description ?? '';
+}
+
+/** The runtime's catalog codec: a plain encoder writes a scalar of 32-63 as a fixint the runtime reads as a struct. */
+function catalogDbiOptions() {
+	return new OpenDBIObject(false);
+}
 
 const MAX_COPY_RETRIES = 1000;
 
@@ -351,15 +372,26 @@ async function copyDbEnvironment(
 	const targetEnv = (loadNativePackage('lmdb') as typeof import('lmdb')).open(
 		new OpenEnvironmentObject(targetDatabasePath)
 	);
-	const targetDbisDb = targetEnv.openDB({ name: INTERNAL_DBIS_NAME });
+	const targetDbisDb = targetEnv.openDB(INTERNAL_DBIS_NAME, catalogDbiOptions() as any);
+	(targetDbisDb as any).encoder.useVersions = false;
 	let written;
+	let observedWrite;
+	let writeFailure;
 	let outstandingWrites = 0;
 	// One cutoff for the whole copy so a long copy classifies every tombstone against the same instant
 	const tombstoneCutoff = Date.now() - auditRetention;
 	// we use a single transaction to get a snapshot, also we can't use snapshot: false on dupsort dbs
 	const transaction = sourceDbisDb.useReadTransaction();
+	// written after the data and audit log they describe, so an interrupted copy claims none of it
+	const symbolKeyedRows: { key: any; value: unknown }[] = [];
 	try {
-		for (const { key, value: attribute } of sourceDbisDb.getRange({ transaction })) {
+		// lmdb-js's default start skips Symbol keys
+		for (const { key, value: attribute } of sourceDbisDb.getRange({ start: null, transaction })) {
+			if (catalogSymbolName(key) !== undefined) {
+				// the target's encoder keeps its own structures dictionary
+				if (key !== STRUCTURES_KEY) symbolKeyedRows.push({ key, value: attribute });
+				continue;
+			}
 			const isPrimary = isPrimaryCatalogRow(key, attribute);
 			let existingCompression, newCompression;
 			if (isPrimary) {
@@ -373,7 +405,7 @@ async function copyDbEnvironment(
 					newCompression = null;
 				}
 			}
-			targetDbisDb.put(key, attribute);
+			targetDbisDb.putSync(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 			const dbiInit = new OpenDBIObject(!isPrimary, isPrimary);
 			// we want to directly copy bytes so we don't have the overhead of
@@ -397,6 +429,9 @@ async function copyDbEnvironment(
 			console.log('copying audit log for', sourceDatabase, 'to', targetDatabasePath);
 			await copyDbi(useRawBytes(sourceAuditDbi), useRawBytes(targetAuditStore), false, transaction);
 		}
+		await written;
+		if (writeFailure) throw writeFailure;
+		for (const { key, value } of symbolKeyedRows) targetDbisDb.putSync(key, value);
 
 		/**
 		 * A primary DBI's shared-structures dictionary is the whole table's decodability: without it
@@ -440,6 +475,7 @@ async function copyDbEnvironment(
 			let retries = MAX_COPY_RETRIES;
 			let start = null;
 			let completed = false;
+			let lastError;
 			while (!completed && retries-- > 0) {
 				try {
 					// getRange, not getKeys + getEntry: on a dupSort index the latter yields one entry per
@@ -462,6 +498,14 @@ async function copyDbEnvironment(
 								continue;
 							}
 							written = targetDbi.put(key, value, isPrimary ? version : undefined);
+							// lmdb-js also rejects a failed commit's commitError, separately
+							if (written !== observedWrite) {
+								observedWrite = written;
+								written.catch((error) => {
+									error?.commitError?.catch?.(() => {});
+									writeFailure ??= error;
+								});
+							}
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
 							bytesCopied += (key?.length || 10) + value.length;
@@ -494,11 +538,12 @@ async function copyDbEnvironment(
 					}
 					completed = true;
 				} catch (error) {
+					lastError = error;
 					// Resume from the last key read, never past it: re-copying that key is idempotent (an
 					// identical put, and an identical dupSort pair, is a no-op) while advancing the key
 					// would jump the copy over everything in between and still reach the success path.
 					console.error(
-						`Error iterating ${sourceDatabase} near key ${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)}, retrying (${retries} retries left):`,
+						`Error iterating ${sourceDatabase} near key ${describeKey(start)}, retrying (${retries} retries left):`,
 						error
 					);
 				}
@@ -507,7 +552,8 @@ async function copyDbEnvironment(
 			if (!completed)
 				throw new Error(
 					`Copy of ${sourceDatabase} to ${targetDatabasePath} could not get past key ` +
-						`${typeof start === 'symbol' ? 'symbol' : JSON.stringify(start)} in ${MAX_COPY_RETRIES} attempts`
+						`${describeKey(start)} in ${MAX_COPY_RETRIES} attempts`,
+					{ cause: lastError }
 				);
 			if (failedRecords > 0)
 				throw new Error(
@@ -777,19 +823,14 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	// path string, so a handle left open on the staging path would hold the DB lock against the
 	// runtime's open of the renamed directory (harper#2012 restart-safety).
 	const targetHandles: RocksDatabase[] = [targetRootStore];
-	// sharedStructuresKey wires the rocksdb-js getStructures/saveStructures closures
-	// so that the plain msgpackr.Encoder used here persists structures within the
-	// __dbis__ CF at Symbol.for('structures'). The runtime attributesDbi RecordEncoder
-	// takes the non-isRocksDB path (handleLocalTimeForGets is never called on it) and
-	// reads from the same CF key via superGetStructures. Without this, own structure
-	// IDs starting at 0x40 are minted in-memory and silently lost on restart →
-	// runtime decoder interprets 0x40 as fixint 64 → "Data read, but end of buffer
-	// not reached 64" (harper#1260).
+	// The runtime reads __dbis__ shared structures from this CF's Symbol.for('structures'), so they must
+	// persist there, not be minted in memory and lost on restart (harper#1260).
 	const targetDbisDb = openRocksDb(targetPath, {
+		...catalogDbiOptions(),
 		disableWAL: false,
 		name: INTERNAL_DBIS_NAME,
-		sharedStructuresKey: Symbol.for('structures'),
-	});
+	} as any);
+	(targetDbisDb.encoder as any).useVersions = false;
 	targetHandles.push(targetDbisDb);
 
 	const copyStructures = (sourceDbi, storeName: string, extraTarget?: RocksDatabase) => {
@@ -819,9 +860,14 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	let transaction;
 	try {
 		transaction = sourceDbisDb.useReadTransaction();
-		for (const { key, value: attribute } of sourceDbisDb.getRange({ transaction })) {
+		for (const { key, value: attribute } of sourceDbisDb.getRange({ start: null, transaction })) {
+			const symbolName = catalogSymbolName(key);
+			if (symbolName !== undefined) {
+				if (LOG_INDEPENDENT_CATALOG_KEYS.has(symbolName)) targetDbisDb.putSync(key, attribute);
+				continue;
+			}
 			const isPrimary = isPrimaryCatalogRow(key, attribute);
-			targetDbisDb.put(key, attribute);
+			targetDbisDb.putSync(key, attribute);
 			if (!(isPrimary || attribute.indexed)) continue;
 
 			// Open source LMDB dbi with default encoding so values are decoded.
@@ -893,6 +939,8 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 
 			console.log('migrating', key, 'from', sourceDatabase, 'to RocksDB');
 			const copied = await copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder);
+			if (copied?.failedRecords > 0)
+				throw new Error(`Migration of ${sourceDatabase}/${key} failed to write ${copied.failedRecords} record(s)`);
 			if (copied?.firstVersioned !== undefined) {
 				const { firstVersioned, versionlessKeys } = copied;
 				// Invariant tripwire (#2012): a versioned record must round-trip with its 8-byte
@@ -901,7 +949,6 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 				// also lead with 0x42 (structure ref id 2). Failing here keeps the migration
 				// incomplete (LMDB source intact, migrateOnStart flag retained) instead of
 				// shipping a database whose records silently lost versions and record prototypes.
-				await firstVersioned.written;
 				await written;
 				const roundTrip = targetDbi.getBinarySync(firstVersioned.key);
 				const roundTripVersion = roundTrip && roundTrip.length >= 8 ? roundTrip.readDoubleBE(0) : undefined;
@@ -1017,6 +1064,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 	async function copyDbiToRocks(sourceDbi, targetDbi, isPrimary, transaction, observerEncoder?) {
 		let recordsCopied = 0;
 		let skippedRecord = 0;
+		let failedRecords = 0;
 		let firstVersioned;
 		// keys (normalized for compound keys) of source records with no version, deliberately
 		// encoded plain — the verification sweep exempts them by key, never by byte sniffing
@@ -1024,6 +1072,11 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 		const MAX_RETRIES = 1000;
 		let retries = MAX_RETRIES;
 		let start = null;
+		let hasStart = false;
+		// A resumed primary read starts after the last key read: re-putting that record would save its blobs again.
+		// An index read resumes at it, since its remaining duplicates share that key.
+		let resumed = false;
+		let lastError;
 		while (retries-- > 0) {
 			try {
 				if (isPrimary) {
@@ -1032,13 +1085,18 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 						value,
 						version,
 						expiresAt: entryExpiresAt,
+						replicaDeadline: entryReplicaDeadline,
 						nodeId: entryNodeId,
 						residencyId: entryResidencyId,
 						residencySlot: entryResidencySlot,
 						metadataFlags: entryMetadataFlags,
-					} of sourceDbi.getRange({ start, transaction, versions: true })) {
+						additionalAuditRefs: entryAdditionalAuditRefs,
+						receivedIdentityRefs: entryReceivedIdentityRefs,
+						copiedDeleteBoundary: entryCopiedDeleteBoundary,
+					} of sourceDbi.getRange({ start, transaction, versions: true, exclusiveStart: resumed })) {
 						try {
 							start = key;
+							hasStart = true;
 							if (typeof key === 'symbol') {
 								skippedRecord++;
 								continue;
@@ -1051,13 +1109,22 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 							// entry fields are set by handleLocalTimeForGets for patched stores
 							const sourceMeta = lastMetadata;
 							if (version) {
+								const metadataFlags = entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0;
 								setNextEncoding(
 									version,
-									entryMetadataFlags ?? sourceMeta?.[METADATA] ?? 0,
+									metadataFlags,
 									entryExpiresAt ?? sourceMeta?.expiresAt ?? -1,
 									entryNodeId ?? sourceMeta?.nodeId ?? -1,
 									entryResidencyId ?? sourceMeta?.residencyId ?? 0,
-									entryResidencySlot ?? sourceMeta?.residencySlot
+									entryResidencySlot ?? sourceMeta?.residencySlot,
+									entryReplicaDeadline ?? sourceMeta?.replicaDeadline,
+									metadataFlags & HAS_ADDITIONAL_AUDIT_REFS
+										? {
+												additionalAuditRefs: entryAdditionalAuditRefs ?? sourceMeta?.additionalAuditRefs,
+												receivedIdentityRefs: entryReceivedIdentityRefs ?? sourceMeta?.receivedIdentityRefs,
+												copiedDeleteBoundary: entryCopiedDeleteBoundary ?? sourceMeta?.copiedDeleteBoundary,
+											}
+										: undefined
 								);
 							} else {
 								// A flags-word-only prefix (no leading timestamp) is misparsed by the RocksDB
@@ -1069,13 +1136,11 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								versionlessKeys.add(typeof key === 'object' ? JSON.stringify(key) : key);
 							}
 							written = encodeBlobsWithFilePath(
-								() => targetDbi.put(key, value, version),
+								() => targetDbi.putSync(key, value, version),
 								typeof key === 'number' ? key : recordsCopied,
 								sourceRootStore
 							);
-							// Capture the put promise so the tripwire awaits THIS record's write, not
-							// an ordering assumption about later puts in the batch.
-							if (version) firstVersioned ??= { key, version, written };
+							if (version) firstVersioned ??= { key, version };
 							// Feed only the record's SHAPE to the observer so it accumulates the canonical
 							// classic structure (key list) for this shape; the encoded output is discarded.
 							// A classic/named structure depends only on the keys, so we stub every leaf value
@@ -1096,6 +1161,9 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								outstandingWrites = 0;
 							}
 						} catch (error) {
+							failedRecords++;
+							// an aborted write's staged header would prefix the next encode, on any store
+							clearNextEncoding();
 							console.error(
 								'Error migrating record',
 								typeof key === 'symbol' ? 'symbol' : key,
@@ -1109,10 +1177,11 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 					for (const { key, value } of sourceDbi.getRange({ start, transaction })) {
 						try {
 							start = key;
+							hasStart = true;
 							if (typeof key === 'symbol') {
 								continue;
 							}
-							written = targetDbi.put(key, value);
+							written = targetDbi.putSync(key, value);
 							recordsCopied++;
 							if (transaction.openTimer) transaction.openTimer = 0;
 							if (outstandingWrites++ > 5000) {
@@ -1121,6 +1190,7 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								outstandingWrites = 0;
 							}
 						} catch (error) {
+							failedRecords++;
 							console.error(
 								'Error migrating index record',
 								typeof key === 'symbol' ? 'symbol' : key,
@@ -1132,29 +1202,22 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 					}
 				}
 				console.log('finish migrating, copied', recordsCopied, 'entries, skipped', skippedRecord, 'delete records');
-				return { firstVersioned, versionlessKeys };
+				return { firstVersioned, versionlessKeys, failedRecords };
 			} catch (err) {
+				// resuming from the last key read, never past it, skips no unread entry
+				resumed = hasStart;
+				lastError = err;
 				console.error(
-					`Error iterating dbi for ${sourceDatabase} near key ${JSON.stringify(start)}, retrying (${retries} retries left):`,
+					`Error iterating dbi for ${sourceDatabase} near key ${describeKey(start)}, retrying (${retries} retries left):`,
 					err
 				);
-				if (typeof start === 'string') {
-					if (start === 'z') {
-						console.error('Reached end of dbi', start, 'for', sourceDatabase);
-						return;
-					}
-					start = start.slice(0, -2) + 'z';
-				} else if (typeof start === 'number') start++;
-				else {
-					console.error('Unknown key type', start, 'for', sourceDatabase);
-					return;
-				}
 			}
 		}
 		// Fail loudly so migrateOnStart's try/catch preserves the migrateOnStart flag and
 		// skips moving the LMDB files to backup, instead of leaving a partial copy.
 		throw new Error(
-			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${JSON.stringify(start)}`
+			`Migration of ${sourceDatabase} exceeded ${MAX_RETRIES} retries, giving up at key ${describeKey(start)}`,
+			{ cause: lastError }
 		);
 	}
 }

@@ -90,9 +90,22 @@ test(
 				});
 			await waitFor(async () => (await request('/PlaneStatus/')).body.readiness.state === 'ready', 30_000);
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
+			const seedRetryDeadline = performance.now() + 120_000;
 			for (let start = 0; start < records.length; start += 500) {
-				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
-				assert(result.status < 300 && !result.aborted, JSON.stringify(result));
+				const batch = records.slice(start, start + 500);
+				await waitFor(
+					async () => {
+						const result = await request('/PlaneProbe/', 'PUT', batch);
+						if (result.status === 503 && result.body?.code === 'DERIVED_INDEX_LAGGING') return false;
+						assert(result.status < 300 && !result.aborted, JSON.stringify(result));
+						return true;
+					},
+					{
+						timeout: Math.max(0, seedRetryDeadline - performance.now()),
+						interval: 500,
+						message: `seed batch starting at id ${batch[0].id} stayed backpressured through the seed retry deadline (503 DERIVED_INDEX_LAGGING)`,
+					}
+				);
 			}
 			for (const path of ['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/']) {
 				const lagLinesBefore = lagLogLines();

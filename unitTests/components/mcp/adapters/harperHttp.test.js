@@ -350,6 +350,54 @@ describe('mcp/adapters/harperHttp', () => {
 			assert.equal(result.headers.get('WWW-Authenticate'), `Bearer error="invalid_token", resource_metadata="${PRM}"`);
 		});
 
+		describe('a token a validator refused (#4352)', () => {
+			const { markRejectingValidator } = require('#src/security/credentialRejection');
+			const OTHER_PRM = 'https://other.example.com/.well-known/oauth-protected-resource/mcp';
+
+			function refusedBy(resourceMetadata) {
+				const request = initializeRequest();
+				const error = markRejectingValidator(request, credentialRejectionError('token expired', 401), resourceMetadata);
+				deferCredentialRejection(request, error, 'Bearer');
+				return request;
+			}
+
+			it('names the refusing validator when the validators disagree', async () => {
+				registerChallengeValidator();
+				registerChallengeValidator(OTHER_PRM);
+				const handler = createHarperHttpHandler('application', { required: true });
+
+				const result = await handler(refusedBy(OTHER_PRM), next);
+
+				assert.equal(result.status, 401);
+				assert.equal(
+					result.headers.get('WWW-Authenticate'),
+					`Bearer error="invalid_token", resource_metadata="${OTHER_PRM}"`
+				);
+			});
+
+			it("names no other validator's metadata when the refusing one declared none", async () => {
+				registerChallengeValidator();
+				const handler = createHarperHttpHandler('application', { required: true });
+
+				const result = await handler(refusedBy(undefined), next);
+
+				assert.equal(result.status, 401);
+				assert.equal(result.headers.get('WWW-Authenticate'), 'Bearer realm="Harper", error="invalid_token"');
+			});
+
+			it('still prefers the configured metadata URL', async () => {
+				registerChallengeValidator(OTHER_PRM);
+				const handler = createHarperHttpHandler('application', { required: true, resourceMetadata: PRM });
+
+				const result = await handler(refusedBy(OTHER_PRM), next);
+
+				assert.equal(
+					result.headers.get('WWW-Authenticate'),
+					`Bearer error="invalid_token", resource_metadata="${PRM}"`
+				);
+			});
+		});
+
 		it('keeps the Basic challenge for a rejected Basic credential', async () => {
 			const handler = createHarperHttpHandler('application', { required: true, resourceMetadata: PRM });
 			const request = initializeRequest();

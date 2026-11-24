@@ -1733,3 +1733,31 @@ describe('processLocalTransaction call-site redaction (real log file)', function
 		);
 	});
 });
+
+describe('server.setMcpInstructions (#4362)', () => {
+	const { server } = require('#src/server/Server');
+	const { handleInitialize } = require('#src/components/mcp/lifecycle');
+	const { _resetApplicationInfoForTest } = require('#src/components/mcp/applicationInfo');
+	afterEach(() => _resetApplicationInfoForTest());
+
+	it('sets the instructions the MCP application profile returns on initialize', async () => {
+		server.setMcpInstructions('Set through the server API.');
+		const { result } = await handleInitialize({ protocolVersion: '2025-06-18' }, 'alice', {
+			profile: 'application',
+			stateless: true,
+		});
+		assert.equal(result.instructions, 'Set through the server API.');
+	});
+});
+
+describe('server.setMcpServerCard (#4347)', () => {
+	const { server } = require('#src/server/Server');
+	const { applicationServerCard, _resetApplicationInfoForTest } = require('#src/components/mcp/applicationInfo');
+	afterEach(() => _resetApplicationInfoForTest());
+
+	it('registers the card the MCP application profile serves, and validates it', () => {
+		server.setMcpServerCard({ name: 'com.example/app', description: 'Set through the server API.' });
+		assert.equal(applicationServerCard().card.description, 'Set through the server API.');
+		assert.throws(() => server.setMcpServerCard({ name: 'app' }), TypeError);
+	});
+});

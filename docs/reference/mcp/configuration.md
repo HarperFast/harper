@@ -18,6 +18,8 @@ mcp:
 
 That boots both profiles with default settings: the operations profile mounts at `/mcp` on the operations server, the application profile mounts at `/mcp` on the application HTTP server, and the default allow lists / rate limits apply.
 
+A key Harper does not know under `mcp`, `mcp.operations`, `mcp.application`, their `rateLimit` or `mcp.session` fails validation, so a misspelled setting such as `authenticaton:` stops Harper from starting instead of being ignored. <VersionBadge type="changed" version="v5.4.2" /> Before v5.4.2 only `mcp.application.authentication` refused unknown keys.
+
 ## `mcp.operations.*`
 
 Configures the operations-profile MCP endpoint that wraps Harper's operation catalog.
@@ -102,6 +104,119 @@ Set to `false` to stop generating verb tools from exported Resources, so the onl
 
 `allow`, `deny` and `generatedTools` are read whenever the application tool set is rebuilt (at startup, and when schemas or registered Resources change), not on every request as the operations profile's lists are, so an edited value may not apply until the next rebuild or restart.
 
+### `mcp.application.stateless`
+
+<VersionBadge version="v5.4.2" />
+
+Type: `boolean`
+
+Default: `false`
+
+Set to `true` to serve the application profile without sessions, so that any node of a deployment can answer any request. Use it when the nodes sit behind DNS load balancing or another router that can send a client's consecutive requests to different nodes. Sessions are stored in `system.mcp_session`, which is not replicated, so without this setting a request that reaches another node gets `404` for its `Mcp-Session-Id` and the client has to initialize again.
+
+With `stateless: true`:
+
+- `initialize` returns no `Mcp-Session-Id` and stores nothing. Clients then send none, as the MCP Streamable HTTP transport (2025-06-18 and 2025-03-26) allows.
+- Every `POST` is authenticated and answered on its own. An `Mcp-Session-Id` header, if a client sends one, is ignored, and any supported `MCP-Protocol-Version` is accepted.
+- `GET` and `DELETE` answer `405` with `Allow: POST`: there is no notification stream to open and no session to end.
+- `initialize` advertises `tools`, `resources`, `prompts` and `completions` without `listChanged`, `resources.subscribe` or `logging`. `resources/subscribe`, `resources/unsubscribe` and `logging/setLevel` answer the JSON-RPC error `-32601`.
+- Tool calls still stream progress when the client asks for it, but a tool cannot send server-to-client requests (sampling, elicitation, roots), and `notifications/cancelled` has no effect. A streaming call is still stopped when its connection closes.
+- `sessionId` is absent from a tool's context, a prompt's render context, the [durable quota handler](#durable-quota-handler)'s argument and audit entries.
+- The per-session [rate limits](#mcpprofileratelimit) apply per user and client address instead, in memory on each thread of each node. Past 100,000 tracked pairs on a thread, new pairs share 64 buckets.
+
+Turn it on for every node of a deployment at the same restart: first upgrade every node to a version that has it, then set it on every node and restart them together. While some nodes are stateless and others are not, a request that moves from a stateless node to a stateful one gets `400` (no `Mcp-Session-Id`), and one that moves the other way loses its session. Once every node is stateless, a client connected before the switch keeps working: its `Mcp-Session-Id` is ignored. The value must be the boolean `true`; a quoted `"true"` fails validation. It is read when the profile starts, so a change applies after a restart.
+
+### `mcp.application.instructions`
+
+<VersionBadge version="v5.4.2" />
+
+Type: `string` (at most 16,384 characters)
+
+Default: unset
+
+Text the application profile returns as `instructions` in its `initialize` result. A client can give it to its model as guidance about the whole server: what it is for, how its tools fit together, and what it cannot do. Use it for orientation that would otherwise have to be repeated in tool descriptions. A longer or empty string, or a value that is not a string, fails validation. When it is unset, `initialize` has no `instructions` field unless a component supplies one with [`server.setMcpInstructions`](#serversetmcpinstructionsinstructions). The operations profile never sends `instructions`. It is read when the profile starts, so a change applies after a restart.
+
+### `server.setMcpInstructions(instructions)`
+
+<VersionBadge version="v5.4.2" />
+
+Sets the `instructions` from a component, so an application can supply them without editing the node's configuration:
+
+```javascript
+// resources.js
+server.setMcpInstructions(
+	'Read-only access to your organizations and clusters. To change anything, open the Studio link a result gives you.'
+);
+```
+
+`mcp.application.instructions` in config takes precedence over it. The latest call wins; `server.setMcpInstructions(undefined)` (or `''`) clears it. A value that is not a string throws a `TypeError`, and one longer than 16,384 characters throws a `RangeError`, leaving the previous value in place. Each thread keeps its own value, like the components that set it, so call it at module load as in the example.
+
+### `mcp.application.serverCard`
+
+<VersionBadge version="v5.4.2" />
+
+Type: `object`
+
+Default: unset
+
+The [MCP server card](https://modelcontextprotocol.io/seps/2127-mcp-server-cards) (SEP-2127) the application profile serves at `<mountPath>/server-card` (`/mcp/server-card` by default), so that a client can discover the server before it connects. The fields are:
+
+- `name` - a namespaced name such as `com.example/weather`: 3 to 200 characters, letters, digits, `.` and `-`, then `/`, then letters, digits, `.`, `_` and `-`.
+- `description` - 1 to 100 characters.
+- `title` - optional, 1 to 100 characters.
+- `version` - optional, the server's version (not a range such as `^1.2.3` or `1.x`); Harper's version when unset.
+- `websiteUrl` - optional, an absolute `http` or `https` URL.
+- `icons` - optional, at most 32 objects with `src` (an `http`, `https` or `data:` URI) and optional `mimeType`, `sizes` (such as `["64x64"]` or `["any"]`) and `theme` (`light` or `dark`).
+- `url` - optional, the public `https` URL of the MCP endpoint, which the card lists in `remotes`. When unset, the URL is built from the protocol and host of the request for the card, and the response varies by `Host`. Set it when Harper sits behind a proxy that changes either.
+
+An unknown or invalid field fails validation. The fields may also come from a component through [`server.setMcpServerCard`](#serversetmcpservercardcard); a field set here takes precedence over the same field set there. Until `name` and `description` are both supplied, `<mountPath>/server-card` answers `404`. It is read when the profile starts, so a change applies after a restart.
+
+The card is public. It answers without credentials, even when [`authentication.required`](#mcpapplicationauthenticationrequired) is set, and ignores any credential a request carries. Do not put anything in it you would not publish. The response is:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/mcp-server-card+json
+Access-Control-Allow-Origin: *
+Cache-Control: public, max-age=3600
+ETag: "..."
+```
+
+```json
+{
+	"$schema": "https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json",
+	"name": "com.example/weather",
+	"description": "Forecasts and alerts for any city.",
+	"version": "1.2.0",
+	"remotes": [
+		{
+			"type": "streamable-http",
+			"url": "https://weather.example.com/mcp",
+			"supportedProtocolVersions": ["2025-06-18", "2025-03-26"]
+		}
+	]
+}
+```
+
+`HEAD` returns the same headers, a request whose `If-None-Match` matches the `ETag` gets `304`, and `OPTIONS` answers a browser's preflight with `204`. Other methods get `405`. Harper does not serve `/.well-known/ai-catalog.json`, which SEP-2127 makes optional.
+
+### `server.setMcpServerCard(card)`
+
+<VersionBadge version="v5.4.2" />
+
+Supplies the server card fields from a component, with the same fields and rules as [`mcp.application.serverCard`](#mcpapplicationservercard):
+
+```javascript
+// resources.js
+server.setMcpServerCard({
+	name: 'com.example/weather',
+	title: 'Weather',
+	description: 'Forecasts and alerts for any city.',
+	websiteUrl: 'https://weather.example.com',
+});
+```
+
+The card is checked and copied when you call it, so an invalid field throws a `TypeError` at load and leaves the previous card in place, and changing the object afterwards changes nothing. `name` and `description` may come from config instead. The latest call wins, and `server.setMcpServerCard(undefined)` clears it. Each thread keeps its own card, like the components that set it, so call it at module load.
+
 ### `mcp.application.searchMaxResults`
 
 Type: `integer` (minimum 1)
@@ -131,7 +246,7 @@ Some clients, such as Claude's connectors, start their OAuth flow only after thi
 
 The metadata URL is [`resourceMetadata`](#mcpapplicationauthenticationresourcemetadata) when set. Otherwise it is the URL the registered [Bearer validators](../http/api.md#serverregisterbearervalidatorvalidator-options) declare with `challenge`, provided every validator that declares one names the same URL. With neither, the challenge is `Bearer realm="Harper"`, and Harper logs a warning once.
 
-A Bearer token that Harper or a validator rejects is answered with the same metadata URL and `error="invalid_token"`, whether or not this setting is on. Any Harper principal still authenticates: Basic credentials, Harper's own tokens, a session, a validator's token, or a connection trusted by [`authorizeLocal`](../security/configuration.md#authorizelocal). The value must be the boolean `true`; a quoted `"true"` fails validation.
+A Bearer token that Harper or a validator rejects is answered with `error="invalid_token"` and, when one is known, a metadata URL, whether or not this setting is on. <VersionBadge type="changed" version="v5.4.2" /> When a validator refused the token (it threw a credential rejection, the token it accepted has expired, or the user it named does not exist or is inactive), the URL is the one that validator declared, or none when it declared none, since another validator's authorization server did not issue the token. Otherwise it is the URL chosen as above. `resourceMetadata` still takes precedence. Any Harper principal still authenticates: Basic credentials, Harper's own tokens, a session, a validator's token, or a connection trusted by [`authorizeLocal`](../security/configuration.md#authorizelocal). The value must be the boolean `true`; a quoted `"true"` fails validation.
 
 The operations profile has no such setting, because Bearer validators do not run on the operations API.
 
@@ -287,7 +402,7 @@ server.setMcpQuotaHandler(async ({ identity, tool, user, profile, sessionId }) =
 
 ### `server.setMcpQuotaHandler(handler)`
 
-Registers the durable quota policy (opt-in — no handler registered means calls are allowed). The handler is called before each admitted `tools/call` with `{ identity, tool, user, profile, sessionId }` (`identity` may be `undefined` when no socket IP or header value is available). Return `true` (or any truthy non-object) to allow, or `{ allowed: false, message?, retryAfterSeconds? }` to deny — denials surface as an `isError` tool result with `kind: 'quota_exceeded'` plus the author-supplied `message`/`retryAfterSeconds`. Pass `undefined` to clear the handler.
+Registers the durable quota policy (opt-in — no handler registered means calls are allowed). The handler is called before each admitted `tools/call` with `{ identity, tool, user, profile, sessionId }` (`identity` may be `undefined` when no socket IP or header value is available, and `sessionId` is `undefined` on a [stateless](#mcpapplicationstateless) application profile). Return `true` (or any truthy non-object) to allow, or `{ allowed: false, message?, retryAfterSeconds? }` to deny — denials surface as an `isError` tool result with `kind: 'quota_exceeded'` plus the author-supplied `message`/`retryAfterSeconds`. Pass `undefined` to clear the handler.
 
 Because the policy is a plain function and not a Resource, it exposes no `update_/delete_` MCP tools or REST/etc. surface — unlike an exported class, whose inherited CRUD would let a permitted client reset its own counter. Keep any table the handler uses for storage unexported (no `@export`), as above, so it stays off every transport. The latest registration wins, so a reloaded component replaces the previous handler; the single handler receives `profile`, so gate the operations and application profiles in code.
 
@@ -300,7 +415,7 @@ Semantics to know:
 
 ## `mcp.session.*`
 
-Settings that apply to MCP session lifecycle on both profiles.
+Settings that apply to MCP session lifecycle on both profiles. A [stateless](#mcpapplicationstateless) application profile has no sessions, so they do not apply to it.
 
 ### `mcp.session.idleTimeoutSeconds`
 

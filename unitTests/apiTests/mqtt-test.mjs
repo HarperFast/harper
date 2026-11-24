@@ -1496,13 +1496,14 @@ describe('test MQTT connections and commands', function () {
 		// never go through onSocket with both ports) missed it four review rounds in a row — this
 		// test goes through the real wiring and asserts the artifact a proxy actually consumes.
 		this.timeout(10000);
-		const { existsSync, readFileSync: readFile, readdirSync, unlinkSync } = await import('node:fs');
+		const { existsSync, readFileSync: readFile, readdirSync, unlinkSync, writeFileSync } = await import('node:fs');
 		const { join } = await import('node:path');
+		const { recordUdsBindSuccess } = await import('#src/server/http');
 		const preexistingServers = { ...SERVERS };
 		const preexistingPortServer = new Map([...portServer.entries()].map(([key, servers]) => [key, [...servers]]));
 		const preexistingUds = env_get('tls_unixDomainSockets');
 		setProperty('tls_unixDomainSockets', true);
-		const securePort = 28887;
+		const securePort = 28888; // unique: an earlier test leaves a 28887 mirror registered
 		const socketsDir = join(environmentManager.getHdbBasePath(), 'sockets');
 		try {
 			// Clear any yaml a crashed prior run left behind — a stale populated file would false-pass
@@ -1516,8 +1517,16 @@ describe('test MQTT connections and commands', function () {
 			}
 			// Note: like the sibling socket tests above, this leaves the selector's liveReload
 			// registration in keys.ts's module-global rebuild set — onSocket exposes no teardown.
-			global.server.socket(() => {}, { port: 21887, securePort });
-			// The yaml is written when the TLS selector's `.ready` resolves (or on a later rebuild);
+			global.server.socket(() => {}, { port: 21888, securePort });
+			// A mirror publishes its yaml only once its own bind is recorded (harper#4436). This registration
+			// comes after startup's listen, so a plain file stands in for the bind: ownership is its inode.
+			const mirrorKey = Object.keys(SERVERS).find(
+				(key) => key.endsWith(`-${securePort}.sock`) && !preexistingServers[key]
+			);
+			assert.ok(mirrorKey, `securePort ${securePort} should create a UDS mirror when tls_unixDomainSockets is on`);
+			writeFileSync(mirrorKey, '');
+			recordUdsBindSuccess(mirrorKey);
+			// The yaml is written once the TLS selector's `.ready` resolves (or on a later rebuild);
 			// poll for a yaml for our securePort that actually carries certificates.
 			const deadline = Date.now() + 8000;
 			let yamlPath;
@@ -1542,7 +1551,7 @@ describe('test MQTT connections and commands', function () {
 			);
 		} finally {
 			setProperty('tls_unixDomainSockets', preexistingUds);
-			// Close the servers this call created (TLS 28887, TCP 21887, and the UDS mirror) before
+			// Close the servers this call created (TLS 28888, TCP 21888, and the UDS mirror) before
 			// dropping them from the registry, so they can't exert timing pressure on later tests in
 			// this mocha process even if something bound them.
 			for (const key of Object.keys(SERVERS)) {

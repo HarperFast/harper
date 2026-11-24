@@ -25,12 +25,17 @@ import {
 	type JsonRpcId,
 	type JsonRpcMessage,
 } from './jsonrpc.ts';
-import { handleInitialize, handleInitialized, SUPPORTED_PROTOCOL_VERSIONS } from './lifecycle.ts';
+import {
+	handleInitialize,
+	handleInitialized,
+	SUPPORTED_PROTOCOL_VERSIONS,
+	type InitializeOutcome,
+} from './lifecycle.ts';
 import { emitAuditEntry } from './audit.ts';
 import { emitMcpLogToSession, isValidMcpLogLevel, setSessionLogLevel } from './logging.ts';
 import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
-import { tryAdmit, tryAdmitInitialize, resolveClientIdentity } from './rateLimit.ts';
+import { tryAdmit, tryAdmitInitialize, tryAdmitStateless, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
 import { deleteSession, loadSession, patchSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
@@ -88,6 +93,11 @@ export interface NormRequest {
 	 * and the OpenAPI server URL are built from it.
 	 */
 	baseUrl?: string;
+	/**
+	 * Serve every request without a session (`mcp.application.stateless`): no `Mcp-Session-Id`, no
+	 * `system.mcp_session` row, and no GET stream, so any node can answer any request.
+	 */
+	stateless?: boolean;
 }
 
 export interface NormResponse {
@@ -96,6 +106,8 @@ export interface NormResponse {
 	jsonBody?: unknown;
 	sseIterable?: AsyncIterable<unknown>;
 }
+
+const SESSION_METHODS = new Set(['resources/subscribe', 'resources/unsubscribe', 'logging/setLevel']);
 
 const SESSION_HEADER = 'mcp-session-id';
 const PROTOCOL_HEADER = 'mcp-protocol-version';
@@ -122,6 +134,7 @@ export async function handleMcpRequest(request: NormRequest): Promise<NormRespon
 		if (request.profile === 'application') {
 			ensureApplicationToolsFresh();
 		}
+		if (request.stateless && request.method !== 'POST') return { status: 405, headers: { Allow: 'POST' } };
 		if (request.method === 'POST') {
 			// POST always yields a single JSON object in v1 (no per-request SSE).
 			if (!acceptsMediaType(request.headers[ACCEPT_HEADER], 'application/json')) {
@@ -225,48 +238,60 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 
 	if (method === 'initialize') return dispatchInitialize(request, message, messageId);
 
-	const sessionId = request.headers[SESSION_HEADER];
-	if (!sessionId) {
-		return jsonRpcErrorResponse(400, messageId, ERROR_CODES.INVALID_REQUEST, 'missing Mcp-Session-Id header');
-	}
-	let session = await loadSession(sessionId);
-	if (!session) {
-		// Terminated, expired, or never existed. Spec mandates 404 so the
-		// client knows to drop the id and re-initialize.
-		return { status: 404, headers: {} };
+	// A stateless request reads no session state, so it can land on any node; a stale
+	// Mcp-Session-Id header (from a stateful deployment) is ignored rather than 404'd.
+	let session: McpSessionRecord | undefined;
+	if (!request.stateless) {
+		const sessionId = request.headers[SESSION_HEADER];
+		if (!sessionId) {
+			return jsonRpcErrorResponse(400, messageId, ERROR_CODES.INVALID_REQUEST, 'missing Mcp-Session-Id header');
+		}
+		session = await loadSession(sessionId);
+		if (!session) {
+			// Terminated, expired, or never existed. Spec mandates 404 so the
+			// client knows to drop the id and re-initialize.
+			return { status: 404, headers: {} };
+		}
 	}
 
-	const protocolCheck = validateProtocolHeader(request.headers[PROTOCOL_HEADER], session.protocolVersion);
+	const protocolCheck = validateProtocolHeader(request.headers[PROTOCOL_HEADER], session?.protocolVersion);
 	if (protocolCheck.ok !== true) {
 		const fail = protocolCheck as { ok: false; reason: string };
 		return jsonRpcErrorResponse(400, messageId, ERROR_CODES.INVALID_REQUEST, fail.reason);
 	}
 
-	if (session.user !== request.user) {
-		// Defense-in-depth against session-id leaks: id was created for a
-		// different user. Mask the session id in logs — even though it's not
-		// a credential in MCP, leaking it to an attacker with log access would
-		// enable session-jacking once paired with a valid token.
-		harperLogger.warn(
-			`MCP session ${maskSessionId(sessionId)} presented by user ${request.user} but bound to ${session.user}`
-		);
-		return { status: 403, headers: {} };
+	if (session) {
+		if (session.user !== request.user) {
+			// Defense-in-depth against session-id leaks: id was created for a
+			// different user. Mask the session id in logs — even though it's not
+			// a credential in MCP, leaking it to an attacker with log access would
+			// enable session-jacking once paired with a valid token.
+			harperLogger.warn(
+				`MCP session ${maskSessionId(session.id)} presented by user ${request.user} but bound to ${session.user}`
+			);
+			return { status: 403, headers: {} };
+		}
+		session = await touchSession(session);
 	}
-
-	session = await touchSession(session);
 
 	// A client's response to a server→client request (#3.7): route it to the
 	// worker awaiting it (resolve locally or fan out over ITC), then 202.
+	// A stateless profile never sends such requests, so it has nothing to route.
 	if (isClientResponse(message)) {
-		routeClientResponse(
-			session.id,
-			message as { id: JsonRpcId & (string | number); result?: unknown; error?: unknown }
-		);
+		if (session) {
+			routeClientResponse(
+				session.id,
+				message as { id: JsonRpcId & (string | number); result?: unknown; error?: unknown }
+			);
+		}
 		return { status: 202, headers: {} };
 	}
 
 	// Fire-and-forget frames (notifications + client responses) always 202.
+	// Stateless: no session to mark initialized, and a request id is not unique to one
+	// client without a session, so a cancellation could abort another client's call.
 	if (isClientFireAndForget(message)) {
+		if (!session) return { status: 202, headers: {} };
 		if (method === 'notifications/initialized') {
 			await handleInitialized(session);
 		} else if (method === 'notifications/cancelled') {
@@ -289,12 +314,18 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 	if (method === 'resources/list') return dispatchResourcesList(request, message, messageId);
 	if (method === 'resources/templates/list') return dispatchResourceTemplatesList(request, message, messageId);
 	if (method === 'resources/read') return dispatchResourcesRead(request, message, messageId);
-	if (method === 'resources/subscribe') return await dispatchResourcesSubscribe(request, session, message, messageId);
-	if (method === 'resources/unsubscribe')
-		return await dispatchResourcesUnsubscribe(request, session, message, messageId);
 	if (method === 'prompts/list') return dispatchPromptsList(request, message, messageId);
 	if (method === 'prompts/get') return await dispatchPromptsGet(request, session, message, messageId);
 	if (method === 'completion/complete') return dispatchCompletion(request, message, messageId);
+	if (SESSION_METHODS.has(method) && !session) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.METHOD_NOT_FOUND, `${method} is not available: this MCP endpoint is stateless`)
+		);
+	}
+	if (method === 'resources/subscribe') return await dispatchResourcesSubscribe(request, session, message, messageId);
+	if (method === 'resources/unsubscribe')
+		return await dispatchResourcesUnsubscribe(request, session, message, messageId);
 	if (method === 'logging/setLevel') return dispatchSetLevel(session, message, messageId);
 	// `ping` (base-protocol liveness) → empty result. Routed here, after session
 	// validation, so a stale/expired/wrong-user session surfaces the normal
@@ -325,17 +356,21 @@ async function dispatchInitialize(
 		return limited;
 	}
 	const params = 'params' in message ? (message.params as { protocolVersion?: unknown } | undefined) : undefined;
-	const outcome = await handleInitialize(params, request.user);
+	const outcome = await handleInitialize(params, request.user, {
+		profile: request.profile,
+		stateless: request.stateless,
+	});
 	if (outcome.ok !== true) {
 		const fail = outcome as { ok: false; reason: string; supportedVersions: readonly string[] };
 		return jsonRpcErrorResponse(400, messageId, ERROR_CODES.INVALID_PARAMS, fail.reason, {
 			supportedVersions: fail.supportedVersions,
 		});
 	}
+	const success = outcome as InitializeOutcome;
 	return {
 		status: 200,
-		headers: { 'Mcp-Session-Id': outcome.session.id },
-		jsonBody: buildSuccess(messageId, outcome.result),
+		headers: success.session ? { 'Mcp-Session-Id': success.session.id } : {},
+		jsonBody: buildSuccess(messageId, success.result),
 	};
 }
 
@@ -466,7 +501,7 @@ function decodeRequestCursor(rawCursor: unknown): number | undefined | typeof IN
 
 function dispatchToolsList(
 	request: NormRequest,
-	session: McpSessionRecord,
+	session: McpSessionRecord | undefined,
 	message: JsonRpcMessage,
 	messageId: JsonRpcId
 ): NormResponse {
@@ -479,7 +514,7 @@ function dispatchToolsList(
 	const { tools, nextCursor } = listTools({
 		user: effectiveUser(request),
 		profile: request.profile,
-		sessionId: session.id,
+		sessionId: session?.id,
 		offset,
 		limit,
 	});
@@ -490,7 +525,7 @@ function dispatchToolsList(
 
 async function dispatchToolsCall(
 	request: NormRequest,
-	session: McpSessionRecord,
+	session: McpSessionRecord | undefined,
 	message: JsonRpcMessage,
 	messageId: JsonRpcId
 ): Promise<NormResponse> {
@@ -508,10 +543,11 @@ async function dispatchToolsCall(
 	const args = params?.arguments ?? {};
 	const callStartedAt = Date.now();
 	const user = effectiveUser(request);
+	const sessionId = session?.id;
 	// Keep the SSE registry's idle-prune from sweeping this session: tools/call
 	// activity counts as "alive" even if the GET stream is dormant between
 	// listChanged events.
-	touchRegisteredSession(session.id);
+	if (sessionId) touchRegisteredSession(sessionId);
 
 	// Rate limit check — admit-or-deny BEFORE invoking the handler. Failures
 	// surface as `isError: true` with `kind: 'rate_limited'` (NOT a JSON-RPC
@@ -519,7 +555,9 @@ async function dispatchToolsCall(
 	// engages the per-client bucket, the scope that survives session cycling
 	// by anonymous clients (#1610).
 	const clientIdentity = resolveClientIdentity(request.headers, request.clientIp, request.profile);
-	const decision = tryAdmit(session.id, name, request.profile, clientIdentity);
+	const decision = sessionId
+		? tryAdmit(sessionId, name, request.profile, clientIdentity)
+		: tryAdmitStateless(request.user, name, request.profile, clientIdentity);
 	if (!decision.allowed) {
 		// Non-strict tsconfig doesn't narrow the discriminated union here.
 		const denied = decision as { allowed: false; reason: string };
@@ -540,7 +578,7 @@ async function dispatchToolsCall(
 		emitAuditEntry({
 			timestamp: new Date(callStartedAt).toISOString(),
 			profile: request.profile,
-			sessionId: session.id,
+			sessionId,
 			tool: name,
 			user: user.username ?? request.user,
 			args: args as object,
@@ -549,12 +587,14 @@ async function dispatchToolsCall(
 		});
 		// Surface the throttle to a client that opted into logging, so it can
 		// back off rather than only inferring from the isError tool result.
-		emitMcpLogToSession(
-			session.id,
-			'notice',
-			{ kind: 'rate_limited', tool: name, scope: denied.reason },
-			'mcp.rateLimit'
-		);
+		if (sessionId) {
+			emitMcpLogToSession(
+				sessionId,
+				'notice',
+				{ kind: 'rate_limited', tool: name, scope: denied.reason },
+				'mcp.rateLimit'
+			);
+		}
 		return jsonResponse(200, buildSuccess(messageId, toolResult));
 	}
 
@@ -567,7 +607,7 @@ async function dispatchToolsCall(
 		tool: name,
 		user,
 		profile: request.profile,
-		sessionId: session.id,
+		sessionId,
 	});
 	if (quota.allowed === false) {
 		decision.release();
@@ -588,14 +628,14 @@ async function dispatchToolsCall(
 		emitAuditEntry({
 			timestamp: new Date(callStartedAt).toISOString(),
 			profile: request.profile,
-			sessionId: session.id,
+			sessionId,
 			tool: name,
 			user: user.username ?? request.user,
 			args: args as object,
 			status: 'quota_exceeded',
 			durationMs: 0,
 		});
-		emitMcpLogToSession(session.id, 'notice', { kind: 'quota_exceeded', tool: name }, 'mcp.quota');
+		if (sessionId) emitMcpLogToSession(sessionId, 'notice', { kind: 'quota_exceeded', tool: name }, 'mcp.quota');
 		return jsonResponse(200, buildSuccess(messageId, toolResult));
 	}
 
@@ -603,7 +643,7 @@ async function dispatchToolsCall(
 	// referencing this request id aborts `signal`. Registered for the call's
 	// lifetime, removed in `finally`.
 	const controller = new AbortController();
-	registerCall(session.id, messageId, controller);
+	if (sessionId) registerCall(sessionId, messageId, controller);
 
 	// Invoke the handler, normalize errors to an isError tool result, release the
 	// rate-limit slot, and emit the audit entry. `progress` is wired only on the
@@ -619,7 +659,7 @@ async function dispatchToolsCall(
 			toolResult = await tool.handler(args, {
 				user,
 				profile: request.profile,
-				sessionId: session.id,
+				sessionId,
 				signal: controller.signal,
 				progress,
 				serverRequest,
@@ -649,7 +689,7 @@ async function dispatchToolsCall(
 		emitAuditEntry({
 			timestamp: new Date(callStartedAt).toISOString(),
 			profile: request.profile,
-			sessionId: session.id,
+			sessionId,
 			tool: name,
 			user: user.username ?? request.user,
 			args: args as object,
@@ -672,7 +712,7 @@ async function dispatchToolsCall(
 			const toolResult = await invoke();
 			return jsonResponse(200, buildSuccess(messageId, toolResult));
 		} finally {
-			unregisterCall(session.id, messageId);
+			if (sessionId) unregisterCall(sessionId, messageId);
 		}
 	}
 
@@ -706,14 +746,17 @@ async function dispatchToolsCall(
 	// Server→client requests (#3.7): the handler can call back into the client
 	// during a streaming call. The request frame rides this SSE stream; the
 	// client's response arrives as a later POST and is correlated cross-worker.
-	const serverRequest: ToolCallContext['serverRequest'] = (method, params) =>
-		sendServerRequest({
-			sessionId: session.id,
-			method,
-			params,
-			clientCapabilities: session.clientCapabilities,
-			deliver: (frame) => queue.send({ event: 'message', data: frame }),
-		});
+	// Stateless: that POST can reach any node, and no client capabilities were kept.
+	const serverRequest: ToolCallContext['serverRequest'] | undefined = session
+		? (method, params) =>
+				sendServerRequest({
+					sessionId: session.id,
+					method,
+					params,
+					clientCapabilities: session.clientCapabilities,
+					deliver: (frame) => queue.send({ event: 'message', data: frame }),
+				})
+		: undefined;
 	// Defer the detached run to the next macrotask so the adapter has wired up its
 	// toSseStream consumer (via the synchronous, microtask-only return path) before
 	// we produce. A synchronous handler could otherwise emit the final frame and
@@ -738,7 +781,7 @@ async function dispatchToolsCall(
 					/* queue already torn down — nothing more to deliver */
 				}
 			} finally {
-				unregisterCall(session.id, messageId);
+				if (sessionId) unregisterCall(sessionId, messageId);
 				queue.emit('close');
 			}
 		})();
@@ -806,7 +849,7 @@ function dispatchPromptsList(request: NormRequest, message: JsonRpcMessage, mess
 
 async function dispatchPromptsGet(
 	request: NormRequest,
-	session: McpSessionRecord,
+	session: McpSessionRecord | undefined,
 	message: JsonRpcMessage,
 	messageId: JsonRpcId
 ): Promise<NormResponse> {
@@ -842,7 +885,7 @@ async function dispatchPromptsGet(
 		const rendered = await prompt.render(args, {
 			user: effectiveUser(request),
 			profile: request.profile,
-			sessionId: session.id,
+			sessionId: session?.id,
 		});
 		if (!Array.isArray(rendered?.messages)) {
 			harperLogger.warn(`MCP prompts/get ${name}: render must return { messages: [...] }, got ${typeName(rendered)}`);
@@ -1051,7 +1094,7 @@ async function handleDelete(request: NormRequest): Promise<NormResponse> {
 
 function validateProtocolHeader(
 	headerValue: string | undefined,
-	sessionVersion: string
+	sessionVersion?: string
 ): { ok: true } | { ok: false; reason: string } {
 	// A missing header is accepted as the session's own negotiated version
 	// (#1611). The spec's assume-2025-03-26 compatibility rule exists for
@@ -1065,7 +1108,7 @@ function validateProtocolHeader(
 	if (!SUPPORTED_PROTOCOL_VERSIONS.includes(headerValue as (typeof SUPPORTED_PROTOCOL_VERSIONS)[number])) {
 		return { ok: false, reason: `unsupported MCP-Protocol-Version: ${headerValue}` };
 	}
-	if (headerValue !== sessionVersion) {
+	if (sessionVersion !== undefined && headerValue !== sessionVersion) {
 		return {
 			ok: false,
 			reason: `MCP-Protocol-Version mismatch: session negotiated ${sessionVersion}, request sent ${headerValue}`,

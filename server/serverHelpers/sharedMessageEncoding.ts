@@ -38,7 +38,7 @@ const PASS_THROUGH = function passThrough() {};
 // dispatched to every subscription of a key (resources/transactionBroadcast.ts), so identity is
 // what lets the first subscriber to encode do the work for all of them. This is only sound because
 // every internal producer yields a *fresh object per version* — transactionBroadcast hands one
-// auditRecord to every subscription, auditStore's getValue memoizes the decode in its closure, and
+// auditRecord to every subscription, auditStore's getValue memoizes the decode on the entry, and
 // primaryStore.getEntry is guarded by a version check — so identity implies equal content, and a
 // miss (a primitive message, or a store cache eviction between subscribers) only costs the
 // redundant encode we have today rather than yielding stale bytes.

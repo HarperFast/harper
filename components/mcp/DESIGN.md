@@ -32,9 +32,22 @@ A handful of design points are non-obvious and easy to break:
   exists; OAuth MCP clients such as Claude start sign-in only on that 401. The response is marked with
   `ownAuthenticationChallenge` so `security/auth.ts` keeps its `Bearer resource_metadata` challenge instead
   of replacing it or redirecting a browser; unmarked route 401s are rewritten as before. The metadata URL
-  is the configured one, else the active Bearer validators' `challenge` only when every validator that declares one names the same URL (undeclared validators are not counted)
+  is the configured one; else, for a token a validator refused, that validator's own `challenge` or none
+  (`markRejectingValidator` tags the rejection for its request in `runBearerValidators` and `principalFromClaim`, and
+  `deferCredentialRejection` copies it onto the frozen record as `validatorResourceMetadata`; a validator unregistered
+  during the call leaves its rejection untagged); else the active
+  validators' `challenge` only when every validator that declares one names the same URL
   (`declaredResourceMetadata`): registrations are worker-global and load in no fixed order, so a
   disagreement could point a client at an authorization server that does not protect this mount.
+- **The server card's route runs no authentication (#4347).** `<mountPath>/server-card` is a route of its own,
+  registered without `after: 'authentication'`. Sub-routes dispatch longest path first, and a sub-route's chain
+  includes `authentication` only when one of its entries names it in `after` (`resolveDeps`), so a card request
+  never reaches it: no 401 for a missing principal on a required mount, a refused token, or a validator fault,
+  which `authentication` answers in place before any route handler runs. Handling the path inside the MCP adapter
+  instead would miss those in-place answers and would put an exception into the adapter's rule that it settles
+  every deferred rejection. Without a configured `url`, the card's remote comes from the request's host,
+  so `createServerCardHandler` keeps one serialized body and sends `Vary: Host, X-Forwarded-Proto`.
+
 - **Per-call POST SSE streaming has a close-before-subscribe race.** A `tools/call` that opts into streaming
   (`Accept: text/event-stream`) gets an `IterableEventQueue` whose frames the adapter consumes via the event
   API (`on('data')` / `once('close')`), **not** `for await` — the async iterator does not terminate on
@@ -72,6 +85,20 @@ A handful of design points are non-obvious and easy to break:
   `threads.count` was rejected: it assumes an even spread, which the exclusive operations-API listener, macOS
   binds (`noReusePort`, `server/http.ts`) and Bun do not give, and it turns `initializeBurst: 50` into one token per worker at 32 threads, so a client reusing
   one connection would get a 429 on its second session.
+
+- **A stateless application profile reads no state an earlier request wrote, so any node can answer (#4346).**
+  `system.mcp_session` does not replicate, so behind DNS load balancing a request that moves to another node
+  gets 404 for its session. With `mcp.application.stateless: true`, `initialize` writes no row and returns no
+  `Mcp-Session-Id`, `handlePost` skips `loadSession` (a leftover session id is ignored, and any supported
+  `MCP-Protocol-Version` is accepted), and GET and DELETE answer 405 `Allow: POST`. Everything that needs a
+  session is off rather than node-local: no `listChanged`, `resources.subscribe` or `logging` in
+  `STATELESS_SERVER_CAPABILITIES`; `SESSION_METHODS` answer -32601; a tool gets no `serverRequest`, since the
+  client's reply is a fresh POST to any node; and `notifications/cancelled` is ignored, since without a session a
+  request id does not identify one client's call. The session buckets bound one principal from one client
+  identity instead (`tryAdmitStateless`; past 100,000 keys, 64 hashed overflow buckets keep the map bounded). Replicating the row instead was
+  rejected: replication is asynchronous, so the request after `initialize` can reach a node the row has not; every
+  request would write a replicated row (`touchSession`); and the subscription fences in `subscriptionState.ts`
+  assume one owning node.
 
 - **Application tools must be rebuilt after JS resources register, not just on schema changes.** The
   application-profile tool scan (`registerApplicationTools`) runs at MCP component boot and on schema-change

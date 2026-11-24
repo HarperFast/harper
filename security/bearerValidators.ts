@@ -1,7 +1,7 @@
 import { server, getBearerValidators, type BearerValidatorEntry } from '../server/Server.ts';
 import type { Request } from '../server/serverHelpers/Request.ts';
 import { cloneUserView, isCurrentUser, trackUserRecords, userRecordVersions, type User } from './user.ts';
-import { credentialRejectionError } from './credentialRejection.ts';
+import { credentialRejectionError, markRejectingValidator } from './credentialRejection.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { hdbErrors } from '../utility/errors/hdbError.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
@@ -34,12 +34,17 @@ export async function runBearerValidators(token: string, request: Request): Prom
 		if (!entry.active) continue;
 		if (deadline.at <= Date.now()) throw new Error(`Bearer validator chain timed out after ${budgetMs}ms`);
 		const abortController = new AbortController();
-		const result: any = await withinDeadline(
-			entry.validator(token, request, abortController.signal),
-			entry.timeoutMs,
-			deadline,
-			abortController
-		);
+		let result: any;
+		try {
+			result = await withinDeadline(
+				entry.validator(token, request, abortController.signal),
+				entry.timeoutMs,
+				deadline,
+				abortController
+			);
+		} catch (error) {
+			throw entry.active ? markRejectingValidator(request, error, entry.challenge?.resourceMetadata) : error;
+		}
 		if (!entry.active || result == null) continue;
 		if (
 			typeof result !== 'object' ||
@@ -69,15 +74,19 @@ export async function principalFromClaim(
 	decodedToken: any,
 	request: Request
 ): Promise<{ user: User; cacheable: boolean }> {
-	const authExpiresAt = effectiveExpiry(result.authExpiresAt, decodedToken);
-	const user = await resolveUser(entry, result.username, request, deadline);
-	// the server.getUser lookup can outlast the token
-	if (authExpiresAt * 1000 <= Date.now()) {
-		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.UNAUTHORIZED);
+	try {
+		const authExpiresAt = effectiveExpiry(result.authExpiresAt, decodedToken);
+		const user = await resolveUser(entry, result.username, request, deadline);
+		// the server.getUser lookup can outlast the token
+		if (authExpiresAt * 1000 <= Date.now()) {
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.UNAUTHORIZED);
+		}
+		user._bearerValidator = true;
+		user.authExpiresAt = authExpiresAt;
+		return { user, cacheable: result.authCacheable !== false };
+	} catch (error) {
+		throw entry.active ? markRejectingValidator(request, error, entry.challenge?.resourceMetadata) : error;
 	}
-	user._bearerValidator = true;
-	user.authExpiresAt = authExpiresAt;
-	return { user, cacheable: result.authCacheable !== false };
 }
 
 function effectiveExpiry(claimedExp: unknown, decodedToken: any): number {

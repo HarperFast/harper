@@ -397,6 +397,32 @@ describe('DerivedIndexRuntime & HNSW/FullText coverage durability and purged-anc
 		await reopened.stop();
 	});
 
+	it('FullText: an owner that acquires with nothing to deliver persists coverage without rebuilding', async () => {
+		// What a shutdown flush leaves behind: the cursor is durable, the coverage for it never was.
+		const store = new TestLogStore({ initialPosition: P0 });
+		const ftState = createSharedFullTextState({ format: 1, logs: { local: 50 } });
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'fulltext:idle-acquire',
+			lifecycle: ftState.createLifecycle(),
+		});
+		const runtime = createRuntime(store, new Map(), { maxFlushAgeMilliseconds: 15 });
+		runtime.register({
+			backend,
+			projections: new Map([[1, (record) => ({ title: record.title })]]),
+		});
+
+		await waitFor(() => backend.getDurableCursor()?.coverage?.local?.offset === P0.offset || ftState.resetCalls > 0);
+		assert.strictEqual(ftState.resetCalls, 0);
+		assert.strictEqual(runtime.getReadiness(backend.id).state, 'ready');
+		assert.strictEqual(runtime.getMetrics(backend.id).rebuiltRecords, 0);
+		assert.deepStrictEqual(normalizeCursor(backend.getDurableCursor()), {
+			format: 1,
+			logs: { local: 50 },
+			coverage: { local: P0 },
+		});
+		await runtime.stop();
+	});
+
 	it('Arm 1: unindexed sibling-table commits must not stamp coverage onto an older durable vector or strip coverage on flush/shutdown', async () => {
 		const initialCursor = { format: 1, logs: { local: 50 }, coverage: { local: P0 } };
 		const failures = [];

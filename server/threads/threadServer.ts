@@ -808,7 +808,7 @@ async function listenOnPortsBun() {
 				httpComponent.recordUdsBindSuccess(udsPath);
 
 				const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, port, config.pseudoServer);
-				httpComponent.publishUdsMetadata(config.tlsSelector.ready, config.pseudoServer, writeMetadata);
+				httpComponent.publishUdsMetadata(udsPath, config.tlsSelector.ready, config.pseudoServer, writeMetadata);
 				harperLogger.info('Domain socket listening on ' + udsPath);
 			}
 		} catch (error) {
@@ -992,10 +992,8 @@ function onSocket(listener?: any, options?: any) {
 			SERVERS[udsPath] = udsServer;
 			httpComponent.registerUdsCleanupPaths(udsPath, yamlPath);
 
-			const writeMetadata = () =>
-				httpComponent.isUdsBindFailed(udsPath) ||
-				httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
-			httpComponent.publishUdsMetadata(SNICallback.ready, secureSocketServer, writeMetadata);
+			const writeMetadata = () => httpComponent.writeUdsMetadata(yamlPath, options.securePort, secureSocketServer);
+			httpComponent.publishUdsMetadata(udsPath, SNICallback.ready, secureSocketServer, writeMetadata);
 		}
 	}
 	if (options.port) {
