@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ModelCallAnalyticsWriter } = require('#src/resources/models/analyticsTable');
+const { getWorkerIndex, setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 /**
  * Mock primaryStore that records put/remove operations in an in-memory Map.
@@ -237,6 +238,33 @@ describe('ModelCallAnalyticsWriter', () => {
 	});
 
 	describe('cleanup', () => {
+		// The main thread maintains shared stores only when it is the worker (threads: 0).
+		let mainWasWorker;
+		before(() => {
+			mainWasWorker = getWorkerIndex() === 0;
+			setMainIsWorker(true);
+		});
+		after(() => setMainIsWorker(mainWasWorker));
+
+		it('leaves the table alone on a thread that does not own store maintenance', async () => {
+			setMainIsWorker(false);
+			try {
+				const oldId = Date.now() - 1_000_000;
+				table.store.set(oldId, makeRecord({ backend: 'old' }));
+				const w = new ModelCallAnalyticsWriter({
+					flushIntervalMs: 60_000,
+					cleanupIntervalMs: 60_000,
+					retentionMs: 1000,
+					getTable: () => table,
+				});
+				await w.cleanup();
+				w.stop();
+				assert.strictEqual(table.store.has(oldId), true);
+			} finally {
+				setMainIsWorker(true);
+			}
+		});
+
 		it('removes rows whose ids are older than retentionMs', async () => {
 			const oldId = Date.now() - 1_000_000;
 			const newId = Date.now();
