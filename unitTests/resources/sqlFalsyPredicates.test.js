@@ -131,9 +131,8 @@ describe('SQL predicates over falsy, blank and NaN values', function () {
 	});
 
 	async function reseed() {
-		let last;
-		for (const record of SEED) last = T.put({ ...record });
-		await last;
+		// Each put commits on its own; the last one settling does not mean the earlier ones have.
+		await Promise.all(SEED.map((record) => T.put({ ...record })));
 		if (T.indexingOperation) await T.indexingOperation;
 	}
 
