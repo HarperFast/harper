@@ -79,6 +79,18 @@ thread record carries nothing but measures and its `count`, which the thread cou
 the fold keeps `total`/`ratio` on non-thread actions only, so a `ratio` on a thread record is
 always a caller's measure.
 
+## Retention cleanup resumes past its own deletes
+
+`cleanupExpiredAnalytics` deletes keys below `now - retention` starting from the end of the previous pass
+on the same store, not from the first key. Rows are keyed `[timestamp, nodeId]`, so the expired rows
+are a prefix, and a RocksDB delete leaves the row and its tombstone on disk until compaction: a scan
+from the first key steps over everything earlier passes deleted, a cost that grows without bound
+(#4570). A row written below the cursor after a pass is left until the next process starts.
+
+Passes are single-flight per store and yield between batches. Where the store has `compact()`, the
+expired range is compacted on a process's first pass and then at most hourly after a pass deletes
+rows, which drops the tombstones for restarts and range reads near the head.
+
 ## Full-text collection follows actual handle ownership
 
 `fullTextTelemetry.ts` keeps private per-handle baselines and carries exact counters into a stable worker/index/role series. `nativeFullTextTelemetry.test.js` pins reader churn, wrap/precision, optional recording unions and peer-gauge aggregation; cached aggregate names include null leaves, so a live peer's queue age survives a newest null observation. `nativeFullTextTelemetryClose.test.js` holds backend close across live-peer timer ticks and recording changes: closing handles are neither sampled nor reconfigured until settlement. Completed registrations release references; inactive groups remain until their final row drains. Pending export has a 128-row bound with explicit drop counts. Graceful HTTP/job exit reuses the serialized analytics flush after owner cleanup, drains pending rows and samples open handles without overflowing that bound (`nativeFullTextTelemetryShutdown.test.js`).

@@ -1372,12 +1372,51 @@ let lastResourceUsage: ResourceUsage = {
 
 const rest = () => new Promise(setImmediate);
 
-async function cleanup(AnalyticsTable, expiration) {
+const CLEANUP_BATCH_SIZE = 1000;
+const CLEANUP_COMPACT_INTERVAL = 3600000;
+const cleanupStates = new WeakMap<object, { from: number | false; compactedAt: number; running: boolean }>();
+
+export async function cleanupExpiredAnalytics(AnalyticsTable, expiration, now = Date.now()) {
 	// Skip writes in read-only mode
 	if (isReadOnlyMode()) return;
-	const end = Date.now() - expiration;
-	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
-		AnalyticsTable.primaryStore.remove(key);
+	const store = AnalyticsTable.primaryStore;
+	let state = cleanupStates.get(store);
+	if (!state) cleanupStates.set(store, (state = { from: false, compactedAt: 0, running: false }));
+	if (state.running) return;
+	state.running = true;
+	try {
+		const end = now - expiration;
+		if (state.from !== false && end <= state.from) return;
+		// Deleted keys stay on disk until compaction drops them, so a scan from the first key steps over
+		// every row earlier passes removed; resuming at the previous end skips them.
+		let start: unknown = state.from;
+		let deleted = 0;
+		for (;;) {
+			let last: unknown;
+			let count = 0;
+			for (const key of store.getKeys({ start, end, limit: CLEANUP_BATCH_SIZE })) {
+				store.remove(key);
+				last = key;
+				count++;
+			}
+			deleted += count;
+			if (count < CLEANUP_BATCH_SIZE) break;
+			start = last;
+			await rest();
+		}
+		state.from = end;
+		// The first pass compacts whatever an earlier process left behind; after that, only ranges that grew.
+		if (
+			typeof store.compact === 'function' &&
+			(state.compactedAt === 0 || (deleted > 0 && now - state.compactedAt >= CLEANUP_COMPACT_INTERVAL))
+		) {
+			state.compactedAt = now;
+			await store
+				.compact({ start: false, end })
+				.catch((error) => log.warn?.('Compacting expired analytics failed', error));
+		}
+	} finally {
+		state.running = false;
 	}
 }
 
@@ -1454,9 +1493,9 @@ function startScheduledTasks() {
 		setInterval(
 			async () => {
 				await runAggregationCycle(analyticsDelay, AGGREGATE_PERIOD);
-				await cleanup(getRawAnalyticsTable(), rawRetentionMs);
+				await cleanupExpiredAnalytics(getRawAnalyticsTable(), rawRetentionMs);
 				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
-				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);
+				if (aggregateRetentionMs) await cleanupExpiredAnalytics(getAnalyticsTable(), aggregateRetentionMs);
 			},
 			Math.max(0, Math.min(AGGREGATE_PERIOD / 2, MAX_SET_TIMEOUT_MS))
 		).unref();
