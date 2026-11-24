@@ -315,6 +315,7 @@ describe('Concurrent source misses on one key', function () {
 				if (retirement === 'cleanup') RetiredTable.cleanup();
 				else {
 					dropping = RetiredTable.dropTable();
+					dropping.catch(() => {});
 					await waitFor(() => RetiredTable.getResource !== originalGetResource);
 				}
 				if (overlappingClose) {
@@ -364,9 +365,9 @@ describe('Concurrent source misses on one key', function () {
 				store.getEntry = originalGetEntry;
 				for (const wake of wakeups.splice(0)) wake();
 				await Promise.all(reads);
-				if (closing) await closing;
-				if (dropping) await dropping;
-				else if (!closing) await RetiredTable.dropTable();
+				const ddlResults = await Promise.allSettled([closing, dropping]);
+				for (const result of ddlResults) if (result.status === 'rejected') throw result.reason;
+				if (!closing && !dropping) await RetiredTable.dropTable();
 			}
 		});
 	}

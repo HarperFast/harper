@@ -385,7 +385,7 @@ console.log(target.loadedFromSource); // true = own foreground fill attempt, fal
 The flag settles as follows:
 
 - `true` — the get attempted its own foreground fill. This includes fetching a record, source unavailability or admission failure, and serving a stale cached record after a source error (`staleIfError`). It does not guarantee that a source request ran or that the returned data is fresh.
-- `false` — the get settled without its own foreground fill attempt: fresh cache hits, `onlyIfCached` cache hits, stale-while-revalidate responses (the source fetch continues in the background), and requests that waited on another request's in-flight fetch of the same record. A waiter also reports `false` when it receives a shared source error or a table-retirement 404. Waiting for another request can still take as long as an upstream fetch.
+- `false` — the get settled without its own foreground fill attempt: fresh cache hits, `onlyIfCached` cache hits, stale-while-revalidate responses (the source fetch continues in the background), and waiters that reuse another request's fill result or shared error. A waiter also reports `false` when it receives a table-retirement 404. A waiter that instead starts its own foreground fill reports `true`. Waiting for another request can still take as long as an upstream fetch.
 
 An error raised before cache disposition is determined, such as a cache-only miss that returns 504, can leave this property unset or retain a reused target's earlier value.
 

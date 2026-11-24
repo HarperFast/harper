@@ -15489,9 +15489,9 @@ export function makeTable(options): TableResourceClass {
 	}
 
 	function warnWaitersOfFailedFill(fill: SourceFill, id: Id, error: any): void {
-		if (TableResource.getResource === unavailableResource) return;
 		const waiting = fill.waiters;
 		if (!(waiting >= SOURCE_FILL_WAITERS_WARNING)) return;
+		if (TableResource.getResource === unavailableResource) return;
 		const now = performance.now();
 		if (now - lastSourceFillWaitersWarn < 60_000) return;
 		try {
