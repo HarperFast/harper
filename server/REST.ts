@@ -497,7 +497,11 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			request[WRITE_CONDITION] = writeCondition;
 		}
 		const dispatch = () => {
-			if (headersObject['content-length'] || headersObject['transfer-encoding']) {
+			if (
+				headersObject['content-length'] ||
+				headersObject['transfer-encoding'] ||
+				(request.nodeRequest?.httpVersionMajor >= 2 && request.nodeRequest.stream?.endAfterHeaders === false)
+			) {
 				// TODO: Support cancellation for buffered request bodies.
 				try {
 					request.data = getDeserializer(headersObject['content-type'] as any, true, true)(request.body, request);
