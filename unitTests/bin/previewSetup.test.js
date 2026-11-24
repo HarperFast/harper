@@ -4,14 +4,15 @@ const assert = require('node:assert');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { previewSetup } = require('#src/bin/previewSetup');
+const { stripVTControlCharacters } = require('node:util');
+const { ACTIONS_POLICY_DOCS, previewSetup, starterPreviewWorkflow } = require('#src/bin/previewSetup');
 const { prompts } = require('#src/utility/interactivePrompts');
 const cliOperationsModule = require('#js/bin/cliOperations');
 
 const TARGET = 'https://cluster.example.com:9925/';
 const WORKFLOW = path.join('.github', 'workflows', 'preview.yaml');
 
-describe('harper preview setup, before it enables anything (harper#3609)', () => {
+describe('harper preview setup (harper#3609)', () => {
 	const saved = {};
 	let directory;
 	let cwd;
@@ -145,5 +146,94 @@ describe('harper preview setup, before it enables anything (harper#3609)', () =>
 		await assert.rejects(setup({ credential: true }), /appeared while setup ran.*Nothing was changed/);
 		assert.strictEqual(enabled(), false);
 		assert.strictEqual(await fs.readFile(path.join(directory, WORKFLOW), 'utf8'), 'someone else wrote this\n');
+	});
+
+	describe('the pull_request_target event policy GitHub requires of a public repository', () => {
+		let output;
+		const printed = () => output.join('\n');
+		const visibility = (value) => {
+			const parsed = JSON.parse(repository);
+			if (value === undefined) delete parsed.private;
+			else parsed.private = value;
+			if (value === false) parsed.visibility = 'public';
+			return `echo '${JSON.stringify(parsed)}'`;
+		};
+		const writeGhFor = (repositoryAnswer, { create = 'exit 0', variable = absentVariable } = {}) =>
+			fs.writeFile(
+				path.join(directory, 'bin', 'gh'),
+				`#!/bin/sh\ncase "$*" in\n  auth*) exit 1 ;;\n  *POST*) ${create} ;;\n` +
+					`  *actions/variables*) ${variable} ;;\n  *) ${repositoryAnswer} ;;\nesac\n`,
+				{ mode: 0o755 }
+			);
+
+		beforeEach(() => {
+			output = [];
+			console.log = (...parts) => output.push(stripVTControlCharacters(parts.join(' ')));
+		});
+
+		it('names the workflow, where to allow it, and the guide, before anything can stop setup', async () => {
+			await writeGhFor(visibility(false));
+			await setup();
+			const text = printed();
+			assert.match(text, /acme\/shop is public: from December 2, 2026, GitHub Actions blocks pull_request_target/);
+			assert.match(
+				text,
+				/repository's Settings > Actions > Policies, make sure an Active policy targets only \.github\/workflows\/preview\.yaml and its Restrict events allows pull_request_target.*An organization policy for it must target acme\/shop too/
+			);
+			assert.ok(text.includes(ACTIONS_POLICY_DOCS));
+			assert.ok(text.indexOf('is public') < text.indexOf('can deploy previews of shop'));
+			assert.match(
+				await fs.readFile(path.join(directory, WORKFLOW), 'utf8'),
+				/^# From December 2, 2026, in a public repository, pull_request_target runs only if an Actions event policy targeting this repository and this file allows it\. https:\/\/docs\.github\.com\/actions\/how-tos\/administer\/control-workflow-execution$/m
+			);
+		});
+
+		it('names a workflow that was already there', async () => {
+			const custom = path.join('.github', 'workflows', 'pr.yml');
+			await fs.mkdir(path.dirname(path.join(directory, custom)), { recursive: true });
+			await fs.writeFile(path.join(directory, custom), starterPreviewWorkflow({ app: 'shop', branch: 'main' }));
+			await writeGhFor(visibility(false));
+			await setup({ workflow: '.github/workflows/pr.yml', write_workflow: undefined });
+			assert.match(printed(), /targets only \.github\/workflows\/pr\.yml and/);
+		});
+
+		it('is worded as conditional when the repository visibility is unknown', async () => {
+			await writeGhFor(visibility(undefined));
+			await setup();
+			assert.match(printed(), /If acme\/shop is public: from December 2, 2026/);
+			output.length = 0;
+			await fs.rm(path.join(directory, WORKFLOW));
+			const withoutVisibility = JSON.parse(repository);
+			withoutVisibility.private = false;
+			await writeGhFor(`echo '${JSON.stringify(withoutVisibility)}'`);
+			await setup();
+			assert.match(printed(), /If acme\/shop is public: from December 2, 2026/);
+		});
+
+		it('says nothing for a private or internal repository, which GitHub does not block', async () => {
+			await writeGhFor(visibility(true));
+			await setup();
+			assert.doesNotMatch(printed(), /pull_request_target in public repositories/);
+			const internal = JSON.parse(repository);
+			internal.private = false;
+			internal.visibility = 'internal';
+			await fs.rm(path.join(directory, WORKFLOW));
+			await writeGhFor(`echo '${JSON.stringify(internal)}'`);
+			await setup();
+			assert.doesNotMatch(printed(), /pull_request_target in public repositories/);
+		});
+
+		it('is printed even when setting the repository variable fails afterwards', async () => {
+			await writeGhFor(visibility(false), { create: 'echo "gh: HTTP 403" >&2; exit 1' });
+			await assert.rejects(setup(), /repository variable was not set/);
+			assert.match(printed(), /acme\/shop is public/);
+		});
+
+		it('is printed when setup stops at the repository variable, before it enables anything', async () => {
+			await writeGhFor(visibility(false), { variable: 'echo https://other.example.com:9925/' });
+			await assert.rejects(setup(), /Nothing was changed/);
+			assert.strictEqual(enabled(), false);
+			assert.match(printed(), /acme\/shop is public/);
+		});
 	});
 });

@@ -189,6 +189,10 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 		match(stdout, /can deploy previews of shop/);
 		match(stdout, /created role shop-ci-preview, user shop-ci-preview, trust policy github-actions-shop-preview/);
 		match(stdout, /Wrote \.github\/workflows\/preview\.yaml/);
+		match(
+			stdout,
+			/If preview_setup_fixture\/shop is public: .*pull_request_target[\s\S]*targets only \.github\/workflows\/preview\.yaml and/
+		);
 		match(stderr, /the HARPER_PREVIEW_TARGET repository variable was not set/);
 
 		const workflow = await readFile(join(checkout, '.github', 'workflows', 'preview.yaml'), 'utf8');

@@ -24,6 +24,8 @@ import {
 	derivePreviewNames,
 } from '../utility/previewIdentity.ts';
 
+export const ACTIONS_POLICY_DOCS = 'https://docs.github.com/actions/how-tos/administer/control-workflow-execution';
+
 function usageError(message: string): Error {
 	return Object.assign(new Error(message), { statusCode: 400 });
 }
@@ -71,6 +73,7 @@ export function starterPreviewWorkflow({
 	];
 	return [
 		'# Written by `harper preview setup`.',
+		`# From December 2, 2026, in a public repository, pull_request_target runs only if an Actions event policy targeting this repository and this file allows it. ${ACTIONS_POLICY_DOCS}`,
 		'name: Preview',
 		'on:',
 		'  pull_request_target:',
@@ -129,6 +132,20 @@ export function starterPreviewWorkflow({
 		'          exit 1',
 		'',
 	].join('\n');
+}
+
+function pullRequestTargetPolicyWarning(repository: string, isPrivate: boolean | undefined, workflow: string) {
+	if (isPrivate === true) return undefined;
+	return (
+		`${isPrivate === false ? `${repository} is public:` : `If ${repository} is public:`} from December 2, 2026, ` +
+		`GitHub Actions blocks pull_request_target in public repositories unless an Actions event policy allows it, ` +
+		`and previews stop.\n` +
+		`  In the repository's Settings > Actions > Policies, make sure an Active policy targets only ${workflow} ` +
+		`and its Restrict events allows pull_request_target, plus any other event that workflow runs on. ` +
+		`An organization policy for it must target ${repository} too, and an organization or enterprise policy ` +
+		`can still block it: Policy insights shows what was blocked.\n` +
+		`  ${ACTIONS_POLICY_DOCS}`
+	);
 }
 
 function previewApp(args: Record<string, any>): string {
@@ -223,6 +240,8 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			);
 		}
 	}
+	const policyWarning = pullRequestTargetPolicyWarning(repository.fullName, repository.private, workflow);
+	if (policyWarning) console.log(chalk.yellow(`! ${policyWarning}`));
 	assertGithubVariableSettable(repository, PREVIEW_TARGET_VARIABLE, audience, args.allow_unverified === true);
 	// Before anything is written: a cluster without secret custody cannot hold the credential.
 	const secretsKey = credential ? await fetchSecretsPublicKey(transport) : undefined;

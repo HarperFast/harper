@@ -324,7 +324,7 @@ It checks everything it can before it changes anything, so a refusal before step
 
 1. Takes the GitHub repository from the checkout's `origin` remote, or `repo=<owner>/<name>`, and looks it up with the `gh` CLI or GitHub's public API for its numeric id, its default branch, and the spelling of its name that GitHub uses in the token. When neither answers, pass `repository_id=<id>`.
 2. Reads the preview workflow, `.github/workflows/preview.yaml`, from the checkout. It refuses a workflow the trust policies could never match, and one that may give the preview identity to a fork or to a PR's own code: see [What setup checks in the workflow](#what-setup-checks-in-the-workflow). If the file doesn't exist, it offers to write the starter workflow (`write_workflow=true` without a prompt). When it can neither check nor write the workflow, such as when it is not run from a checkout of the repository, it stops unless you pass `allow_unverified=true`.
-3. For a private repository, offers to seal a credential for the cluster to fetch each PR with (`credential=true`).
+3. For a private repository, offers to seal a credential for the cluster to fetch each PR with (`credential=true`). For a public one, or one whose visibility it could not look up, prints the Actions event policy GitHub requires: see [Public repositories: allow `pull_request_target`](#public-repositories-allow-pull_request_target). <VersionBadge type="changed" version="v5.5.0" />
 4. Reads the repository's `HARPER_PREVIEW_TARGET` variable. One that names another cluster stops setup. One it cannot read, such as when `gh` is not installed, stops it unless you pass `allow_unverified=true`, and you then set the variable yourself afterward.
 5. With `credential=true`, asks for the token and checks that the cluster can hold a sealed secret.
 6. Calls [`enable_previews`](../operations-api/operations.md#enable_previews), which creates the role, the user and the two trust policies, and stores the application's preview limits.
@@ -350,6 +350,22 @@ It checks everything it can before it changes anything, so a refusal before step
 | `credential=true`           | asked, for a private repository              | Seal a GitHub token for the cluster to fetch each PR's commit with.                                                                                                                                                                     |
 | `write_workflow=true`       | asked                                        | Write the starter workflow when the file doesn't exist.                                                                                                                                                                                 |
 | `allow_unverified=true`     | `false`                                      | Go on when setup cannot check the workflow or the repository variable, or when the workflow has a step it cannot verify. Check the workflow yourself first: it is what keeps forks and PR code from the token.                          |
+
+##### Public repositories: allow `pull_request_target`
+
+<VersionBadge type="changed" version="v5.5.0" />
+
+From December 2, 2026, GitHub Actions blocks `pull_request_target` in public repositories unless an Actions event policy allows it, so the preview workflow no longer runs and previews stop: PRs get no preview, and closed PRs keep theirs until they expire. Private and internal repositories are not affected. See [GitHub's announcement](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2).
+
+In a public repository, allow the event for the preview workflow alone. In the repository's **Settings > Actions > Policies**, create a policy, unless one already allows it:
+
+1. Set its enforcement status to **Active**.
+2. Under its target workflows, add the workflow file, `.github/workflows/preview.yaml` or the `workflow=` you passed.
+3. Turn on **Restrict events**, and allow `pull_request_target`, plus any other event that workflow runs on.
+
+An organization can set the same policy in its own **Settings > Actions > Policies**; target the repository as well as the workflow file, or it applies to every repository with a file at that path. An organization or enterprise policy can still block the event; **Policy insights**, under **Policies** in the sidebar, shows what a policy blocked, and the owner of a blocking policy has to allow the event for this repository and workflow. See [Governing execution of GitHub Actions workflows](https://docs.github.com/actions/how-tos/administer/control-workflow-execution). Setup does not check or create the policy. `get_preview_policy` cannot report it either: GitHub's API reads it only with a GitHub token for the repository, which the cluster does not have for a public one.
+
+The starter workflow carries a comment that links to GitHub's guide. Setup does not change a workflow that is already there.
 
 ##### What setup checks in the workflow
 
