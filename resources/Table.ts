@@ -992,7 +992,8 @@ function closeUnread(results: any) {
 		if (results.onDone !== undefined) return results.onDone?.();
 		const release = results[SEARCH_OPENING]?.release;
 		if (release) return release();
-		return openIterator(results, { async: true }).return?.();
+		if (results.iterate || results[Symbol.asyncIterator] || results[Symbol.iterator])
+			return openIterator(results, { async: true }).return?.();
 	});
 }
 function openIterator(results: any, options: any) {
@@ -1064,9 +1065,9 @@ function deferredIterator(
 	const getIterator = () =>
 		(iteratorPromise ||= openResults().then((results: any) => {
 			if (returned) return undefined;
-			opened = openIterator(results, iterationOptions);
+			// before the factory, which can close the results itself
 			onOpen?.();
-			return opened;
+			return (opened = openIterator(results, iterationOptions));
 		}));
 	return {
 		next(value?: any) {
@@ -8951,7 +8952,8 @@ export function makeTable(options): TableResourceClass {
 								authorization.then((state: any) => {
 									if (state.error) throw state.error;
 									if (!state.allowed) throw new AccessViolation((context as any).user);
-									return state.results;
+									// a closed gate has released its results
+									return gateClosed ? [] : state.results;
 								}),
 							() => gatedResults.onDone?.(),
 							'Can not synchronously iterate while allowRead is asynchronous',

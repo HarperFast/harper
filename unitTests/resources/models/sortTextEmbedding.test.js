@@ -1057,6 +1057,54 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('a reader that starts after the gate closed reads nothing, and a factory that closes it is not asked twice', async () => {
+			if (!observesSnapshot) return;
+			let cursors = 0;
+			let gated;
+			let searched = false;
+			class Closing extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					searched = true;
+					const results = super.search(target);
+					return {
+						[Symbol.asyncIterator]() {
+							cursors++;
+							gated.onDone?.();
+							return results[Symbol.asyncIterator]();
+						},
+					};
+				}
+			}
+			const transaction = new DatabaseTransaction();
+			const target = () => ({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true });
+			try {
+				gated = new Closing(null, { transaction, user: { username: 'reader' } }).search(target());
+				const iterator = gated[Symbol.asyncIterator]();
+				assert.ok((await iterator.next()).value);
+				await iterator.return();
+				assert.equal(cursors, 1);
+				await waitFor(() => transaction.readTxnsUsed === 1, {
+					message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+				});
+				searched = false;
+				gated = new Closing(null, { transaction, user: { username: 'reader' } }).search(target());
+				await waitFor(() => searched);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				gated.onDone();
+				// the close opens the one cursor it returns; the later reader opens none
+				assert.equal(cursors, 2);
+				assert.deepEqual(await fromAsync(gated), []);
+				assert.equal(cursors, 2);
+				assert.equal(transaction.readTxnsUsed, 1);
+			} finally {
+				transaction.abort();
+			}
+		});
+
 		it('a gate closed before its first step logs a cleanup that rejects instead of letting it escape', async () => {
 			const failure = new Error('cursor close failed');
 			const escaped = [];
