@@ -14616,7 +14616,6 @@ export function makeTable(options): TableResourceClass {
 		};
 	}
 
-	// this database's open link, whose clock a fill may move or cap; none when the caller set the version
 	function clockLink(context: Context): any {
 		if (!isRocksDB || context?.timestamp) return;
 		for (let txn: any = context?.transaction; txn && !isReleasedTransaction(txn); txn = txn.next) {
@@ -14633,8 +14632,11 @@ export function makeTable(options): TableResourceClass {
 	// pinned yet moves past it, so the transaction's own later write still supersedes the fill. A read never mints
 	// the key: the write's reservation issues and covers it.
 	function advanceClockPast(link: any, version: number): void {
-		const handle = link?.transaction;
-		if (!handle || !(version > 0) || pinnedClock(link) || handle.getTimestamp() > version) return;
+		if (!pinnedClock(link)) moveClockPast(link?.transaction, version);
+	}
+
+	function moveClockPast(handle: any, version: number): void {
+		if (!handle || !(version > 0) || handle.getTimestamp() > version) return;
 		const clock = (primaryStore as RocksDatabase).getMonotonicTimestamp();
 		if (clock > version) handle.setTimestamp(clock);
 	}
@@ -15470,10 +15472,7 @@ export function makeTable(options): TableResourceClass {
 					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
-					// The requester's later write must supersede this fill. Decided now, as a write during the source call
-					// can pin its clock: a pinned clock caps the fill just below it unless that would not advance past the
-					// record's version; an unpinned one moves past the fill, which keeps its fetch-time version so
-					// successive fills stay in fetch order.
+					// decided at resolve, as a write during the source call can pin the requester's clock
 					const requesterLink = clockLink(context);
 					const requesterPin = pinnedClock(requesterLink);
 					if (requesterPin > 0) {
@@ -15515,7 +15514,7 @@ export function makeTable(options): TableResourceClass {
 					}
 					if (!issuanceFailed && !sourceContext.noCacheStore) {
 						sharedEntry = resolvedEntry;
-						if (!requesterPin) advanceClockPast(requesterLink, resolvedVersion);
+						if (!requesterPin) moveClockPast(requesterLink?.transaction, resolvedVersion);
 					}
 					resolve(resolvedEntry);
 				} catch (error) {

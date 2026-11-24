@@ -115,7 +115,6 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		sourceGate = new Promise((resolve) => (releaseSource = resolve));
 		const fetching = new Promise((resolve) => (sourceStarted = resolve));
 		try {
-			// this transaction's clock is set by its first read, before the other request starts fetching
 			await writerAfterLoad(undefined, async (resource) => {
 				await Target.get('warm', resource.getContext());
 				const other = {};
@@ -146,7 +145,6 @@ describe('Write after ensureLoaded() on a caching table', function () {
 				const loading = resource.ensureLoaded();
 				await fetching;
 				sourceGate = undefined;
-				// this write reserves the transaction's clock before its fill resolves
 				await Target.put('pinned-other', { value: 1 }, resource.getContext());
 				releaseSource();
 				await loading;
@@ -218,7 +216,7 @@ describe('Write after ensureLoaded() on a caching table', function () {
 			sourceValue = 1;
 			const context = {};
 			await transaction(context, async () => {
-				await Target.getResource('warm', context); // fixes this transaction's clock before the other fetch
+				await Target.getResource('warm', context); // sets this transaction's clock before the other fetch
 				const other = {};
 				olderFetch = transaction(other, () => Target.get('overlapped', other));
 				await fetching;
@@ -234,9 +232,9 @@ describe('Write after ensureLoaded() on a caching table', function () {
 			for (const end = Date.now() + 300; Date.now() < end; await delay(10))
 				assert.equal(Target.primaryStore.getEntry('overlapped').value.value, 2);
 		} finally {
-			releaseSource?.();
-			await olderFetch;
 			setSourceFillLockTimeoutForTesting(undefined);
+			releaseSource?.();
+			await olderFetch?.catch(() => {});
 		}
 	});
 
