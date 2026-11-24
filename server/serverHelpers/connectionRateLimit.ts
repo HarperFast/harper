@@ -18,6 +18,8 @@ const PRUNE_STEP = 16;
 // way a shared overflow bucket would. A per-address limit cannot bound a distributed flood in any case.
 const MAX_TRACKED_ADDRESSES = 100_000;
 const REPORT_INTERVAL_MS = 60_000;
+// a wall-clock correction must not refill a spent bucket early
+const monotonicNow = () => performance.now();
 
 /**
  * Admission for new connections from each source address, or undefined when `limit` sets no
@@ -28,7 +30,7 @@ const REPORT_INTERVAL_MS = 60_000;
 export function createConnectionRateLimiter(
 	limit: ConnectionRateLimit | undefined,
 	description: string,
-	clock: () => number = Date.now
+	clock: () => number = monotonicNow
 ): ConnectionAdmission | undefined {
 	const perSecond = Number(limit?.perSecond);
 	if (!(perSecond > 0)) return undefined;

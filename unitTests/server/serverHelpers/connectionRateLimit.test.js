@@ -53,6 +53,20 @@ describe('connectionRateLimit', () => {
 			assert.equal(admit('10.0.0.1'), false);
 		});
 
+		it('ignores wall-clock jumps when refilling', () => {
+			const realNow = Date.now;
+			let wallClock = realNow();
+			Date.now = () => wallClock;
+			try {
+				const admit = createConnectionRateLimiter({ perSecond: 1, burst: 1 }, 'test');
+				assert.equal(admit('10.0.0.1'), true);
+				wallClock += 3_600_000;
+				assert.equal(admit('10.0.0.1'), false);
+			} finally {
+				Date.now = realNow;
+			}
+		});
+
 		it('keeps a separate allowance per address', () => {
 			const admit = createConnectionRateLimiter({ perSecond: 1, burst: 1 }, 'test', now);
 			assert.equal(admit('10.0.0.1'), true);
