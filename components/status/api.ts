@@ -160,17 +160,24 @@ export const lifecycle = {
 	},
 
 	/**
-	 * Remove a component's own status, as when the load that recorded it runs again
+	 * Remove a component's own status, leaving its sub-components'
 	 */
 	cleared(componentName: string): void {
 		componentStatusRegistry.remove(componentName);
 	},
 
 	/**
+	 * Remove the failure `failed` recorded with `error`, unless something has reported over it since
+	 */
+	failureCleared(componentName: string, error: Error | string): void {
+		componentStatusRegistry.removeFailure(componentName, error);
+	},
+
+	/**
 	 * Remove a component's statuses, its sub-components' included, once the component itself is gone
 	 */
-	retired(componentName: string): void {
-		componentStatusRegistry.retire(componentName);
+	retired(componentName: string, keepUnder?: string[]): void {
+		componentStatusRegistry.retire(componentName, keepUnder);
 	},
 };
 

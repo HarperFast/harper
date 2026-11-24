@@ -155,13 +155,28 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
-	 * Remove a component's status along with its sub-components' (`name.*`), for a component that no longer exists
+	 * Remove one component's status only while it is still the failure recorded with `error`: a report made over it
+	 * since belongs to whoever made it.
 	 */
-	public retire(componentName: string): void {
+	public removeFailure(componentName: string, error: Error | string): void {
+		const current = this.statusMap.get(componentName);
+		const recorded = typeof error === 'string' ? redactUrlCredentials(error) : error;
+		if (current?.status === COMPONENT_STATUS_LEVELS.ERROR && current.error === recorded) {
+			this.statusMap.delete(componentName);
+		}
+	}
+
+	/**
+	 * Remove a component's status along with its sub-components' (`name.*`), except those under `keepUnder`: a
+	 * component whose name extends this one's (`shop.eu` under `shop`) can be another component altogether.
+	 */
+	public retire(componentName: string, keepUnder: string[] = []): void {
 		this.statusMap.delete(componentName);
 		const prefix = componentName + '.';
 		for (const key of this.statusMap.keys()) {
-			if (key.startsWith(prefix)) this.statusMap.delete(key);
+			if (!key.startsWith(prefix)) continue;
+			if (keepUnder.some((kept) => key === kept || key.startsWith(kept + '.'))) continue;
+			this.statusMap.delete(key);
 		}
 	}
 

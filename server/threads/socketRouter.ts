@@ -193,6 +193,14 @@ let poolSize = 0;
 let dedicatedPoolsStarted = false;
 let dedicatedWorkerCount = 0;
 const refusedIsolated = new Set<string>(); // reported once, not on every reconcile
+// Dedicated-worker failures this thread reported: an application no longer isolated here may load on this thread from
+// its cache, which writes nothing over them.
+const failedIsolatedStarts = new Map<string, Error>();
+
+function reportIsolatedFailure(application: string, error: Error, message: string) {
+	failedIsolatedStarts.set(application, error);
+	componentLifecycle.failed(application, error, message);
+}
 // A first release's start is held as its canary, so it may take the canary's whole report window before it binds.
 const isolatedWorkerReadyTimeoutMs = () => canaryVerdictTimeoutMs() + 60_000;
 let nextIsolatedIndex = 0;
@@ -262,6 +270,7 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 		.then(() => {
 			// the worker's own registry reports its components; this thread's entry is only the start outcome
 			if (isolatedSlots.get(application) === slot) {
+				failedIsolatedStarts.delete(application);
 				componentLifecycle.loaded(application, `Dedicated worker for '${application}' is running`);
 			}
 			return true;
@@ -269,7 +278,7 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 		.catch(async (error) => {
 			if (isolatedSlots.get(application) !== slot) return false;
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
-			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
+			reportIsolatedFailure(application, error, `Component '${application}' failed to load`);
 			// The slot IS the lease: holding it until the failed worker has actually exited is what stops a
 			// reconcile from starting a replacement over its still-bound UDS mirror and still-open stores,
 			// and what makes a concurrent drop's `await slot.shutdown()` cover this worker too.
@@ -307,6 +316,11 @@ async function reconcileIsolatedWorkersNow(only?: string, refused = false): Prom
 	const wanted = new Set(admitIsolatedWorkers([...isolatedSlots.keys()], await readFailedClosedApplications(), only));
 	// main already knows its release is refused, whatever this reading of the records says
 	if (refused && only !== undefined) wanted.delete(only);
+	for (const [application, error] of failedIsolatedStarts) {
+		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
+		failedIsolatedStarts.delete(application);
+		componentLifecycle.failureCleared(application, error);
+	}
 	const stopping = [];
 	for (const [application, slot] of isolatedSlots) {
 		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
@@ -456,7 +470,7 @@ function startWorkerSlot(
 			if (waitingForInitialReady) failStartup(error);
 			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot) {
 				isolatedSlots.delete(application);
-				componentLifecycle.failed(application, error, `Component '${application}' worker failed`);
+				reportIsolatedFailure(application, error, `Component '${application}' worker failed`);
 				void import('../http.ts').then(
 					({ cleanupApplicationSockets }) => {
 						// A config reconciliation may already have installed a replacement after the

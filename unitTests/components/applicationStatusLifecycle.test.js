@@ -1,11 +1,12 @@
 'use strict';
 
-// What the status registry says about an application across repeated directory scans on one thread, as the main thread
-// sees them: it reruns the scan on every reload cycle without restarting, so its `loadedPaths` cache survives.
+// The main thread reruns the directory scan on every reload cycle without restarting, so its `loadedPaths` cache
+// survives between scans the way it does here.
 
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -13,6 +14,8 @@ testUtils.preTestPrep();
 const { internal: statusInternal, statusForComponent, STATUS } = require('#src/components/status/index');
 const configUtils = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const { ComponentPreparationLockTimeoutError } = require('#js/components/componentPreparationLock');
+const { waitFor } = require('../waitFor.js');
 
 const LOADER = require.resolve('#src/components/componentLoader');
 
@@ -26,7 +29,7 @@ describe('application status across directory scans', function () {
 	const created = [];
 	const plugins = [];
 
-	// A suite before this one may have moved the components root: an instance of our own reads the root this suite writes.
+	// a suite before this one may have moved the components root, so this one loads an instance of its own
 	before(async () => {
 		componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		await fs.mkdir(componentsRoot, { recursive: true });
@@ -60,8 +63,20 @@ describe('application status across directory scans', function () {
 		return dir;
 	}
 
-	function scan() {
-		return componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} });
+	function scan(interruptedActivationFailures) {
+		return componentLoader.loadComponentDirectories(
+			new Map(),
+			{ isWorker: true, set() {} },
+			new WeakMap(),
+			interruptedActivationFailures
+		);
+	}
+
+	async function outsideDirectory(configYaml) {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-status-pkg-'));
+		await fs.writeFile(path.join(dir, 'config.yaml'), configYaml);
+		created.push(dir);
+		return dir;
 	}
 
 	const statusOf = (key) => registry.getStatus(key)?.status;
@@ -168,6 +183,85 @@ describe('application status across directory scans', function () {
 		assert.equal(registry.getStatus('leafpkg'), undefined);
 	});
 
+	it('heals a failed package linked in from outside the application directory', async () => {
+		const dir = await application('status-linked-probe', 'linkedpkg:\n  package: linkedpkg\n');
+		const packageDir = await outsideDirectory('branchedDatabases: [data]\n');
+		await fs.mkdir(path.join(dir, 'node_modules'), { recursive: true });
+		await fs.symlink(packageDir, path.join(dir, 'node_modules', 'linkedpkg'), 'dir');
+		await scan();
+		assert.equal(statusOf('status-linked-probe.linkedpkg'), STATUS.ERROR, 'precondition');
+
+		await fs.writeFile(path.join(packageDir, 'config.yaml'), 'statusLoadsProbe: {}\n');
+		await scan();
+
+		assert.equal(statusOf('status-linked-probe.linkedpkg'), STATUS.HEALTHY);
+		assert.equal(statusOf('status-linked-probe.linkedpkg.statusLoadsProbe'), STATUS.HEALTHY);
+	});
+
+	it('leaves an error a component reported over the loader failure since', async () => {
+		const dir = await application('status-report-probe', 'statusThrowsProbe: {}\n');
+		await scan();
+		statusForComponent('status-report-probe.statusThrowsProbe').error('reported by the component');
+
+		await fs.writeFile(path.join(dir, 'config.yaml'), 'statusLoadsProbe: {}\n');
+		await scan();
+
+		const reported = registry.getStatus('status-report-probe.statusThrowsProbe');
+		assert.equal(reported?.status, STATUS.ERROR);
+		assert.equal(reported.message, 'reported by the component');
+	});
+
+	it('ends a deferred load of a cached application healthy, not loading', async () => {
+		await application('status-deferred-probe', 'statusLoadsProbe: {}\n');
+		await scan();
+
+		const waiting = new ComponentPreparationLockTimeoutError('preparation in progress');
+		await scan(new Map([['status-deferred-probe', waiting]]));
+
+		await waitFor(() => statusOf('status-deferred-probe') === STATUS.HEALTHY, 5000);
+		assert.equal(starts, 1, 'the cached application is not loaded again');
+	});
+
+	it('keeps a recovery failure for an application whose directory is gone', async () => {
+		const dir = await application('status-recovery-probe', 'statusLoadsProbe: {}\n');
+		await scan();
+		await fs.rm(dir, { recursive: true, force: true });
+
+		await scan(new Map([['status-recovery-probe', new Error('could not restore the previous release')]]));
+
+		assert.equal(statusOf('status-recovery-probe'), STATUS.ERROR);
+	});
+
+	it('loads and reports an application recreated after it was retired', async () => {
+		const dir = await application('status-return-probe', 'statusLoadsProbe: {}\n');
+		await scan();
+		await fs.rm(dir, { recursive: true, force: true });
+		await scan();
+		assert.equal(registry.getStatus('status-return-probe'), undefined, 'precondition: retired');
+
+		await application('status-return-probe', 'statusLoadsProbe: {}\n');
+		await scan();
+
+		assert.equal(statusOf('status-return-probe'), STATUS.HEALTHY);
+		assert.equal(starts, 2);
+	});
+
+	it('keeps an application whose name extends a removed or retried one', async () => {
+		const shop = await application('status-shop', 'statusThrowsProbe: {}\n');
+		await application('status-shop.eu', 'statusThrowsProbe: {}\n');
+		await scan();
+		assert.equal(statusOf('status-shop.eu.statusThrowsProbe'), STATUS.ERROR, 'precondition');
+
+		await fs.writeFile(path.join(shop, 'config.yaml'), 'statusLoadsProbe: {}\n');
+		await scan();
+		assert.equal(statusOf('status-shop.eu.statusThrowsProbe'), STATUS.ERROR, 'retrying status-shop leaves it');
+
+		await fs.rm(shop, { recursive: true, force: true });
+		await scan();
+		assert.equal(registry.getStatus('status-shop'), undefined);
+		assert.equal(statusOf('status-shop.eu.statusThrowsProbe'), STATUS.ERROR, 'retiring status-shop leaves it');
+	});
+
 	it('retires a removed application and everything under it on the next scan', async () => {
 		const dir = await application('status-retire-probe', 'statusThrowsProbe: {}\n');
 		await scan();
@@ -197,6 +291,32 @@ describe('ComponentStatusRegistry retire and remove', () => {
 		assert.equal(registry.getStatus('dead-app'), undefined);
 		assert.equal(registry.getStatus('dead-app.rest'), undefined);
 		assert.equal(registry.getStatus('dead-apple').status, STATUS.HEALTHY);
+	});
+
+	it('retires a component but keeps the subtrees named to keep', () => {
+		const registry = new ComponentStatusRegistry();
+		registry.setStatus('shop', STATUS.ERROR, 'load failed', 'boom');
+		registry.setStatus('shop.rest', STATUS.HEALTHY);
+		registry.setStatus('shop.eu', STATUS.HEALTHY);
+		registry.setStatus('shop.eu.rest', STATUS.ERROR, 'plugin failed', 'boom');
+
+		registry.retire('shop', ['shop.eu']);
+
+		assert.deepEqual([...registry.getAllStatuses().keys()].sort(), ['shop.eu', 'shop.eu.rest']);
+	});
+
+	it('removes a failure only while it is still the one recorded', () => {
+		const registry = new ComponentStatusRegistry();
+		const recorded = new Error('load failed');
+		registry.markFailed('app', recorded, 'failed');
+		registry.markFailed('other', recorded, 'failed');
+		registry.setStatus('other', STATUS.ERROR, 'reported since', new Error('runtime'), 'explicit');
+
+		registry.removeFailure('app', recorded);
+		registry.removeFailure('other', recorded);
+
+		assert.equal(registry.getStatus('app'), undefined);
+		assert.equal(registry.getStatus('other').message, 'reported since');
 	});
 
 	it('removes one component, leaving its sub-components', () => {

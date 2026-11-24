@@ -10,7 +10,7 @@ import {
 	rmSync,
 	symlinkSync,
 } from 'node:fs';
-import { join, basename, dirname, sep } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 
 import { parseDocument } from 'yaml';
@@ -89,8 +89,11 @@ let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
-// what the previous directory scan found, so an application removed since has its statuses retired
 let applicationsInLastScan = new Set<string>();
+// Hoisted or symlinked packages resolve outside their application's directory, so containment cannot find them.
+const pathsLoadedByApplication = new Map<string, Set<string>>();
+// A root-config `package:` lives in the components root too, but only the root load may load it.
+const rootConfigPackages = new Set<string>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
 export type BootLoadFailure = { key: string; name: string; message: string; stack?: string };
@@ -131,26 +134,40 @@ function markLoadedUnlessReported(componentStatusName: string, message: string):
 	if (current === undefined || current === STATUS.LOADING) componentLifecycle.loaded(componentStatusName, message);
 }
 
-// Status keys this loader marked failed, as opposed to health a component reported through `statusForComponent`:
-// only these send a cached application back through a load, and only these are cleared when it goes.
-const loaderFailures = new Set<string>();
+// Keys the loader itself marked failed, unlike health a component reports through `statusForComponent`: only these send
+// a cached application back through a load, and only these are cleared then.
+const loaderFailures = new Map<string, Error | string>();
 
 function recordLoadFailure(componentStatusName: string, error: Error | string, message?: string): void {
-	loaderFailures.add(componentStatusName);
+	loaderFailures.set(componentStatusName, error);
 	componentLifecycle.failed(componentStatusName, error, message);
 }
 
-/** Clears the failures this loader recorded for `appName` and its components; returns whether there were any. */
+// Application names can contain dots: `shop.eu` is an application of its own, not a component of `shop`.
+function belongsToApplication(key: string, appName: string): boolean {
+	if (key !== appName && !key.startsWith(appName + '.')) return false;
+	for (const other of applicationsInLastScan) {
+		if (other.length > appName.length && other.startsWith(appName + '.') && belongsToApplication(key, other)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function clearLoaderFailures(appName: string): boolean {
-	const prefix = appName + '.';
 	let cleared = false;
-	for (const key of loaderFailures) {
-		if (key !== appName && !key.startsWith(prefix)) continue;
+	for (const [key, error] of loaderFailures) {
+		if (!belongsToApplication(key, appName)) continue;
 		loaderFailures.delete(key);
-		if (statusForComponent(key).get()?.status === STATUS.ERROR) componentLifecycle.cleared(key);
+		componentLifecycle.failureCleared(key, error);
 		cleared = true;
 	}
 	return cleared;
+}
+
+function forgetLoadedPaths(appName: string): void {
+	for (const path of pathsLoadedByApplication.get(appName) ?? []) loadedPaths.delete(path);
+	pathsLoadedByApplication.delete(appName);
 }
 
 /**
@@ -158,17 +175,15 @@ function clearLoaderFailures(appName: string): boolean {
  * application that failed would stay cached, with its failure reported, until the process restarts. Forgetting its
  * paths sends it through a fresh load that records its outcome again; an application that did not fail stays cached.
  */
-function retryIfFailed(appName: string, appFolder: string): void {
-	if (!clearLoaderFailures(appName)) return;
-	const resolvedFolder = realpathSync(appFolder);
-	for (const path of loadedPaths.keys()) {
-		if (path === resolvedFolder || path.startsWith(resolvedFolder + sep)) loadedPaths.delete(path);
-	}
+function retryIfFailed(appName: string): void {
+	if (!rootConfigPackages.has(appName) && clearLoaderFailures(appName)) forgetLoadedPaths(appName);
 }
 
 function retireApplication(appName: string): void {
 	clearLoaderFailures(appName);
-	componentLifecycle.retired(appName);
+	forgetLoadedPaths(appName);
+	const otherApplications = [...applicationsInLastScan].filter((other) => other.startsWith(appName + '.'));
+	componentLifecycle.retired(appName, otherApplications);
 }
 
 /**
@@ -428,7 +443,23 @@ export async function loadComponentDirectories(
 	const unreportedFailedRecoveries = new Map(
 		[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
 	);
-	const scannedApplications = new Set<string>();
+	const hdbAppFolder = process.env.RUN_HDB_APP;
+	const applicationEntries = existsSync(getComponentsRoot())
+		? readdirSync(getComponentsRoot(), { withFileTypes: true }).filter(
+				// Skip hidden entries: component names are never dot-prefixed, and this keeps
+				// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
+				(entry) => (entry.isDirectory() || entry.isSymbolicLink()) && !entry.name.startsWith('.')
+			)
+		: [];
+	const previousApplications = applicationsInLastScan;
+	applicationsInLastScan = new Set([
+		...applicationEntries.map((entry) => entry.name),
+		...failedRecoveries.keys(),
+		...(hdbAppFolder ? [basename(hdbAppFolder)] : []),
+	]);
+	for (const appName of previousApplications) {
+		if (!applicationsInLastScan.has(appName)) retireApplication(appName);
+	}
 	const deferComponentLoad = (appName: string) => {
 		// It may load once its preparation settles, after this thread has reported what it loaded, and under whatever
 		// config is live then: so it is recorded now, unchecked, since an extra entry only widens a restart.
@@ -445,10 +476,13 @@ export async function loadComponentDirectories(
 						retireApplication(appName);
 						return;
 					}
-					if (!placedOnThisThread(appName)) return;
+					if (!placedOnThisThread(appName)) {
+						if (statusForComponent(appName).get()?.status === STATUS.LOADING) componentLifecycle.cleared(appName);
+						return;
+					}
 					const mountResult = tryRootConfigMount(appName);
 					if (!mountResult.ok) return;
-					retryIfFailed(appName, appFolder);
+					retryIfFailed(appName);
 					const loadedModules = new Set<any>();
 					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
 						isRoot: false,
@@ -458,6 +492,8 @@ export async function loadComponentDirectories(
 						branchedDatabases: rootConfigBranchedDatabases(appName),
 						collectLoadedModules: loadedModules,
 					});
+					// a cached application reports nothing from its load, so the wait ends here
+					markLoadedUnlessReported(appName, `Application '${appName}' loaded`);
 					await readyComponentModules(loadedModules, readyComponentPromises);
 				})
 				.catch((error) => {
@@ -474,58 +510,50 @@ export async function loadComponentDirectories(
 		);
 		trackDeferredBootLoad(appName, deferredLoad);
 	};
-	if (existsSync(getComponentsRoot())) {
-		const cfFolders = readdirSync(getComponentsRoot(), { withFileTypes: true });
-		for (const appEntry of cfFolders) {
-			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
-			// Skip hidden entries: component names are never dot-prefixed, and this keeps
-			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
-			if (appEntry.name.startsWith('.')) continue;
-			const appName = appEntry.name;
-			scannedApplications.add(appName);
-			const refusal = failClosed?.get(appName);
-			if (refusal) {
-				noteBootFailure(appName, appName, refusal);
-				recordLoadFailure(appName, refusal, refusal.message);
-				continue;
-			}
-			const recoveryError = failedRecoveries.get(appName);
-			if (recoveryError) {
-				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
-					deferredRecoveries.delete(appName);
-					deferComponentLoad(appName);
-					continue;
-				}
-				unreportedFailedRecoveries.delete(appName);
-				noteBootFailure(appName, appName, recoveryError);
-				recordLoadFailure(
-					appName,
-					recoveryError,
-					`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
-				);
-				continue;
-			}
-			if (!placedOnThisThread(appName)) continue;
-			const appFolder = join(getComponentsRoot(), appName);
-			const mountResult = tryRootConfigMount(appName);
-			if (!mountResult.ok) continue;
-			cfsLoaded.push(
-				serializeComponentLoad(appName, () => {
-					retryIfFailed(appName, appFolder);
-					return loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
-						isRoot: false,
-						autoReload: false,
-						appName,
-						mount: mountResult.mount,
-						branchedDatabases: rootConfigBranchedDatabases(appName),
-					});
-				}).catch((error) => {
-					const loadError = error instanceof Error ? error : new Error(String(error));
-					noteBootFailure(appName, appName, loadError);
-					recordLoadFailure(appName, loadError, `Component '${appName}' failed to load`);
-				})
-			);
+	for (const appEntry of applicationEntries) {
+		const appName = appEntry.name;
+		const refusal = failClosed?.get(appName);
+		if (refusal) {
+			noteBootFailure(appName, appName, refusal);
+			recordLoadFailure(appName, refusal, refusal.message);
+			continue;
 		}
+		const recoveryError = failedRecoveries.get(appName);
+		if (recoveryError) {
+			if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
+				deferredRecoveries.delete(appName);
+				deferComponentLoad(appName);
+				continue;
+			}
+			unreportedFailedRecoveries.delete(appName);
+			noteBootFailure(appName, appName, recoveryError);
+			recordLoadFailure(
+				appName,
+				recoveryError,
+				`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
+			);
+			continue;
+		}
+		if (!placedOnThisThread(appName)) continue;
+		const appFolder = join(getComponentsRoot(), appName);
+		const mountResult = tryRootConfigMount(appName);
+		if (!mountResult.ok) continue;
+		cfsLoaded.push(
+			serializeComponentLoad(appName, async () => {
+				retryIfFailed(appName);
+				return loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
+					isRoot: false,
+					autoReload: false,
+					appName,
+					mount: mountResult.mount,
+					branchedDatabases: rootConfigBranchedDatabases(appName),
+				});
+			}).catch((error) => {
+				const loadError = error instanceof Error ? error : new Error(String(error));
+				noteBootFailure(appName, appName, loadError);
+				recordLoadFailure(appName, loadError, `Component '${appName}' failed to load`);
+			})
+		);
 	}
 	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
 		noteBootFailure(appName, appName, recoveryError);
@@ -536,15 +564,13 @@ export async function loadComponentDirectories(
 		);
 	}
 	for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
-	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
-		scannedApplications.add(basename(hdbAppFolder));
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
 		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
 		if (mountResult.ok && placedOnThisThread(basename(hdbAppFolder))) {
 			cfsLoaded.push(
-				serializeComponentLoad(hdbAppFolder, () => {
-					retryIfFailed(basename(hdbAppFolder), hdbAppFolder);
+				serializeComponentLoad(hdbAppFolder, async () => {
+					retryIfFailed(basename(hdbAppFolder));
 					return loadComponent(hdbAppFolder, cycleResources, hdbAppFolder, {
 						isRoot: false,
 						autoReload: Boolean(process.env.DEV_MODE),
@@ -559,10 +585,6 @@ export async function loadComponentDirectories(
 			);
 		}
 	}
-	for (const appName of applicationsInLastScan) {
-		if (!scannedApplications.has(appName)) retireApplication(appName);
-	}
-	applicationsInLastScan = scannedApplications;
 	return await Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
 	});
@@ -940,6 +962,11 @@ export async function loadComponent(
 	options: LoadComponentOptions = {}
 ) {
 	const resolvedFolder = realpathSync(componentDirectory);
+	if (!options.isRoot && options.appName) {
+		let applicationPaths = pathsLoadedByApplication.get(options.appName);
+		if (!applicationPaths) pathsLoadedByApplication.set(options.appName, (applicationPaths = new Set()));
+		applicationPaths.add(resolvedFolder);
+	}
 	if (loadedPaths.has(resolvedFolder)) return loadedPaths.get(resolvedFolder);
 	loadedPaths.set(resolvedFolder, true);
 
@@ -957,7 +984,7 @@ export async function loadComponent(
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	const statusName = options.statusName ?? basename(componentDirectory);
-	// a nested component's entry belongs to the parent load that declared it
+	// a nested package's entry is written by the parent load that declared it
 	const ownsApplicationStatus = !isRoot && !options.applicationScope;
 	if (ownsApplicationStatus) componentLifecycle.loading(statusName, `Application '${statusName}' is loading`);
 	try {
@@ -1074,12 +1101,13 @@ export async function loadComponent(
 		for (const componentName in config) {
 			if (componentName === 'env') continue; // handled above — not a plugin
 			// For root components, use just the component name
-			// For application components, use applicationName.componentName format, nesting as packages nest
+			// For application components, use applicationName.componentName format (directoryName.componentName)
 			const componentStatusName = isRoot ? componentName : `${statusName}.${componentName}`;
 
 			compName = componentName;
 			const componentConfig = config[componentName];
 			if (!componentConfig) continue;
+			if (isRoot && componentConfig.package) rootConfigPackages.add(componentName);
 
 			// Initialize loading status for all components (applications and extensions)
 			// A root-config application (`package:`) is placed like a directory one: an isolated application
