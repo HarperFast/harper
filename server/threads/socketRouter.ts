@@ -206,7 +206,6 @@ function reportIsolatedFailure(application: string, error: Error, message: strin
 	reportDedicatedWorker(application, () => componentLifecycle.failed(application, error, message));
 }
 
-/** Whether `application`'s status is unset or still the last one this thread reported for its dedicated worker */
 function dedicatedWorkerOwnsStatus(application: string): boolean {
 	const current = statusForComponent(application).get();
 	return !current || current.lastChecked === dedicatedWorkerReports.get(application);
@@ -258,7 +257,7 @@ function reportIsolatedRefusal(name: string, refusal: string) {
 		`Application '${name}' is isolated but gets no dedicated worker: ${refusal}; it is not loaded anywhere`
 	);
 	harperLogger.error(error.message);
-	componentLifecycle.failed(name, error, `Component '${name}' failed to load`);
+	reportDedicatedWorker(name, () => componentLifecycle.failed(name, error, `Component '${name}' failed to load`));
 }
 
 /**

@@ -1,8 +1,5 @@
 'use strict';
 
-// The main thread reruns the directory scan on every reload cycle without restarting, so its `loadedPaths` cache
-// survives between scans the way it does here.
-
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs/promises');

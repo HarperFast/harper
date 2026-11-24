@@ -460,9 +460,11 @@ export async function loadComponentDirectories(
 		...(hdbAppFolder ? [basename(hdbAppFolder)] : []),
 	]);
 	for (const appName of previousApplications) {
-		// after any load of it still in flight, which would otherwise report on it once it is gone
-		if (!applicationsInLastScan.has(appName))
-			void serializeComponentLoad(appName, async () => retireApplication(appName));
+		if (applicationsInLastScan.has(appName)) continue;
+		// after any load of it still in flight, which would otherwise report on it once it is gone; it may be back by then
+		void serializeComponentLoad(appName, async () => {
+			if (!applicationsInLastScan.has(appName)) retireApplication(appName);
+		});
 	}
 	const deferComponentLoad = (appName: string) => {
 		// It may load once its preparation settles, after this thread has reported what it loaded, and under whatever
@@ -499,7 +501,6 @@ export async function loadComponentDirectories(
 						branchedDatabases: rootConfigBranchedDatabases(appName),
 						collectLoadedModules: loadedModules,
 					});
-					// a cached application writes nothing from its load
 					if (stillWaiting()) componentLifecycle.loaded(appName, `Application '${appName}' loaded`);
 					await readyComponentModules(loadedModules, readyComponentPromises);
 				})
