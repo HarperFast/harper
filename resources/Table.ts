@@ -675,6 +675,13 @@ function finishDroppedTableBlobSweep(rootStore: RocksDatabase, primaryStore, lab
 			}
 		});
 }
+function isServableToWaiter(entry: Entry | undefined): boolean {
+	return Boolean(
+		entry?.value &&
+		!(entry.metadataFlags & (INVALIDATED | EVICTED)) &&
+		!(entry.expiresAt != undefined && entry.expiresAt < Date.now())
+	);
+}
 const NOT_FOUND_STATUSES = new Set([404, 410]);
 // Not a thrown Response: REST serves it as the response, reading its body once and merging into its headers.
 function isNotFoundFailure(error: unknown): boolean {
@@ -14990,12 +14997,7 @@ export function makeTable(options): TableResourceClass {
 			clearTimeout(timer);
 			if (heldFill) heldFill.waiters--;
 			const entry = primaryStore.getEntry(id);
-			if (
-				!entry ||
-				!entry.value ||
-				entry.metadataFlags & (INVALIDATED | EVICTED) ||
-				(entry.expiresAt != undefined && entry.expiresAt < Date.now())
-			) {
+			if (!isServableToWaiter(entry)) {
 				const outcome = heldFill?.source === source ? heldFill.outcome : undefined;
 				if (
 					outcome &&
@@ -15483,8 +15485,9 @@ export function makeTable(options): TableResourceClass {
 		if (!(waiting >= SOURCE_FILL_WAITERS_WARNING)) return;
 		const now = performance.now();
 		if (now - lastSourceFillWaitersWarn < 60_000) return;
-		lastSourceFillWaitersWarn = now;
 		try {
+			if (isServableToWaiter(primaryStore.getEntry(id))) return;
+			lastSourceFillWaitersWarn = now;
 			const failure =
 				error?.statusCode ??
 				error?.status ??
