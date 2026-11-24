@@ -193,14 +193,23 @@ let poolSize = 0;
 let dedicatedPoolsStarted = false;
 let dedicatedWorkerCount = 0;
 const refusedIsolated = new Set<string>(); // reported once, not on every reconcile
-// Dedicated-worker failures this thread reported: an application no longer isolated here may load on this thread from
-// its cache, which writes nothing over them.
-const failedIsolatedStarts = new Map<string, Date>();
+// What this thread reported of each dedicated worker, by revision (every status write replaces `lastChecked`): once an
+// application is no longer isolated, the main thread may load it from its cache, which writes nothing over it.
+const dedicatedWorkerReports = new Map<string, Date>();
+
+function reportDedicatedWorker(application: string, report: () => void) {
+	report();
+	dedicatedWorkerReports.set(application, statusForComponent(application).get()!.lastChecked);
+}
 
 function reportIsolatedFailure(application: string, error: Error, message: string) {
-	componentLifecycle.failed(application, error, message);
-	// every status write replaces `lastChecked`, so it identifies this report
-	failedIsolatedStarts.set(application, statusForComponent(application).get()!.lastChecked);
+	reportDedicatedWorker(application, () => componentLifecycle.failed(application, error, message));
+}
+
+/** Whether `application`'s status is unset or still the last one this thread reported for its dedicated worker */
+function dedicatedWorkerOwnsStatus(application: string): boolean {
+	const current = statusForComponent(application).get();
+	return !current || current.lastChecked === dedicatedWorkerReports.get(application);
 }
 // A first release's start is held as its canary, so it may take the canary's whole report window before it binds.
 const isolatedWorkerReadyTimeoutMs = () => canaryVerdictTimeoutMs() + 60_000;
@@ -270,9 +279,10 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 	])
 		.then(() => {
 			// the worker's own registry reports its components; this thread's entry is only the start outcome
-			if (isolatedSlots.get(application) === slot) {
-				failedIsolatedStarts.delete(application);
-				componentLifecycle.loaded(application, `Dedicated worker for '${application}' is running`);
+			if (isolatedSlots.get(application) === slot && dedicatedWorkerOwnsStatus(application)) {
+				reportDedicatedWorker(application, () =>
+					componentLifecycle.loaded(application, `Dedicated worker for '${application}' is running`)
+				);
 			}
 			return true;
 		})
@@ -317,10 +327,10 @@ async function reconcileIsolatedWorkersNow(only?: string, refused = false): Prom
 	const wanted = new Set(admitIsolatedWorkers([...isolatedSlots.keys()], await readFailedClosedApplications(), only));
 	// main already knows its release is refused, whatever this reading of the records says
 	if (refused && only !== undefined) wanted.delete(only);
-	for (const [application, recorded] of failedIsolatedStarts) {
+	for (const application of dedicatedWorkerReports.keys()) {
 		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
-		failedIsolatedStarts.delete(application);
-		if (statusForComponent(application).get()?.lastChecked === recorded) componentLifecycle.cleared(application);
+		if (dedicatedWorkerOwnsStatus(application)) componentLifecycle.cleared(application);
+		dedicatedWorkerReports.delete(application);
 	}
 	const stopping = [];
 	for (const [application, slot] of isolatedSlots) {

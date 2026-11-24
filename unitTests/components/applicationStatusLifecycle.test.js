@@ -29,7 +29,7 @@ describe('application status across directory scans', function () {
 	const created = [];
 	const plugins = [];
 
-	// a suite before this one may have moved the components root, so this one loads an instance of its own
+	// a suite before this one may have moved the components root
 	before(async () => {
 		componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		await fs.mkdir(componentsRoot, { recursive: true });
@@ -96,6 +96,7 @@ describe('application status across directory scans', function () {
 		for (const dir of created.splice(0)) await fs.rm(dir, { recursive: true, force: true });
 		await scan();
 		componentLoader.loadedPaths.clear();
+		componentLoader.trackBootOutcomes([]);
 		registry.reset();
 	});
 
@@ -212,14 +213,28 @@ describe('application status across directory scans', function () {
 		assert.equal(reported.message, 'reported by the component');
 	});
 
-	it('ends a deferred load of a cached application healthy, not loading', async () => {
+	it('ends a deferred load healthy once the application loads, not loading', async () => {
 		await application('status-deferred-probe', 'statusLoadsProbe: {}\n');
-		await scan();
-
 		const waiting = new ComponentPreparationLockTimeoutError('preparation in progress');
+
 		await scan(new Map([['status-deferred-probe', waiting]]));
 
 		await waitFor(() => statusOf('status-deferred-probe') === STATUS.HEALTHY, 5000);
+		assert.equal(starts, 1);
+	});
+
+	it('leaves what a cached application reported through a deferred load', async () => {
+		await application('status-deferred-cached', 'statusLoadsProbe: {}\n');
+		await scan();
+		statusForComponent('status-deferred-cached').error('reported by the application');
+		const waiting = new ComponentPreparationLockTimeoutError('preparation in progress');
+
+		componentLoader.trackBootOutcomes(['status-deferred-cached']);
+
+		await scan(new Map([['status-deferred-cached', waiting]]));
+		await waitFor(() => componentLoader.bootVerdictOf('status-deferred-cached').outcome !== 'pending', 5000);
+
+		assert.equal(registry.getStatus('status-deferred-cached')?.message, 'reported by the application');
 		assert.equal(starts, 1, 'the cached application is not loaded again');
 	});
 

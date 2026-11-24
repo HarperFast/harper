@@ -92,8 +92,6 @@ const componentLoadTails = new Map<string, Promise<void>>();
 let applicationsInLastScan = new Set<string>();
 // Hoisted or symlinked packages resolve outside their application's directory, so containment cannot find them.
 const pathsLoadedByApplication = new Map<string, Set<string>>();
-// A root-config `package:` lives in the components root too, but only the root load may load it.
-const rootConfigPackages = new Set<string>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
 export type BootLoadFailure = { key: string; name: string; message: string; stack?: string };
@@ -178,7 +176,9 @@ function forgetLoadedPaths(appName: string): void {
  * paths sends it through a fresh load that records its outcome again; an application that did not fail stays cached.
  */
 function retryIfFailed(appName: string): void {
-	if (!rootConfigPackages.has(appName) && clearLoaderFailures(appName)) forgetLoadedPaths(appName);
+	// a root-config `package:` lives in the components root too, but only the root load may load it
+	if ((getConfigObj()?.[appName] as any)?.package) return;
+	if (clearLoaderFailures(appName)) forgetLoadedPaths(appName);
 }
 
 function retireApplication(appName: string): void {
@@ -348,7 +348,7 @@ function placementOf(appName: string): boolean {
 	}
 	if (shouldLoadApplicationHere(appName)) return true;
 	// placed on another thread now: a failure this thread recorded while it loaded here no longer describes it
-	clearLoaderFailures(appName);
+	if (clearLoaderFailures(appName)) forgetLoadedPaths(appName);
 	return false;
 }
 
@@ -460,7 +460,9 @@ export async function loadComponentDirectories(
 		...(hdbAppFolder ? [basename(hdbAppFolder)] : []),
 	]);
 	for (const appName of previousApplications) {
-		if (!applicationsInLastScan.has(appName)) retireApplication(appName);
+		// after any load of it still in flight, which would otherwise report on it once it is gone
+		if (!applicationsInLastScan.has(appName))
+			void serializeComponentLoad(appName, async () => retireApplication(appName));
 	}
 	const deferComponentLoad = (appName: string) => {
 		// It may load once its preparation settles, after this thread has reported what it loaded, and under whatever
@@ -468,9 +470,12 @@ export async function loadComponentDirectories(
 		if (shouldLoadApplicationHere(appName)) applicationsPlaced.add(appName);
 		const appFolder = join(getComponentsRoot(), appName);
 		const appWasVisible = existsSync(appFolder);
-		if (appWasVisible) {
+		let waiting: Date | undefined;
+		if (appWasVisible && !statusForComponent(appName).get()) {
 			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
+			waiting = statusForComponent(appName).get()!.lastChecked;
 		}
+		const stillWaiting = () => waiting !== undefined && statusForComponent(appName).get()?.lastChecked === waiting;
 		const deferredLoad = serializeComponentLoad(appName, () =>
 			recoverInterruptedComponentExtraction(getComponentsRoot(), appName)
 				.then(async () => {
@@ -479,7 +484,7 @@ export async function loadComponentDirectories(
 						return;
 					}
 					if (!placedOnThisThread(appName)) {
-						if (statusForComponent(appName).get()?.status === STATUS.LOADING) componentLifecycle.cleared(appName);
+						if (stillWaiting()) componentLifecycle.cleared(appName);
 						return;
 					}
 					const mountResult = tryRootConfigMount(appName);
@@ -494,8 +499,8 @@ export async function loadComponentDirectories(
 						branchedDatabases: rootConfigBranchedDatabases(appName),
 						collectLoadedModules: loadedModules,
 					});
-					// a cached application reports nothing from its load, so the wait ends here
-					markLoadedUnlessReported(appName, `Application '${appName}' loaded`);
+					// a cached application writes nothing from its load
+					if (stillWaiting()) componentLifecycle.loaded(appName, `Application '${appName}' loaded`);
 					await readyComponentModules(loadedModules, readyComponentPromises);
 				})
 				.catch((error) => {
@@ -986,7 +991,6 @@ export async function loadComponent(
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	const statusName = options.statusName ?? basename(componentDirectory);
-	// a nested package's entry is written by the parent load that declared it
 	const ownsApplicationStatus = !isRoot && !options.applicationScope;
 	if (ownsApplicationStatus) componentLifecycle.loading(statusName, `Application '${statusName}' is loading`);
 	try {
@@ -1109,7 +1113,6 @@ export async function loadComponent(
 			compName = componentName;
 			const componentConfig = config[componentName];
 			if (!componentConfig) continue;
-			if (isRoot && componentConfig.package) rootConfigPackages.add(componentName);
 
 			// Initialize loading status for all components (applications and extensions)
 			// A root-config application (`package:`) is placed like a directory one: an isolated application
