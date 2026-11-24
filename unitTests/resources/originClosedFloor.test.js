@@ -22,6 +22,7 @@ const {
 	WORD_COVERED,
 	WORD_DURABLE_CEILING,
 	WORD_WRITE_FENCE,
+	WORD_UNRESUMABLE,
 	certifyOriginFloor,
 	claimLocalKey,
 	freshLocalKey,
@@ -144,6 +145,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			WORD_SLOT_LIMIT,
 			WORD_DURABLE_CEILING,
 			WORD_WRITE_FENCE,
+			WORD_UNRESUMABLE,
 		];
 		assert.strictEqual(new Set(headerWords).size, headerWords.length, 'header word indices must be distinct');
 		for (const word of headerWords) {
@@ -248,13 +250,17 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 	});
 
 	it('a slot still being claimed constrains nothing', () => {
-		// buffer layout from originClosedFloor.ts: 8 header words (the slot limit is word 5), 1024 owner words, then
+		// buffer layout from originClosedFloor.ts: the header words (the slot limit is word 5), 1024 owner words, then
 		// one bound per 8 words
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let slot = 1023;
-		while (Atomics.load(words, 8 + slot) !== 0n || Atomics.load(words, 8 + 1024 + slot * 8) !== 0n) slot--;
+		while (
+			Atomics.load(words, HEADER_WORDS + slot) !== 0n ||
+			Atomics.load(words, HEADER_WORDS + 1024 + slot * 8) !== 0n
+		)
+			slot--;
 		const limitBefore = Atomics.load(words, 5);
-		Atomics.store(words, 8 + slot, 1n << 30n);
+		Atomics.store(words, HEADER_WORDS + slot, 1n << 30n);
 		Atomics.store(words, 5, BigInt(slot + 1));
 		try {
 			const start = localStartBound(rootStore);
@@ -262,7 +268,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 			assert(bound > 0 && bound < Infinity, `a claim in progress must not reach the start: ${bound}`);
 			assert.strictEqual(certifyOriginFloor(rootStore), null, 'certification still waits for the claimer');
 		} finally {
-			Atomics.store(words, 8 + slot, 0n);
+			Atomics.store(words, HEADER_WORDS + slot, 0n);
 			Atomics.store(words, 5, limitBefore);
 		}
 	});
@@ -276,7 +282,7 @@ describe('origin-closed timestamp floor (harper-pro#922)', function () {
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let workerSlot = -1;
 		for (let slot = 0; slot < 1024; slot++)
-			if (Atomics.load(words, 8 + slot) === BigInt(workerThreadId + 1)) workerSlot = slot;
+			if (Atomics.load(words, HEADER_WORDS + slot) === BigInt(workerThreadId + 1)) workerSlot = slot;
 		assert(workerSlot > 0, `the worker's slot ${workerSlot} is not a later one`);
 		const limit = Number(Atomics.load(words, 5));
 		assert(limit > workerSlot, `the slot limit ${limit} does not cover the worker's slot ${workerSlot}`);

@@ -79,6 +79,8 @@ export function tableEventSerializer(
 		const key = message?.localTime;
 		if (typeof key !== 'number' || message.fromScan || cursor.holdsToken || !verified) return serialize(message);
 		if (cursor.logKeyScope === undefined) return serialize(message);
+		// a write that took its key before a reload marker and committed after it: a replay from it reads the marker
+		if (key <= subscription.unresumableThrough) return serialize(message);
 		// the event may be shared with other subscribers, so the id goes on an envelope
 		return serialize({ data: message, id: key + cursor.logKeyScope });
 	};

@@ -446,6 +446,61 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			tracking.end();
 		});
 
+		it('issues no checkpoint that a resume would start at or below a reload marker appended before it registered', async () => {
+			const T = tableInOwnDatabase();
+			const Sibling = table({
+				table: `Sibling${++sequence}`,
+				database: T.databaseName,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			// registered before the marker, on another table: it keeps the floors published and its own checkpoints
+			const siblingListener = collector();
+			const sibling = await Sibling.subscribe({ omitCurrent: true, reportProgress: true, listener: siblingListener });
+			await Sibling.put('s', { value: 's' });
+			await waitFor(() => siblingListener.values().includes('s'));
+			await certifiedCheckpoint(Sibling, sibling);
+			await T.put('copied', { value: 'copied' });
+			await T.writeReloadMarker();
+			let markerKey;
+			for (const entry of T.auditStore.getRange({ start: 1 })) {
+				if (entry.type === 'reload' && entry.tableId === T.tableId) markerKey = entry.txnLogKey;
+			}
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true });
+			assert.strictEqual(subscription.unresumableThrough, markerKey);
+			assert.ok(sibling.unresumableThrough < markerKey);
+			assert.ok(certifiedFloors(subscription).origins.get(0).floor < markerKey, 'the floors predate the marker');
+			assert.strictEqual(subscription.checkpoint(), undefined);
+			assert.strictEqual(subscription.checkpointFloor(), undefined);
+			assert.ok(sibling.checkpoint().time < markerKey, 'a replay of the sibling table does not stop at this marker');
+
+			// another origin whose floor is still below the marker: the local log is replayed from the common boundary
+			const lagging = positionBefore(markerKey);
+			const peer = { originGeneration: 'peer-generation', fullCoverage: true, certifiedFrom: 0 };
+			writeSeqRow(T, 'lagging-peer', { closedFloor: lagging, ...peer });
+			await sleep(2);
+			const floor = certify(T);
+			assert.ok(floor > markerKey);
+			await waitFor(() => certifiedFloors(subscription)?.origins.get(0).floor >= floor && sibling.checkpoint());
+			assert.strictEqual(sibling.checkpoint().time - sibling.checkpoint().overlap, lagging);
+			assert.strictEqual(subscription.checkpoint(), undefined, 'the fold puts the local start below the marker');
+			assert.strictEqual(subscription.checkpointFloor(), undefined);
+
+			writeSeqRow(T, 'lagging-peer', { closedFloor: floor, ...peer });
+			let checkpoint;
+			await waitFor(() => (checkpoint = subscription.checkpoint()) !== undefined);
+			assert.ok(checkpoint.time - checkpoint.overlap > markerKey);
+			assert.ok(subscription.checkpointFloor() > markerKey);
+			await T.put('after', { value: 'after' });
+			const resumed = collector();
+			const resume = await T.subscribe({ resume: checkpoint, omitCurrent: true, listener: resumed });
+			await waitFor(() => resumed.values().includes('after'));
+			assert.strictEqual(await resume.resumeVerified, true);
+			resume.end();
+			subscription.end();
+			sibling.end();
+		});
+
 		it('sends no checkpoint event while a resumed replay is still running', async () => {
 			const T = tableInOwnDatabase();
 			const tracked = collector();

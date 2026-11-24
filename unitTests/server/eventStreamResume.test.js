@@ -594,6 +594,76 @@ describe('Table event stream resume (harper#515)', function () {
 			assert.strictEqual(last.id, '', 'an EventSource reconnects without Last-Event-ID');
 			assert.strictEqual(stream.lastEventId, '');
 		});
+
+		it('issues no token at or below a reload marker to a stream opened after it, so every id it holds resumes', async () => {
+			const T = tableInOwnDatabase();
+			const url = served(T);
+			// another table's stream keeps the database's certified floors published, as captured before the marker
+			const Warm = table({
+				table: `Warm${++sequence}`,
+				database: T.databaseName,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			const warm = await connect(request, served(Warm));
+			await Warm.put('w', { value: 'w' });
+			await waitFor(() => warm.frameOf('w'));
+			await certifiedToken(Warm, warm);
+
+			await T.put('copied', { value: 'copied' });
+			await T.writeReloadMarker();
+			let markerKey;
+			for (const entry of T.auditStore.getRange({ start: 1 })) {
+				if (entry.type === 'reload' && entry.tableId === T.tableId) markerKey = entry.txnLogKey;
+			}
+			assert.ok(markerKey > 0);
+
+			const stream = await connect(request, url);
+			assert.strictEqual(stream.status, 200);
+			await T.put('a', { value: 'a' });
+			await waitFor(() => stream.frameOf('a'));
+			// the first checkpoint is tried when the stream goes live, ahead of this write
+			assert.deepStrictEqual(stream.tokens(), [], 'the certified floor has not passed the marker');
+			assert.match(stream.frameOf('a').id, SCALAR_ID);
+			const scalarId = stream.lastEventId;
+			const fromScalar = await connect(request, url, scalarId);
+			assert.strictEqual(fromScalar.status, 200);
+			await waitFor(() => fromScalar.frameOf('a'));
+			fromScalar.close();
+
+			const token = await certifiedToken(T, stream);
+			assert.ok(decodeToken(token).time > markerKey);
+			assert.ok(stream.tokens().every((frame) => decodeToken(frame.id).time > markerKey));
+			stream.close();
+			await T.put('b', { value: 'b' });
+			const fromToken = await connect(request, url, token);
+			assert.strictEqual(fromToken.status, 200);
+			await waitFor(() => fromToken.frameOf('b'));
+			assert.strictEqual(
+				fromToken.frames.find((frame) => frame.event === 'harper-error'),
+				undefined
+			);
+		});
+
+		it('gives no id to a write that took its key before a reload marker and committed after it', async () => {
+			const T = tableInOwnDatabase();
+			const url = served(T);
+			const commitLate = await heldTransaction(T, 'late');
+			await T.writeReloadMarker();
+			const stream = await connect(request, url);
+			await commitLate();
+			await waitFor(() => stream.frameOf('late'));
+			assert.strictEqual(stream.frameOf('late').id, undefined, 'a replay from its key would read the marker');
+			await T.put('after', { value: 'after' });
+			await waitFor(() => stream.frameOf('after'));
+			assert.ok(stream.frameOf('late').data.localTime < stream.frameOf('after').data.localTime);
+			assert.match(stream.frameOf('after').id, SCALAR_ID);
+			stream.close();
+			await T.put('away', { value: 'away' });
+			const resumed = await connect(request, url, stream.lastEventId);
+			assert.strictEqual(resumed.status, 200);
+			await waitFor(() => resumed.frameOf('away'));
+		});
 	});
 
 	describe('on LMDB', function () {

@@ -429,15 +429,28 @@ function positionAfter(key: number): number {
 	return KEY_SCRATCH[0];
 }
 
-/** Folds per-origin boundaries into the compact form; a boundary is never raised. */
-export function encodeCheckpoint(scope: string, boundaries: Map<string, MemberBoundary>): SubscriptionCheckpoint {
+function foldBoundaries(boundaries: Map<string, MemberBoundary>): { time: number; common: number } {
 	let time = 0;
 	let lowest = Infinity;
 	for (const { boundary } of boundaries.values()) {
 		if (boundary > time) time = boundary;
 		if (boundary < lowest) lowest = boundary;
 	}
-	const common = Math.max(lowest, time - MAX_OVERLAP_MS);
+	return { time, common: Math.max(lowest, time - MAX_OVERLAP_MS) };
+}
+
+/** Where a resume of these boundaries' checkpoint starts `name`: at its own boundary, or the common one it folds to. */
+export function resumeBoundary(boundaries: Map<string, MemberBoundary>, name: string | undefined): number | undefined {
+	const own = boundaries.get(name!)?.boundary;
+	if (own === undefined) return;
+	const { time, common } = foldBoundaries(boundaries);
+	// as `resolveMembership` decodes it, from the stored overlap
+	return own < common ? own : time - (time - common);
+}
+
+/** Folds per-origin boundaries into the compact form; a boundary is never raised. */
+export function encodeCheckpoint(scope: string, boundaries: Map<string, MemberBoundary>): SubscriptionCheckpoint {
+	const { time, common } = foldBoundaries(boundaries);
 	const exceptions: { [originName: string]: number } = {};
 	const members: [string, string][] = [];
 	for (const [name, { boundary, generation }] of boundaries) {

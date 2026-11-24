@@ -96,10 +96,12 @@ import {
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
 	freshLocalKey,
+	raiseUnresumableThrough,
 	releaseLocalKey,
 	reserveLocalKey,
 	reservedAroundCallerValue,
 	reservedLocalKey,
+	unresumableThrough,
 } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
@@ -131,6 +133,7 @@ import {
 	encodeCheckpoint,
 	positionBefore,
 	readOriginStateEpoch,
+	resumeBoundary,
 	validateCheckpoint,
 	withReplacedGeneration,
 	type CertifiedFloors,
@@ -2051,6 +2054,11 @@ type ProgressState = {
 	planFloor: number | undefined;
 	checkpointScopeId: string;
 	filtersWithoutKey: boolean;
+	/**
+	 * Sampled once the subscription was registered: a reload marker appended before that raised it first, and
+	 * one appended later reaches the listener. No position at or below it is issued.
+	 */
+	unresumableThrough: number;
 	live: boolean;
 	floor: number | undefined;
 	/** A resumed replay left committed entries to live delivery, so its floor stays at the requested start. */
@@ -11430,6 +11438,8 @@ export function makeTable(options): TableResourceClass {
 					requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 					skipReplicationConfirmation: true,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
+						// before the marker is staged, so a subscription that registers after the append samples its key
+						if (isRocksDB) raiseUnresumableThrough(auditStore.rootStore, reservedLocalKey(transaction));
 						return updateRecord(
 							null, // recordId: null — a whole-table signal, not a per-row change
 							undefined, // no record to store: this writes the audit entry only
@@ -13039,6 +13049,7 @@ export function makeTable(options): TableResourceClass {
 			planFloor,
 			checkpointScopeId,
 			filtersWithoutKey,
+			unresumableThrough: isRocksDB ? unresumableThrough(auditStore.rootStore) : 0,
 			live: false,
 			floor: undefined,
 			replayLeftEntriesToLive: false,
@@ -13048,6 +13059,7 @@ export function makeTable(options): TableResourceClass {
 			queueSend: subscription.send,
 		};
 		subscription.progressState = progress;
+		subscription.unresumableThrough = progress.unresumableThrough;
 		subscription.sentCount = 0;
 		subscription.send = sendTrackingLate;
 		subscription.lowestLateUnconsumed = (consumed: number) => lowestLateUnconsumed(subscription, consumed);
@@ -13200,6 +13212,9 @@ export function makeTable(options): TableResourceClass {
 			if (held < boundary) boundary = held;
 			boundaries.set(state.name, { boundary, generation: state.generation! });
 		}
+		// the local log is where a reload marker lies, and a resume reads it from the folded start
+		const localStart = resumeBoundary(boundaries, certified.origins.get(0)?.name);
+		if (!(localStart > subscription.progressState.unresumableThrough)) return;
 		return boundaries;
 	}
 	function currentBoundaries(subscription: any, holds?: Map<number, number>) {

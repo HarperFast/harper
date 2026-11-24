@@ -83,6 +83,8 @@ function subscribe() {
 
 On RocksDB a stream also ends with `harper-error` and an empty `id` when another node's data is copied into the database underneath it, since the copied records have no events to resume from.
 
+No id is issued for a position before such a copy, or before the server last started, because a resume from it would be refused. A stream opened soon after either one gets log positions first. Its first token follows once every node's certified position has passed that point: within about ten seconds on a single node, and up to a minute in a cluster. A change that was already being written when the copy finished can arrive with no id; the client keeps the id it has.
+
 On LMDB retention is recorded for the whole database, so pruning another table's history can also refuse a collection stream's position with `410`.
 
 ### In a Custom Resource
