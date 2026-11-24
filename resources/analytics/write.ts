@@ -1373,6 +1373,14 @@ let lastResourceUsage: ResourceUsage = {
 
 const rest = () => new Promise(setImmediate);
 
+async function cleanupTable(kind: string, cleanup: () => Promise<void>): Promise<void> {
+	try {
+		await cleanup();
+	} catch (error) {
+		log.warn?.(`Cleaning up ${kind} analytics failed`, error);
+	}
+}
+
 const RAW_EXPIRATION = 3600000;
 const AGGREGATE_EXPIRATION = 31536000000; // one year
 
@@ -1447,11 +1455,14 @@ function startScheduledTasks() {
 			async () => {
 				try {
 					await runAggregationCycle(analyticsDelay, AGGREGATE_PERIOD);
-					await cleanupExpiredAnalytics(getRawAnalyticsTable(), rawRetentionMs);
-					// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
-					if (aggregateRetentionMs) await cleanupExpiredAnalytics(getAnalyticsTable(), aggregateRetentionMs);
 				} catch (error) {
-					log.warn?.('Analytics aggregation or cleanup failed', error);
+					log.warn?.('Analytics aggregation failed', error);
+					return;
+				}
+				await cleanupTable('raw', () => cleanupExpiredAnalytics(getRawAnalyticsTable(), rawRetentionMs));
+				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
+				if (aggregateRetentionMs) {
+					await cleanupTable('aggregate', () => cleanupExpiredAnalytics(getAnalyticsTable(), aggregateRetentionMs));
 				}
 			},
 			Math.max(0, Math.min(AGGREGATE_PERIOD / 2, MAX_SET_TIMEOUT_MS))

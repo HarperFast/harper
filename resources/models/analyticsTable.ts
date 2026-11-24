@@ -182,8 +182,9 @@ export class ModelCallAnalyticsWriter {
 		}
 	}
 
-	cleanup(): Promise<void> {
-		return cleanupExpiredAnalytics(this.#getTable(), this.#retentionMs);
+	async cleanup(): Promise<void> {
+		if (isReadOnlyMode()) return;
+		await cleanupExpiredAnalytics(this.#getTable(), this.#retentionMs);
 	}
 
 	/** Stop the periodic timers. After stop, `write()` is a no-op and `flush()` still works. */

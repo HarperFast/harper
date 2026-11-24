@@ -95,16 +95,44 @@ describe('analytics retention cleanup', () => {
 		assert.deepStrictEqual(remainingTimes(), [5000]);
 	});
 
+	it('keeps the batches that settled when a later batch fails', async function () {
+		this.timeout(20000);
+		await seed(Array.from({ length: 1500 }, (_, index) => index + 1));
+		const remove = store.remove;
+		store.remove = function (key) {
+			if (key[0] === 1200) return Promise.reject(new Error('disk full'));
+			return remove.call(this, key);
+		};
+		const starts = [];
+		record(starts, 'getKeys');
+		await cleanupExpiredAnalytics(Analytics, RETENTION, 50000);
+		await cleanupExpiredAnalytics(Analytics, RETENTION, 50000);
+		assert.deepStrictEqual(starts, [false, [1000, 'node-1'], [1000, 'node-1']]);
+	});
+
 	it('yields to the event loop between batches of a large backlog', async function () {
 		this.timeout(20000);
 		withoutCompaction();
 		const times = Array.from({ length: 2500 }, (_, index) => index + 1);
 		await seed([...times, 100000]);
+		// Synchronous removals, so only the cleanup's own yield can let the event loop turn between batches.
+		const remove = store.remove;
+		let removingSync = false;
+		store.remove = function (key) {
+			// lmdb-js implements removeSync through remove.
+			if (removingSync) return remove.call(this, key);
+			removingSync = true;
+			try {
+				this.removeSync(key);
+			} finally {
+				removingSync = false;
+			}
+		};
 		const order = [];
+		record(order, 'getKeys', () => 'batch');
 		setImmediate(() => order.push('event loop'));
 		await cleanupExpiredAnalytics(Analytics, RETENTION, 50000);
-		order.push('cleanup done');
-		assert.deepStrictEqual(order, ['event loop', 'cleanup done']);
+		assert.deepStrictEqual(order.slice(0, 3), ['batch', 'event loop', 'batch']);
 		assert.deepStrictEqual(remainingTimes(), [100000]);
 	});
 

@@ -7,7 +7,9 @@ const BATCH_SIZE = 1000;
 const COMPACT_INTERVAL = 3600000;
 
 interface CleanupState {
-	from: number | false;
+	from: unknown;
+	completedEnd: number;
+	canCompact: boolean;
 	compactAttemptedAt: number;
 	needsCompaction: boolean;
 	running: boolean;
@@ -29,46 +31,67 @@ export async function cleanupExpiredAnalytics(
 	const store = table.primaryStore;
 	let state = states.get(store);
 	if (!state) {
-		state = { from: false, compactAttemptedAt: 0, needsCompaction: true, running: false };
+		const canCompact = typeof store.compact === 'function';
+		state = {
+			from: false,
+			completedEnd: -Infinity,
+			canCompact,
+			compactAttemptedAt: 0,
+			needsCompaction: canCompact,
+			running: false,
+		};
 		states.set(store, state);
 	}
 	if (state.running) return;
 	state.running = true;
 	try {
 		const end = now - retentionMs;
-		if (state.from !== false && end <= state.from) return;
-		// The scan below starts at the first key, which steps over every tombstone an earlier process left.
-		if (state.compactAttemptedAt === 0) await compactExpired(store, end, now, state);
-		let start: unknown = state.from;
-		for (;;) {
-			const removals = [];
-			let last: unknown;
-			for (const key of store.getKeys({ start, end, limit: BATCH_SIZE })) {
-				removals.push(store.remove(key));
-				last = key;
-			}
-			if (removals.length === 0) break;
-			const failure = (await Promise.allSettled(removals)).find((result) => result.status === 'rejected');
-			state.needsCompaction = true;
-			if (failure) {
-				log.warn?.('Removing expired analytics failed', (failure as PromiseRejectedResult).reason);
-				return;
-			}
-			if (removals.length < BATCH_SIZE) break;
-			start = last;
-			await rest();
+		if (end > state.completedEnd) {
+			if (state.needsCompaction && state.compactAttemptedAt === 0) await compactExpired(store, end, now, state);
+			if (!(await removeExpired(store, end, state))) return;
 		}
-		state.from = end;
 		if (state.needsCompaction && now - state.compactAttemptedAt >= COMPACT_INTERVAL) {
-			await compactExpired(store, end, now, state);
+			await compactExpired(store, state.completedEnd, now, state);
 		}
 	} finally {
 		state.running = false;
 	}
 }
 
+async function removeExpired(store: any, end: number, state: CleanupState): Promise<boolean> {
+	for (;;) {
+		let failure: unknown;
+		const removals = [];
+		let last: unknown;
+		for (const key of store.getKeys({ start: state.from, end, limit: BATCH_SIZE })) {
+			removals.push(
+				Promise.resolve(store.remove(key)).then(
+					() => {},
+					(error) => {
+						failure ??= error ?? new Error('Removal failed');
+					}
+				)
+			);
+			last = key;
+		}
+		if (removals.length > 0) {
+			await Promise.all(removals);
+			state.needsCompaction = state.canCompact;
+			if (failure) {
+				log.warn?.('Removing expired analytics failed', failure);
+				return false;
+			}
+		}
+		if (removals.length < BATCH_SIZE) break;
+		state.from = last;
+		await rest();
+	}
+	state.from = end;
+	state.completedEnd = end;
+	return true;
+}
+
 async function compactExpired(store: any, end: number, now: number, state: CleanupState): Promise<void> {
-	if (typeof store.compact !== 'function') return;
 	state.compactAttemptedAt = now;
 	try {
 		await store.compact({ start: false, end });

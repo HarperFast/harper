@@ -86,8 +86,9 @@ writer) deletes keys below `now - retention` starting from the end of the previo
 store, not from the first key. Keys start with a timestamp, so the expired rows are a prefix, and a
 RocksDB delete leaves the row and its tombstone on disk until compaction: a scan from the first key
 steps over everything earlier passes deleted, a cost that grows without bound (#4570). The cursor
-moves only after every removal in the pass settled successfully; a failed removal leaves it in place
-for the next pass to retry. A row written below the cursor is left until the next process starts.
+moves past a batch only after all of that batch's removals settled successfully; a failed removal
+leaves it at the start of its batch for the next pass to retry. A row written below the cursor is left
+until the next process starts.
 
 Passes are single-flight per store and yield between batches. Where the store has `compact()`, a
 process's first pass compacts the expired range before it scans (the scan from the first key would
