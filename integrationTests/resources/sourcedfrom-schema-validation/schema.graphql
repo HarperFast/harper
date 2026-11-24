@@ -1,0 +1,5 @@
+type ValidatedCache @table @export {
+	id: ID @primaryKey
+	name: String!
+	count: Int
+}

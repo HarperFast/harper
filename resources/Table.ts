@@ -15272,6 +15272,7 @@ export function makeTable(options): TableResourceClass {
 					return;
 				}
 				const dbTxn = txnForContext(sourceContext);
+				// no validate hook: the source is the record's source of truth, so a schema it disagrees with is what is wrong
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
