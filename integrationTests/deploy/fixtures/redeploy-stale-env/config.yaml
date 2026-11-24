@@ -1,0 +1,7 @@
+rest: true
+loadEnv:
+  files: '.env'
+jsResource:
+  files: 'resources.js'
+fastifyRoutes:
+  files: 'routes/*.js'
