@@ -5,7 +5,6 @@
  * aggregate.
  */
 export interface AstStep {
-	parent: any;
 	node: any;
 	key: string;
 	/** The key under `root` that this step descends from. */
@@ -15,14 +14,12 @@ export interface AstStep {
 }
 
 class Step implements AstStep {
-	parent: any;
 	node: any;
 	key: string;
 	root: string;
 	up: Step | undefined;
 
-	constructor(parent: any, node: any, key: string, up: Step | undefined) {
-		this.parent = parent;
+	constructor(node: any, key: string, up: Step | undefined) {
 		this.node = node;
 		this.key = key;
 		this.root = up ? up.root : key;
@@ -46,7 +43,7 @@ export function* walkAst(root: any): Generator<AstStep> {
 			if (expanded.has(node)) throw new Error('Circular reference');
 			expanded.add(node);
 			const keys = childKeys(node);
-			for (let i = keys.length - 1; i >= 0; i--) pending.push(new Step(node, node[keys[i]], keys[i], current));
+			for (let i = keys.length - 1; i >= 0; i--) pending.push(new Step(node[keys[i]], keys[i], current));
 		}
 		current = pending.pop();
 		if (current === undefined) return;

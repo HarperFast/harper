@@ -15,6 +15,8 @@ const pSqlSelect = util.promisify(search.sqlSelect);
 
 import * as terms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import { walkAst } from '../sqlTranslator/walkAst.ts';
 
 //here we call to define and import custom functions to alasql
 alasqlFunctionImporter(alasql);
@@ -29,6 +31,11 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
  * @return
  */
 async function updateData({ statement, hdb_user }: any) {
+	// legacy SQL fetches rows only for the WHERE, so a SET subquery would have nothing to read
+	for (const { node } of walkAst(statement.columns)) {
+		if (node instanceof (alasql as any).yy.Select)
+			throw new ClientError('Legacy SQL cannot run a subquery in UPDATE SET');
+	}
 	let tableInfo: any = await pGetTableSchema(statement.table.databaseid, statement.table.tableid);
 	let update_record = createUpdateRecord(statement.columns);
 

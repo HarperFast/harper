@@ -173,6 +173,18 @@ describe('legacy SQL row selection for deep and IS NOT NULL predicates', functio
 			);
 		});
 
+		it('refuses a subquery in an UPDATE SET, and writes nothing', async () => {
+			await reseed();
+			await assert.rejects(
+				sql('legacy', `UPDATE ${TABLE} SET note = EXISTS (SELECT id FROM ${TABLE} WHERE id < 5) WHERE id = 7`),
+				/subquery in UPDATE SET/
+			);
+			// the legacy text check refuses this form first
+			await assert.rejects(sql('legacy', `UPDATE ${TABLE} SET note = (SELECT MAX(id) FROM ${TABLE}) WHERE id = 7`));
+			const notes = await storedNotes();
+			assert.ok(Object.values(notes).every((note) => note === 'seed'));
+		});
+
 		it('still refuses a SELECT, UPDATE or DELETE whose WHERE holds a subquery, and writes nothing', async () => {
 			await reseed();
 			for (const subquery of [
