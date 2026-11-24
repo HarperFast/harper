@@ -180,6 +180,7 @@ if (
 export const FULL_WRITE_HEAD = 0x40000;
 // Primary rows only. createAuditEntry strips this bit when a copy sender forwards row flags.
 export const HAS_REPLICA_DEADLINE = 0x200000;
+const PAYLOAD_FLAGS = HAS_EXPIRATION | HAS_RESIDENCY_ID | HAS_RESIDENCY_SLOT | HAS_NODE_ID | HAS_ADDITIONAL_AUDIT_REFS;
 if (VERSION_REUSED === HAS_REPLICA_DEADLINE) throw new Error('VERSION_REUSED collides with HAS_REPLICA_DEADLINE');
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
@@ -432,12 +433,14 @@ export class RecordEncoder extends StructonEncoder {
 				let auditRefsToEncode = 0;
 				let logKeyRefsToDrop = 0;
 				let identityRefsToDrop = 0;
+				let writtenPayloadFlags = 0;
 				if (metadata >= 0) {
 					valueStart += 4; // make room for metadata bytes
 					metadataInNextEncoding = -1; // reset indicator to mean no metadata
 					if (expiresAt >= 0) {
 						valueStart += 8; // make room for expiration timestamp
 						expiresAtNextEncoding = -1; // reset indicator to mean no expiration
+						writtenPayloadFlags |= HAS_EXPIRATION;
 						if (!(metadata & HAS_EXPIRATION)) {
 							throw new Error('Expiration included, but not in metadata flags');
 						}
@@ -451,6 +454,7 @@ export class RecordEncoder extends StructonEncoder {
 					if (residencyId) {
 						valueStart += 4; // make room for residency id
 						residencyIdAtNextEncoding = 0; // reset indicator to mean no residency id
+						writtenPayloadFlags |= HAS_RESIDENCY_ID;
 						if (!(metadata & HAS_RESIDENCY_ID)) {
 							throw new Error('Residency id included, but not in metadata flags');
 						}
@@ -458,11 +462,13 @@ export class RecordEncoder extends StructonEncoder {
 					if (residencySlot !== undefined) {
 						valueStart += 2;
 						residencySlotAtNextEncoding = undefined;
+						writtenPayloadFlags |= HAS_RESIDENCY_SLOT;
 						if (!(metadata & HAS_RESIDENCY_SLOT)) throw new Error('Residency slot missing its metadata flag');
 					}
 					if (nodeId >= 0) {
 						valueStart += 4; // make room for node id
 						nodeIdAtNextEncoding = -1; // reset indicator to mean no node id
+						writtenPayloadFlags |= HAS_NODE_ID;
 						if (!(metadata & HAS_NODE_ID)) {
 							throw new Error('Node id included, but not in metadata flags');
 						}
@@ -486,7 +492,14 @@ export class RecordEncoder extends StructonEncoder {
 						additionalAuditRefsNextEncoding = undefined;
 						receivedIdentityRefsNextEncoding = undefined;
 						copiedDeleteBoundaryNextEncoding = undefined;
+						writtenPayloadFlags |= HAS_ADDITIONAL_AUDIT_REFS;
 					}
+					// decode reads a payload for each of these flags, so a bare flag would shift the body into the header
+					const missingPayloadFlags = metadata & PAYLOAD_FLAGS & ~writtenPayloadFlags;
+					if (missingPayloadFlags)
+						throw new Error(
+							`Record metadata flags 0x${missingPayloadFlags.toString(16)} are set without their payload`
+						);
 				}
 				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
 				let position = encoded.start || 0;
@@ -1026,9 +1039,15 @@ export function setNextEncoding(
 	nodeId = -1,
 	residencyId = 0,
 	residencySlot?: number,
-	replicaDeadline?: number
+	replicaDeadline?: number,
+	auditRefs?: Pick<Entry, 'additionalAuditRefs' | 'receivedIdentityRefs' | 'copiedDeleteBoundary'>
 ) {
 	replicaDeadlineNextEncoding = replicaDeadline;
+	additionalAuditRefsNextEncoding =
+		auditRefs?.additionalAuditRefs?.length > 0 ? auditRefs.additionalAuditRefs : undefined;
+	receivedIdentityRefsNextEncoding =
+		auditRefs?.receivedIdentityRefs?.length > 0 ? auditRefs.receivedIdentityRefs : undefined;
+	copiedDeleteBoundaryNextEncoding = auditRefs?.copiedDeleteBoundary;
 	timestampNextEncoding = timestamp;
 	metadataInNextEncoding = metadata;
 	expiresAtNextEncoding = expiresAt;
