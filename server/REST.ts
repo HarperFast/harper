@@ -505,8 +505,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				// TODO: Support cancellation for buffered request bodies.
 				try {
 					request.data = getDeserializer(headersObject['content-type'] as any, true, true)(request.body, request);
-					// Resource loading can outlive body parsing; preserve the rejection until it is awaited.
-					if (writeCondition && typeof request.data?.then === 'function') request.data.then(undefined, () => {});
+					// Body parsing can reject before or without a handler awaiting request.data; keep it observed until awaited.
+					if (typeof request.data?.then === 'function') request.data.then(undefined, () => {});
 				} catch (error) {
 					throw new ClientError(error, 400);
 				}

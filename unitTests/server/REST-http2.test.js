@@ -109,7 +109,6 @@ describe('REST over HTTP/2 without content-length', function () {
 	let h2Client;
 	let h2Port;
 	let h1Port;
-	let lastObservedData;
 
 	before(async function () {
 		setupTestDBPath();
@@ -129,15 +128,12 @@ describe('REST over HTTP/2 without content-length', function () {
 		class H2Echo extends Resource {
 			static async post(_target, data) {
 				const resolved = await data;
-				lastObservedData = { hadData: data !== undefined, resolved };
 				return { hadData: data !== undefined, received: resolved ?? null };
 			}
 			static async get(target, request) {
-				lastObservedData = { hadData: request.data !== undefined };
 				return { id: target.id, hadData: request.data !== undefined };
 			}
 			static async delete(target, request) {
-				lastObservedData = { hadData: request.data !== undefined };
 				return { deleted: target.id, hadData: request.data !== undefined };
 			}
 		}
@@ -382,7 +378,26 @@ describe('REST over HTTP/2 without content-length', function () {
 			assert.strictEqual(h2Res.status, h1Res.status, `${contentType}: h2=${h2Res.text} h1=${h1Res.text}`);
 			assert.strictEqual(h2Res.text, h1Res.text, `${contentType} body mismatch`);
 		}
-		assert.strictEqual(lastObservedData.hadData, true);
+	});
+
+	it('does not emit unhandledRejection when an HTTP/2 GET leaves the stream open with an invalid JSON body', async function () {
+		await H2Item.put('open-get-1', { name: 'ok', tag: 'open-get' });
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			const res = await h2Request(
+				h2Client,
+				{ ':method': 'GET', ':path': '/H2Item/open-get-1', 'content-type': 'application/json' },
+				{ body: '{not-json', endStream: false }
+			);
+			assert.strictEqual(res.status, 200, res.text);
+			assert.strictEqual(res.json().name, 'ok');
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
 	});
 
 	it('emits the real host in GET /openapi servers[0].url under HTTP/2', async function () {

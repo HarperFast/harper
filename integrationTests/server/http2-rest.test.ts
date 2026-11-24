@@ -1,6 +1,4 @@
-/**
- * HTTP/2 REST request bodies without content-length and OpenAPI authority host.
- */
+/** Exercises direct TLS (http.http2) and the HARPER_H2C_UDS mirror through the full http.ts listener stack. */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { connect, type ClientHttp2Session } from 'node:http2';
