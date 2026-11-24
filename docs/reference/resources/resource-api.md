@@ -365,7 +365,7 @@ Harper automatically serializes concurrent requests for the same missing or stal
 
 <VersionBadge type="changed" version="v5.4.1" /> If the source throws an `Error` whose `statusCode` (or `status`) is 404 or 410 (as an HTTP client that throws on any non-2xx response does), the requests waiting on that fetch in the same worker thread receive that same error object instead of calling the source again, so anything one of them adds to it, such as a nested source's record context in its message, shows on all of them. This does not apply to a thrown `Response` or other non-`Error` value, when the source sets `noCacheStore` on its context, on a read-only node, or while the table is being dropped. After any other failure, the waiting requests fetch again in turn. A failure is never cached, so the next request after them calls the source again.
 
-A record the source returns is cached and returned without being checked against the table's schema, unlike a `put` of the same record. The source is the record's source of truth, so where it disagrees with the schema (a required attribute missing, or a value of another type), the schema is what needs fixing.
+A record the source returns is cached and returned without the schema checks a `put` of the same record gets, such as for required attributes and attribute types. The source is the record's source of truth, so where it disagrees with the schema, the schema is what needs fixing. A source that returns a query-only `@fullText` field still fails with `502`.
 
 #### Observing cache disposition
 

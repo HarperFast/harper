@@ -57,7 +57,9 @@ suite('sourcedFrom fills that do not match the schema, over REST', (ctx: Context
 		const filled = await request('GET', 'item');
 		strictEqual(filled.status, 200, filled.body);
 		deepStrictEqual(JSON.parse(filled.body), malformed);
-		strictEqual((await request('GET', 'item')).status, 200);
+		const cached = await request('GET', 'item');
+		strictEqual(cached.status, 200, cached.body);
+		deepStrictEqual(JSON.parse(cached.body), malformed);
 		strictEqual(originRequests.get('item'), 1, 'the record was not served from the cache');
 	});
 });

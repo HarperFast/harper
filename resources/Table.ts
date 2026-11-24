@@ -15209,8 +15209,7 @@ export function makeTable(options): TableResourceClass {
 					return;
 				}
 				const dbTxn = txnForContext(sourceContext);
-				// No validate hook: the source is the record's source of truth, so a fill stores what it returned
-				// even where the table's schema disagrees (that schema is what is wrong), unlike a put of the same record.
+				// no validate hook: the source is the record's source of truth, so a schema it disagrees with is what is wrong
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,

@@ -45,7 +45,6 @@ describe('Source fills and the table schema', function () {
 
 	it('caches and serves a record that does not match the schema as the source returned it, unvalidated', async () => {
 		const record = { id: 'mismatched', count: 'three' };
-		await assert.rejects(async () => Validated.put('mismatched', record), { statusCode: 400 });
 		const validate = Validated.prototype.validate;
 		let checks = 0;
 		try {
@@ -53,6 +52,9 @@ describe('Source fills and the table schema', function () {
 				checks++;
 				return validate.apply(this, args);
 			};
+			await assert.rejects(async () => Validated.put('mismatched', record), { statusCode: 400 });
+			assert.ok(checks > 0, 'premise: the spy sees the put validating');
+			checks = 0;
 			responses.set('mismatched', record);
 			const served = await Validated.get('mismatched');
 			assert.equal(served.count, 'three');
