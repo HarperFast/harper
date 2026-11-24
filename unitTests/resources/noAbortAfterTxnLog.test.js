@@ -1480,6 +1480,7 @@ describe('Transactions are never aborted once durably written to the transaction
 				// the outstanding-commit clock, so the contender can win the lock a few ms before the
 				// wedged commit's age passes the shed limit.
 				await waitFor(() => getOutstandingCommits().oldestAgeMs > shedLimitMs, {
+					timeout: 5000,
 					message: 'the wedged native commit should age past the shed limit',
 				});
 				const metricId = [Date.now(), 123];
