@@ -1192,6 +1192,18 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				assert.equal(disposed, 1);
 			});
 
+			it('is disposed when its factory returns the reader and hands over a cursor that can not close', async () => {
+				let reader;
+				factory = () => {
+					reader.return();
+					return { next: () => Promise.resolve({ value: undefined, done: true }) };
+				};
+				const gated = await open();
+				reader = gated[Symbol.asyncIterator]();
+				assert.equal((await reader.next()).done, true);
+				assert.equal(disposed, 1);
+			});
+
 			it('closes the cursor a factory hands over after returning the reader', async () => {
 				if (!observesSnapshot) return;
 				let reader;

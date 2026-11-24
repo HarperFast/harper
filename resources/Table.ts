@@ -1044,7 +1044,7 @@ function deferredIterator(
 	openResults: () => Promise<any>,
 	onFinish: () => void,
 	synchronousIterationMessage: string,
-	acquire: (results: any, options: any) => AsyncIterator<any> | undefined = openIterator
+	acquire: (results: any, options: any, cancelled: () => boolean) => AsyncIterator<any> | undefined = openIterator
 ) {
 	const asynchronous = options === true || options?.async;
 	const iterationOptions = options === true ? { async: true } : { ...options, async: true };
@@ -1065,7 +1065,7 @@ function deferredIterator(
 	const getIterator = () =>
 		(iteratorPromise ||= openResults().then((results: any) => {
 			if (returned) return undefined;
-			const iterator = acquire(results, iterationOptions);
+			const iterator = acquire(results, iterationOptions, () => returned);
 			// a factory can return this reader before it hands over the cursor
 			if (returned) {
 				if (iterator) cleanUp(() => iterator.return?.());
@@ -8922,18 +8922,19 @@ export function makeTable(options): TableResourceClass {
 					let acquiring = false;
 					let handedOver = false;
 					let acquireFailed = false;
-					const acquire = (results: any, options: any) => {
-						// a closed gate has released its results
+					const acquire = (results: any, options: any, cancelled: () => boolean) => {
 						if (gateClosed) return undefined;
+						const held = handedOver;
 						acquiring = true;
 						try {
 							const iterator = openIterator(results, options);
 							handedOver = true;
+							// a reader that left during the factory can not close a cursor without return()
+							if (cancelled() && !iterator?.return && !held) closeUnread(results, false);
 							return iterator;
 						} catch (error) {
 							acquireFailed = true;
-							// a close during the factory left the results to this reader, unless another holds them
-							if (gateClosed && !handedOver) closeUnread(results, false);
+							if (gateClosed && !held) closeUnread(results, false);
 							throw error;
 						} finally {
 							acquiring = false;
