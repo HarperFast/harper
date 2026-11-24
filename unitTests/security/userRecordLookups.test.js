@@ -11,7 +11,7 @@ const user = require('#src/security/user');
 const { authentication } = require('#src/security/auth');
 const { getDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { registerLiveSubscription } = require('#src/server/liveSubscriptionAuth');
-const { VERSION_REUSED, VERSION_REGRESSED } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { transaction } = require('#src/resources/transaction');
 
@@ -191,38 +191,24 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 			await new Promise((resolve) => setTimeout(resolve, 150));
 		});
 
-		it('applies a replicated role write that steps forward onto a version the role held before', async () => {
-			// harper#4483: on LMDB the older merge steps the version back to now - 50, so the write at now advances it
-			// onto the version found was stamped with
+		it('applies a replicated role write that steps the role version back to the next lookup', async () => {
+			// harper#4483: merged under a newer patch, the older put is stored under its own version on LMDB
 			await testUtils.seedUsers([lookupUser()]);
 			const now = Date.now() + 300;
 			const role = { id: 'lookup_role', role: 'lookup_role', permission: { super_user: false }, merges: 0 };
-			const merge = { merges: { __op__: 'add', value: 1 } };
 			await databases.system.hdb_role.put(role, { timestamp: now - 100 });
-			await databases.system.hdb_role.patch('lookup_role', merge, { timestamp: now });
+			await databases.system.hdb_role.patch('lookup_role', { merges: { __op__: 'add', value: 1 } }, { timestamp: now });
 			const found = user.getUserWithRole('lookup_user');
-			await databases.system.hdb_role.patch('lookup_role', merge, { timestamp: now - 50 });
+			assert.strictEqual(found.role.permission.super_user, false);
+			await applyRoleFrom(`${server.hostname}-tie`, { ...role, permission: { super_user: true } }, now - 50);
+			const entry = databases.system.hdb_role.primaryStore.getEntry('lookup_role');
 			const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-			const store = databases.system.hdb_role.primaryStore;
-			assert.strictEqual(
-				store.getEntry('lookup_role').version,
-				isLMDB ? now - 50 : now,
-				'LMDB stores the older write under its own version'
-			);
-			await applyRoleFrom(`${server.hostname}-tie`, role, now - 50);
-			if (isLMDB) assert.ok(store.getEntry('lookup_role').metadataFlags & VERSION_REGRESSED, 'still stepped back');
-			await applyRoleFrom(`${server.hostname}-tie`, { ...role, permission: { super_user: true } }, now);
-			const entry = store.getEntry('lookup_role');
-			assert.strictEqual(entry.version, now);
+			assert.strictEqual(entry.version, isLMDB ? now - 50 : now, 'LMDB stores the older write under its own version');
+			assert.strictEqual(entry.value.merges, 1, 'the newer patch is reapplied over the older put');
 			assert.ok(entry.metadataFlags & VERSION_REUSED, 'the record carries a reused version');
 			assert.strictEqual(user.isCurrentUser(found), false, 'the role it was built from changed');
 			assert.strictEqual(user.getUserWithRole('lookup_user').role.permission.super_user, true);
-			await databases.system.hdb_role.put(role, { timestamp: now + 60 });
-			assert.strictEqual(
-				Boolean(store.getEntry('lookup_role').metadataFlags & VERSION_REUSED),
-				isLMDB,
-				'only a version that stepped back stays flagged past an advancing write'
-			);
+			// later writes in this suite must not lose to the future timestamp
 			await new Promise((resolve) => setTimeout(resolve, 400));
 		});
 

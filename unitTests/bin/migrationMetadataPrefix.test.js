@@ -14,7 +14,7 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { setupTestDBPath } = require('../testUtils');
 const copyDB = require('#src/bin/copyDb');
 const { RocksDatabase } = require('../rocksdbBindings.mts').rocksdbBindings();
-const { RecordEncoder, RecordObject, VERSION_REUSED, VERSION_REGRESSED } = require('#src/resources/RecordEncoder');
+const { RecordEncoder, RecordObject, VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
 const isLMDB = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb';
@@ -93,7 +93,7 @@ describe('migration: records carry the version/metadata prefix (#2012)', functio
 	});
 
 	it('leaves the reused-version flags of the source store behind', function () {
-		assert.ok(steppedBack.metadataFlags & VERSION_REGRESSED, 'the source row stepped back');
+		assert.ok(steppedBack.metadataFlags & VERSION_REUSED, 'the source row stepped back');
 		const root = RocksDatabase.open(targetPath, {});
 		const cf = new PrimaryRocksDatabase(targetPath, {
 			name: 'PrefixGuard/',
@@ -105,7 +105,7 @@ describe('migration: records carry the version/metadata prefix (#2012)', functio
 			const entry = cf.getEntry('d');
 			assert.strictEqual(entry.version, steppedBack.version);
 			assert.strictEqual(entry.value.rank, 6);
-			assert.strictEqual(entry.metadataFlags & (VERSION_REUSED | VERSION_REGRESSED), 0);
+			assert.strictEqual(entry.metadataFlags & VERSION_REUSED, 0);
 		} finally {
 			cf.close();
 			root.close();

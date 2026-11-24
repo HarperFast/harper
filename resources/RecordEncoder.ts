@@ -185,12 +185,6 @@ const PAYLOAD_FLAGS = HAS_EXPIRATION | HAS_RESIDENCY_ID | HAS_RESIDENCY_SLOT | H
 if (VERSION_REUSED === HAS_REPLICA_DEADLINE) throw new Error('VERSION_REUSED collides with HAS_REPLICA_DEADLINE');
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
-// LMDB only: the stored version once stepped back, so it no longer marks the highest version the row held and a
-// later write can step forward onto one an earlier state held. Always set with VERSION_REUSED, and carried by every
-// later write, since nothing records how far back it stepped. Record-only, like FULL_WRITE_HEAD.
-export const VERSION_REGRESSED = 0x80000;
-if (VERSION_REUSED === VERSION_REGRESSED)
-	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with VERSION_REGRESSED`);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
@@ -1136,17 +1130,14 @@ export function recordUpdater(
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
 		const auditExpiresAt = options?.auditExpiresAt ?? expiresAt;
-		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value. The
-		// VERSION_REGRESSED carry is tested before versionIsReused, so a tie at the stepped-back version keeps it.
-		if (record !== undefined) {
-			if (options?.unchangedValue)
-				metadataInNextEncoding |= existingEntry?.metadataFlags & (VERSION_REUSED | VERSION_REGRESSED);
-			else if (!isRocksDB && existingEntry?.metadataFlags & VERSION_REGRESSED)
-				metadataInNextEncoding |= VERSION_REUSED | VERSION_REGRESSED;
-			else if (versionIsReused(newVersion, existingEntry))
-				metadataInNextEncoding |=
-					!isRocksDB && newVersion < existingEntry.version ? VERSION_REUSED | VERSION_REGRESSED : VERSION_REUSED;
-		}
+		// A rewrite of the unchanged value keeps the row's own answer: its version still identifies that value.
+		if (
+			record !== undefined &&
+			(options?.unchangedValue
+				? existingEntry?.metadataFlags & VERSION_REUSED
+				: versionIsReused(newVersion, existingEntry))
+		)
+			metadataInNextEncoding |= VERSION_REUSED;
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
