@@ -41,6 +41,23 @@ aggregate writes are not joined before advancing the cursor, so failed rows are 
 refusals now drop a row instead of aborting a partially written cycle. Durable replay needs a cursor
 persisted with the rows.
 
+**Retention cleanup keeps a cursor of its own.** `cleanupExpiredAnalytics` (`cleanup.ts`, used by
+`hdb_raw_analytics`, `hdb_analytics` and the model-call writer) deletes keys below `now - retention`
+starting from the end of the previous pass on the same store, not from the first key. Keys start with
+a timestamp, so the expired rows are a prefix, and a RocksDB delete leaves the row and its tombstone
+on disk until compaction: a scan from the first key steps over everything earlier passes deleted, a
+cost that grows without bound (#4570). The cursor moves past a batch only after all of that batch's
+removals settled successfully; a failed removal leaves it at the start of its batch for the next pass
+to retry. A row written below the cursor is left until the next process starts.
+
+Passes are single-flight per store and yield between batches. Where the store has `compact()`, a
+process's first pass compacts the expired range before it scans (the scan from the first key would
+otherwise walk an earlier process's tombstones; if that compaction fails, the scan runs anyway, since
+deletion must not wait on compaction), and later passes compact at most hourly while any deletes are
+uncompacted, including after a failed removal; a failed compaction is retried on that cadence. Manual
+compaction is exclusive in rocksdb-js, so automatic compaction of the whole database waits while it
+runs.
+
 ## A reset ends the window that was being flushed too (`resources/analytics/write.ts`)
 
 After `setAnalyticsEnabled()` returns, no listener or sink on that thread receives a sample recorded on
@@ -78,25 +95,6 @@ the key's first sample lacked, or that only some threads carry, is kept. That ho
 thread record carries nothing but measures and its `count`, which the thread count then replaces:
 the fold keeps `total`/`ratio` on non-thread actions only, so a `ratio` on a thread record is
 always a caller's measure.
-
-## Retention cleanup resumes past its own deletes
-
-`cleanupExpiredAnalytics` (`cleanup.ts`, used by `hdb_raw_analytics`, `hdb_analytics` and the model-call
-writer) deletes keys below `now - retention` starting from the end of the previous pass on the same
-store, not from the first key. Keys start with a timestamp, so the expired rows are a prefix, and a
-RocksDB delete leaves the row and its tombstone on disk until compaction: a scan from the first key
-steps over everything earlier passes deleted, a cost that grows without bound (#4570). The cursor
-moves past a batch only after all of that batch's removals settled successfully; a failed removal
-leaves it at the start of its batch for the next pass to retry. A row written below the cursor is left
-until the next process starts.
-
-Passes are single-flight per store and yield between batches. Where the store has `compact()`, a
-process's first pass compacts the expired range before it scans (the scan from the first key would
-otherwise walk an earlier process's tombstones; if that compaction fails, the scan runs anyway, since
-deletion must not wait on compaction), and later passes compact at most hourly while any deletes are
-uncompacted, including after a failed removal; a failed compaction is retried on that cadence. Manual
-compaction is exclusive in rocksdb-js, so automatic compaction of the whole database waits while it
-runs.
 
 ## Full-text collection follows actual handle ownership
 
