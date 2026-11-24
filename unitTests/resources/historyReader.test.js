@@ -783,7 +783,17 @@ describe('bounded history readers', function () {
 					events.map((event) => event.value.n),
 					Array.from({ length: 2881 }, (_, n) => n)
 				);
-				assert.strictEqual(counter.logReads, LINEAR_REPLAY_READS[isCollection][lmdb ? 1 : 0]);
+				const [rocksReads, lmdbReads] = LINEAR_REPLAY_READS[isCollection];
+				if (lmdb) {
+					// LMDB usually takes one more read than RocksDB, but not always: a run on main read
+					// 14404, RocksDB's count. Linear replay is the property; the last read can go either way.
+					assert.ok(
+						counter.logReads >= rocksReads && counter.logReads <= lmdbReads,
+						`${counter.logReads} log reads, expected ${rocksReads}-${lmdbReads}`
+					);
+				} else {
+					assert.strictEqual(counter.logReads, rocksReads);
+				}
 			} finally {
 				counter.close();
 				subscription?.end();

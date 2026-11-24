@@ -1475,6 +1475,12 @@ describe('Transactions are never aborted once durably written to the transaction
 			const contender = await AuditedA.lock(recordId, { lease: 1000, timeout: 2500 });
 			await contender.unlock();
 			try {
+				// The hold-deadline clock (commitStartedAt) starts before trackOutstandingCommit() stamps
+				// the outstanding-commit clock, so the contender can win the lock a few ms before the
+				// wedged commit's age passes the shed limit. Wait on the value checkOverloaded() reads.
+				await waitFor(() => getOutstandingCommits().oldestAgeMs > 1500, {
+					message: 'the wedged native commit should age past the shed limit',
+				});
 				const metricId = [Date.now(), 123];
 				await assert.rejects(
 					async () => analyticsTable.put(metricId, { id: metricId, metric: 'overload-probe' }),
