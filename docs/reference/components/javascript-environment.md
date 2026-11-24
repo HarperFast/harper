@@ -51,6 +51,8 @@ export async function render(url: string): Promise<string> {
 
 When bundling for SSR, keep `harper` external so it resolves to the runtime instead of being bundled (symlinked dependencies are not reliably auto-externalized) — e.g. `ssr: { external: ['harper'] }` in `vite.config`.
 
+Harper does not load bundled code itself, so its `harper` import does not get the application's view described above. In an isolated application with branched databases, it reaches the forks, like the bare globals. Elsewhere it reaches the base databases. <VersionBadge type="changed" version="v5.4.2" /> Before v5.4.2, it reached the base databases in an isolated application too, so a Next.js or Vite server bundle running as a [pull request preview](../cli/commands.md#harper-preview) read and wrote the cluster's own data instead of the preview's branch.
+
 ## TypeScript Support
 
 Harper runs `.ts` files directly via Node.js's built-in [type stripping](https://nodejs.org/api/typescript.html#type-stripping). No build step or transpiler is required.

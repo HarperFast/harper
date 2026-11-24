@@ -135,7 +135,9 @@ interface ApplicationConfig {
 	 * `databases`/`tables` globals do under `vm` and `compartment`, which give each application a global
 	 * object of its own, and in an isolated application's dedicated worker. In a shared
 	 * worker under the default `vm-current-context` loader they are the thread's, so an application that
-	 * uses them there reads and writes the BASE — silently.
+	 * uses them there reads and writes the BASE — silently. The same holds for code Harper does not load
+	 * itself, such as a Next.js or Vite server bundle importing `harper` natively: it reaches the fork only
+	 * in an isolated application's dedicated worker, where the package's exports take the branch view too.
 	 */
 	branchedDatabases?: string[] | true;
 	/** Run in a worker thread of its own that loads no other application. */

@@ -81,12 +81,21 @@ describe('componentLoader branch scope ownership', () => {
 	});
 
 	describe('the bare databases and tables globals (harper#3053)', () => {
+		// What `require('harper')` hands code Harper does not load itself, such as a Next.js or Vite server bundle.
+		const packageExports = require('#src/globals');
 		let savedGlobals;
+		let savedPackageExports;
 		beforeEach(() => {
 			savedGlobals = { databases: globalThis.databases, tables: globalThis.tables };
+			savedPackageExports = { databases: packageExports.databases, tables: packageExports.tables };
 		});
 		afterEach(() => {
 			if (savedGlobals) Object.assign(globalThis, savedGlobals);
+			// Through the setter, so a package entry linked to these exports is restored too.
+			if (savedPackageExports) {
+				for (const [name, value] of Object.entries(savedPackageExports))
+					packageExports._assignPackageExport(name, value);
+			}
 		});
 
 		async function loadBranched(appName, mode) {
@@ -113,10 +122,36 @@ describe('componentLoader branch scope ownership', () => {
 			assert.strictEqual(await Source.get('bare'), null);
 		});
 
+		(isLMDB ? it.skip : it)(
+			"reach the branch through the harper package's exports in the application's own dedicated worker",
+			async () => {
+				const { applicationScope, Records } = await loadBranched('isolated-package');
+				// A bundle's `import { tables } from 'harper'` resolves natively, through node_modules/harper, to the
+				// package entry, which copies these exports when it loads. Stand in for one loaded before the binding.
+				const loadedEarlier = { ...packageExports };
+				packageExports._linkPackageEntry?.(loadedEarlier);
+
+				assert.strictEqual(bindIsolatedApplicationGlobals(applicationScope, 'isolated-package'), true);
+				// assert.ok on identity: a failing strictEqual would print a table class, which this harness cannot survive.
+				const views = { 'the package exports': packageExports, 'an entry loaded earlier': loadedEarlier };
+				views['an entry loaded afterwards'] = { ...packageExports };
+				for (const [name, exports] of Object.entries(views)) {
+					assert.ok(exports.databases[BASE].Records === Records, `${name} must reach the branch`);
+					assert.ok(exports.databases.system === databases.system, `${name} keep the base for an unbranched name`);
+					assert.ok(exports.databases === globalThis.databases, `${name} must match the databases global`);
+					assert.ok(exports.tables === globalThis.tables, `${name} must match the tables global`);
+				}
+				await packageExports.databases[BASE].Records.put({ id: 'imported' });
+				assert.ok(await Records.get('imported'));
+				assert.strictEqual(await Source.get('imported'), null, 'a package import must not write the base');
+			}
+		);
+
 		(isLMDB ? it.skip : it)("stay the base in another application's dedicated worker", async () => {
 			const { applicationScope } = await loadBranched('isolated-other');
 			assert.strictEqual(bindIsolatedApplicationGlobals(applicationScope, 'someone-else'), false);
 			assert.strictEqual(globalThis.databases, savedGlobals.databases);
+			assert.ok(packageExports.databases === savedPackageExports.databases, 'the package exports stay the base');
 		});
 
 		(isLMDB ? it.skip : it)(

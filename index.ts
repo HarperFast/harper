@@ -208,4 +208,7 @@ export const tables = runtimeGlobals.tables as typeof TablesImport;
 export const threads = runtimeGlobals.threads as ThreadsImport;
 export const transaction = runtimeGlobals.transaction as typeof TransactionImport;
 
-if (typeof exports !== 'undefined') Object.assign(exports, runtimeGlobals);
+if (typeof exports !== 'undefined') {
+	Object.assign(exports, runtimeGlobals);
+	runtimeGlobals._linkPackageEntry(exports);
+}
