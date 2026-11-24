@@ -201,7 +201,8 @@ describe('application status across directory scans', function () {
 	it('leaves an error a component reported over the loader failure since', async () => {
 		const dir = await application('status-report-probe', 'statusThrowsProbe: {}\n');
 		await scan();
-		statusForComponent('status-report-probe.statusThrowsProbe').error('reported by the component');
+		const thrown = registry.getStatus('status-report-probe.statusThrowsProbe').error;
+		statusForComponent('status-report-probe.statusThrowsProbe').error('reported by the component', thrown);
 
 		await fs.writeFile(path.join(dir, 'config.yaml'), 'statusLoadsProbe: {}\n');
 		await scan();
@@ -303,20 +304,6 @@ describe('ComponentStatusRegistry retire and remove', () => {
 		registry.retire('shop', ['shop.eu']);
 
 		assert.deepEqual([...registry.getAllStatuses().keys()].sort(), ['shop.eu', 'shop.eu.rest']);
-	});
-
-	it('removes a failure only while it is still the one recorded', () => {
-		const registry = new ComponentStatusRegistry();
-		const recorded = new Error('load failed');
-		registry.markFailed('app', recorded, 'failed');
-		registry.markFailed('other', recorded, 'failed');
-		registry.setStatus('other', STATUS.ERROR, 'reported since', new Error('runtime'), 'explicit');
-
-		registry.removeFailure('app', recorded);
-		registry.removeFailure('other', recorded);
-
-		assert.equal(registry.getStatus('app'), undefined);
-		assert.equal(registry.getStatus('other').message, 'reported since');
 	});
 
 	it('removes one component, leaving its sub-components', () => {

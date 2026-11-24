@@ -136,11 +136,12 @@ function markLoadedUnlessReported(componentStatusName: string, message: string):
 
 // Keys the loader itself marked failed, unlike health a component reports through `statusForComponent`: only these send
 // a cached application back through a load, and only these are cleared then.
-const loaderFailures = new Map<string, Error | string>();
+const loaderFailures = new Map<string, Date>();
 
 function recordLoadFailure(componentStatusName: string, error: Error | string, message?: string): void {
-	loaderFailures.set(componentStatusName, error);
 	componentLifecycle.failed(componentStatusName, error, message);
+	// every status write replaces `lastChecked`, so it identifies this report
+	loaderFailures.set(componentStatusName, statusForComponent(componentStatusName).get()!.lastChecked);
 }
 
 // Application names can contain dots: `shop.eu` is an application of its own, not a component of `shop`.
@@ -156,10 +157,11 @@ function belongsToApplication(key: string, appName: string): boolean {
 
 function clearLoaderFailures(appName: string): boolean {
 	let cleared = false;
-	for (const [key, error] of loaderFailures) {
+	for (const [key, recorded] of loaderFailures) {
 		if (!belongsToApplication(key, appName)) continue;
 		loaderFailures.delete(key);
-		componentLifecycle.failureCleared(key, error);
+		// a report made over the loader's since belongs to whoever made it
+		if (statusForComponent(key).get()?.lastChecked === recorded) componentLifecycle.cleared(key);
 		cleared = true;
 	}
 	return cleared;

@@ -167,13 +167,6 @@ export const lifecycle = {
 	},
 
 	/**
-	 * Remove the failure `failed` recorded with `error`, unless something has reported over it since
-	 */
-	failureCleared(componentName: string, error: Error | string): void {
-		componentStatusRegistry.removeFailure(componentName, error);
-	},
-
-	/**
 	 * Remove a component's statuses, its sub-components' included, once the component itself is gone
 	 */
 	retired(componentName: string, keepUnder?: string[]): void {

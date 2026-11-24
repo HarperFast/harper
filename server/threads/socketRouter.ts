@@ -12,7 +12,7 @@ import {
 	canaryVerdictTimeoutMs,
 } from './manageThreads.ts';
 import { admittedIsolatedApplications, failedClosedApplications } from './isolatedApplications.ts';
-import { lifecycle as componentLifecycle } from '../../components/status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent } from '../../components/status/index.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
@@ -195,11 +195,12 @@ let dedicatedWorkerCount = 0;
 const refusedIsolated = new Set<string>(); // reported once, not on every reconcile
 // Dedicated-worker failures this thread reported: an application no longer isolated here may load on this thread from
 // its cache, which writes nothing over them.
-const failedIsolatedStarts = new Map<string, Error>();
+const failedIsolatedStarts = new Map<string, Date>();
 
 function reportIsolatedFailure(application: string, error: Error, message: string) {
-	failedIsolatedStarts.set(application, error);
 	componentLifecycle.failed(application, error, message);
+	// every status write replaces `lastChecked`, so it identifies this report
+	failedIsolatedStarts.set(application, statusForComponent(application).get()!.lastChecked);
 }
 // A first release's start is held as its canary, so it may take the canary's whole report window before it binds.
 const isolatedWorkerReadyTimeoutMs = () => canaryVerdictTimeoutMs() + 60_000;
@@ -316,10 +317,10 @@ async function reconcileIsolatedWorkersNow(only?: string, refused = false): Prom
 	const wanted = new Set(admitIsolatedWorkers([...isolatedSlots.keys()], await readFailedClosedApplications(), only));
 	// main already knows its release is refused, whatever this reading of the records says
 	if (refused && only !== undefined) wanted.delete(only);
-	for (const [application, error] of failedIsolatedStarts) {
+	for (const [application, recorded] of failedIsolatedStarts) {
 		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
 		failedIsolatedStarts.delete(application);
-		componentLifecycle.failureCleared(application, error);
+		if (statusForComponent(application).get()?.lastChecked === recorded) componentLifecycle.cleared(application);
 	}
 	const stopping = [];
 	for (const [application, slot] of isolatedSlots) {

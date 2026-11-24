@@ -155,18 +155,6 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
-	 * Remove one component's status only while it is still the failure recorded with `error`: a report made over it
-	 * since belongs to whoever made it.
-	 */
-	public removeFailure(componentName: string, error: Error | string): void {
-		const current = this.statusMap.get(componentName);
-		const recorded = typeof error === 'string' ? redactUrlCredentials(error) : error;
-		if (current?.status === COMPONENT_STATUS_LEVELS.ERROR && current.error === recorded) {
-			this.statusMap.delete(componentName);
-		}
-	}
-
-	/**
 	 * Remove a component's status along with its sub-components' (`name.*`), except those under `keepUnder`: a
 	 * component whose name extends this one's (`shop.eu` under `shop`) can be another component altogether.
 	 */
