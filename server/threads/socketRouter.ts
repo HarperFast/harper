@@ -277,7 +277,6 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 		),
 	])
 		.then(() => {
-			// the worker's own registry reports its components; this thread's entry is only the start outcome
 			if (isolatedSlots.get(application) === slot && dedicatedWorkerOwnsStatus(application)) {
 				reportDedicatedWorker(application, () =>
 					componentLifecycle.loaded(application, `Dedicated worker for '${application}' is running`)

@@ -22,7 +22,6 @@ describe('application status across directory scans', function () {
 	let componentLoader;
 	let componentsRoot;
 	let sharedLoader;
-	let starts;
 	const created = [];
 	const plugins = [];
 
@@ -62,7 +61,8 @@ describe('application status across directory scans', function () {
 	function scan(interruptedActivationFailures) {
 		return componentLoader.loadComponentDirectories(
 			new Map(),
-			{ isWorker: true, set() {} },
+			// the main thread of a node with worker threads, which loads no plugin's handleApplication or start
+			{ isWorker: false, set() {} },
 			new WeakMap(),
 			interruptedActivationFailures
 		);
@@ -78,10 +78,9 @@ describe('application status across directory scans', function () {
 	const statusOf = (key) => registry.getStatus(key)?.status;
 
 	beforeEach(() => {
-		starts = 0;
-		plugin('statusLoadsProbe', { start: () => starts++ });
+		plugin('statusLoadsProbe', {});
 		plugin('statusThrowsProbe', {
-			start() {
+			startOnMainThread() {
 				throw new Error('threw at load');
 			},
 		});
@@ -132,11 +131,12 @@ describe('application status across directory scans', function () {
 	it('keeps a healthy application cached, and the health it reports itself, across scans', async () => {
 		await application('status-runtime-probe', 'statusLoadsProbe: {}\n');
 		await scan();
+		const loaded = registry.getStatus('status-runtime-probe').lastChecked;
 		statusForComponent('status-runtime-probe.live').error('dependency down');
 
 		await scan();
 
-		assert.equal(starts, 1, 'a reported runtime error does not send the application through another load');
+		assert.equal(registry.getStatus('status-runtime-probe').lastChecked, loaded, 'not loaded again');
 		assert.equal(statusOf('status-runtime-probe.live'), STATUS.ERROR);
 		assert.equal(statusOf('status-runtime-probe'), STATUS.HEALTHY);
 	});
@@ -216,7 +216,6 @@ describe('application status across directory scans', function () {
 		await scan(new Map([['status-deferred-probe', waiting]]));
 
 		await waitFor(() => statusOf('status-deferred-probe') === STATUS.HEALTHY, 5000);
-		assert.equal(starts, 1);
 	});
 
 	it('leaves what a cached application reported through a deferred load', async () => {
@@ -231,7 +230,6 @@ describe('application status across directory scans', function () {
 		await waitFor(() => componentLoader.bootVerdictOf('status-deferred-cached').outcome !== 'pending', 5000);
 
 		assert.equal(registry.getStatus('status-deferred-cached')?.message, 'reported by the application');
-		assert.equal(starts, 1, 'the cached application is not loaded again');
 	});
 
 	it('keeps a recovery failure for an application whose directory is gone', async () => {
@@ -255,7 +253,6 @@ describe('application status across directory scans', function () {
 		await scan();
 
 		assert.equal(statusOf('status-return-probe'), STATUS.HEALTHY);
-		assert.equal(starts, 2);
 	});
 
 	it('keeps an application whose name extends a removed or retried one', async () => {

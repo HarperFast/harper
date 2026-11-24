@@ -167,9 +167,12 @@ function forgetLoadedPaths(appName: string): void {
 
 /**
  * `loadedPaths` outlives a reload cycle (the main thread reruns `loadComponentDirectories` without restarting), so an
- * application that failed would stay cached, with its failure reported, until the process restarts.
+ * application that failed would stay cached, with its failure reported, until the process restarts. Only a thread that
+ * runs no plugin's `handleApplication` or `start` loads it again: one that does (the main thread with `threads.count: 0`)
+ * would leave the scopes and handlers of the first load in place.
  */
 function retryIfFailed(appName: string): void {
+	if (resources?.isWorker) return;
 	// a root-config `package:` lives in the components root too, but only the root load may load it
 	if ((getConfigObj()?.[appName] as any)?.package) return;
 	if (clearLoaderFailures(appName)) forgetLoadedPaths(appName);
@@ -178,7 +181,9 @@ function retryIfFailed(appName: string): void {
 function retireApplication(appName: string): void {
 	clearLoaderFailures(appName);
 	forgetLoadedPaths(appName);
-	const otherApplications = [...applicationsInLastScan].filter((other) => other.startsWith(appName + '.'));
+	const otherApplications = [...applicationsInLastScan, ...Object.keys(getConfigObj() ?? {})].filter((other) =>
+		other.startsWith(appName + '.')
+	);
 	componentLifecycle.retired(appName, otherApplications);
 }
 
