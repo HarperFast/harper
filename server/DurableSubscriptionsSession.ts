@@ -5,13 +5,17 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { warn, trace } from '../utility/logging/harper_logger.ts';
 import { contextStorage, transaction } from '../resources/transaction.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.ts';
+import { processIncarnation } from './threads/processIncarnation.ts';
 import { whenComponentsLoaded } from '../server/threads/threadServer.ts';
+import { registerShutdownDrain } from '../components/shutdownDrain.ts';
+import { declareWillClaimTable, ENDED_CLAIM_LIFETIME_MS } from './willClaimTable.ts';
 import { server } from '../server/Server.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { randomBytes } from 'node:crypto';
 import { AsyncResource } from 'node:async_hooks';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
+import { ORIGIN_FLOOR_TICK_MS } from '../resources/originClosedFloor.ts';
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
 import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
@@ -19,6 +23,7 @@ import { isLocalPrincipal, localPrincipal, type UserProvenance } from '../securi
 import {
 	ORIGIN_ID,
 	admitCheckpoint,
+	certifiedPeerFloors,
 	positionBefore,
 	validateCheckpoint,
 	type SubscriptionCheckpoint,
@@ -102,47 +107,163 @@ function getLastWill() {
 	}
 	return _LastWill;
 }
+let _WillClaim: any;
+function getWillClaim() {
+	return (_WillClaim ??= declareWillClaimTable());
+}
 // Defer to startup so `whenComponentsLoaded` (an `export const` in threadServer.ts)
 // is past TDZ — this module is loaded inside threadServer's static-graph SCC.
 onStartup(() => {
 	if (getWorkerIndex() !== 0) return;
+	let stopping = false;
+	const unregister = registerShutdownDrain({
+		hasWork: () => false,
+		drain: async () => {
+			stopping = true;
+		},
+	});
 	(async () => {
 		await whenComponentsLoaded;
 		await new Promise((resolve) => setTimeout(resolve, 2000));
-		for await (const will of getLastWill().search({})) {
-			try {
-				await replayLastWill(will);
-			} catch {
-				// One will's publish/delete failure must not abort replay of the rest; the row stays and
-				// is retried on the next restart.
-				warn('Failed to publish will', will.data);
-			}
-		}
-	})();
+		if (!stopping) await replayOrphanedWills(() => stopping);
+	})()
+		.catch((error) => warn('MQTT will replay failed', error))
+		.finally(unregister);
 });
 
+/**
+ * Publishes the wills a previous process left behind, except one whose client has connected again since, here
+ * or on a peer: that one is deleted unpublished. The running process's rows belong to live connections, which
+ * settle their own (server/DESIGN.md, "The boot replay").
+ */
+export async function replayOrphanedWills(stopping: () => boolean = () => false): Promise<void> {
+	// without an incarnation a live row cannot be told from a dead one
+	if (processIncarnation === undefined) return;
+	if (!(await peersCertify(Date.now(), stopping))) return;
+	for await (const will of getLastWill().search({})) {
+		if (will.processIncarnation === processIncarnation) continue;
+		if (stopping()) return;
+		try {
+			let message;
+			if (!(await isSuperseded(will))) {
+				message = await willMessage(will);
+				if (stopping()) return;
+				// a CONNECT can land while the principal resolves
+				if (message && (await isSuperseded(will))) message = undefined;
+				if (message) await publishMessage(message, message.data, message);
+			}
+			if (!message) trace(`Not publishing the MQTT will left for ${will.id[0]}`);
+			await settleWillRow(will);
+		} catch {
+			// One will's publish/delete failure must not abort replay of the rest; the row stays and
+			// is retried on the next restart.
+			warn('Failed to publish will', will.data);
+		}
+	}
+}
+
+/**
+ * A peer still not caught up by then is taken as unreachable: it holds no live connection, so a client whose newer
+ * connection was there is disconnected now, and its old will states a true offline.
+ */
+const PEER_CATCH_UP_LIMIT_MS = 60_000;
+let peerCheckIntervalMs = ORIGIN_FLOOR_TICK_MS;
+let peerCatchUpLimitMs = PEER_CATCH_UP_LIMIT_MS;
+/** Test-only: how often the replay re-reads peers' floors, and how long it waits for them. */
+export function setWillReplayPeerWaitForTests(intervalMs = ORIGIN_FLOOR_TICK_MS, limitMs = PEER_CATCH_UP_LIMIT_MS) {
+	peerCheckIntervalMs = intervalMs;
+	peerCatchUpLimitMs = limitMs;
+}
+
+/**
+ * Waits until every peer whose replication carries a certified floor for the system database has advanced it past
+ * both `since` and the floor it had when the wait began (a floor from before this process could pass `since` on a
+ * clock that leads), so the claims of any connection a peer accepted before then are here. A peer that carries no
+ * floor cannot certify and is not waited for. False once `stopping` turns true.
+ */
+async function peersCertify(since: number, stopping: () => boolean): Promise<boolean> {
+	const claims = getWillClaim();
+	const readFloors = () => {
+		try {
+			return certifiedPeerFloors(claims.auditStore, claims.dbisDB);
+		} catch (error) {
+			trace('MQTT will replay cannot read replication floors', error);
+			return new Map<string, number>();
+		}
+	};
+	const initial = readFloors();
+	const deadline = Date.now() + peerCatchUpLimitMs;
+	for (;;) {
+		if (stopping()) return false;
+		const floors = readFloors();
+		const caughtUp = (name: string) => {
+			const floor = floors.get(name);
+			return floor === undefined || (floor >= since && !(initial.get(name) >= floor));
+		};
+		const behind = (server.nodes ?? []).map(({ name }) => name).filter((name) => !caughtUp(name));
+		if (behind.length === 0) return true;
+		if (Date.now() >= deadline) {
+			warn(`MQTT will replay proceeds without ${behind.join(', ')} catching up`);
+			return true;
+		}
+		await new Promise((resolve) => setTimeout(resolve, peerCheckIntervalMs).unref?.());
+	}
+}
+
+/** Whether a connection of the will's client id began after the will's own, on this node or a peer. */
+async function isSuperseded(will: any): Promise<boolean> {
+	const [clientId, incarnation] = will.id;
+	if (!clientId) return false;
+	for await (const claim of getWillClaim().search([{ attribute: 'clientId', value: clientId }], {})) {
+		if (claim.id[1] === incarnation) continue;
+		// a row written before connections were claimed is older than every claim
+		if (will.connectedAt === undefined || claim.connectedAt > will.connectedAt) return true;
+	}
+	return false;
+}
+
+/** Deletes the will row and marks its connection's claim ended, in one transaction. */
+async function settleWillRow(will: { id: [string, string]; connectedAt?: number }) {
+	const context: any = {};
+	await transaction(context, async () => {
+		await getLastWill().delete(will.id, context);
+		// a row written before connections were claimed has no claim
+		if (will.id[0] && will.connectedAt !== undefined) await endClaim(will.id, will.connectedAt, context);
+	});
+}
+
+function endClaim(id: [string, string], connectedAt: number, context: any) {
+	context.expiresAt = Date.now() + ENDED_CLAIM_LIFETIME_MS;
+	return getWillClaim().put({ id, clientId: id[0], connectedAt, ended: true }, context);
+}
+
 export async function replayLastWill(will: any): Promise<void> {
+	const message = await willMessage(will);
+	if (message) await publishMessage(message, message.data, message);
+	await settleWillRow(will);
+}
+
+/** The will as the message to publish, under the principal it publishes as; undefined when it must be dropped. */
+async function willMessage(will: any): Promise<any> {
 	const data = will.data;
 	const message = { ...will };
 	if (message.user?._scopedToken) {
 		// A scoped token's username is attribution only; never rehydrate it by name (that could
 		// substitute a real principal). The will carries the token's own downgraded role.
-		if (!isWillFromExpiredScopedToken(message)) {
-			await publishMessage(message, data, message);
-		} else warn('Dropping will from an expired scoped token', data);
+		if (!isWillFromExpiredScopedToken(message)) return message;
+		warn('Dropping will from an expired scoped token', data);
 	} else if (isPastBearerExpiry(message.user)) {
 		warn('Dropping will from an expired bearer token', data);
 	} else if (isLocalPrincipal(message.user)) {
 		message.user = localPrincipal();
-		await publishMessage(message, data, message);
+		return message;
 	} else {
 		const persistedUser = message.user;
 		if (persistedUser?.username) message.user = await (server as any).getUser(persistedUser.username);
 		// the lookup can outlast a bearer token
-		if (isPastBearerExpiry(persistedUser)) warn('Dropping will from an expired bearer token', data);
-		else await publishMessage(message, data, message);
+		if (!isPastBearerExpiry(persistedUser)) return message;
+		warn('Dropping will from an expired bearer token', data);
 	}
-	await getLastWill().delete(will.id);
 }
 
 /**
@@ -217,6 +338,9 @@ export async function getSession({
 	if (will) {
 		// keyed by connection, so a connection that is closing can never publish or delete a newer one's will
 		will.id = [sessionId, session.incarnation];
+		// the boot replay leaves the running process's rows to their own connections
+		will.processIncarnation = processIncarnation;
+		will.connectedAt = Date.now();
 		// A scoped-token bearer's will must carry the token's own role and expiry: its username is
 		// attribution only and cannot be rehydrated from hdb_user at replay time. Persist only the
 		// durable permission fields — not the runtime-only _expandedOperations Set, which is rebuilt
@@ -241,8 +365,18 @@ export async function getSession({
 		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
 		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
 		// reads this same record back to publish the will, finds nothing, and silently drops it.
-		await getLastWill().put(will);
+		// declared outside the transaction: LMDB cannot read a table opened after the transaction's snapshot
+		if (sessionId) getWillClaim();
+		// a live connection's claim never expires
+		const context: any = { expiresAt: -1 };
+		await transaction(context, async () => {
+			await getLastWill().put(will, context);
+			if (sessionId) await claimConnection(session, will.connectedAt, context);
+		});
 		session.willId = will.id;
+	} else if (sessionId && (await hasClaims(sessionId))) {
+		// an older connection's will a crash left behind must not outlive this connection
+		await claimConnection(session, Date.now(), { expiresAt: -1 });
 	}
 	if (keepalive) {
 		// keep alive is the interval in seconds that the client will send a ping to the server
@@ -252,6 +386,16 @@ export async function getSession({
 		session.receivedPacket(); // start the keepalive timer
 	}
 	return session;
+}
+function claimConnection(session: SubscriptionsSession, connectedAt: number, context: any) {
+	session.claimId = [session.sessionId, session.incarnation];
+	session.connectedAt = connectedAt;
+	return getWillClaim().put({ id: session.claimId, clientId: session.sessionId, connectedAt }, context);
+}
+
+async function hasClaims(clientId: string): Promise<boolean> {
+	for await (const _claim of getWillClaim().search([{ attribute: 'clientId', value: clientId }], {})) return true;
+	return false;
 }
 /**
  * Every subscription's delivery loop on this thread draws on one budget per event turn, so a fan-out to many
@@ -505,6 +649,9 @@ class SubscriptionsSession {
 	terminated = false;
 	incarnation = randomBytes(8).toString('hex');
 	willId: [string, string] | undefined;
+	/** Set once this connection's claim is written; its settle marks the claim ended. */
+	claimId: [string, string] | undefined;
+	connectedAt: number | undefined;
 	/** Closes the transport; mqtt.ts supplies it, and sends a v5 DISCONNECT carrying `error` first. */
 	closeConnection?: (error?: Error) => void;
 	/** Hold the packets sent until released, to write them together; mqtt.ts supplies them for a Node socket. */
@@ -993,9 +1140,11 @@ class SubscriptionsSession {
 			this.keepaliveTimer = undefined;
 		}
 		const willId = this.willId;
+		const claimId = this.claimId;
 		this.willId = undefined;
-		if (willId) {
-			this.settleWill(willId, !clientTerminated).catch((error) => {
+		this.claimId = undefined;
+		if (willId || claimId) {
+			this.settleWill(willId, claimId, !clientTerminated).catch((error) => {
 				warn(`Error publishing MQTT will for ${this.sessionId}`, error);
 			});
 		}
@@ -1006,9 +1155,9 @@ class SubscriptionsSession {
 		this.subscriptions = [];
 	}
 	/** The will row is session bookkeeping on contexts of its own; only the publish runs as the session (server/DESIGN.md). */
-	async settleWill(willId: [string, string], publish: boolean) {
+	async settleWill(willId: [string, string] | undefined, claimId: [string, string] | undefined, publish: boolean) {
 		try {
-			if (publish) {
+			if (publish && willId) {
 				const will = await getLastWill().get(willId, {});
 				if (will && !isWillFromExpiredScopedToken(will) && !isPastBearerExpiry(will.user)) {
 					const context = this.createContext();
@@ -1020,7 +1169,11 @@ class SubscriptionsSession {
 				}
 			}
 		} finally {
-			await getLastWill().delete(willId, {});
+			const context: any = {};
+			await transaction(context, async () => {
+				if (willId) await getLastWill().delete(willId, context);
+				if (claimId) await endClaim(claimId, this.connectedAt, context);
+			});
 		}
 	}
 	receivedPacket() {

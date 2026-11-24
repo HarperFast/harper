@@ -103,6 +103,8 @@ Harper supports the MQTT Last Will and Testament feature. If a client disconnect
 
 As of v5.4.0, each connection's will is kept separately, so a connection that closes after a newer one with the same client ID has connected publishes only its own will. When the newer connection takes a durable session over, the older connection is closed and publishes its will then, as MQTT v5 specifies.
 
+When Harper starts after a crash, or after a shutdown that left wills unpublished, it publishes those wills about two seconds after its components load. A will whose client has connected again since, to this node or another node in the cluster, is discarded instead, since the client is no longer gone, and the will of the client's new connection is kept. Connections are recorded in the replicated `hdb_session_will_claim` system table, and an ended connection's record is kept for seven days. In a cluster, the restarting node first waits, for up to a minute, until it has received each peer's writes from before the replay began, so a reconnection to a peer is seen before any will is published.
+
 ## Content Negotiation
 
 Harper handles structured data natively. Messages can be published and received in any supported structured format — JSON, CBOR, or MessagePack — and Harper stores and delivers them as structured objects. Different clients can independently choose their preferred format: one client may publish in JSON while another subscribes and receives in CBOR.

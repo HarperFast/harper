@@ -34,6 +34,7 @@ import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
 import { declareTokenUseTable } from '../security/authn/oidc/tokenUseTable.ts';
 import { ensureCertificateVerificationTables } from '../security/certificateVerification/verificationTables.ts';
+import { declareWillClaimTable } from '../server/willClaimTable.ts';
 import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.ts';
@@ -217,6 +218,12 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 			await ensureCertificateVerificationTables();
 		} catch (error) {
 			hdbLogger.error('Starting without the declared certificate verification tables; the next start retries', error);
+		}
+		// A node that serves no MQTT still holds the claims its peers replicate.
+		try {
+			declareWillClaimTable();
+		} catch (error) {
+			hdbLogger.error('Starting without the declared system.hdb_session_will_claim; the next start retries', error);
 		}
 	}
 

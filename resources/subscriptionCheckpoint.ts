@@ -398,6 +398,18 @@ export function captureCertifiedFloors(auditStore: any, dbisDb: any): CertifiedF
 	return { origins: states, capturedAt: Date.now(), epoch };
 }
 
+/**
+ * Each peer origin's certified floor, by node name: this node holds every write that origin made below it. An origin
+ * with no qualifying floor (a peer that sends none, a gap, an engine without floors) is absent.
+ */
+export function certifiedPeerFloors(auditStore: any, dbisDb: any): Map<string, number> {
+	const floors = new Map<string, number>();
+	for (const state of readOriginStates(auditStore, dbisDb).values()) {
+		if (state.nodeId !== 0 && qualifies(state)) floors.set(state.name, state.floor!);
+	}
+	return floors;
+}
+
 const KEY_SCRATCH = new Float64Array(1);
 const KEY_BITS = new BigInt64Array(KEY_SCRATCH.buffer);
 /** The greatest double below a log key, so a replay after it starts at the key. */
