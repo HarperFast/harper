@@ -135,6 +135,8 @@ describe('an index build that ends without completing is marked and recovered', 
 		const originalTransactionSync = rootStore.transactionSync;
 		let reads = 0;
 		let heldOnReread = null;
+		// the build reads the descriptor before its scan too, so only the settle handler's reads, after it, count
+		let scanFailed = false;
 		if (!isRocksDatabase) {
 			rootStore.transactionSync = function (...args) {
 				heldOnReread = true;
@@ -143,7 +145,7 @@ describe('an index build that ends without completing is marked and recovered', 
 		}
 		const restoreGetSync = stubMethod(dbisDB, 'getSync', (readKey, ...rest) => {
 			const value = originalGetSync(readKey, ...rest);
-			if (readKey === key && ++reads === 2) {
+			if (readKey === key && scanFailed && ++reads === 2) {
 				// tryLock fails even for the thread already holding it, so this observes the locked section
 				if (isRocksDatabase) {
 					heldOnReread = !rootStore.tryLock(UPDATE_ATTRIBUTES_LOCK_KEY);
@@ -156,6 +158,7 @@ describe('an index build that ends without completing is marked and recovered', 
 		const originalStatus = Object.getOwnPropertyDescriptor(rootStore, 'status');
 		const originalGetRange = Rebuilding.primaryStore.getRange;
 		Rebuilding.primaryStore.getRange = () => {
+			scanFailed = true;
 			throw new Error('Database not open');
 		};
 		Object.defineProperty(rootStore, 'status', { value: 'closed', configurable: true, writable: true });
