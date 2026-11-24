@@ -370,7 +370,7 @@ Setup never changes or deletes a policy. It creates none, and says what to chang
 - the workflow file on the default branch differs from the one in the checkout, and fails the checks setup runs on the checkout's or runs on other events. Make the two copies agree, then run setup again;
 - the workflow file's name contains a character a policy reads as a pattern, such as `*`, `?`, `[` or `+`.
 
-An Active policy that already allows the event is reported and left as it is, with any event of the workflow it leaves out. When setup cannot create the policy, because `gh` is not installed or signed in, the account is not an admin of the repository (which a policy needs, more than the variable does), GitHub refuses, or you decline, it prints the steps below and goes on. With them it prints the `gh api` command that creates the policy, unless you passed `actions_policy=false` or a request may already have created it. When it could not look up whether the repository is public, it prints only the steps.
+An Active policy that already allows the event is reported and left as it is, with any event of the workflow it leaves out. When setup cannot create the policy, because `gh` is not installed or signed in, the account is not an admin of the repository (which a policy needs, more than the variable does), GitHub refuses, or you decline, it prints the steps below and goes on. With them it prints the `gh api` command that creates the policy when it could read the workflow's events and knows no request created one already. When it could not look up whether the repository is public, it prints only the steps.
 
 To create the policy yourself, in the repository's **Settings > Actions > Policies**, create a policy, unless one already allows the event:
 
