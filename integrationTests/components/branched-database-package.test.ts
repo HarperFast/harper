@@ -46,7 +46,8 @@ async function packageFixture(directory: string, plugin = false): Promise<string
 			);
 			await writeFile(
 				join(dir, 'resources.js'),
-				`import { databases, Resource, server } from 'harper';
+				(dir === source ? `import { createRequire } from 'node:module';\n` : '') +
+					`import { databases, Resource, server } from 'harper';
 const Records = databases.data.Branched;
 const initialized = Records.put({ id: '${name}-init' });
 export class ${name} extends Resource {
@@ -67,6 +68,14 @@ export class ${name} extends Resource {
 	async post(target, data) {
 		const { project, ...options } = await data;
 		return server.operation({ operation: 'drop_component', project, ...options, replicated: false });
+	}
+}
+export class NativeProbe extends Resource {
+	async put(record) {
+		// What a server bundle outside the component loader gets, such as Next.js's: Node's own require.
+		const { databases: native } = createRequire(import.meta.url)('harper');
+		await native.data.Branched.put({ ...record, id: this.getId() });
+		return { id: this.getId() };
 	}
 }
 `
@@ -215,6 +224,13 @@ for (const isolated of [false, true]) {
 						assert.strictEqual((await read(`/PackageProbe/${resource}-write`)).note, resource);
 					}
 					assert.deepStrictEqual(await baseRows(['PackageProbe-write', 'ChildProbe-write']), []);
+					if (isolated) {
+						// A shared worker's native import is the process's, so it reaches the base by design.
+						const written = await appRequest('/NativeProbe/native-write', 'PUT', { note: 'native' });
+						assert.ok(written.status >= 200 && written.status < 300, written.body);
+						assert.deepStrictEqual(await baseRows(['native-write']), [], 'a native harper import wrote the base');
+						assert.strictEqual((await read('/PackageProbe/native-write')).note, 'native');
+					}
 					assert.deepStrictEqual(
 						await readdir(branchRoot()),
 						['data'],

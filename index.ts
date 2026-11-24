@@ -177,7 +177,9 @@ import type { transaction as TransactionImport } from './resources/transaction.t
 // running install, see components/componentLoader.ts). Application VM compartments are *seeded* from
 // this process global, not given an alternate set (see security/jsLoader.ts `getGlobalObject`).
 // An isolated application's worker with branched databases rebinds `databases` and `tables` to its branch
-// view; an ES module that imported them by name from this entry before then keeps the base (harper#4593).
+// view. Node builds this entry's ES module view once per worker and never updates its named exports, so
+// if anything imports it as an ES module before then, every named import in that worker keeps the base;
+// `require('harper')` and the default export follow the rebinding (harper#4593).
 declare global {
 	const contentTypes: typeof ContentTypesImport;
 	const createBlob: typeof CreateBlobImport;
