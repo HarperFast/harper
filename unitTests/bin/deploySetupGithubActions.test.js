@@ -584,7 +584,6 @@ jobs:
 
 		it('reads a test that the variable setup sets is set as true, and no other variable', () => {
 			const clean = { problems: [], unverified: [], unsafe: [] };
-			// The starter, like create-harper's workflow, stays dormant on this gate until setup sets the variable.
 			assert.strictEqual(starter.match(/^ {4}if: vars\.HARPER_PREVIEW_TARGET != '' && /gm).length, 2);
 			assert.deepStrictEqual(check(starter), clean);
 			const ungated = starter.replace(/^ {4}if: vars\.HARPER_PREVIEW_TARGET != '' && /gm, '    if: ');

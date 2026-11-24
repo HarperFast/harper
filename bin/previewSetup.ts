@@ -185,9 +185,10 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 		target.protocol === 'http:' &&
 		!/^(?:localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i.test(target.hostname)
 	) {
-		notes.push(
-			`HarperFast/deploy-action, which ${workflow} runs, refuses an http:// target other than a loopback address, so ` +
-				`its runs cannot reach ${audience}. Set up previews against the cluster's https:// URL.`
+		throw usageError(
+			`The starter ${workflow} runs HarperFast/deploy-action, which refuses an http:// target other than a loopback ` +
+				`address, so it could never reach ${audience}. Set up previews against the cluster's https:// URL, or write ` +
+				'your own workflow. Nothing was changed.'
 		);
 	}
 	if ((!checkout || (checkout.content === undefined && !writeWorkflow)) && args.allow_unverified !== true) {
@@ -337,9 +338,7 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 	}
 	if (unfinished.length > 0) {
 		if (starter && workflowWritten) {
-			unfinished.push(
-				`Setup wrote ${workflow}: commit it only once the steps above are done, since its runs fail until then.`
-			);
+			unfinished.push(`Setup wrote ${workflow}: commit it once the steps above are done.`);
 		}
 		throw usageError(unfinished.join('\n'));
 	}

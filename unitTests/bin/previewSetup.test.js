@@ -103,7 +103,7 @@ describe('harper preview setup (harper#3609)', () => {
 	it('keeps a starter it wrote when a later step fails, and says not to commit it until that step is done', async () => {
 		await assert.rejects(
 			setup(),
-			/repository variable was not set[\s\S]*\nSetup wrote \.github\/workflows\/preview\.yaml: commit it only once the steps above are done, since its runs fail until then\.$/
+			/repository variable was not set[\s\S]*\nSetup wrote \.github\/workflows\/preview\.yaml: commit it once the steps above are done\.$/
 		);
 		assert.ok(await workflowPresent());
 
@@ -159,19 +159,24 @@ describe('harper preview setup (harper#3609)', () => {
 		assert.strictEqual(await fs.readFile(path.join(directory, WORKFLOW), 'utf8'), 'someone else wrote this\n');
 	});
 
-	it('says deploy-action cannot reach an http:// target when it writes the starter', async () => {
-		const output = [];
-		console.log = (...parts) => output.push(stripVTControlCharacters(parts.join(' ')));
+	it('refuses, changing nothing, to write a starter for an http:// target deploy-action cannot reach', async () => {
 		const stub = cliOperationsModule.cliOperations;
-		cliOperationsModule.cliOperations = async (request, ...rest) =>
-			request.operation === 'get_preview_policy'
-				? { resolvedTarget: 'http://cluster.example.com:9925/' }
-				: stub(request, ...rest);
-		await assert.rejects(setup(), /repository variable was not set/);
-		assert.match(
-			output.join('\n'),
-			/refuses an http:\/\/ target other than a loopback address, so its runs cannot reach http:\/\/cluster\.example\.com:9925\//
+		const answer = (target) => {
+			cliOperationsModule.cliOperations = async (request, ...rest) =>
+				request.operation === 'get_preview_policy' ? { resolvedTarget: target } : stub(request, ...rest);
+		};
+		answer('http://cluster.example.com:9925/');
+		await assert.rejects(
+			setup(),
+			/refuses an http:\/\/ target other than a loopback address, so it could never reach http:\/\/cluster\.example\.com:9925\/\..*Nothing was changed/s
 		);
+		assert.strictEqual(enabled(), false);
+		assert.strictEqual(await workflowPresent(), false);
+
+		answer('http://127.0.0.1:9925/');
+		await assert.rejects(setup({ domain: 'app.example.com' }), /repository variable was not set/);
+		assert.strictEqual(enabled(), true);
+		assert.ok(await workflowPresent());
 	});
 
 	describe('the pull_request_target event policy GitHub requires of a public repository', () => {
