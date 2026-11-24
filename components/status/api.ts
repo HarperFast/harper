@@ -159,16 +159,10 @@ export const lifecycle = {
 		componentStatusRegistry.markFailed(componentName, error, message);
 	},
 
-	/**
-	 * Remove a component's own status, leaving its sub-components'
-	 */
 	cleared(componentName: string): void {
 		componentStatusRegistry.remove(componentName);
 	},
 
-	/**
-	 * Remove a component's statuses, its sub-components' included, once the component itself is gone
-	 */
 	retired(componentName: string, keepUnder?: string[]): void {
 		componentStatusRegistry.retire(componentName, keepUnder);
 	},

@@ -180,7 +180,8 @@ function retryIfFailed(appName: string): void {
 
 function retireApplication(appName: string): void {
 	clearLoaderFailures(appName);
-	forgetLoadedPaths(appName);
+	// as with a retry, a thread that runs plugins must not load a returning application over its first load
+	if (!resources?.isWorker) forgetLoadedPaths(appName);
 	const otherApplications = [...applicationsInLastScan, ...Object.keys(getConfigObj() ?? {})].filter((other) =>
 		other.startsWith(appName + '.')
 	);

@@ -147,9 +147,6 @@ export class ComponentStatusRegistry {
 		this.markLoadEnded(componentName);
 	}
 
-	/**
-	 * Remove one component's status, leaving its sub-components'
-	 */
 	public remove(componentName: string): void {
 		this.statusMap.delete(componentName);
 	}
