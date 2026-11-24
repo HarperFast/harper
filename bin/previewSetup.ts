@@ -323,7 +323,11 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 	if (starter && checkout) {
 		try {
 			writeFileSync(checkout.path, starter, { flag: 'wx' });
-			console.log(chalk.green(`✓ Wrote ${workflow}. Commit it to ${branch}: pull_request_target runs it from there.`));
+			console.log(
+				chalk.green(
+					`✓ Wrote ${workflow}. Once setup finishes, commit it to ${branch}: pull_request_target runs it from there.`
+				)
+			);
 		} catch (error) {
 			workflowWritten = false;
 			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
