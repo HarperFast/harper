@@ -11,7 +11,7 @@ const user = require('#src/security/user');
 const { authentication } = require('#src/security/auth');
 const { getDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { registerLiveSubscription } = require('#src/server/liveSubscriptionAuth');
-const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED, VERSION_REGRESSED } = require('#src/resources/RecordEncoder');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { transaction } = require('#src/resources/transaction');
 
@@ -209,6 +209,9 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				isLMDB ? now - 50 : now,
 				'LMDB stores the older write under its own version'
 			);
+			// a winning write at the stepped-back version must keep the row marked as stepped back
+			await applyRoleFrom(`${server.hostname}-tie`, role, now - 50);
+			if (isLMDB) assert.ok(store.getEntry('lookup_role').metadataFlags & VERSION_REGRESSED, 'still stepped back');
 			await applyRoleFrom(`${server.hostname}-tie`, { ...role, permission: { super_user: true } }, now);
 			const entry = store.getEntry('lookup_role');
 			assert.strictEqual(entry.version, now);
