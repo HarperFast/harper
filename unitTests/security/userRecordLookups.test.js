@@ -209,7 +209,6 @@ describe('user and role lookups read hdb_user and hdb_role', function () {
 				isLMDB ? now - 50 : now,
 				'LMDB stores the older write under its own version'
 			);
-			// a winning write at the stepped-back version must keep the row marked as stepped back
 			await applyRoleFrom(`${server.hostname}-tie`, role, now - 50);
 			if (isLMDB) assert.ok(store.getEntry('lookup_role').metadataFlags & VERSION_REGRESSED, 'still stepped back');
 			await applyRoleFrom(`${server.hostname}-tie`, { ...role, permission: { super_user: true } }, now);
