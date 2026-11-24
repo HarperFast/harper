@@ -5,6 +5,7 @@
 // These cases cover the derivations and the create-missing-only reconcile. The end-to-end run against
 // a real Harper is integrationTests/security/deploy-setup-github-actions.test.ts.
 const assert = require('node:assert');
+const YAML = require('yaml');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -278,7 +279,6 @@ jobs:
 		const check = (content, branch = 'main') => checkPreviewWorkflowFile(content, branch, 'preview', 'preview-cleanup');
 		const sameRepository = ' && github.event.pull_request.head.repo.full_name == github.repository';
 		const deployIf = `    if: github.event.action != 'closed'${sameRepository}\n`;
-		// The git-step cases need a workflow that names the pull request's head in `env:`, as a shell-run deploy does.
 		const withHeadEnv = starter
 			.replace('permissions: {}\n', 'permissions: {}\nenv:\n  PR: ${{ github.event.pull_request.number }}\n')
 			.replace(
@@ -634,6 +634,19 @@ jobs:
 			}
 		});
 
+		it('quotes the app and domain, so YAML reads back exactly the values setup was given', () => {
+			for (const [app, domain] of [
+				['0123', '*.example.com'],
+				['null', 'app.example.com'],
+				['-', 'true'],
+			]) {
+				const parsed = YAML.parse(starterPreviewWorkflow({ app, branch: 'main', domain }));
+				assert.deepStrictEqual(parsed.jobs.deploy.steps[0].with.app, app);
+				assert.deepStrictEqual(parsed.jobs.deploy.steps[0].with.domain, domain);
+				assert.deepStrictEqual(parsed.jobs.cleanup.steps[0].with.app, app);
+			}
+		});
+
 		it('writes the options it is given into the deploy, and still passes', () => {
 			const shaped = starterPreviewWorkflow({
 				app: 'shop',
@@ -645,9 +658,9 @@ jobs:
 			const [deploy, cleanup] = shaped.split('  cleanup:\n');
 			assert.match(
 				deploy,
-				/uses: HarperFast\/deploy-action@[0-9a-f]{40} # v\d+\.\d+\.\d+\n {8}with:\n {10}target: \$\{\{ vars\.HARPER_PREVIEW_TARGET \}\}\n {10}app: shop\n {10}preview: true\n {10}credential: true\n {10}domain: previews\.example\.com\n {10}branched_databases: false\n$/
+				/uses: HarperFast\/deploy-action@a4a8af4e47add946657310b546f9e483d44b5cc5 # v1\.0\.1\n {8}with:\n {10}target: \$\{\{ vars\.HARPER_PREVIEW_TARGET \}\}\n {10}app: "shop"\n {10}preview: true\n {10}credential: true\n {10}domain: "previews\.example\.com"\n {10}branched_databases: false\n$/
 			);
-			assert.match(cleanup, /\n {10}app: shop\n {10}preview: true\n$/);
+			assert.match(cleanup, /\n {10}app: "shop"\n {10}preview: true\n$/);
 			assert.match(cleanup, /environment: preview-cleanup\n/);
 			assert.doesNotMatch(cleanup, /concurrency|credential|domain|branched_databases/);
 			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [], unsafe: [] });

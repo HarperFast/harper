@@ -41,11 +41,15 @@ export interface StarterWorkflowOptions {
 	shared?: boolean;
 }
 
-/** Pinned by commit, so a moved tag cannot change what runs with the preview identity. */
+/**
+ * Pinned by commit, so a moved tag cannot change what runs with the preview identity. Setup's workflow check does not
+ * read inside an action, so keeping a PR's code away from that identity rests on this version never checking out the
+ * PR's head: check that again before moving the pin.
+ */
 const DEPLOY_ACTION = 'HarperFast/deploy-action@a4a8af4e47add946657310b546f9e483d44b5cc5 # v1.0.1';
 
 /**
- * The smallest workflow the preview policies match, running HarperFast/deploy-action. It runs from the default branch and
+ * The smallest workflow the preview policies match. It runs from the default branch and
  * never checks out the PR, so a PR cannot change what runs with the identity, and the cluster fetches the PR's commit
  * itself. Cleanup runs in its own environment, which carries no required reviewers, so a closure never waits for an
  * approval. The action deploys only while the PR is open at its commit, and drops what it deployed if the PR closed
@@ -75,7 +79,7 @@ export function starterPreviewWorkflow({
 		`        uses: ${DEPLOY_ACTION}`,
 		'        with:',
 		`          target: \${{ vars.${PREVIEW_TARGET_VARIABLE} }}`,
-		`          app: ${app}`,
+		`          app: ${JSON.stringify(app)}`,
 		'          preview: true',
 	];
 	return [
@@ -93,7 +97,7 @@ export function starterPreviewWorkflow({
 			'      group: harper-preview-${{ github.event.pull_request.number }}',
 		]),
 		...(credential ? ['          credential: true'] : []),
-		...(domain ? [`          domain: ${domain}`] : []),
+		...(domain ? [`          domain: ${JSON.stringify(domain)}`] : []),
 		...(shared ? ['          branched_databases: false'] : []),
 		...job('cleanup', "github.event.action == 'closed'", PREVIEW_CLEANUP_ENVIRONMENT, 'Remove the preview', []),
 		'',
@@ -173,6 +177,12 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 					message: `${workflow} does not exist. Write a starter preview workflow?`,
 					default: true,
 				})));
+	}
+	if (writeWorkflow && new URL(audience).protocol === 'http:') {
+		notes.push(
+			`HarperFast/deploy-action, which ${workflow} runs, refuses an http:// target other than a loopback address, so ` +
+				`its runs cannot reach ${audience}. Set up previews against the cluster's https:// URL.`
+		);
 	}
 	if ((!checkout || (checkout.content === undefined && !writeWorkflow)) && args.allow_unverified !== true) {
 		throw usageError(

@@ -159,6 +159,21 @@ describe('harper preview setup (harper#3609)', () => {
 		assert.strictEqual(await fs.readFile(path.join(directory, WORKFLOW), 'utf8'), 'someone else wrote this\n');
 	});
 
+	it('says deploy-action cannot reach an http:// target when it writes the starter', async () => {
+		const output = [];
+		console.log = (...parts) => output.push(stripVTControlCharacters(parts.join(' ')));
+		const stub = cliOperationsModule.cliOperations;
+		cliOperationsModule.cliOperations = async (request, ...rest) =>
+			request.operation === 'get_preview_policy'
+				? { resolvedTarget: 'http://cluster.example.com:9925/' }
+				: stub(request, ...rest);
+		await assert.rejects(setup(), /repository variable was not set/);
+		assert.match(
+			output.join('\n'),
+			/refuses an http:\/\/ target other than a loopback address, so its runs cannot reach http:\/\/cluster\.example\.com:9925\//
+		);
+	});
+
 	describe('the pull_request_target event policy GitHub requires of a public repository', () => {
 		const POLICY_NAME = 'Allow Harper previews (preview.yaml)';
 		let output;
