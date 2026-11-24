@@ -236,7 +236,7 @@ function admitIsolatedWorkers(
 	for (const [name, refusal] of refused) {
 		if (only === undefined || only === name) reportIsolatedRefusal(name, refusal);
 	}
-	for (const name of admitted) refusedIsolated.delete(name);
+	for (const name of refusedIsolated) if (!refused.has(name)) refusedIsolated.delete(name);
 	return admitted;
 }
 
@@ -327,7 +327,8 @@ async function reconcileIsolatedWorkersNow(only?: string, refused = false): Prom
 	// main already knows its release is refused, whatever this reading of the records says
 	if (refused && only !== undefined) wanted.delete(only);
 	for (const application of dedicatedWorkerReports.keys()) {
-		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
+		if (wanted.has(application) || refusedIsolated.has(application)) continue;
+		if (only !== undefined && application !== only) continue;
 		if (dedicatedWorkerOwnsStatus(application)) componentLifecycle.cleared(application);
 		dedicatedWorkerReports.delete(application);
 	}

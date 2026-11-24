@@ -26,7 +26,6 @@ describe('application status across directory scans', function () {
 	const created = [];
 	const plugins = [];
 
-	// a suite before this one may have moved the components root
 	before(async () => {
 		componentsRoot = configUtils.getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 		await fs.mkdir(componentsRoot, { recursive: true });
