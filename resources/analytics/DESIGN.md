@@ -56,7 +56,9 @@ otherwise walk an earlier process's tombstones; if that compaction fails, the sc
 deletion must not wait on compaction), and later passes compact at most hourly while any deletes are
 uncompacted, including after a failed removal; a failed compaction is retried on that cadence. Manual
 compaction is exclusive in rocksdb-js, so automatic compaction of the whole database waits while it
-runs.
+runs. Raw and aggregate cleanup run only on the main thread; the model-call writer's timer runs on every
+worker that loads it, so only the worker that owns store maintenance (`ownsStoreMaintenance`) cleans
+that table.
 
 ## A reset ends the window that was being flushed too (`resources/analytics/write.ts`)
 

@@ -184,7 +184,12 @@ export class ModelCallAnalyticsWriter {
 
 	async cleanup(): Promise<void> {
 		if (isReadOnlyMode()) return;
-		await cleanupExpiredAnalytics(this.#getTable(), this.#retentionMs);
+		const modelCalls = this.#getTable();
+		// Every worker that loads Models runs this timer against the same store. Imported here: a static
+		// import cycles back through Models.ts, which builds this writer while the module is still loading.
+		const { ownsStoreMaintenance } = await import('../../server/threads/manageThreads.ts');
+		if (!ownsStoreMaintenance(modelCalls.primaryStore.path)) return;
+		await cleanupExpiredAnalytics(modelCalls, this.#retentionMs);
 	}
 
 	/** Stop the periodic timers. After stop, `write()` is a no-op and `flush()` still works. */
