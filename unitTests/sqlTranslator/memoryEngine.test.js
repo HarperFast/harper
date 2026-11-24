@@ -2,7 +2,9 @@
 /**
  * The in-memory SQL engine runs legacy SQL's statements over the rows it fetched, and must return what AlaSQL 4
  * returned for them. memoryEngineGolden.json holds the expected result of each seeded workload (sqlWorkloads.js); it
- * was generated, and checked against AlaSQL itself, while AlaSQL was still a dependency.
+ * was generated, and checked against AlaSQL itself, while AlaSQL was still a dependency. A workload whose ORDER BY
+ * compares values with no consistent order lists more than one result: its row order is whatever V8's sort makes of
+ * that comparator, which differs between Node versions, and each listed result is AlaSQL's on one of them.
  */
 const assert = require('node:assert');
 const crypto = require('node:crypto');
@@ -63,6 +65,12 @@ function digest({ sql, params }) {
 	return crypto.createHash('sha1').update(canon(result)).digest('hex').slice(0, 16);
 }
 
+function goldenMismatches({ seed, count, digests }, workloads) {
+	return workloads(seed, count)
+		.filter((workload, i) => ![].concat(digests[i]).includes(digest(workload)))
+		.map((workload) => workload.sql);
+}
+
 const values = (sql, rows, column = 'v') => query(sql, [rows]).map((row) => row[column]);
 
 describe('in-memory SQL engine', function () {
@@ -79,48 +87,23 @@ describe('in-memory SQL engine', function () {
 		});
 
 		it('for joined, filtered, grouped and sorted statements', function () {
-			const { seed, count, digests } = golden.joins;
-			const mismatches = joinWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
-			assert.deepStrictEqual(
-				mismatches.map((w) => w.sql),
-				[]
-			);
+			assert.deepStrictEqual(goldenMismatches(golden.joins, joinWorkloads), []);
 		});
 
 		it('for modifiers, set operations, window aggregates and subqueries', function () {
-			const { seed, count, digests } = golden.features;
-			const mismatches = featureWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
-			assert.deepStrictEqual(
-				mismatches.map((w) => w.sql),
-				[]
-			);
+			assert.deepStrictEqual(goldenMismatches(golden.features, featureWorkloads), []);
 		});
 
 		it('for joins linked through WHERE', function () {
-			const { seed, count, digests } = golden.commaJoins;
-			const mismatches = commaJoinWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
-			assert.deepStrictEqual(
-				mismatches.map((w) => w.sql),
-				[]
-			);
+			assert.deepStrictEqual(goldenMismatches(golden.commaJoins, commaJoinWorkloads), []);
 		});
 
 		it('for GROUP BY ROLLUP, CUBE and GROUPING SETS', function () {
-			const { seed, count, digests } = golden.groupingSets;
-			const mismatches = groupingSetWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
-			assert.deepStrictEqual(
-				mismatches.map((w) => w.sql),
-				[]
-			);
+			assert.deepStrictEqual(goldenMismatches(golden.groupingSets, groupingSetWorkloads), []);
 		});
 
 		it('for equality joins whose ON calls a function', function () {
-			const { seed, count, digests } = golden.onFunctionJoins;
-			const mismatches = onFunctionWorkloads(seed, count).filter((workload, i) => digest(workload) !== digests[i]);
-			assert.deepStrictEqual(
-				mismatches.map((w) => w.sql),
-				[]
-			);
+			assert.deepStrictEqual(goldenMismatches(golden.onFunctionJoins, onFunctionWorkloads), []);
 		});
 	});
 
