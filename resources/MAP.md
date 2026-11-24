@@ -62,7 +62,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - relationships → the resolvers built in `updatedAttributes`; `_prepareRelationshipSelection` and `_readDenial` in Table.ts
 - relationship conditions and `rel[...]` groups → `filterByType`, `searchRelatedGroup` in search.ts; `_prepareQueryConditions` in Table.ts
 - URL path to resource → `getMatch`, `matchParamRoute` in Resources.ts
-- record flags → `INVALIDATED`, `REPLICA` in Table.ts; `VERSION_REUSED`, `FULL_WRITE_HEAD` in RecordEncoder.ts
+- record flags → `INVALIDATED`, `REPLICA` in Table.ts; `VERSION_REUSED`, `VERSION_REGRESSED`, `FULL_WRITE_HEAD` in RecordEncoder.ts
 - audit floor and retention → auditStore.ts; see [audit-retention.md](audit-retention.md)
 - opting a query out of a read snapshot → `useReadTxn` in Table.ts; `getReadTxn` in DatabaseTransaction.ts
 - application row filtering → `eventFilter` in ResourceInterface.ts; `search`, `subscribe` in Table.ts
