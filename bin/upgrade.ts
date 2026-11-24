@@ -75,7 +75,7 @@ async function upgrade(upgradeObj) {
 	// (Downgrades still confirm via forceDowngradePrompt in hdbInfoController — running older
 	// software on upgraded data is the genuinely risky, lossy direction.)
 	printToLogAndConsole(
-		`${PRODUCT_NAME} is completing an update to version ${currentHdbVersion}. You can read more about the changes in this upgrade at https://harperdb.io/developers/release-notes/`,
+		`${PRODUCT_NAME} is completing an update to version ${currentHdbVersion}. You can read more about the changes in this upgrade at https://docs.harper.fast/release-notes`,
 		hdbTerms.LOG_LEVELS.INFO
 	);
 
