@@ -8989,7 +8989,6 @@ export function makeTable(options): TableResourceClass {
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;
 						gateClosed = true;
-						// an iterator that read the results owns their cursor and closes it
 						// after a failed factory only the result's own disposer runs, never the factory again
 						if (!handedOver && !acquiring) closeUnread(resolvedResults, !acquireFailed);
 					};
