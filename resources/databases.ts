@@ -636,26 +636,57 @@ function retainUnclosedStore(path: string, store: any): void {
 	owned.push({ deref: () => store });
 }
 
+// a draining wrapper is in neither `ownedRocksStores` nor closed, so a check of that map alone would miss it
+const drainingOwnedStores = new Map<string, number>();
+
 async function closeOwnedStores(path: string, close: (store: any) => Promise<boolean>): Promise<void> {
 	const failed: any[] = [];
 	let owned: OwnedStores | undefined;
-	// a declaration during an await below starts a fresh list, which the next pass drains
-	while ((owned = ownedRocksStores.get(path))) {
-		ownedRocksStores.delete(path);
-		for (const ref of owned) {
-			const store = ref.deref();
-			if (store && !(await close(store))) failed.push(store);
+	countClosing(drainingOwnedStores, [path]);
+	try {
+		// a declaration during an await below starts a fresh list, which the next pass drains
+		while ((owned = ownedRocksStores.get(path))) {
+			ownedRocksStores.delete(path);
+			for (const ref of owned) {
+				const store = ref.deref();
+				if (store && !(await close(store))) failed.push(store);
+			}
 		}
+	} finally {
+		for (const store of failed) retainUnclosedStore(path, store);
+		uncountClosing(drainingOwnedStores, [path]);
 	}
-	for (const store of failed) retainUnclosedStore(path, store);
 }
 type IncompleteDatabaseClose = {
 	databaseNames: Set<string>;
 	rootPaths: string[];
+	rootStores: Set<any>;
 	retry: () => Promise<void>;
 	task?: Promise<void>;
 };
 const incompleteDatabaseCloses = new Map<string, IncompleteDatabaseClose>();
+// counted per `closeDatabaseGraph` call, so the first of two overlapping closes to finish does not lift the other's
+const closingDatabaseRoots = new Map<string, number>();
+const closingDatabaseNames = new Map<string, number>();
+
+function databaseRootClosing(rootPath: string): boolean {
+	return closingDatabaseRoots.size > 0 && closingDatabaseRoots.has(resolve(rootPath));
+}
+// an alias's computed path is not its root's, so a name awaiting incomplete-close recovery is refused by name
+function incompleteCloseNamed(databaseName: string): boolean {
+	return incompleteDatabaseCloses.size > 0 && incompleteDatabaseClosePaths(databaseName).length > 0;
+}
+
+function countClosing(counts: Map<string, number>, keys: Iterable<string>): void {
+	for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+function uncountClosing(counts: Map<string, number>, keys: Iterable<string>): void {
+	for (const key of keys) {
+		const remaining = counts.get(key) - 1;
+		if (remaining > 0) counts.set(key, remaining);
+		else counts.delete(key);
+	}
+}
 
 const residencyBlockedRoots = new Map<string, string>();
 const residencyBlockedDatabases = new Map<string, string>();
@@ -739,7 +770,8 @@ function databaseRootUnavailable(rootPath: string): boolean {
 	return (
 		databaseDropPrepared(rootPath) ||
 		(residencyBlockedRoots.size > 0 && residencyBlockedRoots.has(resolve(rootPath))) ||
-		(incompleteDatabaseCloses.size > 0 && incompleteDatabaseCloses.has(resolve(rootPath)))
+		(incompleteDatabaseCloses.size > 0 && incompleteDatabaseCloses.has(resolve(rootPath))) ||
+		databaseRootClosing(rootPath)
 	);
 }
 
@@ -1369,7 +1401,13 @@ export function getDatabases(): Databases {
 }
 
 function loadDatabaseCatalogs(): Databases {
+	const previousDefinedDatabases = definedDatabases;
 	definedDatabases = new Map();
+	// set first, so a scan that throws partway still keeps them; the scan skips closing roots and names
+	for (const dbName of closingDatabaseNames.keys()) {
+		const defined = previousDefinedDatabases?.get(dbName);
+		if (defined) definedDatabases.set(dbName, defined);
+	}
 	relationshipsToHydrate = [];
 	const hdbBasePath = getHdbBasePath();
 	let databasePath = hdbBasePath && join(hdbBasePath, DATABASES_DIR_NAME);
@@ -1531,7 +1569,7 @@ function loadDatabaseCatalogs(): Databases {
 	deferredResidencyReplays = blockedReplays.length ? blockedReplays : undefined;
 	// now remove any databases or tables that have been removed
 	for (const dbName in databases) {
-		if (databaseUsesPreparedRoot(dbName)) continue;
+		if (closingDatabaseNames.has(dbName) || databaseUsesPreparedRoot(dbName)) continue;
 		const definedTables = definedDatabases.get(dbName);
 		if (definedTables) {
 			const tables = databases[dbName];
@@ -3136,6 +3174,9 @@ function openDatabaseRoot(
 	{ allowPreparedDrop = false }: { allowPreparedDrop?: boolean } = {}
 ) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	// by name too, so the drop bypass below cannot reach a closing graph either
+	if (closingDatabaseNames.has(databaseName) || (!allowPreparedDrop && incompleteCloseNamed(databaseName)))
+		throw new DatabaseClosingError(databaseName);
 	getDatabases();
 	if (!allowPreparedDrop) assertDatabaseResidencyAvailable(databaseName);
 	let definedDatabase = definedDatabases.get(databaseName);
@@ -3251,6 +3292,8 @@ function openDatabaseRoot(
  * there and is closed the same way.
  */
 function openUnlessBlocked(rootPath: string, dbName: string, load: () => void): void {
+	// a sibling root the closing graph never loaded is skipped by name
+	if (databaseRootClosing(rootPath) || closingDatabaseNames.has(dbName) || incompleteCloseNamed(dbName)) return;
 	// A root already in the engine map needs no exclusion: `load` then only re-runs `initStores` and
 	// never opens the directory, and a restore has to close the live handle first anyway (its close
 	// broadcast and `verifyDatabaseClosed` own that). Taking the lock here would make every rescan on
@@ -3383,12 +3426,17 @@ const incompleteDatabaseDropStores = new Map<string, RootDatabaseKind>();
 
 function rememberIncompleteDatabaseClose(
 	databaseNames: Iterable<string>,
-	rootPaths: Iterable<string>,
+	rootStores: Set<any>,
 	retry: () => Promise<void>
 ): void {
 	const names = new Set(databaseNames);
-	const normalizedPaths = [...new Set([...rootPaths].map((rootPath) => resolve(rootPath)))];
-	const incompleteClose: IncompleteDatabaseClose = { databaseNames: names, rootPaths: normalizedPaths, retry };
+	const normalizedPaths = [...new Set([...rootStores].map((rootStore) => resolve(rootStore.path)))];
+	const incompleteClose: IncompleteDatabaseClose = {
+		databaseNames: names,
+		rootPaths: normalizedPaths,
+		rootStores,
+		retry,
+	};
 	for (const rootPath of normalizedPaths) incompleteDatabaseCloses.set(rootPath, incompleteClose);
 	logger.warn(
 		`Database '${[...names].join("', '")}' handles remain partially closed on this worker; the affected roots stay unavailable until drop_database is retried or the worker restarts`,
@@ -3405,11 +3453,20 @@ function incompleteDatabaseClosePaths(databaseName: string): string[] {
 	return [...rootPaths];
 }
 
+function recordedWrappersSettled(incompleteClose: IncompleteDatabaseClose): boolean {
+	for (const rootStore of incompleteClose.rootStores) {
+		if (ownedRocksStores.has(rootStore.path) || drainingOwnedStores.has(rootStore.path)) return false;
+	}
+	return true;
+}
+
 async function retryIncompleteDatabaseClose(rootPath: string): Promise<void> {
 	const incompleteClose = incompleteDatabaseCloses.get(resolve(rootPath));
 	if (!incompleteClose) return;
 	if (!incompleteClose.task) {
 		const operation = incompleteClose.retry().then(() => {
+			if (!recordedWrappersSettled(incompleteClose))
+				throw new DatabaseClosingError([...incompleteClose.databaseNames][0] ?? incompleteClose.rootPaths[0]);
 			for (const path of incompleteClose.rootPaths) {
 				if (incompleteDatabaseCloses.get(path) === incompleteClose) incompleteDatabaseCloses.delete(path);
 			}
@@ -3835,7 +3892,7 @@ async function closeDatabaseStores(
 			await closeOwned();
 			await closeStore(rootStore.dbisDb, 'attributes store');
 			rootClosed = await closeStore(rootStore, 'root store');
-			// a declaration during the closes above still resolved this root, which stays registered until below
+			// a backstop for any wrapper registered on this root after the first pass
 			await closeOwned();
 		} else if (!rootClosed) rootClosed = await closeStore(rootStore, 'root store');
 		if (rootClosed || !requireClosed) rootStorePaths.push(rootStore.path);
@@ -3891,9 +3948,37 @@ async function closeDatabaseGraph(
 	{ databaseNames, dbTables, rootStores }: ReturnType<typeof collectDatabaseGraph>,
 	requireClosed: boolean
 ): Promise<boolean> {
-	const releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, false, rootStores);
+	// the close cleans up only the graph it captured, so nothing may resolve these roots or names until it ends
+	const closingRootPaths = [...rootStores].map((rootStore) => resolve(rootStore.path));
+	countClosing(closingDatabaseRoots, closingRootPaths);
+	countClosing(closingDatabaseNames, databaseNames);
+	const releaseClosing = () => {
+		uncountClosing(closingDatabaseRoots, closingRootPaths);
+		uncountClosing(closingDatabaseNames, databaseNames);
+	};
+	let releaseDerivedIndexActivation: () => void;
+	try {
+		releaseDerivedIndexActivation = await settleDatabaseDerivedIndexes(dbTables, false, rootStores);
+	} catch (error) {
+		releaseClosing();
+		throw error;
+	}
 	let databaseClosed = false;
 	let handleCloseStarted = false;
+	let closeHandedOff = false;
+	const handOffIncompleteClose = () => {
+		for (const rootStore of rootStores) {
+			lmdbDatabaseEnvs.delete(rootStore.path);
+			rocksdbDatabaseEnvs.delete(rootStore.path);
+		}
+		for (const name of databaseNames) unregisterDatabase(name);
+		rememberIncompleteDatabaseClose(databaseNames, rootStores, async () => {
+			const retryFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, true);
+			if (retryFailures.length > 0)
+				throw new AggregateError(retryFailures, `Could not finish closing database graph '${databaseName}'`);
+		});
+		closeHandedOff = true;
+	};
 	try {
 		await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
 		handleCloseStarted = true;
@@ -3901,37 +3986,44 @@ async function closeDatabaseGraph(
 		for (const table of Object.values(dbTables)) table?.cleanup?.({ closing: true });
 		const closeFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, requireClosed);
 		if (requireClosed && closeFailures.length > 0) {
-			for (const rootStore of rootStores) {
-				lmdbDatabaseEnvs.delete(rootStore.path);
-				rocksdbDatabaseEnvs.delete(rootStore.path);
-			}
-			for (const name of databaseNames) unregisterDatabase(name);
-			rememberIncompleteDatabaseClose(
-				databaseNames,
-				[...rootStores].map((rootStore) => rootStore.path),
-				async () => {
-					const retryFailures = await closeDatabaseStores(databaseName, dbTables, rootStores, true);
-					if (retryFailures.length > 0)
-						throw new AggregateError(retryFailures, `Could not finish closing database graph '${databaseName}'`);
-				}
-			);
+			handOffIncompleteClose();
 			throw new AggregateError(
 				closeFailures,
 				`Could not close database graph '${[...databaseNames].join("', '")}' for destructive DDL`
 			);
 		}
+		// an overlapping close of these same handles may have thrown and recorded them; they are closed now
+		if (closeFailures.length === 0) {
+			for (const rootPath of closingRootPaths) {
+				const record = incompleteDatabaseCloses.get(rootPath);
+				if (
+					record &&
+					[...record.rootStores].every((rootStore) => rootStores.has(rootStore)) &&
+					recordedWrappersSettled(record)
+				)
+					incompleteDatabaseCloses.delete(rootPath);
+			}
+		}
 		for (const name of databaseNames) unregisterDatabase(name);
 		databaseClosed = true;
 		return true;
 	} finally {
-		if (handleCloseStarted && !databaseClosed) {
-			permanentlySuspendDatabaseCommits(rootStores);
-			for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
-		} else if (!databaseClosed && !handleCloseStarted) {
-			resumeTableMaintenance(dbTables);
-			for (const table of Object.values(dbTables)) refreshDerivedIndexes(table);
+		try {
+			if (handleCloseStarted && !databaseClosed && !closeHandedOff) handOffIncompleteClose();
+		} finally {
+			releaseClosing();
+			try {
+				if (handleCloseStarted && !databaseClosed) {
+					permanentlySuspendDatabaseCommits(rootStores);
+					for (const rootStore of rootStores) permanentlySuspendDerivedIndexActivation(rootStore);
+				} else if (!databaseClosed && !handleCloseStarted) {
+					resumeTableMaintenance(dbTables);
+					for (const table of Object.values(dbTables)) refreshDerivedIndexes(table);
+				}
+			} finally {
+				releaseDerivedIndexActivation();
+			}
 		}
-		releaseDerivedIndexActivation();
 	}
 }
 

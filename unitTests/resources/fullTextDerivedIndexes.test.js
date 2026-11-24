@@ -11,6 +11,7 @@ const {
 } = require('#src/resources/DatabaseTransaction');
 const { publishDerivedIndexReadiness, readDerivedIndexReadiness } = require('#src/resources/derivedIndexRuntime');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { DatabaseClosingError } = require('#src/utility/errors/hdbError');
 const { waitFor } = require('../waitFor');
 const { fullTextRetirementInProgress, hasDerivedIndexRegistration } = require('#src/resources/derivedIndexRegistry');
 const {
@@ -1032,7 +1033,7 @@ describe('@fullText derived-index activation', () => {
 		Product = undefined;
 	});
 
-	rocksOnly('suspends first-table activation while a tableless database closes', async () => {
+	rocksOnly('refuses a first-table declaration while a tableless database closes', async () => {
 		const database = `fulltext-tableless-close-${Date.now()}`;
 		const EmptyingTable = table({
 			database,
@@ -1055,18 +1056,21 @@ describe('@fullText derived-index activation', () => {
 		const closing = closeDatabase(database);
 		try {
 			await waitFor(() => cleanupStarted);
-			Product = table({
-				database,
-				table: 'Product',
-				audit: true,
-				attributes: [
-					{ name: 'id', type: 'ID', isPrimaryKey: true },
-					{ name: 'title', type: 'String' },
-					{ name: 'tags', type: 'array', elements: { type: 'String' } },
-				],
-				fullTextIndexes: [definition()],
-			});
-			assert.strictEqual(Product.derivedIndexRuntime, undefined);
+			assert.throws(
+				() =>
+					table({
+						database,
+						table: 'Product',
+						audit: true,
+						attributes: [
+							{ name: 'id', type: 'ID', isPrimaryKey: true },
+							{ name: 'title', type: 'String' },
+							{ name: 'tags', type: 'array', elements: { type: 'String' } },
+						],
+						fullTextIndexes: [definition()],
+					}),
+				DatabaseClosingError
+			);
 			releaseCleanup();
 			assert.strictEqual(await closing, true);
 		} finally {
