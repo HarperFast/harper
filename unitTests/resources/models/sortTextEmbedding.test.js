@@ -1105,6 +1105,96 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		describe('a granted result whose cursor is being opened', () => {
+			let disposed, factories, searched, factory, Wrapped;
+			before(() => {
+				Wrapped = class extends Doc {
+					async allowRead() {
+						return true;
+					}
+					search(target) {
+						if (target.checkPermission !== false) return super.search(target);
+						searched = true;
+						const results = super.search(target);
+						return {
+							onDone() {
+								disposed++;
+								results.onDone?.();
+							},
+							[Symbol.asyncIterator]() {
+								factories++;
+								return factory(results);
+							},
+						};
+					}
+				};
+			});
+			const open = async (transaction) => {
+				disposed = 0;
+				factories = 0;
+				searched = false;
+				const gated = new Wrapped(null, { transaction, user: { username: 'reader' } }).search({
+					conditions: [{ attribute: 'tag', value: 'odd' }],
+					checkPermission: true,
+				});
+				await waitFor(() => searched);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				return gated;
+			};
+
+			it('is never both disposed and read when the gate closes in between', async () => {
+				factory = (results) => results[Symbol.asyncIterator]();
+				const gated = await open();
+				const iterator = gated[Symbol.asyncIterator]();
+				const step = iterator.next();
+				queueMicrotask(() => gated.onDone());
+				const result = await step;
+				await iterator.return();
+				assert.ok(!(disposed && factories), `disposed ${disposed}, factories ${factories}`);
+				assert.ok(!(disposed && !result.done), 'read a row from a disposed result');
+			});
+
+			it('is disposed when its factory throws', async () => {
+				factory = () => {
+					throw new Error('no cursor');
+				};
+				const gated = await open();
+				await assert.rejects(fromAsync(gated), /no cursor/);
+				assert.equal(disposed, 1);
+			});
+
+			it('is disposed when its factory closes the gate and then throws', async () => {
+				let gated;
+				factory = () => {
+					gated.onDone();
+					throw new Error('no cursor');
+				};
+				gated = await open();
+				await assert.rejects(fromAsync(gated), /no cursor/);
+				assert.equal(disposed, 1);
+			});
+
+			it('closes the cursor a factory hands over after returning the reader', async () => {
+				if (!observesSnapshot) return;
+				let reader;
+				factory = (results) => {
+					reader.return();
+					return results[Symbol.asyncIterator]();
+				};
+				const transaction = new DatabaseTransaction();
+				try {
+					const gated = await open(transaction);
+					reader = gated[Symbol.asyncIterator]();
+					assert.equal((await reader.next()).done, true);
+					await waitFor(() => transaction.readTxnsUsed === 1, {
+						message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+					});
+				} finally {
+					transaction.abort();
+				}
+			});
+		});
+
 		it('a gate closed before its first step logs a cleanup that rejects instead of letting it escape', async () => {
 			const failure = new Error('cursor close failed');
 			const escaped = [];

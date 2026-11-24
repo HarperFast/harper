@@ -1044,7 +1044,7 @@ function deferredIterator(
 	openResults: () => Promise<any>,
 	onFinish: () => void,
 	synchronousIterationMessage: string,
-	onOpen?: () => void
+	acquire: (results: any, options: any) => AsyncIterator<any> | undefined = openIterator
 ) {
 	const asynchronous = options === true || options?.async;
 	const iterationOptions = options === true ? { async: true } : { ...options, async: true };
@@ -1065,9 +1065,13 @@ function deferredIterator(
 	const getIterator = () =>
 		(iteratorPromise ||= openResults().then((results: any) => {
 			if (returned) return undefined;
-			// before the factory, which can close the results itself
-			onOpen?.();
-			return (opened = openIterator(results, iterationOptions));
+			const iterator = acquire(results, iterationOptions);
+			// a factory can return this reader before it hands over the cursor
+			if (returned) {
+				if (iterator) cleanUp(() => iterator.return?.());
+				return undefined;
+			}
+			return (opened = iterator);
 		}));
 	return {
 		next(value?: any) {
@@ -1079,6 +1083,10 @@ function deferredIterator(
 			return getIterator().then(
 				(iterator) => {
 					if (returned) return { value: undefined, done: true };
+					if (!iterator) {
+						finish();
+						return { value: undefined, done: true };
+					}
 					let step;
 					try {
 						step = iterator.next(value);
@@ -8911,7 +8919,24 @@ export function makeTable(options): TableResourceClass {
 					let resolvedResults: any;
 					let earlyColumns: ColumnsList | undefined;
 					let gateClosed = false;
+					let acquiring = false;
 					let handedOver = false;
+					const acquire = (results: any, options: any) => {
+						// a closed gate has released its results
+						if (gateClosed) return undefined;
+						acquiring = true;
+						try {
+							const iterator = openIterator(results, options);
+							handedOver = true;
+							return iterator;
+						} catch (error) {
+							// a close during the factory left the results to this reader
+							if (gateClosed) closeUnread(results);
+							throw error;
+						} finally {
+							acquiring = false;
+						}
+					};
 					gatedResults.pendingAuth = true;
 					const authorization = Promise.resolve(allowed).then(
 						async (resolved) => {
@@ -8952,18 +8977,17 @@ export function makeTable(options): TableResourceClass {
 								authorization.then((state: any) => {
 									if (state.error) throw state.error;
 									if (!state.allowed) throw new AccessViolation((context as any).user);
-									// a closed gate has released its results
-									return gateClosed ? [] : state.results;
+									return state.results;
 								}),
 							() => gatedResults.onDone?.(),
 							'Can not synchronously iterate while allowRead is asynchronous',
-							() => (handedOver = true)
+							acquire
 						);
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;
 						gateClosed = true;
 						// an iterator that read the results owns their cursor and closes it
-						if (!handedOver) closeUnread(resolvedResults);
+						if (!handedOver && !acquiring) closeUnread(resolvedResults);
 					};
 					return propagateSearchAuthorization(gatedResults, authorization);
 				}
