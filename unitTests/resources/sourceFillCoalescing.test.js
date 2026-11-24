@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { Readable } = require('node:stream');
 const { setupTestDBPath } = require('../testUtils');
-const { table, __setReadOnlyModeForTest } = require('#src/resources/databases');
+const { table, closeDatabase, __setReadOnlyModeForTest } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
 const { RequestTarget } = require('#src/resources/RequestTarget');
@@ -230,12 +230,16 @@ describe('Concurrent source misses on one key', function () {
 		['cleanup', 503],
 		['drop-after-failure', 404],
 		['drop-natural-wake', 404],
+		['drop-during-close', 404],
+		['drop-during-close', 503],
 	]) {
 		it(`settles retired-table waiters after ${retirement} with source outcome ${outcome}`, async function () {
 			const name = `RetiredSourceFill_${retirement.replaceAll('-', '_')}_${outcome}`;
+			const overlappingClose = retirement === 'drop-during-close';
+			const database = overlappingClose ? `retired_fill_close_${outcome}` : 'test';
 			const RetiredTable = table({
 				table: name,
-				database: 'test',
+				database,
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 			});
 			let answer,
@@ -254,6 +258,8 @@ describe('Concurrent source misses on one key', function () {
 			});
 			const store = RetiredTable.primaryStore;
 			const originalTryLock = store.tryLock;
+			const originalGetEntry = store.getEntry;
+			const originalCloseMaintenance = RetiredTable.closeMaintenance;
 			const originalGetResource = RetiredTable.getResource;
 			const originalWarn = logger.warn;
 			const warnings = [],
@@ -280,13 +286,28 @@ describe('Concurrent source misses on one key', function () {
 				Object.assign(new RequestTarget(), { id: 'gone', loadedFromSource: true })
 			);
 			const failure = sourceError(outcome);
-			let dropping;
+			let dropping, closing, resumeClose;
+			let closePaused = false,
+				closedStoreReads = 0;
+			const closeGate = overlappingClose && new Promise((resolve) => (resumeClose = resolve));
 			try {
 				reads.push(RetiredTable.get(targets[0]).catch((error) => error));
 				await waitFor(() => calls === 1);
 				reads.push(...targets.slice(1).map((target) => RetiredTable.get(target).catch((error) => error)));
 				await waitFor(() => parked === 59);
 				logger.warn('unrelated source-fill warning');
+				if (overlappingClose) {
+					RetiredTable.closeMaintenance = async function (...args) {
+						if (!closePaused) {
+							closePaused = true;
+							await closeGate;
+						}
+						return originalCloseMaintenance.apply(this, args);
+					};
+					closing = closeDatabase(database);
+					closing.catch(() => {});
+					await waitFor(() => closePaused);
+				}
 				if (retirement === 'drop-after-failure') {
 					rejectSource(failure);
 					assert.equal(await reads[0], failure);
@@ -295,6 +316,17 @@ describe('Concurrent source misses on one key', function () {
 				else {
 					dropping = RetiredTable.dropTable();
 					await waitFor(() => RetiredTable.getResource !== originalGetResource);
+				}
+				if (overlappingClose) {
+					await dropping;
+					const retiredResource = RetiredTable.getResource;
+					resumeClose();
+					await closing;
+					assert.equal(RetiredTable.getResource, retiredResource);
+					store.getEntry = function (...args) {
+						closedStoreReads++;
+						return originalGetEntry.apply(this, args);
+					};
 				}
 				if (outcome === 'record') answer({ id: 'gone', name: 'leader result' });
 				else rejectSource(failure);
@@ -320,16 +352,21 @@ describe('Concurrent source misses on one key', function () {
 				}
 				assert.ok(targets.slice(1).every((target) => target.loadedFromSource === false));
 				assert.equal(calls, 1);
+				if (overlappingClose) assert.equal(closedStoreReads, 0);
 				assert.ok(warnings.includes('unrelated source-fill warning'));
 			} finally {
 				logger.warn = originalWarn;
+				resumeClose?.();
+				RetiredTable.closeMaintenance = originalCloseMaintenance;
 				answer(undefined);
 				wakeImmediately = true;
 				store.tryLock = originalTryLock;
+				store.getEntry = originalGetEntry;
 				for (const wake of wakeups.splice(0)) wake();
 				await Promise.all(reads);
+				if (closing) await closing;
 				if (dropping) await dropping;
-				else await RetiredTable.dropTable();
+				else if (!closing) await RetiredTable.dropTable();
 			}
 		});
 	}

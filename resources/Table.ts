@@ -12820,7 +12820,8 @@ export function makeTable(options): TableResourceClass {
 			const armers = replicaEvictionArmers.get(armerKey);
 			armers?.delete(armReplicaEviction);
 			if (armers?.size === 0) replicaEvictionArmers.delete(armerKey);
-			TableResource.getResource = closing ? closedResource : unavailableResource;
+			if (TableResource.getResource !== unavailableResource)
+				TableResource.getResource = closing ? closedResource : unavailableResource;
 			void TableResource.derivedIndexRuntime
 				?.close()
 				.catch((error) => logger.warn?.(`Derived index shutdown failed for ${databaseName}.${tableName}`, error));
