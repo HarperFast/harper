@@ -2,9 +2,11 @@ require('../testUtils');
 const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { databases, resetDatabases, table } = require('#src/resources/databases');
 const { defineTable, types } = require('#src/resources/defineTable');
+const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 
 const DATABASE = 'declared_catalog';
@@ -539,6 +541,51 @@ describe('A local schema declaration persists what it declares into the attribut
 			for (const _entry of Readded.indices.tag.getRange({})) entries++;
 			assert.strictEqual(entries, 0, 'the deleted record left no entry behind');
 			assert.deepStrictEqual(await searchIds(Readded, 'tag', 'x'), []);
+		});
+
+		it('resets a native HNSW plane added back after its records changed unindexed', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !getPlaneBinding()) this.skip();
+			const declare = (indexed) =>
+				table({
+					table: 'PlaneReadded',
+					database: DATABASE,
+					audit: true,
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{
+							name: 'vector',
+							type: 'Array',
+							...(indexed ? { indexed: { type: 'HNSW', nativePlane: true, efConstruction: 200 } } : {}),
+						},
+					],
+				});
+			declare(true);
+			const { PlaneReadded } = databases[DATABASE];
+			for (let i = 1; i <= 5; i++) await PlaneReadded.put(i, { vector: [i, i + 1, i + 2, i + 3] });
+			await committed('PlaneReadded');
+			const store = PlaneReadded.indices.vector;
+			// the plane publishes its mappings into the index store after the writes
+			await waitFor(() => [...store.getRange({})].length >= 5, {
+				timeout: 15_000,
+				message: 'the plane never published its mappings',
+			});
+			declare(false);
+			await committed('PlaneReadded');
+			for (let i = 1; i <= 5; i++) {
+				await PlaneReadded.delete(i);
+				await PlaneReadded.primaryStore.remove(i);
+			}
+			declare(true);
+			assert.ok(catalogRow('PlaneReadded', 'vector').indexingBuildId, 'the leftover plane state starts a build');
+			// the build yields before it clears, so the reopened index can be watched
+			const index = PlaneReadded.indices.vector.customIndex;
+			let resets = 0;
+			index.resetDerivedStorage = function () {
+				resets++;
+				return Object.getPrototypeOf(this).resetDerivedStorage.call(this);
+			};
+			await committed('PlaneReadded');
+			assert.ok(resets > 0, 'the build reset the plane');
 		});
 	});
 });

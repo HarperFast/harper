@@ -827,7 +827,11 @@ const INDEX_BUILD_FIELDS = [
 ];
 
 function fieldsDiffer(descriptor: any, attribute: any, fields: readonly string[]): boolean {
-	return fields.some((field) => JSON.stringify(descriptor?.[field]) !== JSON.stringify(attribute[field]));
+	return fields.some(
+		(field) =>
+			descriptor?.[field] !== attribute[field] &&
+			JSON.stringify(descriptor?.[field]) !== JSON.stringify(attribute[field])
+	);
 }
 
 function copyFields(target: any, source: any, fields: readonly string[]) {
@@ -6314,13 +6318,13 @@ function generationSuperseded(Table: any): boolean {
 // A build owns its row only while the row carries its id: a declaration that starts no rebuild keeps the id, and
 // one that rebuilds, de-indexes or removes the attribute does not. An owner writes only its own fields, under the
 // lock declarations take, so the declaration the row holds stays.
-function putIndexBuildRow(Table: any, attribute: any, buildId: string | undefined): boolean {
+function putIndexBuildRow(Table: any, attribute: any, buildId: string | undefined, state = attribute): boolean {
 	let written = false;
 	const writeIfOwned = () => {
 		const current = Table.dbisDB.getSync(attribute.key);
 		if (buildId === undefined || current?.indexingBuildId !== buildId) return;
 		const row = { ...current };
-		copyFields(row, attribute, INDEX_BUILD_FIELDS);
+		copyFields(row, state, INDEX_BUILD_FIELDS);
 		Table.dbisDB.putSync(attribute.key, row);
 		written = true;
 	};
@@ -6564,7 +6568,8 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 	}
 }
 async function runIndexing(Table, attributes, buildIds: Map<any, string>, branchPath?: string) {
-	const writeBuildRow = (attribute) => putIndexBuildRow(Table, attribute, buildIds.get(attribute));
+	const writeBuildRow = (attribute, state = attribute) =>
+		putIndexBuildRow(Table, attribute, buildIds.get(attribute), state);
 	let checkpointing;
 	let hadIndexingErrors = false;
 	const attributeErrorReported = {};
@@ -6832,17 +6837,12 @@ async function runIndexing(Table, attributes, buildIds: Map<any, string>, branch
 			// update the attributes to indicate that we are finished
 			for (let i = 0; i < attributesLength; i++) {
 				const attribute = attributes[i];
-				delete attribute.lastIndexedKey;
-				delete attribute.checkpointCertified;
-				// Survives completion, unlike the checkpoint fields: without it an index built here is
+				// `checkpointAlgorithm` survives completion, unlike the other build fields: without it an index built here is
 				// indistinguishable from one a release that could skip a failed record declared complete.
-				attribute.checkpointAlgorithm = checkpointAlgorithmOf(i);
-				delete attribute.indexingPID;
-				delete attribute.indexingFailed;
-				delete attribute.restartNumber;
-				delete attribute.indexingIncarnation;
-				delete attribute.indexingBuildId;
-				if (!writeBuildRow(attribute)) continue;
+				// The attribute keeps its claim until the row is written, so a failed write still marks it failed.
+				const completed = { checkpointAlgorithm: checkpointAlgorithmOf(i) };
+				if (!writeBuildRow(attribute, completed)) continue;
+				copyFields(attribute, completed, INDEX_BUILD_FIELDS);
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration
