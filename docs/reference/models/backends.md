@@ -139,6 +139,8 @@ The `@embed` write hook sets `inputType: 'document'`. Set `inputType: 'query'` w
 const [queryVector] = await models.embed('What is Harper?', { inputType: 'query' });
 ```
 
+<VersionBadge version="v5.5.0" /> A vector search that passes [`text` in its `sort`](../database/schema.md#searching-by-text) embeds it with `inputType: 'query'` for you.
+
 Both [nomic-embed-text-v1](https://huggingface.co/nomic-ai/nomic-embed-text-v1#usage) and [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5#usage) require `"search_document: "` for retrieval documents and `"search_query: "` for retrieval queries. For other models, follow the model author's instructions and leave prefixes unset unless required.
 
 Prefixes are concatenated exactly: Harper does not trim text or detect an existing prefix. Remove any application wrapper adding the same prefix when enabling this option, and leave it unset if the endpoint already adds the task instruction. Existing embedding config entries retain their previous behavior until configured. A config reload applies prefix changes immediately. Changing the text sent for existing documents requires rewriting their source fields to re-embed those documents; switching from a wrapper that already adds these exact strings preserves input bytes.

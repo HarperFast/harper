@@ -1964,32 +1964,14 @@ export class HierarchicalNavigableSmallWorld {
 		// For quantized (int8) threshold queries, suppress the distance limit so the full candidate
 		// set is returned; rescoreResults() re-filters on exact full-precision distances post-load.
 		if (this.int8 && limit !== undefined) limit = undefined;
-		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
-		let distanceFunction: (a: number[], b: number[]) => number;
-		if (distance === 'cosine') distanceFunction = cosineDistance;
-		else if (distance === 'euclidean') distanceFunction = euclideanDistance;
-		else if (distance === 'dotProduct') distanceFunction = dotProductDistance;
-		else if (distance) throw new ClientError('Unknown distance function');
-		else distanceFunction = this.distance;
+		const distanceFunction = this.searchDistance(
+			descending,
+			distance,
+			maxIndexLagMilliseconds,
+			waitForIndexMilliseconds
+		);
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
-		if (
-			this.filePrimary &&
-			(typeof maxIndexLagMilliseconds !== 'number' ||
-				!Number.isFinite(maxIndexLagMilliseconds) ||
-				maxIndexLagMilliseconds < 0)
-		)
-			throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
-		if (
-			this.filePrimary &&
-			(typeof waitForIndexMilliseconds !== 'number' ||
-				!Number.isFinite(waitForIndexMilliseconds) ||
-				waitForIndexMilliseconds < 0 ||
-				waitForIndexMilliseconds > MAX_WAIT_FOR_INDEX_MILLISECONDS)
-		)
-			throw new ClientError(
-				`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`
-			);
 
 		const txnOptions = context.transaction; // should have a nested RocksDB transaction
 		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
@@ -2075,9 +2057,6 @@ export class HierarchicalNavigableSmallWorld {
 			comparator === 'sort' && minResults !== undefined
 				? Math.min(effectiveEf, Math.max(RERANK_MIN, minResults * RERANK_FACTOR))
 				: effectiveEf;
-		if (this.filePrimary && distanceFunction !== this.distance) {
-			throw new ClientError('A nativePlane index only supports its configured cosine distance');
-		}
 		const searchNative = (certified?: DerivedIndexCoverage) => {
 			if (this.filePrimary && this.derivedReadiness() !== 'ready') {
 				throw new ServerError(
@@ -2215,6 +2194,40 @@ export class HierarchicalNavigableSmallWorld {
 			})),
 			filterState
 		);
+	}
+	searchDistance(
+		descending: boolean | undefined,
+		distance: string | undefined,
+		maxIndexLagMilliseconds = DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
+		waitForIndexMilliseconds = 0
+	) {
+		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
+		let distanceFunction: (a: number[], b: number[]) => number;
+		if (distance === 'cosine') distanceFunction = cosineDistance;
+		else if (distance === 'euclidean') distanceFunction = euclideanDistance;
+		else if (distance === 'dotProduct') distanceFunction = dotProductDistance;
+		else if (distance) throw new ClientError('Unknown distance function');
+		else distanceFunction = this.distance;
+		if (this.filePrimary && distanceFunction !== this.distance)
+			throw new ClientError('A nativePlane index only supports its configured cosine distance');
+		if (
+			this.filePrimary &&
+			(typeof maxIndexLagMilliseconds !== 'number' ||
+				!Number.isFinite(maxIndexLagMilliseconds) ||
+				maxIndexLagMilliseconds < 0)
+		)
+			throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
+		if (
+			this.filePrimary &&
+			(typeof waitForIndexMilliseconds !== 'number' ||
+				!Number.isFinite(waitForIndexMilliseconds) ||
+				waitForIndexMilliseconds < 0 ||
+				waitForIndexMilliseconds > MAX_WAIT_FOR_INDEX_MILLISECONDS)
+		)
+			throw new ClientError(
+				`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`
+			);
+		return distanceFunction;
 	}
 	/**
 	 * Exact distance between a query and a record's FULL-precision vector, mirroring search()'s metric

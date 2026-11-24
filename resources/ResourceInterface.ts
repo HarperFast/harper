@@ -271,6 +271,16 @@ export type Conditions<Record extends object = any> = Condition<Record>[];
 
 export interface Sort<Record extends object = any> {
 	attribute: keyof Record;
+	/** On an HNSW-indexed attribute, the vector to order records by their distance from. */
+	target?: number[];
+	/** On an `@embed` attribute, text to order records by similarity to; embedded with that attribute's model. Not with `target`. */
+	text?: string;
+	/** On an HNSW-indexed attribute, overrides the index's distance function for this query. */
+	distance?: 'cosine' | 'euclidean' | 'dotProduct';
+	/** On an HNSW-indexed attribute, overrides the search exploration budget for this query. */
+	ef?: number;
+	/** On an HNSW-indexed attribute, the visit-budget multiplier for a filtered search. */
+	filterExpansion?: number;
 	/** Native HNSW coverage tolerance in milliseconds; defaults to 3000, with 0 requiring current coverage. */
 	maxIndexLagMilliseconds?: number;
 	/** Wait for coverage of prior committed writes, up to 30,000 ms; 0 (default) does not wait. */

@@ -46,7 +46,12 @@ function refuseWriteInReadOnlyMode(...args: any[]): Promise<never> {
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const RELATIONSHIPS_LISTED = Symbol.for('harper.relationshipsListed');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
+export const SEARCH_OPENING = Symbol.for('harper.searchOpening');
 export const WRITE_CONDITION = Symbol('writeCondition');
+
+export function searchOpening(result: any): Promise<unknown> | undefined {
+	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
+}
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -1110,6 +1115,13 @@ function authorizeSearchResult(result: any, user: any) {
 						if (result.headers && result.data === gate) {
 							if (Object.isFrozen(result)) return { ...result, data: state.results };
 							result.data = state.results;
+						} else {
+							const opening = searchOpening(state.results);
+							const derived = result.headers ? result.data : result;
+							if (opening && derived && typeof derived === 'object') {
+								if (!Object.isExtensible(derived)) return opening.then(() => result);
+								derived[SEARCH_OPENING] ??= opening;
+							}
 						}
 					}
 				} else if (!state) throw new AccessViolation(user);
@@ -1378,6 +1390,10 @@ export function assertNestedQueryOptions(select, resource) {
 			(!resource?._prepareRelationshipSelection || !related)
 		)
 			throw new ClientError('Nested query constraints require a relationship attribute');
+		for (let order = typeof property.sort === 'object' && property.sort; order; order = order.next) {
+			if (order.text !== undefined)
+				throw new ClientError(`The select of "${property.name}" can not sort by text; sort it by a target vector`);
+		}
 		assertNestedQueryOptions(property.select || (Array.isArray(property) ? property : undefined), related);
 	}
 }
