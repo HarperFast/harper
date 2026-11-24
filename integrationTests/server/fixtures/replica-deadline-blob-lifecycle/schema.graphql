@@ -1,0 +1,52 @@
+type MediaNoAudit
+	@table(database: "repblob_noaudit", audit: false, replicaExpiration: 4, replicaRefreshFraction: 0.25)
+	@export {
+	id: ID @primaryKey
+	tag: String @indexed
+	note: String
+	attachment: Blob
+}
+
+type MediaAudit
+	@table(database: "repblob_audit", audit: true, replicaExpiration: 4, replicaRefreshFraction: 0.25)
+	@sharded(slots: 2)
+	@export {
+	id: ID @primaryKey
+	tag: String @indexed
+	note: String
+	attachment: Blob
+}
+
+type DualTtl
+	@table(
+		database: "repblob_dual"
+		audit: true
+		expiration: 2
+		eviction: 2
+		scanInterval: 1
+		replicaExpiration: 60
+		replicaRefreshFraction: 0.5
+	)
+	@sharded(slots: 2)
+	@export {
+	id: ID @primaryKey
+	tag: String @indexed
+	attachment: Blob
+}
+
+type BackupTarget
+	@table(database: "repblob_backup", audit: true, replicaExpiration: 20, replicaRefreshFraction: 0.5)
+	@sharded(slots: 2)
+	@export {
+	id: ID @primaryKey
+	tag: String @indexed
+	attachment: Blob
+}
+
+type LmdbReplicaOpt
+	@table(database: "repblob_lmdb_ctrl", audit: true, replicaExpiration: 4, replicaRefreshFraction: 0.25)
+	@export {
+	id: ID @primaryKey
+	tag: String @indexed
+	note: String
+}
