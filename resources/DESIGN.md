@@ -72,7 +72,7 @@ Each element gets its own target (`elementTargetFactory`) without `checkPermissi
 
 ## Persisted relationship catalog
 
-The operations thread loads no schema; `table()` stores `@relationship` targets on the primary descriptor. Only GraphQL replaces them, never over a drop tombstone (`schemaMigrationFragility.test.js`).
+The operations thread loads no schema; `table()` stores `@relationship` targets on the primary descriptor. Only GraphQL replaces them, never over a drop tombstone (`schemaMigrationFragility.test.js`). A relationship has no attribute row: one under its name, as a peer's definition writes, shadows it on every load, so a declaration removes it (`declareTable`; `declaredSchemaCatalog.test.js`).
 
 ## A relationship read is authorized against the related table
 
@@ -215,7 +215,7 @@ A self-committing `ImmediateTransaction` reports `OPEN` with no commit owner. **
 
 ## Schema migration and `runIndexing` internals
 
-`runIndexing` checkpoints only after the writes it covers settle; a failure sets `indexingFailed` (503, never partial). **Set `dbi.isIndexing` on any dbi created mid-build**: `resetDatabases()` reopens tables (`indexBuildAbandonment.test.js`). A `@computed` index rebuilds on `computationChanged` (`requestComputedIndexRepair`; `computedRedeclare.test.js`).
+`runIndexing` checkpoints only after the writes it covers settle; a failure sets `indexingFailed` (503, never partial). **Set `dbi.isIndexing` on any dbi created mid-build**: `resetDatabases()` reopens tables (`indexBuildAbandonment.test.js`). A `@computed` index rebuilds on `computationChanged` (`requestComputedIndexRepair`; `computedRedeclare.test.js`). Every reload, the declaring thread's own included, replaces live attributes with catalog rows, so a declaration rewrites a row when any declared field differs (`DECLARED_METADATA_FIELDS`), and a build writes only its own fields over a row it still owns (`indexBuildRow`). A reload unregisters an index no row opens but never drops its store: other threads still write to it until they reload (`initStores`; `declaredSchemaCatalog.test.js`).
 
 ## Cluster-origin table definitions are additive-only
 
