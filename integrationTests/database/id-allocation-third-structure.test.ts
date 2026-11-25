@@ -113,8 +113,9 @@ suite(
 			strictEqual(body.length, 2 * BULK_ROWS + 4, 'rows were lost or overwritten');
 			const generatedIds = (restarted: boolean) =>
 				body.filter((row: any) => row.id > 2 && row.a.startsWith('restarted') === restarted).map((row: any) => row.id);
-			ok(
-				Math.min(...generatedIds(true)) > Math.max(...generatedIds(false)),
+			strictEqual(
+				Math.min(...generatedIds(true)),
+				Math.max(...generatedIds(false)) + 1,
 				'the restart did not continue the stored range'
 			);
 		});

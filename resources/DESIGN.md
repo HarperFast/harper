@@ -179,7 +179,7 @@ The native estimator can undercount (`getRecordCountCallerImpact.test.js`); only
 
 ## Auto-increment id ranges are claimed by compare-and-replace
 
-`replaceIdAllocation` writes only if the stored range is unchanged. **Compare the value, never `entry.version`**: a range stored before #1762 has none, so a version check always passes. On RocksDB the range is written with the record header and `LOCAL_ONLY`: a header-less value starting with structure id `0x42` reads as a header (#1762). `readIdAllocation` decodes the stored bytes below record promotion, where a resolver named `start` or `end` would answer for the bound, and the compare reads them through its transaction, never the record cache; an unreadable range reads as absent and is replaced (`idAllocation.test.js`).
+`replaceIdAllocation` writes only if the stored range is unchanged. **Compare the value, never `entry.version`**: a range stored before #1762 has none, so a version check always passes. On RocksDB the range is written with the record header, since a header-less value starting with structure id `0x42` reads as a header (#1762), and `LOCAL_ONLY`, since it is this node's alone. `readIdAllocation` decodes the stored bytes below record promotion, where a resolver named `start` or `end` would answer for the bound, and the compare reads them through its transaction, never the record cache. An unreadable range reads as absent: init takes a new range, and an extension stores the range again from the next id (`idAllocation.test.js`).
 
 ## Replicated apply failure listeners
 

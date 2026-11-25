@@ -14,7 +14,6 @@ const MAX_IDS = 0x10000;
 const THIRD_CLASSIC_STRUCTURE = 0x42;
 const HEADER_SIZE = 12;
 
-// below the table's record prototype, whose resolvers may own these names
 function readAllocation(store) {
 	let value = store.encoder.decode(isLMDB ? store.getBinary(ID_ALLOCATION) : store.getBinarySync(ID_ALLOCATION));
 	if (value?.[METADATA] !== undefined) value = value.value;
@@ -266,11 +265,11 @@ describe('Auto-increment id allocation as the third record structure', function 
 		// a bulk insert reaches the synchronous extension, inside the request
 		await insertWithoutIds(IdTable, 1500, 'bulk');
 		written += 1500;
+		// drains a background extension the insert queued
+		await new Promise((resolve) => setImmediate(resolve));
 		assertReadableAllocation(store);
 		const extended = readAllocation(store);
 		assert.strictEqual(extended.start, initial.start, 'expected the range to be extended, not replaced');
-		// the insert can leave a background extension queued, which must not run against the closed store
-		await new Promise((resolve) => setImmediate(resolve));
 		assert.ok(await closeDatabase(database));
 		const Reopened = table(definition);
 		assertReadableAllocation(Reopened.primaryStore);
@@ -299,20 +298,27 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assertReadableAllocation(store);
 	});
 
-	it('takes a new range when the stored allocation becomes unreadable mid-range', async function () {
+	it('stores the range in use again when the stored allocation becomes unreadable mid-range', async function () {
 		if (isLMDB) return this.skip();
 		const { IdTable } = await twoShapeTable();
 		const store = IdTable.primaryStore;
 		const firstId = IdTable.getNewId();
-		const initial = assertReadableAllocation(store);
-		writeLegacyAllocation(store, { ...initial });
-		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'precondition: the allocation is unreadable');
-		const ids = new Set([firstId]);
-		// past the synchronous extension threshold, within one turn
-		for (let i = 0; i < 0x400; i++) ids.add(IdTable.getNewId());
-		assert.strictEqual(ids.size, 0x401, 'an id was issued twice');
-		const replaced = await waitFor(() => store.getEntry(ID_ALLOCATION)?.value);
-		assert.notStrictEqual(replaced.start, initial.start, 'expected a new range');
 		assertReadableAllocation(store);
+		const initial = readAllocation(store);
+		writeLegacyAllocation(store, initial);
+		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'precondition: the allocation is unreadable');
+		const ids = [firstId];
+		// within one turn, so the extension runs synchronously
+		for (let i = 0; i < 0x400; i++) ids.push(IdTable.getNewId());
+		assert.deepStrictEqual(
+			ids,
+			ids.map((_, i) => firstId + i),
+			'the ids did not continue in sequence'
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		assertReadableAllocation(store);
+		const stored = readAllocation(store);
+		assert(stored.start > initial.start && stored.start < initial.end, 'expected the range in use to be stored');
+		assert(stored.end > initial.end, 'expected the range to be extended');
 	});
 });

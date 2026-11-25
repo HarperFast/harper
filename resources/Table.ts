@@ -945,7 +945,14 @@ function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
 function isIdAllocation(value: any): boolean {
-	return Number.isSafeInteger(value?.start) && Number.isSafeInteger(value.end) && value.start <= value.end;
+	return (
+		Number.isSafeInteger(value?.start) &&
+		Number.isSafeInteger(value.end) &&
+		0 <= value.start &&
+		value.start <= value.end &&
+		typeof value.nodeName === 'string' &&
+		Number.isSafeInteger(value.pid)
+	);
 }
 class ConditionLockWait {
 	fullUpdate: boolean;
@@ -2897,7 +2904,6 @@ export function makeTable(options): TableResourceClass {
 		);
 	}
 	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
-	// Decoded below record promotion, where a resolver named start or end would answer for the stored bound.
 	function readIdAllocation(transaction?: RocksTransaction) {
 		const stored = isRocksDB
 			? (primaryStore as RocksDatabase).getBinarySync(ID_ALLOCATION_KEY, transaction && { transaction })
@@ -2913,11 +2919,11 @@ export function makeTable(options): TableResourceClass {
 				const storedAllocation = readIdAllocation(transaction);
 				if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
 				if (isRocksDB) {
-					// LOCAL_ONLY: the range belongs to this node, so replication must not copy it
 					setNextEncoding(transaction.getTimestamp(), LOCAL_ONLY);
 					try {
 						primaryStore.putSync(ID_ALLOCATION_KEY, nextAllocation, { transaction });
 					} finally {
+						// a put that throws before its encode would leave the header for the next write on any store (harper#1307)
 						clearNextEncoding();
 					}
 				} else primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, Date.now());
@@ -4321,27 +4327,28 @@ export function makeTable(options): TableResourceClass {
 					}
 					readTxn?.done();
 					const updatedIdAllocation = readIdAllocation();
-					if (updatedIdAllocation && idIncrementer.maxSafeId < idAfter) {
+					if (idIncrementer.maxSafeId < idAfter) {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
-						if (updatedIdAllocation.end > idIncrementer.maxSafeId - 100) {
+						if (updatedIdAllocation?.end > idIncrementer.maxSafeId - 100) {
 							// the allocation was already updated by another thread
 							return;
 						}
+						// an unreadable range is stored again from the ids in use, so issued ids stay out of any new range
+						if (!updatedIdAllocation)
+							logger.warn?.(`Id range allocation for table ${tableName} could not be read, storing it again`);
 						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
 						idIncrementer.maxSafeId = replaceIdAllocation(updatedIdAllocation, {
-							start: updatedIdAllocation.start,
+							start: updatedIdAllocation?.start ?? nextId,
 							end: idIncrementer.maxSafeId,
 							nodeName: server.hostname,
 							pid: process.pid,
 						}).end;
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
-						if (updatedIdAllocation)
-							logger.warn?.(
-								`Id conflict detected, starting new id allocation range, attempting to allocate to ${idIncrementer.maxSafeId}, but id of ${idAfter} detected`
-							);
-						else logger.warn?.(`Id range allocation for table ${tableName} could not be read, starting a new range`);
+						logger.warn?.(
+							`Id conflict detected, starting new id allocation range, attempting to allocate to ${idIncrementer.maxSafeId}, but id of ${idAfter} detected`
+						);
 						const idAllocation = createNewAllocation(updatedIdAllocation);
 						// reassign the incrementer to the new range/starting point
 						if (!idAllocation.alreadyUpdated) Atomics.store(idIncrementer, 0, BigInt(idAllocation.start + 1));
