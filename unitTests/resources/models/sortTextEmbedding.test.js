@@ -799,6 +799,42 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('answers a failed text search with its status and releases a search the table concatenated beside it', async () => {
+			if (!observesSnapshot) return;
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			let plainClosed = false;
+			let transaction;
+			try {
+				class TextThenPlain extends Doc {
+					search(target) {
+						const plain = super.search({ ...target, conditions: [{ attribute: 'tag', value: 'odd' }] });
+						const close = plain.onDone;
+						plain.onDone = function () {
+							plainClosed = true;
+							return close.call(this);
+						};
+						transaction = this.getContext().transaction;
+						return super.search({ ...target, sort: { attribute: 'embedding', text: 'unlucky' } }).concat(plain);
+					}
+				}
+				const response = await rest([TextThenPlain])(
+					'QUERY',
+					'/SortTextEmbedDoc/',
+					{ select: ['content'] },
+					{ accept: 'application/json' }
+				).catch((error) => error);
+				assert.equal(response.statusCode ?? response.status, 502);
+				assert.ok(plainClosed, 'the concatenated search kept its snapshot');
+				assert.equal(transaction.readTxnsUsed, 0);
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
 		it('a direct reader of a concatenation reads the search that opens though the other failed first', async () => {
 			const firstModel = Promise.withResolvers();
 			__setEmbedFnForTest((input, opts) => {

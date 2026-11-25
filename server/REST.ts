@@ -623,7 +623,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// a write has committed, and a failure status would deny it
 		if (method === 'GET' || method === 'HEAD' || method === 'QUERY') {
 			const opening = searchOpening(responseData);
-			if (opening) await awaitSearchOpening(opening);
+			if (opening) await awaitSearchOpening(opening, request);
 		}
 		let status = request.response.status;
 		let lastModification = request.lastModified;

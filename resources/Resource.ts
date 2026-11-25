@@ -53,11 +53,16 @@ export function searchOpening(result: any): Promise<unknown> | undefined {
 	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
 }
 
-/** For a caller that answers an opening's failure instead of reading the result, which is released on that failure. */
-export function awaitSearchOpening(opening: any): Promise<unknown> {
+/**
+ * For a caller that answers an opening's failure instead of reading the result, which is released on that
+ * failure. So is every other search the request's transaction still holds, since nothing will read those
+ * either: a search concatenated beside a text search keeps no opening to release.
+ */
+export function awaitSearchOpening(opening: any, context?: Context): Promise<unknown> {
 	return opening.catch((error: unknown) => {
 		try {
 			opening.release?.()?.then?.(null, logReleaseFailure);
+			context?.transaction?.closeOwnedReadIterators?.();
 		} catch (releaseError) {
 			logReleaseFailure(releaseError);
 		}
