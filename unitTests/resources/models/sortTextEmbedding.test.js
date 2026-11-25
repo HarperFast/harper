@@ -837,6 +837,41 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('releasing a failed concatenation reused on both sides closes each search once', async () => {
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			try {
+				let closes = 0;
+				let releases = 0;
+				const shared = { onDone: () => closes++, [Symbol.asyncIterator]: () => [][Symbol.iterator]() };
+				const failing = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {});
+				const base = searchOpening(failing);
+				const release = base.release;
+				base.release = () => {
+					releases++;
+					return release();
+				};
+				const other = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, {});
+				// the shared search is an operand of two different concatenations
+				let chain = failing
+					.concat(shared)
+					.map((row) => row)
+					.concat(other.map((row) => row).concat(shared));
+				for (let level = 0; level < 12; level++)
+					chain = chain.map((row) => row).concat(other.map((row) => row).concat(chain));
+				const opening = searchOpening(chain);
+				await assert.rejects(opening, (error) => error.statusCode === 502);
+				releaseSearchOpening(opening);
+				assert.equal(closes, 1);
+				assert.equal(releases, 1);
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
 		it('releasing a failed opening logs a release that rejects instead of letting it escape', async () => {
 			const failure = new Error('release failed');
 			const escaped = [];

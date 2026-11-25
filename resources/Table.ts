@@ -967,10 +967,13 @@ function joinOpenings(opening: any, other: any, operand: any) {
 	joined.catch(() => {});
 	joined[JOINED_OPENING] = { from: opening, other, operand };
 	joined.release = () => {
-		// walked, not recursed, so a concatenation of any depth, on either side, releases every operand
+		// a recursive walk overflows the stack on a deep chain, and a reused result is reached more than once
 		const pending = [joined];
+		const seen = new Set();
 		while (pending.length) {
 			const opening = pending.pop();
+			if (seen.has(opening)) continue;
+			seen.add(opening);
 			const part = opening?.[JOINED_OPENING];
 			if (!part) {
 				cleanUp(() => opening?.release?.());
@@ -978,7 +981,10 @@ function joinOpenings(opening: any, other: any, operand: any) {
 			}
 			pending.push(part.from);
 			if (part.other) pending.push(part.other);
-			else closeUnread(part.operand);
+			else if (!seen.has(part.operand)) {
+				seen.add(part.operand);
+				closeUnread(part.operand);
+			}
 		}
 	};
 	return joined;
@@ -8943,7 +8949,6 @@ export function makeTable(options): TableResourceClass {
 							const iterator = openIterator(results, options);
 							if (!iterator) throw new TypeError('A search result returned no iterator');
 							handedOver = true;
-							// a reader that left during the factory can not close a cursor without return()
 							if (cancelled() && !iterator?.return && !held) closeUnread(results, false);
 							return iterator;
 						} catch (error) {
