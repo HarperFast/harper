@@ -185,6 +185,22 @@ describe('legacy SQL row selection for deep and IS NOT NULL predicates', functio
 			assert.ok(Object.values(notes).every((note) => note === 'seed'));
 		});
 
+		it('runs an UPDATE whose SET calls an aggregate, a named one included', async () => {
+			for (const aggregate of ['SUM', 'MEDIAN']) {
+				await reseed();
+				const result = await sql('legacy', `UPDATE ${TABLE} SET note = ${aggregate}(id) WHERE id = 7`);
+				assert.deepStrictEqual(result.update_hashes, [7], aggregate);
+				assert.strictEqual((await storedNotes())[7], 7, aggregate);
+			}
+		});
+
+		it('stores a JSON literal from SET as written', async () => {
+			await reseed();
+			const value = { as: 'x', tableid: 't', columnid: 'c', databaseid: 'd' };
+			await sql('legacy', `UPDATE ${TABLE} SET note = ${JSON.stringify(value)} WHERE id = 7`);
+			assert.deepStrictEqual((await storedNotes())[7], value);
+		});
+
 		it('still refuses a SELECT, UPDATE or DELETE whose WHERE holds a subquery, and writes nothing', async () => {
 			await reseed();
 			for (const subquery of [
