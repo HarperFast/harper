@@ -2955,25 +2955,6 @@ export function makeTable(options): TableResourceClass {
 		if (!storedAllocation) throw new Error(`Id range allocation for table ${tableName} was aborted`);
 		return storedAllocation;
 	}
-	// Threads keep issuing from bounds the cleared range stored, so a lower end stored after the clear would let a
-	// restart reissue their ids.
-	function keepIdAllocation(keptAllocation) {
-		try {
-			primaryStore.transactionSync(
-				(transaction) => {
-					const stored = readIdAllocation(transaction);
-					// an extension since the clear stored a range of its own, which the kept one must not replace
-					if (!stored || (stored.start === keptAllocation.start && stored.end < keptAllocation.end))
-						writeIdAllocation(keptAllocation, transaction);
-					return true;
-				},
-				isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
-			);
-		} catch (error) {
-			// the clear itself completed; the next extension stores a range from the live counter
-			logger.warn?.(`Could not keep the id range of table ${tableName} across a clear`, error);
-		}
-	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -13024,10 +13005,7 @@ export function makeTable(options): TableResourceClass {
 						.finally(rebuildDerivedIndexes)
 						.finally(releaseFullTextClearFence);
 				try {
-					const keptIdAllocation = readIdAllocation();
-					promises.push(
-						Promise.resolve(primaryStore.clear()).then(() => keptIdAllocation && keepIdAllocation(keptIdAllocation))
-					);
+					promises.push(primaryStore.clear());
 
 					for (const key in indices) {
 						const index = indices[key];

@@ -370,19 +370,18 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert(stored.start <= lastId + 1 && stored.end > lastId, 'the stored range does not hold the ids issued');
 	});
 
-	it('keeps the id range across a clear', async function () {
-		const { IdTable } = await twoShapeTable();
-		const store = IdTable.primaryStore;
+	it('issues unique ids after a clear, and a reopen continues above them', async function () {
+		const { IdTable, definition } = await twoShapeTable('TwoShapesClear');
 		await IdTable.post({ a: 'before the clear' });
-		const kept = readAllocation(store);
 		await IdTable.clear();
-		assert.deepStrictEqual(readAllocation(store), kept, 'the clear did not keep the range');
-		for (let i = 0; i < 0x400; i++) await IdTable.post({ a: `after${i}` });
-		assertReadableAllocation(store);
-		assert.strictEqual(readAllocation(store).start, kept.start, 'the range was replaced');
-		let count = 0;
-		for await (const _record of IdTable.search({})) count++;
-		assert.strictEqual(count, 0x400, 'rows were lost or overwritten');
+		// the clear removes the stored range; Int ranges are 0x400 ids, so these reach the extension that stores it again
+		for (let i = 0; i < 0x400; i++) await IdTable.post({ a: `cleared${i}` });
+		assertReadableAllocation(IdTable.primaryStore);
+		assert.ok(await closeDatabase(database));
+		const Reopened = table(definition);
+		for (let i = 0; i < 0x10; i++) await Reopened.post({ a: `reopened${i}` });
+		const ids = await idsByPrefix(Reopened, 0x410);
+		assert(Math.min(...ids.reopened) > Math.max(...ids.cleared), 'the reopen reissued ids below the last ones');
 	});
 
 	it('stores a missing range again from the live counter', async function () {
