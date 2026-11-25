@@ -1061,7 +1061,7 @@ function carryThroughTransforms(
 function deferredIterator(
 	options: any,
 	openResults: () => Promise<any>,
-	onFinish: (early: boolean) => void,
+	onFinish: () => void,
 	synchronousIterationMessage: string,
 	acquire: (results: any, options: any, cancelled: () => boolean) => AsyncIterator<any> | undefined = openIterator
 ) {
@@ -1071,10 +1071,10 @@ function deferredIterator(
 	let completed = false;
 	let iteratorPromise: Promise<AsyncIterator<any>>;
 	let opened: AsyncIterator<any> | undefined;
-	const finish = (early = true) => {
+	const finish = () => {
 		if (completed) return;
 		completed = true;
-		onFinish(early);
+		onFinish();
 	};
 	const failStep = (error: any) => {
 		if (returned) return { value: undefined, done: true };
@@ -1115,7 +1115,7 @@ function deferredIterator(
 					return Promise.resolve(step).then((result) => {
 						// a stream destroyed mid-step returns without waiting for that step
 						if (returned) return { value: undefined, done: true };
-						if (result.done) finish(false);
+						if (result.done) finish();
 						return result;
 					}, failStep);
 				},
@@ -8992,8 +8992,10 @@ export function makeTable(options): TableResourceClass {
 					gatedResults.selectApplied = true;
 					gatedResults.getColumns = () =>
 						resolvedResults?.getColumns ? resolvedResults.getColumns() : (earlyColumns ??= getColumns());
-					gatedResults.iterate = (options: any = {}) =>
-						deferredIterator(
+					let readers = 0;
+					gatedResults.iterate = (options: any = {}) => {
+						readers++;
+						return deferredIterator(
 							options,
 							() =>
 								authorization.then((state: any) => {
@@ -9001,13 +9003,14 @@ export function makeTable(options): TableResourceClass {
 									if (!state.allowed) throw new AccessViolation((context as any).user);
 									return state.results;
 								}),
-							// a reader that reached the end leaves a replayable result to the next reader
-							(early) => {
-								if (early) gatedResults.onDone?.();
+							// one reader ending leaves a result another reader or a replay can still use
+							() => {
+								if (--readers === 0 && !handedOver) gatedResults.onDone?.();
 							},
 							'Can not synchronously iterate while allowRead is asynchronous',
 							acquire
 						);
+					};
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;
 						gateClosed = true;

@@ -1365,7 +1365,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			});
 		});
 
-		it('a gated result that can be read again is read again after its first reader finishes', async () => {
+		it('a gated result that can be read again stays readable when one reader ends, early or at its end', async () => {
 			class Replayable extends Doc {
 				async allowRead() {
 					return true;
@@ -1375,10 +1375,21 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					return [{ id: 1 }, { id: 2 }];
 				}
 			}
-			const gated = new Replayable(null, { user: { username: 'reader' } }).search({ checkPermission: true });
-			const first = await fromAsync(gated);
-			assert.deepEqual(first, [{ id: 1 }, { id: 2 }]);
-			assert.deepEqual(await fromAsync(gated), first);
+			const gate = () => new Replayable(null, { user: { username: 'reader' } }).search({ checkPermission: true });
+			const rows = [{ id: 1 }, { id: 2 }];
+			let gated = gate();
+			assert.deepEqual(await fromAsync(gated), rows);
+			assert.deepEqual(await fromAsync(gated), rows);
+			gated = gate();
+			assert.deepEqual(await fromAsync(gated.slice(0, 1).concat(gated.slice(1))), rows);
+			gated = gate();
+			const reader = gated[Symbol.asyncIterator]();
+			const first = reader.next();
+			assert.throws(() => {
+				for (const row of gated) assert.fail(row);
+			}, /synchronously/);
+			assert.deepEqual((await first).value, rows[0]);
+			assert.deepEqual((await reader.next()).value, rows[1]);
 		});
 
 		it('a gate closed before its first step logs a cleanup that rejects instead of letting it escape', async () => {
