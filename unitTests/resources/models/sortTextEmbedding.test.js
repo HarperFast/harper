@@ -855,7 +855,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					return release();
 				};
 				const other = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, {});
-				// the shared search is an operand of two different concatenations
 				let chain = failing
 					.concat(shared)
 					.map((row) => row)
@@ -1364,6 +1363,22 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					transaction.abort();
 				}
 			});
+		});
+
+		it('a gated result that can be read again is read again after its first reader finishes', async () => {
+			class Replayable extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					return [{ id: 1 }, { id: 2 }];
+				}
+			}
+			const gated = new Replayable(null, { user: { username: 'reader' } }).search({ checkPermission: true });
+			const first = await fromAsync(gated);
+			assert.deepEqual(first, [{ id: 1 }, { id: 2 }]);
+			assert.deepEqual(await fromAsync(gated), first);
 		});
 
 		it('a gate closed before its first step logs a cleanup that rejects instead of letting it escape', async () => {

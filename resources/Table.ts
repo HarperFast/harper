@@ -1061,7 +1061,7 @@ function carryThroughTransforms(
 function deferredIterator(
 	options: any,
 	openResults: () => Promise<any>,
-	onFinish: () => void,
+	onFinish: (early: boolean) => void,
 	synchronousIterationMessage: string,
 	acquire: (results: any, options: any, cancelled: () => boolean) => AsyncIterator<any> | undefined = openIterator
 ) {
@@ -1071,10 +1071,10 @@ function deferredIterator(
 	let completed = false;
 	let iteratorPromise: Promise<AsyncIterator<any>>;
 	let opened: AsyncIterator<any> | undefined;
-	const finish = () => {
+	const finish = (early = true) => {
 		if (completed) return;
 		completed = true;
-		onFinish();
+		onFinish(early);
 	};
 	const failStep = (error: any) => {
 		if (returned) return { value: undefined, done: true };
@@ -1115,7 +1115,7 @@ function deferredIterator(
 					return Promise.resolve(step).then((result) => {
 						// a stream destroyed mid-step returns without waiting for that step
 						if (returned) return { value: undefined, done: true };
-						if (result.done) finish();
+						if (result.done) finish(false);
 						return result;
 					}, failStep);
 				},
@@ -9001,7 +9001,10 @@ export function makeTable(options): TableResourceClass {
 									if (!state.allowed) throw new AccessViolation((context as any).user);
 									return state.results;
 								}),
-							() => gatedResults.onDone?.(),
+							// a reader that reached the end leaves a replayable result to the next reader
+							(early) => {
+								if (early) gatedResults.onDone?.();
+							},
 							'Can not synchronously iterate while allowRead is asynchronous',
 							acquire
 						);
