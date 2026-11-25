@@ -1,0 +1,5 @@
+type IdRows @table @export {
+	id: Int @primaryKey
+	a: String
+	b: String
+}

@@ -297,6 +297,9 @@ import {
 	type StructureCounts,
 	entryMap,
 	storedFieldsOnly,
+	setNextEncoding,
+	clearNextEncoding,
+	METADATA,
 } from './RecordEncoder.ts';
 import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
 import {
@@ -940,6 +943,9 @@ const STRIP_RETRY_BUDGET_MS = 30_000;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
+}
+function isIdAllocation(value: any): boolean {
+	return Number.isSafeInteger(value?.start) && Number.isSafeInteger(value.end) && value.start <= value.end;
 }
 class ConditionLockWait {
 	fullUpdate: boolean;
@@ -2891,13 +2897,31 @@ export function makeTable(options): TableResourceClass {
 		);
 	}
 	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
+	// Decoded below record promotion, where a resolver-owned attribute named start or end would answer for the
+	// stored bound. Undecodable reads as absent.
+	function readIdAllocation(transaction?: RocksTransaction) {
+		const stored = isRocksDB
+			? (primaryStore as RocksDatabase).getBinarySync(ID_ALLOCATION_KEY, transaction && { transaction })
+			: primaryStore.getBinary(ID_ALLOCATION_KEY);
+		if (stored == null) return undefined;
+		let allocation = primaryStore.encoder.decode(stored);
+		if (allocation?.[METADATA] !== undefined) allocation = allocation.value;
+		return isIdAllocation(allocation) ? allocation : undefined;
+	}
 	function replaceIdAllocation(expectedAllocation, nextAllocation) {
 		const storedAllocation = primaryStore.transactionSync(
 			(transaction) => {
-				const options = transaction && { transaction };
-				const storedAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY, options)?.value;
+				const storedAllocation = readIdAllocation(transaction);
 				if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
-				primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, options ?? Date.now());
+				if (isRocksDB) {
+					// a RocksDB primary value without the version header can read as one (harper#1762); the range is this node's alone
+					setNextEncoding((primaryStore as RocksDatabase).getMonotonicTimestamp(), LOCAL_ONLY);
+					try {
+						primaryStore.putSync(ID_ALLOCATION_KEY, nextAllocation, { transaction });
+					} finally {
+						clearNextEncoding();
+					}
+				} else primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, Date.now());
 				return nextAllocation;
 			},
 			isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
@@ -4245,7 +4269,7 @@ export function makeTable(options): TableResourceClass {
 			if (isReadOnlyMode()) throw readOnlyModeError();
 			if (!idIncrementer) {
 				// if there is no id incrementer yet, we get or create one
-				let idAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY)?.value;
+				let idAllocation = readIdAllocation();
 				let lastKey;
 				if (
 					idAllocation &&
@@ -4297,8 +4321,8 @@ export function makeTable(options): TableResourceClass {
 						idAfter = key;
 					}
 					readTxn?.done();
-					const updatedIdAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY).value;
-					if (idIncrementer.maxSafeId < idAfter) {
+					const updatedIdAllocation = readIdAllocation();
+					if (updatedIdAllocation && idIncrementer.maxSafeId < idAfter) {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
 						if (updatedIdAllocation.end > idIncrementer.maxSafeId - 100) {
@@ -4314,9 +4338,11 @@ export function makeTable(options): TableResourceClass {
 						}).end;
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
-						logger.warn?.(
-							`Id conflict detected, starting new id allocation range, attempting to allocate to ${idIncrementer.maxSafeId}, but id of ${idAfter} detected`
-						);
+						if (updatedIdAllocation)
+							logger.warn?.(
+								`Id conflict detected, starting new id allocation range, attempting to allocate to ${idIncrementer.maxSafeId}, but id of ${idAfter} detected`
+							);
+						else logger.warn?.(`Id range allocation for table ${tableName} could not be read, starting a new range`);
 						const idAllocation = createNewAllocation(updatedIdAllocation);
 						// reassign the incrementer to the new range/starting point
 						if (!idAllocation.alreadyUpdated) Atomics.store(idIncrementer, 0, BigInt(idAllocation.start + 1));
