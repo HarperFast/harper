@@ -215,7 +215,7 @@ type WsListener = (ws: WebSocket, request: Request, chainCompletion: Promise<voi
 
 | Parameter         | Description                                                                                                               |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `ws`              | [`WebSocket`](https://github.com/websockets/ws/blob/main/doc/ws.md#class-websocket) instance                              |
+| `ws`              | [`WebSocket`](https://github.com/websockets/ws/blob/master/doc/ws.md#class-websocket) instance                            |
 | `request`         | Harper `Request` object from the upgrade event                                                                            |
 | `chainCompletion` | `Promise` that resolves when the HTTP request chain finishes. Await before sending to ensure the HTTP request is handled. |
 | `next`            | Continue chain: `next(ws, request, chainCompletion)`                                                                      |
