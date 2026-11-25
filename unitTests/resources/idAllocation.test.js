@@ -295,22 +295,21 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assertReadableAllocation(store);
 	});
 
-	it('does not store an end below ids a sibling issued after the extension was queued', async function () {
+	it('leaves an unreadable range to the synchronous extension, not a queued one', async function () {
 		if (isLMDB) return this.skip();
 		const { IdTable } = await twoShapeTable();
 		const store = IdTable.primaryStore;
 		IdTable.getNewId();
 		const initial = readAllocation(store);
-		// the background extension is queued at this id, and its end is 0x3ff past it
+		// the background extension is queued at this id, and proposes an end 0x3ff past it
 		getNewIdsUntil(IdTable, (id) => id + 0x200 === initial.end);
-		Atomics.add(sharedCounter(store), 0, 0x500n);
 		writeLegacyAllocation(store, initial);
 		await new Promise((resolve) => setImmediate(resolve));
-		const issuedThrough = Number(sharedCounter(store)[0]) - 1;
-		if (store.getEntry(ID_ALLOCATION))
-			assert(readAllocation(store).end >= issuedThrough, 'the stored range ends below issued ids');
+		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'a queued extension stored the range');
+		// a sibling thread issues past the queued proposal
+		Atomics.add(sharedCounter(store), 0, 0x500n);
 		const nextId = IdTable.getNewId();
-		assert(nextId > issuedThrough, 'an issued id was handed out again');
+		assert.strictEqual(readAllocation(store).start, nextId, 'the range was not stored from the live id');
 		assert(readAllocation(store).end > nextId, 'the range in use was not stored');
 	});
 

@@ -4335,8 +4335,8 @@ export function makeTable(options): TableResourceClass {
 							return;
 						}
 						if (!updatedIdAllocation) {
-							// a delayed callback's end can trail ids issued since; the synchronous extension stores it instead
-							if (newestId >= idIncrementer.maxSafeId) return;
+							// only an extension from the live counter, which every thread's bound trails, may store it
+							if (!inTxn || newestId >= idIncrementer.maxSafeId) return;
 							logger.warn?.(`Id range allocation for table ${tableName} could not be read, storing it again`);
 						}
 						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
