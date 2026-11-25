@@ -11,25 +11,24 @@ const { waitFor } = require('../waitFor');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const ID_ALLOCATION = Symbol.for('id_allocation');
 const MAX_IDS = 0x10000;
-// a classic record whose first byte is this reads as a version header on RocksDB (harper#1762)
 const THIRD_CLASSIC_STRUCTURE = 0x42;
 const HEADER_SIZE = 12;
 
-// the bounds as stored, without the table's record prototype (whose resolvers may own these names)
+// below the table's record prototype, whose resolvers may own these names
 function readAllocation(store) {
 	let value = store.encoder.decode(isLMDB ? store.getBinary(ID_ALLOCATION) : store.getBinarySync(ID_ALLOCATION));
 	if (value?.[METADATA] !== undefined) value = value.value;
+	assert(Number.isSafeInteger(value?.start) && Number.isSafeInteger(value.end), 'the stored allocation is unreadable');
 	const { start, end, nodeName, pid } = value;
 	return { start, end, nodeName, pid };
 }
 
-// as this build writes it
 function writeAllocation(store, allocation) {
 	setNextEncoding(store.getMonotonicTimestamp(), LOCAL_ONLY);
 	store.putSync(ID_ALLOCATION, allocation);
 }
 
-// as a build before harper#1762 wrote it: no header
+// the form written before harper#1762
 function writeLegacyAllocation(store, allocation) {
 	clearNextEncoding();
 	store.putSync(ID_ALLOCATION, allocation);
@@ -67,8 +66,8 @@ describe('Auto-increment id allocation under concurrent allocation writes', func
 		});
 	}
 
-	// Lands the sibling's commit after the compare's own read and before its write, so only the commit's
-	// conflict check can make the compare see it. The sibling's counter reset follows its commit, as in production.
+	// After the compare's read and before its write, so only the commit's conflict check can show it the sibling.
+	// The sibling's counter reset follows its commit, as in production.
 	function siblingCommitsAfterNextCompareRead(store, sibling, siblingCounterStart) {
 		const getBinarySync = store.getBinarySync;
 		const state = { fired: false, compareReads: 0, firstRead: undefined };
@@ -173,9 +172,8 @@ describe('Auto-increment id allocation under concurrent allocation writes', func
 	});
 });
 
-// The default classic encoding numbers record structures from 0x40, so the allocation's shape is the third
-// structure, 0x42, in a table that already has two record shapes. That byte is also how a RocksDB version header
-// starts, so a header-less allocation there read as undefined (harper#1762). LMDB has no such header.
+// Classic structure ids start at 0x40, so after two record shapes the allocation's is 0x42, the first byte of a
+// RocksDB version header (harper#1762). LMDB has no such header.
 describe('Auto-increment id allocation as the third record structure', function () {
 	const database = 'idAllocationStructure';
 	let tableCount = 0;
@@ -223,7 +221,7 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert.strictEqual(result.inserted_hashes.length, count, 'not every record was inserted');
 	}
 
-	// an id issued twice overwrites a row, so a missing payload means a reissued id
+	// an id issued twice overwrites a row
 	async function idsByPrefix(IdTable, expectedRows) {
 		const ids = {};
 		let count = 0;

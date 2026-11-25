@@ -1,7 +1,6 @@
 /**
  * Auto-assigned Int ids in a table that already holds two record shapes (harper#1762): the stored id range is then
- * the table's third classic record structure, 0x42, which is also how a RocksDB version header starts. A bulk
- * insert reaches the range extension inside the request, and a restart reads the stored range back.
+ * the table's third classic record structure, 0x42, which is also how a RocksDB version header starts.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -99,7 +98,7 @@ suite(
 			await startHarper(ctx, { config: BOOT_CONFIG, env: {} });
 			await waitForTable(ctx);
 			await insertWithoutIds(ctx, 'restarted');
-			await postWithoutId(ctx, 'posted after the restart');
+			await postWithoutId(ctx, 'restarted post');
 
 			const { status, body } = await operation(ctx, {
 				operation: 'search_by_value',
@@ -112,9 +111,11 @@ suite(
 			strictEqual(status, 200, JSON.stringify(body));
 			// a reissued id overwrites an earlier row
 			strictEqual(body.length, 2 * BULK_ROWS + 4, 'rows were lost or overwritten');
+			const generatedIds = (restarted: boolean) =>
+				body.filter((row: any) => row.id > 2 && row.a.startsWith('restarted') === restarted).map((row: any) => row.id);
 			ok(
-				body.every((row: any) => row.a || row.b),
-				'a row lost its payload'
+				Math.min(...generatedIds(true)) > Math.max(...generatedIds(false)),
+				'the restart did not continue the stored range'
 			);
 		});
 	}

@@ -2897,8 +2897,7 @@ export function makeTable(options): TableResourceClass {
 		);
 	}
 	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
-	// Decoded below record promotion, where a resolver-owned attribute named start or end would answer for the
-	// stored bound. Undecodable reads as absent.
+	// Decoded below record promotion, where a resolver named start or end would answer for the stored bound.
 	function readIdAllocation(transaction?: RocksTransaction) {
 		const stored = isRocksDB
 			? (primaryStore as RocksDatabase).getBinarySync(ID_ALLOCATION_KEY, transaction && { transaction })
@@ -2914,8 +2913,8 @@ export function makeTable(options): TableResourceClass {
 				const storedAllocation = readIdAllocation(transaction);
 				if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
 				if (isRocksDB) {
-					// a RocksDB primary value without the version header can read as one (harper#1762); the range is this node's alone
-					setNextEncoding((primaryStore as RocksDatabase).getMonotonicTimestamp(), LOCAL_ONLY);
+					// LOCAL_ONLY: the range belongs to this node, so replication must not copy it
+					setNextEncoding(transaction.getTimestamp(), LOCAL_ONLY);
 					try {
 						primaryStore.putSync(ID_ALLOCATION_KEY, nextAllocation, { transaction });
 					} finally {
