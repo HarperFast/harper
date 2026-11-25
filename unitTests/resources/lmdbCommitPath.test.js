@@ -281,10 +281,12 @@ describe('LMDB optimistic commit through the Table API', () => {
 	});
 });
 
+const UNUSED_TABLE_ID = 4_000_000;
+
 describe('bodyless audit entries', () => {
-	const reloadRecord = (recordId, version) => ({
+	const reloadRecord = (recordId, version, tableId = 7) => ({
 		version,
-		tableId: 7,
+		tableId,
 		recordId,
 		nodeId: 0,
 		type: 'reload',
@@ -320,8 +322,12 @@ describe('bodyless audit entries', () => {
 			for (let index = 0; index < 20; index++) {
 				const key = firstKey + index;
 				keys.push(key);
-				// every entry is encoded before the batch is flushed
-				puts.push(auditStore.put(key, reloadRecord(`bodyless-${index}-${'x'.repeat(index * 3)}`, 3000.5 + index)));
+				puts.push(
+					auditStore.put(
+						key,
+						reloadRecord(`bodyless-${index}-${'x'.repeat(index * 3)}`, 3000.5 + index, UNUSED_TABLE_ID)
+					)
+				);
 			}
 			await Promise.all(puts);
 			await auditStore.flushed;
