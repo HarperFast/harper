@@ -1,4 +1,3 @@
-// Auto-assigned Int ids in a table that already holds two record shapes (harper#1762).
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';

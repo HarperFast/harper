@@ -1,4 +1,3 @@
-// A worker thread of the test process: its table class has no id incrementer of its own yet.
 require('../../testUtils');
 const { parentPort, workerData } = require('node:worker_threads');
 const { setupTestDBPath } = require('../../testUtils');

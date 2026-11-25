@@ -298,6 +298,7 @@ import {
 	type StructureCounts,
 	entryMap,
 	storedFieldsOnly,
+	decodeStrictly,
 	setNextEncoding,
 	clearNextEncoding,
 	METADATA,
@@ -2920,7 +2921,13 @@ export function makeTable(options): TableResourceClass {
 		);
 	}
 	function decodeIdAllocation(stored: Uint8Array, noMetadata: boolean) {
-		let allocation = primaryStore.encoder.decode(stored, noMetadata ? { noMetadata } : undefined);
+		let allocation;
+		try {
+			// strict, so a reading that fails is not reported as a corrupt record when the other reading is right
+			allocation = decodeStrictly(() => primaryStore.encoder.decode(stored, noMetadata ? { noMetadata } : undefined));
+		} catch {
+			return undefined;
+		}
 		if (allocation?.[METADATA] !== undefined) allocation = allocation.value;
 		return isIdAllocation(allocation) ? allocation : undefined;
 	}
@@ -2951,13 +2958,21 @@ export function makeTable(options): TableResourceClass {
 	// Threads keep issuing from bounds the cleared range stored, so a lower end stored after the clear would let a
 	// restart reissue their ids.
 	function keepIdAllocation(keptAllocation) {
-		primaryStore.transactionSync(
-			(transaction) => {
-				if (!(readIdAllocation(transaction)?.end >= keptAllocation.end)) writeIdAllocation(keptAllocation, transaction);
-				return true;
-			},
-			isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
-		);
+		try {
+			primaryStore.transactionSync(
+				(transaction) => {
+					const stored = readIdAllocation(transaction);
+					// an extension since the clear stored a range of its own, which the kept one must not replace
+					if (!stored || (stored.start === keptAllocation.start && stored.end < keptAllocation.end))
+						writeIdAllocation(keptAllocation, transaction);
+					return true;
+				},
+				isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
+			);
+		} catch (error) {
+			// the clear itself completed; the next extension stores a range from the live counter
+			logger.warn?.(`Could not keep the id range of table ${tableName} across a clear`, error);
+		}
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
@@ -4360,19 +4375,21 @@ export function makeTable(options): TableResourceClass {
 						readTxn?.done();
 					}
 					const updatedIdAllocation = readIdAllocation();
+					// a range that does not hold the counter (missing, or another range) cannot bound the ids it issues
+					const storedHoldsCounter = updatedIdAllocation?.start <= newestId;
 					if (proposedEnd < idAfter) {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
-						if (updatedIdAllocation?.end > proposedEnd - 100) {
+						if (storedHoldsCounter && updatedIdAllocation.end > proposedEnd - 100) {
 							// the allocation was already updated by another thread
 							idIncrementer.maxSafeId = updatedIdAllocation.end;
 							return;
 						}
-						if (!updatedIdAllocation)
-							logger.warn?.(`Id range allocation for table ${tableName} could not be read, storing it again`);
+						if (!storedHoldsCounter)
+							logger.warn?.(`Id range allocation for table ${tableName} does not hold its counter, storing it again`);
 						logger.info?.('New id allocation', newestId, proposedEnd);
 						idIncrementer.maxSafeId = replaceIdAllocation(updatedIdAllocation, {
-							start: updatedIdAllocation?.start ?? newestId,
+							start: storedHoldsCounter ? updatedIdAllocation.start : newestId,
 							end: proposedEnd,
 							nodeName: server.hostname,
 							pid: process.pid,
@@ -4392,6 +4409,7 @@ export function makeTable(options): TableResourceClass {
 				if (nextId + asyncIdExpansionThreshold === idIncrementer.maxSafeId) {
 					// if we are getting kind of close to the end, we try to update it asynchronously
 					setImmediate(() => {
+						if (disposed) return;
 						try {
 							updateEnd();
 						} catch (error) {

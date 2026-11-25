@@ -358,6 +358,18 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert(readAllocation(store).end > initial.end, 'ids passed the stored end without extending it');
 	});
 
+	it('does not take the end of a stored range that does not hold the counter', async function () {
+		const { IdTable } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		IdTable.getNewId();
+		const initial = readAllocation(store);
+		const other = { ...initial, start: initial.end + 0x10000, end: initial.end + 0x10400 };
+		writeAllocation(store, other);
+		const lastId = getNewIdsUntil(IdTable, (id) => id + 100 >= initial.end);
+		const stored = readAllocation(store);
+		assert(stored.start <= lastId + 1 && stored.end > lastId, 'the stored range does not hold the ids issued');
+	});
+
 	it('keeps the id range across a clear', async function () {
 		const { IdTable } = await twoShapeTable();
 		const store = IdTable.primaryStore;
@@ -397,14 +409,14 @@ describe('Auto-increment id allocation as the third record structure', function 
 		store.removeSync(ID_ALLOCATION);
 		const liveId = Number(sharedCounter(store)[0]);
 		const thread = new Worker(__dirname + '/fixtures/idAllocationThread.js', { workerData: { definition } });
+		const exited = once(thread, 'exit', { signal: AbortSignal.timeout(30_000) });
 		try {
 			thread.postMessage({ type: 'newId' });
-			const [{ id, start, end }] = await once(thread, 'message');
+			const [{ id, start, end }] = await once(thread, 'message', { signal: AbortSignal.timeout(30_000) });
 			assert.strictEqual(id, liveId, 'the thread did not continue the live counter');
 			assert(start <= id + 1 && end > id, `the stored range [${start}, ${end}] does not cover id ${id}`);
 		} finally {
 			// as create.test.js: a graceful exit closes the worker's handles; terminate is the fallback
-			const exited = once(thread, 'exit');
 			const fallback = setTimeout(() => thread.terminate().catch(() => {}), 1000);
 			thread.postMessage({ type: 'shutdown' });
 			await exited;
