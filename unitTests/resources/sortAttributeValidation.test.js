@@ -26,7 +26,7 @@ describe('A sort level after the first', () => {
 			],
 		});
 		await Owners.put('o1', { name: 'first' });
-		const attributes = [
+		const attributes = () => [
 			{ name: 'id', isPrimaryKey: true },
 			{ name: 'tag', indexed: true },
 			{ name: 'rank', type: 'Int' },
@@ -35,8 +35,8 @@ describe('A sort level after the first', () => {
 			{ name: 'ownerId', indexed: true },
 			{ name: 'owner', relationship: { from: 'ownerId' }, definition: { tableClass: Owners } },
 		];
-		Sealed = table({ table: 'SortAttributeSealed', database: 'test', sealed: true, attributes });
-		Open = table({ table: 'SortAttributeOpen', database: 'test', attributes });
+		Sealed = table({ table: 'SortAttributeSealed', database: 'test', sealed: true, attributes: attributes() });
+		Open = table({ table: 'SortAttributeOpen', database: 'test', attributes: attributes() });
 		for (let id = 1; id <= 4; id++) {
 			const record = {
 				tag: id % 2 ? 'odd' : 'even',
@@ -61,7 +61,7 @@ describe('A sort level after the first', () => {
 
 	it('is refused when it names no attribute', async () => {
 		for (const Table of [Sealed, Open]) {
-			for (const next of [{ descending: true }, { attribute: [] }]) {
+			for (const next of [{ descending: true }, { attribute: [] }, { attribute: '' }]) {
 				await assert.rejects(
 					async () => fromAsync(Table.search({ sort: { attribute: 'tag', next } })),
 					/Sort requires an attribute/

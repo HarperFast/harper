@@ -1372,7 +1372,7 @@ Sort order object:
 | `descending` | Sort descending if `true` (default: `false`)               |
 | `next`       | Secondary sort to resolve ties (same structure)            |
 
-<VersionBadge type="changed" version="v5.5.0" /> On a sealed table, each `attribute` in the `next` chain of a search's `sort` must start at an attribute the current schema declares or at record metadata such as `$updatedtime`; an undeclared one is rejected with a 404, as an undefined first `attribute` already is outside an `or` search. A `sort` inside a relationship's `select` is not checked. Before v5.5.0 it was not checked, so rows written before the table was sealed could still sort by such an attribute; declare it to keep doing so. An open table skips this schema check. A `next` with no `attribute`, or an empty path, is rejected on every table.
+<VersionBadge type="changed" version="v5.5.0" /> On a sealed table, each `attribute` in the `next` chain of a search's `sort` must start at an attribute the current schema declares or at record metadata such as `$updatedtime`; an undeclared one is rejected with a 404, as an undefined first `attribute` already is outside an `or` search. A `sort` inside a relationship's `select` is not checked. Before v5.5.0 it was not checked, so rows written before the table was sealed could still sort by such an attribute; declare it to keep doing so. An open table skips this schema check. A `next` with no `attribute`, an empty one, or an empty path is rejected on every table.
 
 For top-level collection queries, Harper uses an index to provide sort order, so a `sort` needs one of:
 

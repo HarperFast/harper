@@ -809,6 +809,30 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('releasing a failed concatenation reaches its first search however long the chain', async () => {
+			if (!observesSnapshot) return;
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			try {
+				const context = recordingContext();
+				const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
+				await searchOpening(opened);
+				let chain = opened.concat(Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {}));
+				for (let i = 0; i < 10_000; i++) chain = chain.concat([]);
+				const opening = searchOpening(chain);
+				await assert.rejects(opening, (error) => error.statusCode === 502);
+				releaseSearchOpening(opening);
+				await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
+					message: 'the opened text search kept its snapshot',
+				});
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
 		it('releasing a failed opening logs a release that rejects instead of letting it escape', async () => {
 			const failure = new Error('release failed');
 			const escaped = [];
@@ -1005,7 +1029,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 						.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
 						[Symbol.asyncIterator]();
 					close = () => iterator.return();
-					// the transaction keeps one read of its own
 					await waitFor(() => transaction.readTxnsUsed === 1, {
 						message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
 					});
@@ -1030,7 +1053,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					const iterator = new Granted(null, { transaction, user: { username: 'reader' } })
 						.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
 						[Symbol.asyncIterator]();
-					// the transaction holds a read of its own, beside the search's
 					await waitFor(() => transaction.readTxnsUsed > 1);
 					const held = transaction.readTxnsUsed;
 					await iterator.return();
@@ -1228,6 +1250,13 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				await iterator.return();
 				assert.ok(!(disposed && factories), `disposed ${disposed}, factories ${factories}`);
 				assert.ok(!(disposed && !result.done), 'read a row from a disposed result');
+			});
+
+			it('fails, and is disposed, when its factory returns no iterator', async () => {
+				factory = () => undefined;
+				const gated = await open();
+				await assert.rejects(fromAsync(gated), /returned no iterator/);
+				assert.equal(disposed, 1);
 			});
 
 			it('is disposed when its factory throws', async () => {

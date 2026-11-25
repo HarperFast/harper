@@ -961,14 +961,19 @@ const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
-/** A concatenation's opening, whose release reaches its operand too: an ordinary search there has no opening to release. */
+const JOINED_OPENING = Symbol('joinedOpening');
 function joinOpenings(opening: any, other: any, operand: any) {
 	const joined: any = other ? Promise.all([opening, other]) : opening.then(() => undefined);
 	joined.catch(() => {});
+	joined[JOINED_OPENING] = { from: opening, other, operand };
 	joined.release = () => {
-		cleanUp(() => opening.release?.());
-		if (other) cleanUp(() => other.release?.());
-		else closeUnread(operand);
+		let link = joined;
+		// walked, not recursed, so a long chain of concatenations releases every operand
+		for (let part; (part = link[JOINED_OPENING]); link = part.from) {
+			if (part.other) cleanUp(() => part.other.release?.());
+			else closeUnread(part.operand);
+		}
+		cleanUp(() => link.release?.());
 	};
 	return joined;
 }
@@ -8930,6 +8935,7 @@ export function makeTable(options): TableResourceClass {
 						acquiring = true;
 						try {
 							const iterator = openIterator(results, options);
+							if (!iterator) throw new TypeError('A search result returned no iterator');
 							handedOver = true;
 							// a reader that left during the factory can not close a cursor without return()
 							if (cancelled() && !iterator?.return && !held) closeUnread(results, false);
@@ -8991,7 +8997,6 @@ export function makeTable(options): TableResourceClass {
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;
 						gateClosed = true;
-						// after a failed factory only the result's own disposer runs, never the factory again
 						if (!handedOver && !acquiring) closeUnread(resolvedResults, !acquireFailed);
 					};
 					return propagateSearchAuthorization(gatedResults, authorization);
@@ -14267,7 +14272,8 @@ export function makeTable(options): TableResourceClass {
 		return false;
 	}
 	function assertSortAttribute(name: any): void {
-		if (name == null || (Array.isArray(name) && name.length === 0)) throw new ClientError('Sort requires an attribute');
+		if (name == null || name === '' || (Array.isArray(name) && name.length === 0))
+			throw new ClientError('Sort requires an attribute');
 		// an open table can store attributes it does not declare, and they order its records
 		if (!sealed) return;
 		const root = String(Array.isArray(name) ? name[0] : name);
