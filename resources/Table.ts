@@ -967,13 +967,19 @@ function joinOpenings(opening: any, other: any, operand: any) {
 	joined.catch(() => {});
 	joined[JOINED_OPENING] = { from: opening, other, operand };
 	joined.release = () => {
-		let link = joined;
-		// walked, not recursed, so a long chain of concatenations releases every operand
-		for (let part; (part = link[JOINED_OPENING]); link = part.from) {
-			if (part.other) cleanUp(() => part.other.release?.());
+		// walked, not recursed, so a concatenation of any depth, on either side, releases every operand
+		const pending = [joined];
+		while (pending.length) {
+			const opening = pending.pop();
+			const part = opening?.[JOINED_OPENING];
+			if (!part) {
+				cleanUp(() => opening?.release?.());
+				continue;
+			}
+			pending.push(part.from);
+			if (part.other) pending.push(part.other);
 			else closeUnread(part.operand);
 		}
-		cleanUp(() => link.release?.());
 	};
 	return joined;
 }
@@ -14272,7 +14278,7 @@ export function makeTable(options): TableResourceClass {
 		return false;
 	}
 	function assertSortAttribute(name: any): void {
-		if (name == null || name === '' || (Array.isArray(name) && name.length === 0))
+		if (name == null || name === '' || (Array.isArray(name) && (name.length === 0 || name.includes(''))))
 			throw new ClientError('Sort requires an attribute');
 		// an open table can store attributes it does not declare, and they order its records
 		if (!sealed) return;

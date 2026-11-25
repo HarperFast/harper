@@ -817,17 +817,21 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					: embed(input, opts)
 			);
 			try {
-				const context = recordingContext();
-				const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
-				await searchOpening(opened);
-				let chain = opened.concat(Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {}));
-				for (let i = 0; i < 10_000; i++) chain = chain.concat([]);
-				const opening = searchOpening(chain);
-				await assert.rejects(opening, (error) => error.statusCode === 502);
-				releaseSearchOpening(opening);
-				await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
-					message: 'the opened text search kept its snapshot',
-				});
+				const ready = Doc.search({ sort: { attribute: 'embedding', text: 'orchard fruit' } }, {});
+				for (const grow of [(chain) => chain.concat([]), (chain) => ready.map((row) => row).concat(chain)]) {
+					const context = recordingContext();
+					const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
+					await searchOpening(opened);
+					assert.ok(context.storeLinks().some((txn) => txn.readTxnsUsed > 0));
+					let chain = opened.concat(Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {}));
+					for (let i = 0; i < 10_000; i++) chain = grow(chain);
+					const opening = searchOpening(chain);
+					await assert.rejects(opening, (error) => error.statusCode === 502);
+					releaseSearchOpening(opening);
+					await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
+						message: 'the opened text search kept its snapshot',
+					});
+				}
 			} finally {
 				__setEmbedFnForTest(failingEmbed);
 			}

@@ -61,7 +61,7 @@ describe('A sort level after the first', () => {
 
 	it('is refused when it names no attribute', async () => {
 		for (const Table of [Sealed, Open]) {
-			for (const next of [{ descending: true }, { attribute: [] }, { attribute: '' }]) {
+			for (const next of [{ descending: true }, { attribute: [] }, { attribute: '' }, { attribute: [''] }]) {
 				await assert.rejects(
 					async () => fromAsync(Table.search({ sort: { attribute: 'tag', next } })),
 					/Sort requires an attribute/
