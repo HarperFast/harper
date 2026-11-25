@@ -104,6 +104,8 @@ describe('Write after ensureLoaded() on a caching table', function () {
 	});
 
 	it("keeps a write made after waiting on another request's fill", async function () {
+		// the source gate waits on the other request, so a regression that never starts it fails rather than hangs
+		this.timeout(30_000);
 		await Target.get('warm');
 		await settledValue('warm');
 		let releaseSource, otherRequest;
@@ -155,6 +157,21 @@ describe('Write after ensureLoaded() on a caching table', function () {
 			await Target.put('successive-written', { value: 8 }, context);
 		});
 		assert.equal(await settledValue('successive-written'), 8);
+	});
+
+	it('keeps a write over a refresh fill that loses to one committed after its first read', async function () {
+		await Target.put('successive-refresh', { value: 1 });
+		await Target.invalidate('successive-refresh');
+		const context = {};
+		await transaction(context, async () => {
+			await Target.get('warm', context);
+			assert.equal((await Target.get('successive-refresh')).value, 7);
+			assert.equal(await settledValue('successive-refresh'), 7);
+			sourceValue = 9;
+			assert.equal((await Target.get('successive-refresh', context)).value, 9);
+			await Target.put('successive-refresh', { value: 8 }, context);
+		});
+		assert.equal(await settledValue('successive-refresh'), 8);
 	});
 
 	it('still caches a fill made by a plain read', async function () {

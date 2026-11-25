@@ -14635,6 +14635,16 @@ export function makeTable(options): TableResourceClass {
 		if (handle && !link.timestamp && reservedLocalKey(handle) === undefined) return handle;
 	}
 
+	// The requester's snapshot can predate a fill committed since, which a first fill capped below it would lose to.
+	function committedVersionReaches(id: Id, version: number): boolean {
+		try {
+			return primaryStore.getEntry(id)?.version >= version;
+		} catch {
+			// a store closing under the source call keeps the cap, which still serves the source's answer
+			return false;
+		}
+	}
+
 	// A fill handed to a transaction from outside its snapshot can be versioned above its clock; a clock no write has
 	// reserved yet moves past it, so the transaction's own later write still supersedes the fill. A read never mints
 	// the key: the write's reservation issues and covers it.
@@ -15486,14 +15496,12 @@ export function makeTable(options): TableResourceClass {
 					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
-					// The requester's snapshot can predate a fill committed since; a first fill capped below that one would be
-					// discarded, so it goes uncapped when the requester's clock can still move past it.
 					if (
 						sourceVersion > versionCap &&
 						updatedRecord &&
 						existingVersion == null &&
 						unreservedClockHandle(context) &&
-						primaryStore.getEntry(id)?.version >= versionCap
+						committedVersionReaches(id, versionCap)
 					)
 						versionCap = undefined;
 					if (sourceVersion > versionCap) sourceVersion = versionCap;
