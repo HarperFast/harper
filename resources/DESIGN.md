@@ -119,7 +119,7 @@ Same-thread waiters reuse only a committed, kept, plain-data fill (`isSharableRe
 
 ## getFromSource() keeps source versions separate from fill ordering
 
-A source's `lastModified` caps at local time: the version is the last-writer-wins token. A first fill replaces a raced record only with a strictly greater version; executing-node tie-breaks let replicas diverge at one version. A non-advancing RocksDB version carries `VERSION_REUSED`; renumbering needs a migration (`caching-rocks-database.test.js`). On LMDB one `ifVersion` guards all fill puts (`sourceFillConditionalWrite.test.js`).
+A source's `lastModified` caps at local time: the version is the last-writer-wins token. A first fill replaces a raced record only with a strictly greater version; executing-node tie-breaks let replicas diverge at one version. A non-advancing version carries `VERSION_REUSED` on either engine; renumbering needs a migration (`caching-rocks-database.test.js`). On LMDB an older write stores its own version, so the version can step back, and the next advancing write clears the flag even when it steps forward onto a version an earlier state held: a reader stamped with that version then misses the change. That needs a step back and a later write at exactly the earlier version, and is left open rather than spending a record flag on it (harper#4483). On LMDB one `ifVersion` guards all fill puts (`sourceFillConditionalWrite.test.js`).
 
 ## getFromSource() record locks outlive neither their handle nor a close
 
