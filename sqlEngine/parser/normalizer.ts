@@ -66,8 +66,8 @@ const SORT_KEYS: ReadonlySet<string> = new Set(['expression', 'direction']);
 const CALL_KEYS: ReadonlySet<string> = new Set(['aggregatorid', 'funcid', 'args', 'expression', 'distinct', 'as']);
 
 function assertSupportedKeys(node: AlaSqlNode, supported: ReadonlySet<string>, what: string): void {
-	for (const key in node) {
-		if (!Object.hasOwn(node, key) || supported.has(key) || node[key] == null) continue;
+	for (const key of Object.keys(node)) {
+		if (supported.has(key) || node[key] == null) continue;
 		throw new EngineUnsupportedError(`${what} ${key} is not supported`, node);
 	}
 }
@@ -318,11 +318,10 @@ function aggregateLabel(expr: ExprNode): string | undefined {
 
 function normalizeSort(node: AlaSqlNode): SortNode {
 	assertSupportedKeys(node, SORT_KEYS, 'ORDER BY');
-	const expr = normalizeExpr(node.expression as AlaSqlNode);
-	if (expr.kind === 'literal' && typeof expr.value === 'number') {
+	if (node.expression instanceof NumValue) {
 		throw new EngineUnsupportedError('ORDER BY a column position is not supported', node);
 	}
-	return { expr, descending: node.direction === 'DESC' };
+	return { expr: normalizeExpr(node.expression as AlaSqlNode), descending: node.direction === 'DESC' };
 }
 
 /** Largest row count the legacy engine handles before its 32-bit coercion diverges. */
@@ -377,6 +376,12 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 
 	if (node.aggregatorid != null && node.expression != null) {
 		assertSupportedKeys(node, CALL_KEYS, 'aggregate');
+		if (Array.isArray(node.args) && node.args.length > 1) {
+			throw new EngineUnsupportedError(
+				`${String(node.funcid ?? node.aggregatorid)} with several arguments is not supported`,
+				node
+			);
+		}
 		// AlaSQL uses aggregatorid='REDUCE' with funcid set for user-defined aggregates
 		// (e.g. MEDIAN). Use funcid as the real name when aggregatorid is REDUCE.
 		const rawName =

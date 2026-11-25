@@ -1,11 +1,5 @@
 'use strict';
 
-/**
- * The v2 normalizer models a fixed set of AlaSQL constructs. Anything else it must refuse with
- * EngineUnsupportedError so `sql.engine: auto` runs the statement on the legacy engine, rather than
- * executing it in v2 with the construct silently dropped.
- */
-
 const assert = require('node:assert');
 const alasql = require('alasql');
 
@@ -55,6 +49,8 @@ describe('sqlEngine normalizer refuses constructs it does not model', () => {
 		['select', 'SELECT id FROM dev.t ORDER BY a COLLATE NOCASE', 'nocase'],
 		['select', 'SELECT id FROM dev.t ORDER BY a COLLATE NOCASE DESC', 'nocase'],
 		['select', 'SELECT id FROM dev.t ORDER BY a ASC NULLS LAST', 'nullsOrder'],
+		['select', 'SELECT id FROM dev.t ORDER BY a ASC NULLS FIRST', 'nullsOrder'],
+		['select', 'SELECT id FROM dev.t ORDER BY a DESC NULLS FIRST', 'nullsOrder'],
 		['select', 'SELECT id, a FROM dev.t ORDER BY 2', 'column position'],
 		['select', 'SELECT SUM(a) OVER (PARTITION BY b) FROM dev.t', 'over'],
 		['select', 'SELECT COUNT(*) OVER () FROM dev.t', 'over'],
@@ -63,6 +59,9 @@ describe('sqlEngine normalizer refuses constructs it does not model', () => {
 		['select', "SELECT GROUP_CONCAT(a ORDER BY a DESC SEPARATOR '-') FROM dev.t", 'order'],
 		['select', 'SELECT NEW Foo(1) FROM dev.t', 'newid'],
 		['select', 'SELECT MAX(a, b) FROM dev.t', 'arguments'],
+		['select', 'SELECT MIN(a, b) FROM dev.t', 'arguments'],
+		['select', 'SELECT PROD(a, b) FROM dev.t', 'arguments'],
+		['select', 'SELECT MEDIAN(a, b) FROM dev.t', 'arguments'],
 		['select', 'SELECT * FROM dev.t NATURAL JOIN dev.u', 'natural'],
 		['select', 'SELECT * FROM dev.t JOIN (SELECT * FROM dev.u) x ON x.a = t.a', 'select'],
 		['delete', 'DELETE FROM dev.t WHERE id = 1 AND EXISTS (SELECT id FROM dev.u WHERE id = 99)', 'exists'],
@@ -100,6 +99,7 @@ describe('sqlEngine normalizer refuses constructs it does not model', () => {
 		['select', 'SELECT id AS i, a + 1 AS b, a || b AS c FROM dev.t AS x WHERE (a = 1) OR NOT b = 2'],
 		['select', 'SELECT id FROM dev.t ORDER BY a ASC, b DESC, c'],
 		['select', 'SELECT id FROM dev.t ORDER BY a + b LIMIT 3 OFFSET 1'],
+		['select', "SELECT id, a FROM dev.t ORDER BY (2), '2'"],
 		['select', 'SELECT COUNT(*), COUNT(a), COUNT(DISTINCT a), SUM(a), AVG(a), MIN(a), MAX(a) FROM dev.t'],
 		['select', 'SELECT a, COUNT(*) AS n FROM dev.t GROUP BY a HAVING COUNT(*) > 1 ORDER BY n DESC'],
 		['select', 'SELECT LOWER(a), UPPER(b), LENGTH(c) FROM dev.t'],
@@ -215,7 +215,7 @@ describe('sqlEngine auto falls back to legacy for constructs v2 does not model',
 	// Every statement carries an indexed predicate: v2 answers only queries it can drive from an index, and one
 	// that cannot falls back to legacy whatever the construct, which would make the comparison vacuous.
 	const INDEXED = 'id > 0';
-	const ORDERED = [
+	const LEGACY_RUNS = [
 		`SELECT DISTINCT ON (grp) grp, name FROM ${TABLE} WHERE ${INDEXED} ORDER BY grp, id`,
 		`SELECT VALUE name FROM ${TABLE} WHERE ${INDEXED} ORDER BY id`,
 		`SELECT ROW id, name FROM ${TABLE} WHERE ${INDEXED} ORDER BY id`,
@@ -224,13 +224,18 @@ describe('sqlEngine auto falls back to legacy for constructs v2 does not model',
 		`SELECT id, name FROM ${TABLE} WHERE ${INDEXED} ORDER BY name COLLATE NOCASE DESC, id`,
 		`SELECT id, n FROM ${TABLE} WHERE ${INDEXED} ORDER BY 2 DESC`,
 		`SELECT id, n FROM ${TABLE} WHERE ${INDEXED} ORDER BY n ASC NULLS LAST`,
+		`SELECT id, n FROM ${TABLE} WHERE ${INDEXED} ORDER BY n DESC NULLS FIRST`,
 		`SELECT id, SUM(n) OVER (PARTITION BY grp) AS s FROM ${TABLE} WHERE ${INDEXED} ORDER BY id`,
 		`SELECT id, COUNT(*) OVER () AS c FROM ${TABLE} WHERE ${INDEXED} ORDER BY id`,
 		`SELECT id, LOWER(name) OVER (ORDER BY id) AS l FROM ${TABLE} WHERE ${INDEXED} ORDER BY id`,
 		`SELECT MAX(n, id) AS m FROM ${TABLE} WHERE ${INDEXED}`,
+		`SELECT MIN(n, id) AS m FROM ${TABLE} WHERE ${INDEXED}`,
+		`SELECT id FROM ${TABLE} WHERE id = 1 AND \`\`false\`\``,
+		`SELECT id FROM ${TABLE} WHERE id = 1 AND \`\`true\`\``,
+	];
+	const LEGACY_FAILS = [
 		`SELECT id FROM ${TABLE} WHERE id = 1 AND EXISTS (SELECT id FROM ${TABLE} WHERE n > 1000)`,
 		`SELECT id FROM ${TABLE} WHERE id = 1 AND NOT EXISTS (SELECT id FROM ${TABLE} WHERE n = 20)`,
-		`SELECT id FROM ${TABLE} WHERE id = 1 AND \`\` return false \`\``,
 		`SELECT id FROM ${TABLE} WHERE id IN (SELECT id FROM ${TABLE} WHERE n > 20) ORDER BY id`,
 		`SELECT id FROM ${TABLE} WHERE n <= 30 AND ${INDEXED} UNION SELECT id FROM ${TABLE} WHERE n >= 50`,
 		`SELECT id FROM ${TABLE} WHERE n <= 30 AND ${INDEXED} UNION ALL SELECT id FROM ${TABLE} WHERE n <= 20`,
@@ -238,13 +243,19 @@ describe('sqlEngine auto falls back to legacy for constructs v2 does not model',
 		`SELECT id FROM ${TABLE} WHERE ${INDEXED} INTERSECT SELECT id FROM ${TABLE} WHERE n >= 30`,
 	];
 
-	for (const text of ORDERED) {
-		it(`auto returns what legacy returns for ${text}`, async () => {
-			const legacy = await outcome('legacy', text);
-			assert.deepStrictEqual(await outcome('auto', text), legacy);
-			const v2 = await outcome('new', text);
-			assert.ok(v2.error?.includes('unsupported query'), `new must refuse: ${JSON.stringify(v2).slice(0, 200)}`);
-		});
+	for (const [cases, legacyRuns] of [
+		[LEGACY_RUNS, true],
+		[LEGACY_FAILS, false],
+	]) {
+		for (const text of cases) {
+			it(`auto does what legacy does for ${text}`, async () => {
+				const legacy = await outcome('legacy', text);
+				assert.strictEqual(legacy.error === undefined, legacyRuns, JSON.stringify(legacy).slice(0, 200));
+				assert.deepStrictEqual(await outcome('auto', text), legacy);
+				const v2 = await outcome('new', text);
+				assert.ok(v2.error?.includes('unsupported query'), `new must refuse: ${JSON.stringify(v2).slice(0, 200)}`);
+			});
+		}
 	}
 
 	it('ORDER BY 2 sorts by the second selected column', async () => {
@@ -258,11 +269,10 @@ describe('sqlEngine auto falls back to legacy for constructs v2 does not model',
 	});
 
 	describe('DELETE and UPDATE with a predicate v2 does not model', () => {
-		// Legacy cannot run a subquery or JavaScript predicate in a write: it fails and writes nothing. Before the
-		// normalizer refused them, auto read the node as a constant that is always true.
 		const NO_ROWS = `EXISTS (SELECT id FROM ${TABLE} WHERE n > 1000)`;
 		const ONE_ROW = `EXISTS (SELECT id FROM ${TABLE} WHERE n = 20)`;
-		const FALSE_JS = '`` return false ``';
+		const FALSE_JS = '``false``';
+		const TRUE_JS = '``true``';
 		const UNCHANGED = [
 			`DELETE FROM ${TABLE} WHERE id = 1 AND ${NO_ROWS}`,
 			`DELETE FROM ${TABLE} WHERE id = 1 AND ${FALSE_JS}`,
@@ -272,7 +282,9 @@ describe('sqlEngine auto falls back to legacy for constructs v2 does not model',
 		const OTHERS = [
 			`DELETE FROM ${TABLE} WHERE id = 1 AND ${ONE_ROW}`,
 			`DELETE FROM ${TABLE} WHERE id = 1 OR ${NO_ROWS}`,
+			`DELETE FROM ${TABLE} WHERE id = 1 AND ${TRUE_JS}`,
 			`UPDATE ${TABLE} SET tag = 'hit' WHERE id = 1 AND ${ONE_ROW}`,
+			`UPDATE ${TABLE} SET tag = 'hit' WHERE id = 1 AND ${TRUE_JS}`,
 			`UPDATE ${TABLE} SET tag = 'hit' WHERE id = 1 AND id IN (SELECT id FROM ${TABLE} WHERE n = 20)`,
 		];
 		const seeded = SEED.map(({ id, tag }) => ({ id, tag }));
@@ -293,6 +305,24 @@ describe('sqlEngine auto falls back to legacy for constructs v2 does not model',
 				assert.deepStrictEqual(await stored(), seeded);
 			});
 		}
+
+		it('a true JavaScript predicate changes exactly the target and a false one nothing', async () => {
+			await sql('auto', `DELETE FROM ${TABLE} WHERE id = 1 AND ${FALSE_JS}`);
+			assert.deepStrictEqual(await stored(), seeded);
+			const deleted = await sql('auto', `DELETE FROM ${TABLE} WHERE id = 1 AND ${TRUE_JS}`);
+			assert.deepStrictEqual(deleted.deleted_hashes, [1]);
+			assert.deepStrictEqual(
+				(await stored()).map((row) => row.id),
+				[2, 3, 4, 5]
+			);
+			await sql('auto', `UPDATE ${TABLE} SET tag = 'hit' WHERE id = 2 AND ${FALSE_JS}`);
+			const updated = await sql('auto', `UPDATE ${TABLE} SET tag = 'hit' WHERE id = 2 AND ${TRUE_JS}`);
+			assert.deepStrictEqual(updated.update_hashes, [2]);
+			assert.deepStrictEqual(
+				(await stored()).map((row) => row.tag),
+				['hit', 'seed', 'seed', 'seed']
+			);
+		});
 	});
 
 	describe('what v2 still runs', () => {
@@ -300,6 +330,7 @@ describe('sqlEngine auto falls back to legacy for constructs v2 does not model',
 			`SELECT ALL id FROM ${TABLE} WHERE ${INDEXED} ORDER BY id`,
 			`SELECT id, name FROM ${TABLE} WHERE id = 1 AND name = 'b' AND n >= 0 AND tag IS NOT NULL`,
 			`SELECT id FROM ${TABLE} WHERE ${INDEXED} ORDER BY name DESC, id`,
+			`SELECT id, n FROM ${TABLE} WHERE ${INDEXED} ORDER BY (2), id`,
 			`SELECT COUNT(name) AS c, MAX(n) AS m FROM ${TABLE} WHERE ${INDEXED}`,
 			`SELECT grp, SUM(n) AS s FROM ${TABLE} WHERE ${INDEXED} GROUP BY grp HAVING SUM(n) > 30`,
 			`UPDATE ${TABLE} SET tag = 'hit' WHERE id = 1`,

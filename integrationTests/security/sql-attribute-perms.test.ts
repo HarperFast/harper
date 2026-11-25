@@ -138,7 +138,6 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 			});
 
 			test('DISTINCT ON a read-denied column is refused; a readable one runs where the engine supports it', async () => {
-				// The column decides how many rows come back, so it leaks its distinct values even when never selected.
 				const denied = `SELECT DISTINCT ON (ssn) label FROM data.ColPermLeft WHERE id = 'l1'`;
 				assertRefused(await asReader(denied), denied);
 				const permitted = `SELECT DISTINCT ON (label) label FROM data.ColPermLeft WHERE id = 'l1'`;

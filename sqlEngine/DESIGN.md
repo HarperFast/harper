@@ -30,8 +30,8 @@ The value `runUpdate` (`executor/runMutation.ts`) writes to a column is that col
 
 - `assertSupportedKeys` refuses any own property that holds a value and is not in the node's set (`SELECT_KEYS`, `INSERT_KEYS`, `UPDATE_KEYS`, `DELETE_KEYS`, `TABLE_KEYS`, `JOIN_KEYS`, `SORT_KEYS`, `CALL_KEYS`), so a clause AlaSQL adds later falls back instead of being dropped. A set grows only with the IR field that models the property.
 - `isLiteralNode` is by class (`NumValue`, `StringValue`, `LogicValue`, `NullValue`). A `value` property is not evidence of a literal: `ExistsValue`, `JavaScript`, `Json` and `ArrayValue` carry one.
-- An allowed key can still lose meaning, so two are refused by value: a registered aggregate called with more than one argument (legacy reads `MAX(a, b)` per row) and a numeric ORDER BY key (legacy reads it as a column position).
+- An allowed key can still lose meaning, so two are refused by value: an aggregate called with more than one argument (legacy reads `MAX(a, b)` per row; AlaSQL keeps one argument of a registered `PROD(a, b)` and the extras in `args`) and a bare numeric ORDER BY key (legacy reads it as a column position; `(2)` is a constant in both engines).
 - A refused `DISTINCT ON` runs on legacy, which reads its columns, so `getSelectAttributes` records them for the permission check.
-- Not covered: syntax AlaSQL changes at parse time (`ORDER BY a NULLS FIRST` parses as a sort on a column named `first`), and expression nodes no earlier branch matches, which reach the final `could not normalize expression` throw.
+- Not covered: syntax AlaSQL changes at parse time (`ORDER BY a NULLS FIRST` parses as a sort on a column named `first`), `Column` and `Op` nodes, which are not key-checked, and expression nodes no earlier branch matches, which reach the final `could not normalize expression` throw.
 
 Enforced by `unitTests/sqlEngine/unsupportedConstructs.test.js` (every refusal, every supported shape, and `legacy` against `auto` on a real table) and `unitTests/sqlTranslator/column-attribution.test.js`.
