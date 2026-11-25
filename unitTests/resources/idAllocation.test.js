@@ -358,20 +358,34 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert(readAllocation(store).end > initial.end, 'ids passed the stored end without extending it');
 	});
 
-	it('stores the range again after the table is cleared', async function () {
+	it('keeps the id range across a clear', async function () {
 		const { IdTable } = await twoShapeTable();
 		const store = IdTable.primaryStore;
 		await IdTable.post({ a: 'before the clear' });
+		const kept = readAllocation(store);
 		await IdTable.clear();
-		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'precondition: the clear removed the range');
+		assert.deepStrictEqual(readAllocation(store), kept, 'the clear did not keep the range');
 		for (let i = 0; i < 0x400; i++) await IdTable.post({ a: `after${i}` });
 		assertReadableAllocation(store);
+		assert.strictEqual(readAllocation(store).start, kept.start, 'the range was replaced');
 		let count = 0;
 		for await (const _record of IdTable.search({})) count++;
 		assert.strictEqual(count, 0x400, 'rows were lost or overwritten');
 	});
 
-	it('continues the live counter in a thread whose first id follows a clear', async function () {
+	it('stores a missing range again from the live counter', async function () {
+		const { IdTable } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		await IdTable.post({ a: 'before the removal' });
+		store.removeSync(ID_ALLOCATION);
+		for (let i = 0; i < 0x400; i++) await IdTable.post({ a: `after${i}` });
+		assertReadableAllocation(store);
+		let count = 0;
+		for await (const _record of IdTable.search({})) count++;
+		assert.strictEqual(count, 0x403, 'rows were lost or overwritten');
+	});
+
+	it('continues the live counter in a thread whose first id finds no stored range', async function () {
 		const probe = await twoShapeTable();
 		probe.IdTable.getNewId();
 		const { nodeName, pid } = readAllocation(probe.IdTable.primaryStore);
@@ -380,7 +394,7 @@ describe('Auto-increment id allocation as the third record structure', function 
 		// low in the id space, so a new random range almost never covers the counter
 		writeAllocation(store, { start: 1000, end: 1000 + 0x400, nodeName, pid });
 		for (let i = 0; i < 10; i++) await IdTable.post({ a: `before${i}` });
-		await IdTable.clear();
+		store.removeSync(ID_ALLOCATION);
 		const liveId = Number(sharedCounter(store)[0]);
 		const thread = new Worker(__dirname + '/fixtures/idAllocationThread.js', { workerData: { definition } });
 		try {

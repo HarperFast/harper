@@ -2924,26 +2924,40 @@ export function makeTable(options): TableResourceClass {
 		if (allocation?.[METADATA] !== undefined) allocation = allocation.value;
 		return isIdAllocation(allocation) ? allocation : undefined;
 	}
+	function writeIdAllocation(allocation, transaction?: RocksTransaction) {
+		if (isRocksDB) {
+			setNextEncoding(transaction.getTimestamp(), LOCAL_ONLY);
+			try {
+				primaryStore.putSync(ID_ALLOCATION_KEY, allocation, { transaction });
+			} finally {
+				// a put that throws before its encode would leave the header for the next write on any store (harper#1307)
+				clearNextEncoding();
+			}
+		} else primaryStore.put(ID_ALLOCATION_KEY, allocation, Date.now());
+	}
 	function replaceIdAllocation(expectedAllocation, nextAllocation) {
 		const storedAllocation = primaryStore.transactionSync(
 			(transaction) => {
 				const storedAllocation = readIdAllocation(transaction);
 				if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
-				if (isRocksDB) {
-					setNextEncoding(transaction.getTimestamp(), LOCAL_ONLY);
-					try {
-						primaryStore.putSync(ID_ALLOCATION_KEY, nextAllocation, { transaction });
-					} finally {
-						// a put that throws before its encode would leave the header for the next write on any store (harper#1307)
-						clearNextEncoding();
-					}
-				} else primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, Date.now());
+				writeIdAllocation(nextAllocation, transaction);
 				return nextAllocation;
 			},
 			isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
 		);
 		if (!storedAllocation) throw new Error(`Id range allocation for table ${tableName} was aborted`);
 		return storedAllocation;
+	}
+	// Threads keep issuing from bounds the cleared range stored, so a lower end stored after the clear would let a
+	// restart reissue their ids.
+	function keepIdAllocation(keptAllocation) {
+		primaryStore.transactionSync(
+			(transaction) => {
+				if (!(readIdAllocation(transaction)?.end >= keptAllocation.end)) writeIdAllocation(keptAllocation, transaction);
+				return true;
+			},
+			isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
+		);
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
@@ -4335,7 +4349,7 @@ export function makeTable(options): TableResourceClass {
 					const proposedEnd = newestId + (type === 'Int' ? 0x3ff : 0x3fffff);
 					try {
 						for (const key of primaryStore.getKeys({
-							start: newestId + 1,
+							start: newestId,
 							end: idAfter,
 							limit: 1,
 							transaction: readTxn,
@@ -12992,7 +13006,10 @@ export function makeTable(options): TableResourceClass {
 						.finally(rebuildDerivedIndexes)
 						.finally(releaseFullTextClearFence);
 				try {
-					promises.push(primaryStore.clear());
+					const keptIdAllocation = readIdAllocation();
+					promises.push(
+						Promise.resolve(primaryStore.clear()).then(() => keptIdAllocation && keepIdAllocation(keptIdAllocation))
+					);
 
 					for (const key in indices) {
 						const index = indices[key];
