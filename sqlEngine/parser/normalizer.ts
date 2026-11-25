@@ -63,7 +63,8 @@ const DELETE_KEYS: ReadonlySet<string> = new Set(['table', 'where']);
 const TABLE_KEYS: ReadonlySet<string> = new Set(['databaseid', 'tableid', 'as']);
 const JOIN_KEYS: ReadonlySet<string> = new Set(['joinmode', 'table', 'as', 'on', 'using']);
 const SORT_KEYS: ReadonlySet<string> = new Set(['expression', 'direction']);
-const CALL_KEYS: ReadonlySet<string> = new Set(['aggregatorid', 'funcid', 'args', 'expression', 'distinct', 'as']);
+const AGGREGATE_KEYS: ReadonlySet<string> = new Set(['aggregatorid', 'funcid', 'args', 'expression', 'distinct', 'as']);
+const FUNCTION_KEYS: ReadonlySet<string> = new Set(['funcid', 'args', 'distinct', 'as']);
 
 function assertSupportedKeys(node: AlaSqlNode, supported: ReadonlySet<string>, what: string): void {
 	for (const key of Object.keys(node)) {
@@ -375,7 +376,7 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 	}
 
 	if (node.aggregatorid != null && node.expression != null) {
-		assertSupportedKeys(node, CALL_KEYS, 'aggregate');
+		assertSupportedKeys(node, AGGREGATE_KEYS, 'aggregate');
 		if (Array.isArray(node.args) && node.args.length > 1) {
 			throw new EngineUnsupportedError(
 				`${String(node.funcid ?? node.aggregatorid)} with several arguments is not supported`,
@@ -401,7 +402,7 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 	}
 
 	if (node.funcid != null) {
-		assertSupportedKeys(node, CALL_KEYS, 'function call');
+		assertSupportedKeys(node, FUNCTION_KEYS, 'function call');
 		const fnName = String(node.funcid).toLowerCase();
 		const args = Array.isArray(node.args) ? (node.args as AlaSqlNode[]).map(normalizeExpr) : [];
 		// If this funcCall is a registered aggregate (e.g. PROD, MEAN that AlaSQL
@@ -432,7 +433,7 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 		};
 	}
 
-	if (isLiteralNode(node)) {
+	if (node.op == null && isLiteralNode(node)) {
 		const val = node.value;
 		const sqlType =
 			val === null

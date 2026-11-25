@@ -1,5 +1,15 @@
 # SQL engine v2
 
+`normalizeStatement` (`parser/normalizer.ts`) fails closed: it either represents every property it reads from an AlaSQL node in the IR or throws `EngineUnsupportedError`, which is the only error `router.ts` answers with a legacy run. AlaSQL's AST is a bag of optional properties, so a property the normalizer does not read changes the statement's meaning without any error: `DISTINCT ON`, `OVER`, `SELECT VALUE`, `COLLATE NOCASE` and `UNION` ran on v2 without the clause, and an `EXISTS` was read as the literal `true`, which made `DELETE ... WHERE id = 1 AND EXISTS (<no rows>)` delete row 1.
+
+- `assertSupportedKeys` refuses any own property that holds a value and is not in the node's set (`SELECT_KEYS`, `INSERT_KEYS`, `UPDATE_KEYS`, `DELETE_KEYS`, `TABLE_KEYS`, `JOIN_KEYS`, `SORT_KEYS`, `AGGREGATE_KEYS`, `FUNCTION_KEYS`), so a clause AlaSQL adds later falls back instead of being dropped. A set grows only with the IR field that models the property.
+- `isLiteralNode` is by class (`NumValue`, `StringValue`, `LogicValue`, `NullValue`). A `value` property is not evidence of a literal: `ExistsValue`, `JavaScript`, `Json` and `ArrayValue` carry one.
+- An allowed key can still lose meaning, so two are refused by value: an aggregate called with more than one argument (legacy reads `MAX(a, b)` per row; AlaSQL keeps one argument of a registered `PROD(a, b)` and the extras in `args`) and a bare numeric ORDER BY key (legacy reads it as a column position; `(2)` is a constant in both engines).
+- A refused `DISTINCT ON` runs on legacy, which reads its columns, so `getSelectAttributes` records them for the permission check.
+- Not covered: syntax AlaSQL changes at parse time (`ORDER BY a NULLS FIRST` parses as a sort on a column named `first`), `Column` and `Op` nodes, which are not key-checked, and expression nodes no earlier branch matches, which reach the final `could not normalize expression` throw.
+
+Enforced by `unitTests/sqlEngine/unsupportedConstructs.test.js` (every refusal, every supported shape, and `legacy` against `auto` on a real table) and `unitTests/sqlTranslator/column-attribution.test.js`.
+
 ## LIKE
 
 `tokenizeLike` (`expressions/like.ts`) is the only definition of a v2 LIKE pattern: literal characters, `_` (one character), `%` (any run); the `ESCAPE` character, checked before the wildcards, makes the next character literal. Every consumer calls it: `normalizeLike` (`parser/normalizer.ts`) to validate, `compileExpr` to build the row matcher, and `leafToCondition` (`optimizer/whereToConditions.ts`) to build index conditions. A pushed index condition replaces the row filter with no re-check, so a second reading of the pattern selects or deletes the wrong rows: before [#3878](https://github.com/HarperFast/harper/issues/3878), the index rewrite read `'t0!%' ESCAPE '!'` as `starts_with 't0!'`.
@@ -23,15 +33,3 @@ The value `runUpdate` (`executor/runMutation.ts`) writes to a column is that col
 - `compare` returns NaN when two values have no order (a NaN on either side); `<`, `<=`, `>`, `>=` and BETWEEN return NULL for it. FALSE would break the normalizer's inversions (`normalizePredicate` rewrites `NOT (a < b)` as `a >= b`) against an expression it leaves alone, such as a projection.
 - A blank string is no number (`stringToNumber`), and a string with no numeric reading sorts after a number or boolean. That is the order `Table.search` applies to indexed and unindexed attributes alike (null < booleans < numbers < strings), so a range selects the same such rows whether the index answers it or the residual does. Booleans (the residual reads 0 and 1), numeric strings (`'0'` reads as 0) and a stored NaN (the index sorts it above numbers) still differ between the two. A Date against a string keeps the text order ([#4151](https://github.com/HarperFast/harper/issues/4151)): ordering an ISO date string after every Date would make `d < '2025-01-01'` select every row.
 - `neverEqual`: a NULL or NaN join key matches nothing on any strategy. `Table.search` matches `equals: NaN` to NaN rows, so the indexNL probe skips such a key.
-
-## Fails closed
-
-`normalizeStatement` (`parser/normalizer.ts`) either represents every property it reads from an AlaSQL node in the IR or throws `EngineUnsupportedError`, which is the only error `router.ts` answers with a legacy run. AlaSQL's AST is a bag of optional properties, so a property the normalizer does not read changes the statement's meaning without any error: `DISTINCT ON`, `OVER`, `SELECT VALUE`, `COLLATE NOCASE` and `UNION` ran on v2 without the clause, and an `EXISTS` was read as the literal `true`, which made `DELETE ... WHERE id = 1 AND EXISTS (<no rows>)` delete row 1.
-
-- `assertSupportedKeys` refuses any own property that holds a value and is not in the node's set (`SELECT_KEYS`, `INSERT_KEYS`, `UPDATE_KEYS`, `DELETE_KEYS`, `TABLE_KEYS`, `JOIN_KEYS`, `SORT_KEYS`, `CALL_KEYS`), so a clause AlaSQL adds later falls back instead of being dropped. A set grows only with the IR field that models the property.
-- `isLiteralNode` is by class (`NumValue`, `StringValue`, `LogicValue`, `NullValue`). A `value` property is not evidence of a literal: `ExistsValue`, `JavaScript`, `Json` and `ArrayValue` carry one.
-- An allowed key can still lose meaning, so two are refused by value: an aggregate called with more than one argument (legacy reads `MAX(a, b)` per row; AlaSQL keeps one argument of a registered `PROD(a, b)` and the extras in `args`) and a bare numeric ORDER BY key (legacy reads it as a column position; `(2)` is a constant in both engines).
-- A refused `DISTINCT ON` runs on legacy, which reads its columns, so `getSelectAttributes` records them for the permission check.
-- Not covered: syntax AlaSQL changes at parse time (`ORDER BY a NULLS FIRST` parses as a sort on a column named `first`), `Column` and `Op` nodes, which are not key-checked, and expression nodes no earlier branch matches, which reach the final `could not normalize expression` throw.
-
-Enforced by `unitTests/sqlEngine/unsupportedConstructs.test.js` (every refusal, every supported shape, and `legacy` against `auto` on a real table) and `unitTests/sqlTranslator/column-attribution.test.js`.
