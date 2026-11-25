@@ -2911,9 +2911,16 @@ export function makeTable(options): TableResourceClass {
 			? (primaryStore as RocksDatabase).getBinarySync(ID_ALLOCATION_KEY, transaction && { transaction })
 			: primaryStore.getBinary(ID_ALLOCATION_KEY);
 		if (stored == null) return undefined;
-		// a range written before #1762 that starts with structure id 0x42 has no header behind that byte
-		const legacy = isRocksDB && stored[0] === LEGACY_HEADER_COLLISION && stored[8] !== ACTION_32_BIT;
-		let allocation = primaryStore.encoder.decode(stored, legacy ? { noMetadata: true } : undefined);
+		// a range written before #1762 that starts with structure id 0x42 has no header behind that byte, and its
+		// byte 8 is range data, so either reading can be the right one
+		const ambiguous = isRocksDB && stored[0] === LEGACY_HEADER_COLLISION;
+		const legacyFirst = ambiguous && stored[8] !== ACTION_32_BIT;
+		return (
+			decodeIdAllocation(stored, legacyFirst) ?? (ambiguous ? decodeIdAllocation(stored, !legacyFirst) : undefined)
+		);
+	}
+	function decodeIdAllocation(stored: Uint8Array, noMetadata: boolean) {
+		let allocation = primaryStore.encoder.decode(stored, noMetadata ? { noMetadata } : undefined);
 		if (allocation?.[METADATA] !== undefined) allocation = allocation.value;
 		return isIdAllocation(allocation) ? allocation : undefined;
 	}
@@ -4277,37 +4284,42 @@ export function makeTable(options): TableResourceClass {
 			if (type === 'String' || type === 'ID') return super.getNewId();
 			if (isReadOnlyMode()) throw readOnlyModeError();
 			if (!idIncrementer) {
-				// if there is no id incrementer yet, we get or create one
-				let idAllocation = readIdAllocation();
-				let lastKey;
-				if (
-					idAllocation &&
-					idAllocation.nodeName === server.hostname &&
-					(!hasOtherProcesses(primaryStore) || idAllocation.pid === process.pid)
-				) {
-					// the database has an existing id allocation that we can continue from
-					const startingId = idAllocation.start;
-					const endingId = idAllocation.end;
-					lastKey = startingId;
-					// once it is loaded, we need to find the last key in the allocated range and start from there
-					for (const key of primaryStore.getKeys({ start: endingId, end: startingId, limit: 1, reverse: true })) {
-						lastKey = key;
-					}
-				} else {
-					// we need to create a new id allocation
-					idAllocation = createNewAllocation(idAllocation);
-					lastKey = idAllocation.start;
-				}
-				// all threads will use a shared buffer to atomically increment the id
-				// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
-				// and initialize it with the starting id
-				idIncrementer = new BigInt64Array([BigInt(lastKey) + 1n]) as BigInt64ArrayAndMaxSafeId;
-				// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
-				idIncrementer = new BigInt64Array(
-					primaryStore.getUserSharedBuffer('id', idIncrementer.buffer)
+				// all threads will use a shared buffer to atomically increment the id; it holds zero until one seeds it
+				const counter = new BigInt64Array(
+					primaryStore.getUserSharedBuffer('id', new ArrayBuffer(8))
 				) as BigInt64ArrayAndMaxSafeId;
-				// and we set the maximum safe id to the end of the allocated range before we check for conflicting ids again
-				idIncrementer.maxSafeId = idAllocation.end;
+				let idAllocation = readIdAllocation();
+				let liveId = Atomics.load(counter, 0);
+				if (liveId === 0n) {
+					let lastKey;
+					if (
+						idAllocation &&
+						idAllocation.nodeName === server.hostname &&
+						(!hasOtherProcesses(primaryStore) || idAllocation.pid === process.pid)
+					) {
+						// the database has an existing id allocation that we can continue from
+						const startingId = idAllocation.start;
+						const endingId = idAllocation.end;
+						lastKey = startingId;
+						// once it is loaded, we need to find the last key in the allocated range and start from there
+						for (const key of primaryStore.getKeys({ start: endingId, end: startingId, limit: 1, reverse: true })) {
+							lastKey = key;
+						}
+					} else {
+						// we need to create a new id allocation
+						idAllocation = createNewAllocation(idAllocation);
+						lastKey = idAllocation.start;
+					}
+					liveId = Atomics.compareExchange(counter, 0, 0n, BigInt(lastKey) + 1n);
+					if (liveId === 0n) liveId = BigInt(lastKey) + 1n;
+					else idAllocation = readIdAllocation();
+				}
+				idIncrementer = counter;
+				// joining a live counter (another thread, or a clear() since) takes a stored end only if it covers the
+				// counter; otherwise the first id extends from it
+				const live = Number(liveId);
+				idIncrementer.maxSafeId =
+					idAllocation && idAllocation.start < live && live <= idAllocation.end ? idAllocation.end : 0;
 			}
 			// this is where we actually do the atomic incrementation. All the threads should be pointing to the same
 			// memory location of this incrementer, so we can be sure that the id is unique and sequential.

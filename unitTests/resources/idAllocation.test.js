@@ -4,7 +4,9 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, closeDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setNextEncoding, clearNextEncoding, METADATA } = require('#src/resources/RecordEncoder');
-const { LOCAL_ONLY } = require('#src/resources/auditStore');
+const { LOCAL_ONLY, ACTION_32_BIT } = require('#src/resources/auditStore');
+const { Worker } = require('node:worker_threads');
+const { once } = require('node:events');
 const insert = require('#src/dataLayer/insert');
 const { asBinary } = require('#src/resources/asBinary');
 const { waitFor } = require('../waitFor');
@@ -24,6 +26,7 @@ function readAllocation(store) {
 }
 
 function writeAllocation(store, allocation) {
+	if (isLMDB) return store.putSync(ID_ALLOCATION, allocation, Date.now());
 	setNextEncoding(store.getMonotonicTimestamp(), LOCAL_ONLY);
 	store.putSync(ID_ALLOCATION, allocation);
 }
@@ -304,6 +307,22 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert.strictEqual(readAllocation(store).start, legacy.start, 'the legacy range was replaced');
 	});
 
+	it('continues a header-less range whose ninth byte matches the header tag', async function () {
+		if (isLMDB) return this.skip();
+		const probe = await twoShapeTable();
+		probe.IdTable.getNewId();
+		const { nodeName, pid } = readAllocation(probe.IdTable.primaryStore);
+		const { IdTable } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		// the end's second byte lands at offset 8, where a header carries its tag
+		const legacy = { start: 0x3a0e0000, end: 0x3a0e0400, nodeName, pid };
+		writeLegacyAllocation(store, legacy);
+		assert.strictEqual(store.getBinarySync(ID_ALLOCATION)[8], ACTION_32_BIT, 'precondition: byte 8 is the header tag');
+		await insertWithoutIds(IdTable, 10, 'continued');
+		const ids = await idsByPrefix(IdTable, 12);
+		assert.strictEqual(Math.min(...ids.continued), legacy.start + 1, 'the legacy range was not continued');
+	});
+
 	it('stores an undecodable range from the live counter in a queued extension', async function () {
 		if (isLMDB) return this.skip();
 		const { IdTable } = await twoShapeTable();
@@ -350,6 +369,33 @@ describe('Auto-increment id allocation as the third record structure', function 
 		let count = 0;
 		for await (const _record of IdTable.search({})) count++;
 		assert.strictEqual(count, 0x400, 'rows were lost or overwritten');
+	});
+
+	it('continues the live counter in a thread whose first id follows a clear', async function () {
+		const probe = await twoShapeTable();
+		probe.IdTable.getNewId();
+		const { nodeName, pid } = readAllocation(probe.IdTable.primaryStore);
+		const { IdTable, definition } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		// low in the id space, so a new random range almost never covers the counter
+		writeAllocation(store, { start: 1000, end: 1000 + 0x400, nodeName, pid });
+		for (let i = 0; i < 10; i++) await IdTable.post({ a: `before${i}` });
+		await IdTable.clear();
+		const liveId = Number(sharedCounter(store)[0]);
+		const thread = new Worker(__dirname + '/fixtures/idAllocationThread.js', { workerData: { definition } });
+		try {
+			thread.postMessage({ type: 'newId' });
+			const [{ id, start, end }] = await once(thread, 'message');
+			assert.strictEqual(id, liveId, 'the thread did not continue the live counter');
+			assert(start <= id + 1 && end > id, `the stored range [${start}, ${end}] does not cover id ${id}`);
+		} finally {
+			// as create.test.js: a graceful exit closes the worker's handles; terminate is the fallback
+			const exited = once(thread, 'exit');
+			const fallback = setTimeout(() => thread.terminate().catch(() => {}), 1000);
+			thread.postMessage({ type: 'shutdown' });
+			await exited;
+			clearTimeout(fallback);
+		}
 	});
 
 	it('stores the range in use again when the stored allocation cannot be decoded mid-range', async function () {
