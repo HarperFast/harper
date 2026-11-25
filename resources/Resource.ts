@@ -53,7 +53,6 @@ export function searchOpening(result: any): Promise<unknown> | undefined {
 	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
 }
 
-/** For a caller that answers an opening's failure instead of reading the result: releases what the result opened. */
 export function releaseSearchOpening(opening: any): void {
 	try {
 		opening.release?.()?.then?.(null, logReleaseFailure);
