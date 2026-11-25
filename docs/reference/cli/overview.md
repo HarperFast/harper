@@ -28,7 +28,7 @@ The installation includes the Harper CLI, which provides comprehensive managemen
 
 Install the `harper` package, not `harperdb`. The `harperdb` package on npm is the v4 line, so it has none of the v5 CLI features, such as `harper login`, workload identity (OIDC), or deploying by reference.
 
-For detailed installation instructions, see the [Getting Started / Install And Connect Harper](https://docs.harperdb.io/docs/getting-started/install-and-connect-harper) guide.
+For detailed installation instructions, see the [Getting Started / Install And Connect Harper](/learn/getting-started/install-and-connect-harper) guide.
 
 ## Command Name
 

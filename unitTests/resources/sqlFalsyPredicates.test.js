@@ -131,9 +131,7 @@ describe('SQL predicates over falsy, blank and NaN values', function () {
 	});
 
 	async function reseed() {
-		let last;
-		for (const record of SEED) last = T.put({ ...record });
-		await last;
+		await Promise.all(SEED.map((record) => T.put({ ...record })));
 		if (T.indexingOperation) await T.indexingOperation;
 	}
 

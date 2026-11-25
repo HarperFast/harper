@@ -6,7 +6,7 @@ const { wantsTopLevelHelp } = require('#src/bin/harper');
 const { SERVICE_ACTIONS_ENUM } = require('#src/utility/hdbTerms');
 
 const USAGE = 'Usage: harperdb [command]';
-const OPERATIONS_URL = 'https://docs.harperdb.io/reference/v5/operations-api/operations';
+const OPERATIONS_URL = 'https://docs.harper.fast/reference/v5/operations-api/operations';
 // Every command that must survive in the rendered output; a dropped one is a regression.
 const COMMANDS = [
 	'start',

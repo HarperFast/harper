@@ -1,7 +1,8 @@
 import * as loggerRuntimeModule from '../../utility/logging/harper_logger.ts';
 import * as ModelsRuntimeModule from './Models.ts';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import { validateDecisionSchema } from './decision.ts';
+import { isContextWindowExceeded } from './backendHelpers.ts';
 
 // Lazily resolved to avoid a require cycle on the unit-test load path; only needed on failure.
 function getLogger(): { error?: (...args: any[]) => void } {
@@ -311,6 +312,42 @@ export function createDefaultEmbedder(embedConfig: EmbedConfig): Embedder {
 		// Store as a plain array — typed arrays don't round-trip through the record encoder.
 		return v instanceof Float32Array ? Array.from(v) : Array.from(v as any);
 	};
+}
+
+/**
+ * A model failure is reported without the backend's message, which can carry URLs or key tails; the original
+ * error is a non-enumerable `cause`, so serializing the error never emits it.
+ */
+export async function embedQueryTexts(
+	texts: string[],
+	embedConfig: EmbedConfig,
+	attributeName: string,
+	signal?: AbortSignal
+): Promise<number[][]> {
+	const { model } = embedConfig;
+	let vectors: Float32Array[];
+	try {
+		vectors = await resolveEmbedFn()(texts, { model, inputType: 'query', signal });
+	} catch (err) {
+		signal?.throwIfAborted();
+		const tooLong = isContextWindowExceeded(err);
+		const failure = sanitizedHookError('Query embedder', 'the sort text embedding', attributeName, err, !tooLong);
+		const error = tooLong
+			? new ClientError(`The sort text for attribute "${attributeName}" is too long for model "${model}"`, 400)
+			: new ServerError(failure.message, 502);
+		Object.defineProperty(error, 'cause', { value: err, configurable: true, writable: true });
+		throw error;
+	}
+	signal?.throwIfAborted();
+	return texts.map((_text, index) => {
+		const vector = vectors?.[index];
+		if (!vector?.length)
+			throw new ServerError(
+				`Model "${model}" returned no embedding for the sort text of attribute "${attributeName}"`,
+				502
+			);
+		return Array.from(vector);
+	});
 }
 
 /**

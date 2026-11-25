@@ -1,6 +1,7 @@
 import { table, isReadOnlyMode } from '../databases.ts';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
+import { cleanupExpiredAnalytics } from '../analytics/cleanup.ts';
 
 const log = harperLogger.forComponent('models').conditional;
 
@@ -183,11 +184,12 @@ export class ModelCallAnalyticsWriter {
 
 	async cleanup(): Promise<void> {
 		if (isReadOnlyMode()) return;
-		const end = Date.now() - this.#retentionMs;
-		const tbl = this.#getTable();
-		for (const key of tbl.primaryStore.getKeys({ start: false, end })) {
-			tbl.primaryStore.remove(key);
-		}
+		const modelCalls = this.#getTable();
+		// Every worker that loads Models runs this timer against the same store. Imported here: a static
+		// import cycles back through Models.ts, which builds this writer while the module is still loading.
+		const { ownsStoreMaintenance } = await import('../../server/threads/manageThreads.ts');
+		if (!ownsStoreMaintenance(modelCalls.primaryStore.path)) return;
+		await cleanupExpiredAnalytics(modelCalls, this.#retentionMs);
 	}
 
 	/** Stop the periodic timers. After stop, `write()` is a no-op and `flush()` still works. */

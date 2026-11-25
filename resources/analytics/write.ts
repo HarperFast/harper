@@ -9,6 +9,7 @@ const { getLogFilePath, forComponent } = harperLogger;
 import { dirname, join } from 'node:path';
 import { open } from 'node:fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.ts';
+import { cleanupExpiredAnalytics } from './cleanup.ts';
 import { get as envGet, getHdbBasePath } from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
@@ -1372,12 +1373,11 @@ let lastResourceUsage: ResourceUsage = {
 
 const rest = () => new Promise(setImmediate);
 
-async function cleanup(AnalyticsTable, expiration) {
-	// Skip writes in read-only mode
-	if (isReadOnlyMode()) return;
-	const end = Date.now() - expiration;
-	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
-		AnalyticsTable.primaryStore.remove(key);
+async function cleanupTable(kind: string, cleanup: () => Promise<void>): Promise<void> {
+	try {
+		await cleanup();
+	} catch (error) {
+		log.warn?.(`Cleaning up ${kind} analytics failed`, error);
 	}
 }
 
@@ -1453,10 +1453,17 @@ function startScheduledTasks() {
 		const aggregateRetentionMs = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATERETENTIONMS) ?? AGGREGATE_EXPIRATION;
 		setInterval(
 			async () => {
-				await runAggregationCycle(analyticsDelay, AGGREGATE_PERIOD);
-				await cleanup(getRawAnalyticsTable(), rawRetentionMs);
+				try {
+					await runAggregationCycle(analyticsDelay, AGGREGATE_PERIOD);
+				} catch (error) {
+					log.warn?.('Analytics aggregation failed', error);
+					return;
+				}
+				await cleanupTable('raw', () => cleanupExpiredAnalytics(getRawAnalyticsTable(), rawRetentionMs));
 				// 0 means "keep forever" — skip aggregate cleanup, matching storageInterval: 0 convention
-				if (aggregateRetentionMs) await cleanup(getAnalyticsTable(), aggregateRetentionMs);
+				if (aggregateRetentionMs) {
+					await cleanupTable('aggregate', () => cleanupExpiredAnalytics(getAnalyticsTable(), aggregateRetentionMs));
+				}
 			},
 			Math.max(0, Math.min(AGGREGATE_PERIOD / 2, MAX_SET_TIMEOUT_MS))
 		).unref();

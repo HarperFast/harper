@@ -39,6 +39,7 @@ import * as signalling from '../../utility/signalling.ts';
 import { SchemaEventMsg } from '../../server/threads/itc.ts';
 import { asyncSetTimeout } from '../../utility/common_utils.ts';
 import { transaction } from '../../resources/transaction.ts';
+import { searchOpening } from '../../resources/Resource.ts';
 import type {
 	Condition,
 	Query,
@@ -74,6 +75,11 @@ export type SearchByConditionsRequest = Query &
 		reverse?: boolean;
 		operator?: Operator;
 	};
+
+function afterOpening(results: any) {
+	const opening = searchOpening(results);
+	return opening ? opening.then(() => results) : results;
+}
 
 /**
  * Bridge between the operations/REST/SQL API layer and the underlying resource layer.
@@ -121,7 +127,7 @@ export class ResourceBridge extends BridgeMethods {
 			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
 		}
 
-		return table.search(
+		const results = table.search(
 			{
 				conditions: searchObject.conditions,
 				//set the operator to always be lowercase for later evaluations
@@ -141,6 +147,7 @@ export class ResourceBridge extends BridgeMethods {
 				replicateFrom: searchObject.replicateFrom,
 			}
 		);
+		return results?.then ? results.then(afterOpening) : afterOpening(results);
 	}
 
 	/**
