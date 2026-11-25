@@ -45,6 +45,7 @@ describe('legacy SQL row selection for deep and IS NOT NULL predicates', functio
 				{ name: 'name' },
 				{ name: 'v' },
 				{ name: 'note' },
+				{ name: 'select' },
 			],
 		});
 		await reseed();
@@ -192,6 +193,14 @@ describe('legacy SQL row selection for deep and IS NOT NULL predicates', functio
 				assert.deepStrictEqual(result.update_hashes, [7], aggregate);
 				assert.strictEqual((await storedNotes())[7], 7, aggregate);
 			}
+		});
+
+		it('runs an UPDATE with a named aggregate in SET and a reserved-word column in WHERE', async () => {
+			await reseed();
+			await T.put({ ...SEED[6], select: 7 });
+			const result = await sql('legacy', `UPDATE ${TABLE} SET note = MEDIAN(id) WHERE [select] = 7`);
+			assert.deepStrictEqual(result.update_hashes, [7]);
+			assert.strictEqual((await storedNotes())[7], 7);
 		});
 
 		it('stores a JSON literal from SET as written', async () => {

@@ -1,7 +1,7 @@
 /**
  * Legacy SQL's walk over a statement: every value under `root`, depth first, with no depth limit. A node's children
  * are read only after the caller has seen the node, so a caller may replace them. Reaching an object a second time
- * throws `Circular reference`, which is what refuses a statement that shares a node, such as a subquery or a named
+ * throws `Circular reference` by default, which is what refuses a statement that shares a node, such as a subquery or a named
  * aggregate.
  */
 export interface AstStep {
@@ -33,13 +33,14 @@ class Step implements AstStep {
 	}
 }
 
-export function* walkAst(root: any): Generator<AstStep> {
+/** `repeated: 'skip'` walks a node's children once and goes on, for a caller whose work on a node is idempotent. */
+export function* walkAst(root: any, repeated: 'throw' | 'skip' = 'throw'): Generator<AstStep> {
 	const expanded = new Set<object>();
 	const pending: Step[] = [];
 	let node = root;
 	let current: Step | undefined;
 	while (true) {
-		if (node !== null && typeof node === 'object') {
+		if (node !== null && typeof node === 'object' && !(repeated === 'skip' && expanded.has(node))) {
 			if (expanded.has(node)) throw new Error('Circular reference');
 			expanded.add(node);
 			const keys = childKeys(node);

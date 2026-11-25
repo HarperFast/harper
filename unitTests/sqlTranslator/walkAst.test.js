@@ -58,6 +58,16 @@ describe('walkAst', () => {
 		assert.throws(() => [...walkAst({ left: shared, right: shared })], /Circular reference/);
 	});
 
+	it('with repeated: skip, yields a shared object again but walks its children once', () => {
+		const shared = { columnid: 'a' };
+		const seen = [...walkAst({ left: shared, right: shared }, 'skip')].map(({ node, path }) => [path.join('.'), node]);
+		assert.deepStrictEqual(seen, [
+			['left', shared],
+			['left.columnid', 'a'],
+			['right', shared],
+		]);
+	});
+
 	it('walks a parsed statement without reaching a node twice', () => {
 		const statement = alasql.parse('SELECT a, COUNT(*) AS c FROM t WHERE a IS NOT NULL GROUP BY a ORDER BY c')
 			.statements[0];

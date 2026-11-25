@@ -590,7 +590,8 @@ export function getLimitKey() {
  */
 export function backtickASTSchemaItems(statement: any) {
 	try {
-		let iterator = walkAst(statement);
+		// a named aggregate shares one node between its expression and args; quoting it once is enough
+		let iterator = walkAst(statement, 'skip');
 		for (let { node } of iterator) {
 			if (node) {
 				if (node.columnid && typeof node.columnid !== 'string') {
