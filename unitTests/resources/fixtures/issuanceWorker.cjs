@@ -9,13 +9,17 @@ const { coverLocalIssuance, readLocalIssuanceCeiling } = require('#src/resources
 const { waitFor } = require('../../waitFor');
 
 async function run() {
+	// setupTestDBPath() opens the existing databases, so it must follow the parent's claim.
+	const released = new Promise((resolve) => parentPort.once('message', resolve));
+	parentPort.postMessage({ ready: true });
+	await released;
 	setupTestDBPath();
 	setMainIsWorker(true);
 	const Tbl = table(workerData.definition);
 	const root = Tbl.primaryStore.rootStore;
 	if (workerData.mode === 'issue') {
 		const key = freshLocalKey(root);
-		return { key, ceiling: readLocalIssuanceCeiling(Tbl.auditStore) };
+		return { key, issuedAt: Date.now(), ceiling: readLocalIssuanceCeiling(Tbl.auditStore) };
 	}
 	const failedRoot = RocksDatabase.open(workerData.failedPath);
 	const failedAudit = new RocksTransactionLogStore(failedRoot);
