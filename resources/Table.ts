@@ -123,6 +123,8 @@ import {
 	certifiedThrough,
 	completedReplayThrough,
 	isDispatching,
+	ROUTES_BY_ID_PATTERN,
+	SUBSCRIBE_OVERRIDDEN,
 } from './transactionBroadcast.ts';
 import { keyArrayToString } from './Resources.ts';
 import {
@@ -11331,6 +11333,8 @@ export function makeTable(options): TableResourceClass {
 				const settleUnverified = () => settleResume?.(false);
 				result.then(settleUnverified, settleUnverified);
 			}
+			// an override, an instance field included, can narrow, filter or rewrite what it hands on
+			if (this.subscribe !== TableResource.prototype.subscribe) (subscription as any)[SUBSCRIBE_OVERRIDDEN] = true;
 			return subscription;
 		}
 
@@ -13095,6 +13099,7 @@ export function makeTable(options): TableResourceClass {
 		if (replicaEvictionArmed) armReplicaEviction();
 	}
 	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
+	(TableResource.prototype.subscribe as any)[ROUTES_BY_ID_PATTERN] = true;
 	return TableResource;
 	/**
 	 * Every subscription's live listener, one function for the table: the commit broadcast calls it with

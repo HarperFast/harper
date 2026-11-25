@@ -11,6 +11,8 @@ import { RequestTarget } from '../resources/RequestTarget.ts';
 import { randomBytes } from 'node:crypto';
 import { AsyncResource } from 'node:async_hooks';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
+import { routeByIdPattern, ROUTES_BY_ID_PATTERN } from '../resources/transactionBroadcast.ts';
+import { Resource } from '../resources/Resource.ts';
 import { auditRetention, getDatabaseGeneration, isResumablePosition } from '../resources/auditStore.ts';
 import { exportIdMapping, getNodeNameForId } from '../resources/nodeIdMapping.ts';
 import { getThisNodeName } from './nodeName.ts';
@@ -322,7 +324,9 @@ function topicLevelFilter(matchingPath: string[], mustMatchLength: boolean) {
 				return false;
 			}
 		}
-		if (mustMatchLength && updatePath.length !== matchingPath.length) return false;
+		// accepts exactly the ids IdPatternGroup.collect matches
+		if (mustMatchLength ? updatePath.length !== matchingPath.length : updatePath.length < matchingPath.length)
+			return false;
 		for (let i = 0; i < matchingPath.length; i++) {
 			if (matchingPath[i] !== '+' && matchingPath[i] !== updatePath[i]) return false;
 		}
@@ -556,6 +560,7 @@ class SubscriptionsSession {
 		let url = entry.relativeURL;
 		let isCollection;
 		let onlyChildren;
+		let idPattern: string | undefined;
 		let hashIndex: number;
 		if (url.indexOf('+') > -1 || (hashIndex = url.indexOf('#')) > -1) {
 			const path = url.slice(1); // remove leading slash
@@ -587,7 +592,10 @@ class SubscriptionsSession {
 					matchingPath.length--;
 					mustMatchLength = false;
 				}
-				if (needsFilter) filter = topicLevelFilter(matchingPath, mustMatchLength);
+				if (needsFilter) {
+					idPattern = path;
+					filter = topicLevelFilter(matchingPath, mustMatchLength);
+				}
 				const firstWildcard = matchingPath.indexOf('+');
 				url = '/' + (firstWildcard > -1 ? matchingPath.slice(0, firstWildcard) : matchingPath).concat('').join('/');
 			}
@@ -625,6 +633,14 @@ class SubscriptionsSession {
 				subscription.end?.();
 				return;
 			}
+			// the filter screens the snapshot and replay, read from the prefix; only a table's own subscribe() moves,
+			// as an override can narrow, filter or rewrite what it hands on, which the pattern would bypass
+			if (
+				idPattern !== undefined &&
+				resource.subscribe === Resource.subscribe &&
+				resource.prototype?.subscribe?.[ROUTES_BY_ID_PATTERN]
+			)
+				routeByIdPattern(subscription, idPattern);
 			subscription.topic = topic;
 			subscription.qos = subscriptionRequest.qos;
 			// The session reads an event only in sendUpdate, and its one write there (topic, for the acknowledgement)

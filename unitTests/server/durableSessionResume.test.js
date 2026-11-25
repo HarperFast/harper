@@ -533,6 +533,37 @@ describe('MQTT durable sessions resuming through the checked subscription', func
 		assert.ok((await stored(clientId)).subscriptions[0].startTime < lateKey, 'the queued rest shares the late key');
 	});
 
+	it('resumes a mid-level + topic, replaying through its topic filter and then routing live records by pattern', async () => {
+		const { T, name } = topicTable();
+		await T.put('seed', { value: 0 });
+		const clientId = `resume-pattern-${name}`;
+		const topic = `${name}/site/+/temp`;
+		const routed = (session) => typeof session.subscriptions.find((s) => s.topic === topic)?.subscriptions?.key;
+		const first = await connect(clientId);
+		await first.session.addSubscription({ topic, qos: 1, rh: 2 }, true);
+		assert.strictEqual(routed(first.session), 'symbol');
+		await T.put('site/a/temp', { value: 1 });
+		await waitFor(() => first.received.length >= 1);
+		await ackAll(first.session, first.received);
+		await storedEntry(clientId, (entry) => entry.databaseGeneration !== undefined);
+		first.session.disconnect(true);
+		for (const [id, value] of [
+			['site/b/temp', 2],
+			['site/b/humidity', 3],
+			['site/b', 4],
+		])
+			await T.put(id, { value });
+		const second = await connect(clientId);
+		await second.session.resume();
+		await waitFor(() => values(second.received).includes(2));
+		assert.strictEqual(routed(second.session), 'symbol');
+		await T.put('site/c/humidity', { value: 5 });
+		await T.put('site/c/temp', { value: 6 });
+		await waitFor(() => values(second.received).includes(6));
+		assert.deepStrictEqual(values(second.received), [2, 6]);
+		second.session.disconnect(true);
+	});
+
 	it('resumes a session after a reconnect, and delivers what it missed', async () => {
 		const { T, name } = topicTable();
 		await T.put('seed', { value: 0 });
