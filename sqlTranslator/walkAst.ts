@@ -40,11 +40,14 @@ export function* walkAst(root: any, repeated: 'throw' | 'skip' = 'throw'): Gener
 	let node = root;
 	let current: Step | undefined;
 	while (true) {
-		if (node !== null && typeof node === 'object' && !(repeated === 'skip' && expanded.has(node))) {
-			if (expanded.has(node)) throw new Error('Circular reference');
-			expanded.add(node);
-			const keys = childKeys(node);
-			for (let i = keys.length - 1; i >= 0; i--) pending.push(new Step(node[keys[i]], keys[i], current));
+		if (node !== null && typeof node === 'object') {
+			if (expanded.has(node)) {
+				if (repeated === 'throw') throw new Error('Circular reference');
+			} else {
+				expanded.add(node);
+				const keys = childKeys(node);
+				for (let i = keys.length - 1; i >= 0; i--) pending.push(new Step(node[keys[i]], keys[i], current));
+			}
 		}
 		current = pending.pop();
 		if (current === undefined) return;
