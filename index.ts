@@ -179,7 +179,7 @@ import type { transaction as TransactionImport } from './resources/transaction.t
 // An isolated application's worker with branched databases rebinds `databases` and `tables` to its branch
 // view. Node builds this entry's ES module view once per worker and never updates its named exports, so
 // if anything imports it as an ES module before then, every named import in that worker keeps the base;
-// `require('harper')` and the default export follow the rebinding (harper#4593).
+// `require('harper')` and Node's own default import (this `exports` object) follow the rebinding (harper#4593).
 declare global {
 	const contentTypes: typeof ContentTypesImport;
 	const createBlob: typeof CreateBlobImport;
