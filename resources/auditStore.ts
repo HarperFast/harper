@@ -2414,10 +2414,10 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encodedRecord) {
 		return Buffer.concat([header, encodedRecord]);
-	} else {
-		// lmdb-js writes from the returned buffer's address later, so it cannot alias ENTRY_HEADER
-		return Buffer.from(header);
 	}
+	// lmdb-js writes from the buffer's address after this returns, so it cannot alias ENTRY_HEADER; the
+	// RocksDB log (the only start > 0 caller) copies the entry inside addEntry
+	return start > 0 ? header : Buffer.from(header);
 	function writeValue(value) {
 		const valueLengthPosition = position;
 		position += 1;
