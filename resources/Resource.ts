@@ -53,21 +53,13 @@ export function searchOpening(result: any): Promise<unknown> | undefined {
 	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
 }
 
-/**
- * For a caller that answers an opening's failure instead of reading the result, which is released on that
- * failure. So is every other search the request's transaction still holds, since nothing will read those
- * either: a search concatenated beside a text search keeps no opening to release.
- */
-export function awaitSearchOpening(opening: any, context?: Context): Promise<unknown> {
-	return opening.catch((error: unknown) => {
-		try {
-			opening.release?.()?.then?.(null, logReleaseFailure);
-			context?.transaction?.closeOwnedReadIterators?.();
-		} catch (releaseError) {
-			logReleaseFailure(releaseError);
-		}
-		throw error;
-	});
+/** For a caller that answers an opening's failure instead of reading the result: releases what the result opened. */
+export function releaseSearchOpening(opening: any): void {
+	try {
+		opening.release?.()?.then?.(null, logReleaseFailure);
+	} catch (error) {
+		logReleaseFailure(error);
+	}
 }
 function logReleaseFailure(error: unknown) {
 	logger.error?.('Releasing a search whose opening failed:', error);
@@ -1139,7 +1131,14 @@ function authorizeSearchResult(result: any, user: any) {
 							const opening = searchOpening(state.results);
 							const derived = result.headers ? result.data : result;
 							if (opening && derived && typeof derived === 'object') {
-								if (!Object.isExtensible(derived)) return awaitSearchOpening(opening).then(() => result);
+								if (!Object.isExtensible(derived))
+									return opening.then(
+										() => result,
+										(error) => {
+											releaseSearchOpening(opening);
+											throw error;
+										}
+									);
 								derived[SEARCH_OPENING] ??= opening;
 							}
 						}

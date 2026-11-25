@@ -12,7 +12,7 @@ const { isReleasedTransaction, DatabaseTransaction } = require('#src/resources/D
 const { Resources } = require('#src/resources/Resources');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-const { searchOpening, awaitSearchOpening } = require('#src/resources/Resource');
+const { searchOpening, releaseSearchOpening, SEARCH_AUTHORIZATION } = require('#src/resources/Resource');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { ClientError } = require('#src/utility/errors/hdbError');
 require('#src/server/serverHelpers/serverUtilities');
@@ -767,10 +767,9 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					await searchOpening(opened);
 					if (observesSnapshot) assert.ok(context.storeLinks().some((txn) => txn.readTxnsUsed > 0));
 					const failed = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {});
-					await assert.rejects(
-						awaitSearchOpening(searchOpening(join(opened, failed).map((row) => row))),
-						(error) => error.statusCode === 502
-					);
+					const opening = searchOpening(join(opened, failed).map((row) => row));
+					await assert.rejects(opening, (error) => error.statusCode === 502);
+					releaseSearchOpening(opening);
 					await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
 						message: 'the opened search kept its snapshot',
 					});
@@ -779,7 +778,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				}
 			});
 
-		it('a caller that answers a failed opening logs a release that rejects instead of letting it escape', async () => {
+		it('releasing a failed opening logs a release that rejects instead of letting it escape', async () => {
 			const failure = new Error('release failed');
 			const escaped = [];
 			const onUnhandled = (reason) => {
@@ -791,7 +790,8 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			};
 			process.on('unhandledRejection', onUnhandled);
 			try {
-				await assert.rejects(awaitSearchOpening(opening), (error) => error.statusCode === 502);
+				await assert.rejects(opening, (error) => error.statusCode === 502);
+				releaseSearchOpening(opening);
 				await new Promise((resolve) => setTimeout(resolve, 20));
 				assert.deepEqual(escaped, []);
 			} finally {
@@ -799,41 +799,56 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
-		it('answers a failed text search with its status and releases a search the table concatenated beside it', async () => {
-			if (!observesSnapshot) return;
-			__setEmbedFnForTest((input, opts) =>
-				opts.inputType === 'query' && input.includes('unlucky')
-					? Promise.reject(new Error('backend down'))
-					: embed(input, opts)
-			);
-			let plainClosed = false;
-			let transaction;
-			try {
-				class TextThenPlain extends Doc {
-					search(target) {
-						const plain = super.search({ ...target, conditions: [{ attribute: 'tag', value: 'odd' }] });
-						const close = plain.onDone;
-						plain.onDone = function () {
-							plainClosed = true;
-							return close.call(this);
-						};
-						transaction = this.getContext().transaction;
-						return super.search({ ...target, sort: { attribute: 'embedding', text: 'unlucky' } }).concat(plain);
+		for (const database of ['its own', 'another'])
+			it(`answers a failed text search with its status and releases a search on ${database} database concatenated beside it`, async () => {
+				if (!observesSnapshot) return;
+				const Other =
+					database === 'another' &&
+					table({
+						table: 'SortTextOtherPlain',
+						database: 'sort_text_other',
+						attributes: [
+							{ name: 'id', isPrimaryKey: true },
+							{ name: 'tag', indexed: true },
+						],
+					});
+				if (Other) await Other.put(1, { tag: 'odd' });
+				__setEmbedFnForTest((input, opts) =>
+					opts.inputType === 'query' && input.includes('unlucky')
+						? Promise.reject(new Error('backend down'))
+						: embed(input, opts)
+				);
+				let plainClosed = false;
+				let transaction;
+				try {
+					class TextThenPlain extends Doc {
+						search(target) {
+							const conditions = [{ attribute: 'tag', value: 'odd' }];
+							const plain = Other
+								? Other.search({ conditions }, this.getContext())
+								: super.search({ ...target, conditions });
+							const close = plain.onDone;
+							plain.onDone = function () {
+								plainClosed = true;
+								return close.call(this);
+							};
+							transaction = this.getContext().transaction;
+							return super.search({ ...target, sort: { attribute: 'embedding', text: 'unlucky' } }).concat(plain);
+						}
 					}
+					const response = await rest([TextThenPlain])(
+						'QUERY',
+						'/SortTextEmbedDoc/',
+						{ select: ['content'] },
+						{ accept: 'application/json' }
+					).catch((error) => error);
+					assert.equal(response.statusCode ?? response.status, 502);
+					assert.ok(plainClosed, 'the concatenated search kept its snapshot');
+					for (let link = transaction; link; link = link.next) assert.equal(link.readTxnsUsed, 0);
+				} finally {
+					__setEmbedFnForTest(failingEmbed);
 				}
-				const response = await rest([TextThenPlain])(
-					'QUERY',
-					'/SortTextEmbedDoc/',
-					{ select: ['content'] },
-					{ accept: 'application/json' }
-				).catch((error) => error);
-				assert.equal(response.statusCode ?? response.status, 502);
-				assert.ok(plainClosed, 'the concatenated search kept its snapshot');
-				assert.equal(transaction.readTxnsUsed, 0);
-			} finally {
-				__setEmbedFnForTest(failingEmbed);
-			}
-		});
+			});
 
 		it('a direct reader of a concatenation reads the search that opens though the other failed first', async () => {
 			const firstModel = Promise.withResolvers();
@@ -969,7 +984,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			});
 
 			it(`a search the gate granted${shape}, closed before its first step, releases its snapshot`, async () => {
-				// an LMDB search's snapshot is not counted on the transaction it reads through
+				// this reads the root transaction's count; an LMDB search counts its snapshot on the linked one it reads through
 				if (!observesSnapshot) return;
 				class Granted extends Doc {
 					async allowRead() {
@@ -1017,7 +1032,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					await waitFor(() => transaction.readTxnsUsed === 1, {
 						message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
 					});
-					// closing the gate must not reopen the results to close them
 					await new Promise((resolve) => setTimeout(resolve, 20));
 					assert.equal(transaction.readTxnsUsed, 1);
 				} finally {
@@ -1097,14 +1111,12 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			if (!observesSnapshot) return;
 			let cursors = 0;
 			let gated;
-			let searched = false;
 			class Closing extends Doc {
 				async allowRead() {
 					return true;
 				}
 				search(target) {
 					if (target.checkPermission !== false) return super.search(target);
-					searched = true;
 					const results = super.search(target);
 					return {
 						[Symbol.asyncIterator]() {
@@ -1126,12 +1138,9 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				await waitFor(() => transaction.readTxnsUsed === 1, {
 					message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
 				});
-				searched = false;
 				gated = new Closing(null, { transaction, user: { username: 'reader' } }).search(target());
-				await waitFor(() => searched);
-				await new Promise((resolve) => setTimeout(resolve, 5));
+				await gated[SEARCH_AUTHORIZATION];
 				gated.onDone();
-				// the close opens the one cursor it returns; the later reader opens none
 				assert.equal(cursors, 2);
 				assert.deepEqual(await fromAsync(gated), []);
 				assert.equal(cursors, 2);
@@ -1142,7 +1151,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 		});
 
 		describe('a granted result whose cursor is being opened', () => {
-			let disposed, factories, searched, factory, withDisposer, Wrapped;
+			let disposed, factories, factory, withDisposer, Wrapped;
 			before(() => {
 				Wrapped = class extends Doc {
 					async allowRead() {
@@ -1150,7 +1159,6 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					}
 					search(target) {
 						if (target.checkPermission !== false) return super.search(target);
-						searched = true;
 						const results = super.search(target);
 						const wrapper = {
 							[Symbol.asyncIterator]() {
@@ -1171,13 +1179,11 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				withDisposer = !withoutDisposer;
 				disposed = 0;
 				factories = 0;
-				searched = false;
 				const gated = new Wrapped(null, { transaction, user: { username: 'reader' } }).search({
 					conditions: [{ attribute: 'tag', value: 'odd' }],
 					checkPermission: true,
 				});
-				await waitFor(() => searched);
-				await new Promise((resolve) => setTimeout(resolve, 5));
+				await gated[SEARCH_AUTHORIZATION];
 				return gated;
 			};
 

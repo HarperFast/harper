@@ -961,14 +961,16 @@ const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
-function bothOpen(opening: any, other: any) {
-	const both: any = Promise.all([opening, other]);
-	both.catch(() => {});
-	both.release = () => {
+/** A concatenation's opening, whose release reaches its operand too: an ordinary search there has no opening to release. */
+function joinOpenings(opening: any, other: any, operand: any) {
+	const joined: any = other ? Promise.all([opening, other]) : opening.then(() => undefined);
+	joined.catch(() => {});
+	joined.release = () => {
 		cleanUp(() => opening.release?.());
-		cleanUp(() => other.release?.());
+		if (other) cleanUp(() => other.release?.());
+		else closeUnread(operand);
 	};
-	return both;
+	return joined;
 }
 /** A cleanup has no caller left to take its failure, thrown or rejected, so the failure is logged. */
 function cleanUp(close: () => unknown) {
@@ -1014,7 +1016,7 @@ function carryThroughTransforms(
 	value: any,
 	wrapped: symbol,
 	inheritSelect: boolean,
-	combine?: (value: any, other: any) => any
+	combine?: (value: any, other: any, operand: any) => any
 ) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
 	iterable[key] = value;
@@ -1031,8 +1033,8 @@ function carryThroughTransforms(
 					if (this.selectApplied) derived.selectApplied = true;
 					if (this.getColumns && !derived.getColumns) derived.getColumns = this.getColumns;
 				}
-				const other = combine && methodName === 'concat' ? args[0]?.[key] : undefined;
-				const carried = other && other !== value ? combine(value, other) : value;
+				const other = combine && methodName === 'concat' ? args[0]?.[key] : value;
+				const carried = other !== value ? combine(value, other, args[0]) : value;
 				return carryThroughTransforms(derived, key, carried, wrapped, inheritSelect, combine);
 			},
 		});
@@ -9043,7 +9045,7 @@ export function makeTable(options): TableResourceClass {
 				});
 			opening.catch(() => {});
 			opening.release = () => cleanUp(() => deferred.onDone?.());
-			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false, bothOpen);
+			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false, joinOpenings);
 			deferred.iterate = (options: any = {}) =>
 				deferredIterator(
 					options,

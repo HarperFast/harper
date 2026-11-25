@@ -20,7 +20,7 @@ import {
 	missingMethod,
 	allowedMethods,
 	searchOpening,
-	awaitSearchOpening,
+	releaseSearchOpening,
 } from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
@@ -623,7 +623,14 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// a write has committed, and a failure status would deny it
 		if (method === 'GET' || method === 'HEAD' || method === 'QUERY') {
 			const opening = searchOpening(responseData);
-			if (opening) await awaitSearchOpening(opening, request);
+			if (opening) {
+				try {
+					await opening;
+				} catch (error) {
+					releaseSearchOpening(opening);
+					throw error;
+				}
+			}
 		}
 		let status = request.response.status;
 		let lastModification = request.lastModified;
