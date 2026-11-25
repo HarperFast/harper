@@ -15,18 +15,23 @@ async function withCompetingWrite(stage, competingWrite) {
 	const gate = new Promise((resolve) => (release = resolve));
 	let staged;
 	const read = new Promise((resolve) => (staged = resolve));
+	let stagingFailed = false;
 	const committed = transaction(async (txn) => {
 		await stage(txn);
 		staged();
 		await gate;
 	});
-	// a staging failure reaches the caller through `committed` below instead of leaving it waiting on the read
-	committed.catch(staged);
+	// a staging failure opens the gate for the caller below, which then rethrows it from `committed`
+	committed.catch(() => {
+		stagingFailed = true;
+		staged();
+	});
 	await read;
 	try {
-		await competingWrite();
+		if (!stagingFailed) await competingWrite();
 	} finally {
 		release();
+		await committed.catch(() => {});
 	}
 	await committed;
 }
