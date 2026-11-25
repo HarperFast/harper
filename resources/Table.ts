@@ -236,6 +236,7 @@ import {
 import {
 	HAS_BLOBS,
 	LOCAL_ONLY,
+	ACTION_32_BIT,
 	auditRetention,
 	removeAuditEntry,
 	getAuditFloor,
@@ -941,6 +942,7 @@ const STRIP_BATCH_SIZE = 100;
 const STRIP_MAX_ATTEMPTS = 20;
 const STRIP_RETRY_BUDGET_MS = 30_000;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
+const LEGACY_HEADER_COLLISION = 0x42;
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
@@ -2909,7 +2911,9 @@ export function makeTable(options): TableResourceClass {
 			? (primaryStore as RocksDatabase).getBinarySync(ID_ALLOCATION_KEY, transaction && { transaction })
 			: primaryStore.getBinary(ID_ALLOCATION_KEY);
 		if (stored == null) return undefined;
-		let allocation = primaryStore.encoder.decode(stored);
+		// a range written before #1762 that starts with structure id 0x42 has no header behind that byte
+		const legacy = isRocksDB && stored[0] === LEGACY_HEADER_COLLISION && stored[8] !== ACTION_32_BIT;
+		let allocation = primaryStore.encoder.decode(stored, legacy ? { noMetadata: true } : undefined);
 		if (allocation?.[METADATA] !== undefined) allocation = allocation.value;
 		return isIdAllocation(allocation) ? allocation : undefined;
 	}
@@ -4310,49 +4314,47 @@ export function makeTable(options): TableResourceClass {
 			const nextId = Number(Atomics.add(idIncrementer, 0, 1n));
 			const asyncIdExpansionThreshold = type === 'Int' ? 0x200 : 0x100000;
 			if (nextId + asyncIdExpansionThreshold >= idIncrementer.maxSafeId) {
-				const updateEnd = (inTxn) => {
-					const storedMaxSafeId = idIncrementer.maxSafeId;
-					// we update the end of the allocation range after verifying we don't have any conflicting ids in front of us
-					idIncrementer.maxSafeId = nextId + (type === 'Int' ? 0x3ff : 0x3fffff);
+				const updateEnd = (inTxn?: boolean) => {
 					let idAfter = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
 					const readTxn = inTxn ? undefined : primaryStore.useReadTransaction?.();
 					// get the latest id after the read transaction to make sure we aren't reading any new ids that we assigned from this node
 					const newestId = Number(idIncrementer[0]);
-					for (const key of primaryStore.getKeys({
-						start: newestId + 1,
-						end: idAfter,
-						limit: 1,
-						transaction: readTxn,
-					})) {
-						idAfter = key;
+					// from the live counter, not this call's id: a queued extension runs after other ids were issued
+					const proposedEnd = newestId + (type === 'Int' ? 0x3ff : 0x3fffff);
+					try {
+						for (const key of primaryStore.getKeys({
+							start: newestId + 1,
+							end: idAfter,
+							limit: 1,
+							transaction: readTxn,
+						})) {
+							idAfter = key;
+						}
+					} finally {
+						readTxn?.done();
 					}
-					readTxn?.done();
 					const updatedIdAllocation = readIdAllocation();
-					if (idIncrementer.maxSafeId < idAfter) {
+					if (proposedEnd < idAfter) {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
-						if (updatedIdAllocation?.end > idIncrementer.maxSafeId - 100) {
+						if (updatedIdAllocation?.end > proposedEnd - 100) {
 							// the allocation was already updated by another thread
+							idIncrementer.maxSafeId = updatedIdAllocation.end;
 							return;
 						}
-						if (!updatedIdAllocation) {
-							if (!inTxn || newestId >= idIncrementer.maxSafeId) {
-								idIncrementer.maxSafeId = storedMaxSafeId;
-								return;
-							}
+						if (!updatedIdAllocation)
 							logger.warn?.(`Id range allocation for table ${tableName} could not be read, storing it again`);
-						}
-						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
+						logger.info?.('New id allocation', newestId, proposedEnd);
 						idIncrementer.maxSafeId = replaceIdAllocation(updatedIdAllocation, {
-							start: updatedIdAllocation?.start ?? nextId,
-							end: idIncrementer.maxSafeId,
+							start: updatedIdAllocation?.start ?? newestId,
+							end: proposedEnd,
 							nodeName: server.hostname,
 							pid: process.pid,
 						}).end;
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
 						logger.warn?.(
-							`Id conflict detected, starting new id allocation range, attempting to allocate to ${idIncrementer.maxSafeId}, but id of ${idAfter} detected`
+							`Id conflict detected, starting new id allocation range, attempting to allocate to ${proposedEnd}, but id of ${idAfter} detected`
 						);
 						const idAllocation = createNewAllocation(updatedIdAllocation);
 						// reassign the incrementer to the new range/starting point
@@ -4362,7 +4364,15 @@ export function makeTable(options): TableResourceClass {
 					}
 				};
 				if (nextId + asyncIdExpansionThreshold === idIncrementer.maxSafeId) {
-					setImmediate(updateEnd); // if we are getting kind of close to the end, we try to update it asynchronously
+					// if we are getting kind of close to the end, we try to update it asynchronously
+					setImmediate(() => {
+						try {
+							updateEnd();
+						} catch (error) {
+							// the bound is unchanged, so the synchronous extension retries near the end
+							logger.warn?.(`Id range extension for table ${tableName} failed`, error);
+						}
+					});
 				} else if (nextId + 100 >= idIncrementer.maxSafeId) {
 					logger.warn?.(
 						`Synchronous id allocation required on table ${tableName}${

@@ -6,6 +6,7 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { setNextEncoding, clearNextEncoding, METADATA } = require('#src/resources/RecordEncoder');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const insert = require('#src/dataLayer/insert');
+const { asBinary } = require('#src/resources/asBinary');
 const { waitFor } = require('../waitFor');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -30,6 +31,10 @@ function writeAllocation(store, allocation) {
 function writeLegacyAllocation(store, allocation) {
 	clearNextEncoding();
 	store.putSync(ID_ALLOCATION, allocation);
+}
+
+function writeUndecodableAllocation(store) {
+	store.putSync(ID_ALLOCATION, asBinary(Buffer.from('42c1c1c1c1c1c1c1c1c1c1c1', 'hex')));
 }
 
 function sharedCounter(store) {
@@ -281,34 +286,57 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert(Math.min(...ids.reopened) > Math.max(...ids.bulk), 'the reopened table reissued ids below its last ones');
 	});
 
-	it('replaces a header-less allocation that reads as undefined', async function () {
+	it('continues a header-less range a build before #1762 wrote, and stores it with the header', async function () {
 		if (isLMDB) return this.skip();
+		const probe = await twoShapeTable();
+		probe.IdTable.getNewId();
+		const { nodeName, pid } = readAllocation(probe.IdTable.primaryStore);
 		const { IdTable } = await twoShapeTable();
 		const store = IdTable.primaryStore;
-		const legacy = { start: 1_000_000_000, end: 1_000_000_000 + 0x400, nodeName: 'legacy', pid: 1 };
+		const legacy = { start: 1_000_000_000, end: 1_000_000_000 + 0x400, nodeName, pid };
 		writeLegacyAllocation(store, legacy);
 		assertAllocationIsStructure(store, 0, 'precondition: the legacy allocation starts with the third structure id');
-		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'precondition: the legacy allocation is unreadable');
-		await insertWithoutIds(IdTable, 1500, 'healed');
-		await idsByPrefix(IdTable, 1502);
+		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'precondition: a record read cannot decode it');
+		await insertWithoutIds(IdTable, 1500, 'continued');
+		const ids = await idsByPrefix(IdTable, 1502);
+		assert.strictEqual(Math.min(...ids.continued), legacy.start + 1, 'the legacy range was not continued');
 		assertReadableAllocation(store);
+		assert.strictEqual(readAllocation(store).start, legacy.start, 'the legacy range was replaced');
 	});
 
-	it('leaves an unreadable range to the synchronous extension, not a queued one', async function () {
+	it('stores an undecodable range from the live counter in a queued extension', async function () {
 		if (isLMDB) return this.skip();
 		const { IdTable } = await twoShapeTable();
 		const store = IdTable.primaryStore;
 		IdTable.getNewId();
 		const initial = readAllocation(store);
 		getNewIdsUntil(IdTable, (id) => id + 0x200 === initial.end);
-		writeLegacyAllocation(store, initial);
+		// a sibling thread issues past what an extension proposed from the id that queued it would cover
+		Atomics.add(sharedCounter(store), 0, 0x500n);
+		writeUndecodableAllocation(store);
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'a queued extension stored the range');
-		// as a sibling thread would
-		Atomics.add(sharedCounter(store), 0, 0x250n);
-		const nextId = IdTable.getNewId();
-		assert.strictEqual(readAllocation(store).start, nextId, 'the range was not stored from the live id');
-		assert(readAllocation(store).end > nextId, 'the range in use was not stored');
+		const issuedThrough = Number(sharedCounter(store)[0]) - 1;
+		assertReadableAllocation(store);
+		assert(readAllocation(store).end > issuedThrough, 'the stored range ends below issued ids');
+	});
+
+	it('keeps the stored bound when a queued extension fails, and extends synchronously', async function () {
+		if (isLMDB) return this.skip();
+		const { IdTable } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		IdTable.getNewId();
+		const initial = readAllocation(store);
+		const transactionSync = store.transactionSync;
+		store.transactionSync = function () {
+			store.transactionSync = transactionSync;
+			throw new Error('simulated storage failure');
+		};
+		getNewIdsUntil(IdTable, (id) => id + 0x200 === initial.end);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(store.transactionSync, transactionSync, 'precondition: the queued extension ran');
+		assert.deepStrictEqual(readAllocation(store), initial, 'precondition: nothing was stored');
+		getNewIdsUntil(IdTable, (id) => id + 100 >= initial.end);
+		assert(readAllocation(store).end > initial.end, 'ids passed the stored end without extending it');
 	});
 
 	it('stores the range again after the table is cleared', async function () {
@@ -324,14 +352,14 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert.strictEqual(count, 0x400, 'rows were lost or overwritten');
 	});
 
-	it('stores the range in use again when the stored allocation becomes unreadable mid-range', async function () {
+	it('stores the range in use again when the stored allocation cannot be decoded mid-range', async function () {
 		if (isLMDB) return this.skip();
 		const { IdTable } = await twoShapeTable();
 		const store = IdTable.primaryStore;
 		const firstId = IdTable.getNewId();
 		assertReadableAllocation(store);
 		const initial = readAllocation(store);
-		writeLegacyAllocation(store, initial);
+		writeUndecodableAllocation(store);
 		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'precondition: the allocation is unreadable');
 		const ids = [firstId];
 		for (let i = 0; i < 0x400; i++) ids.push(IdTable.getNewId());
