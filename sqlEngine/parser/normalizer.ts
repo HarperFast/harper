@@ -9,7 +9,7 @@
  *   - IS NULL uses { op: 'IS', left, right: {} }.
  *   - NOT uses { op: 'NOT', right }.
  *   - Column refs are { columnid, tableid? }.
- *   - Literals are { value }.
+ *   - Literals are NumValue, StringValue, LogicValue and NullValue nodes ({ value }).
  *   - Aggregates are columns with { aggregatorid, expression, as? }.
  *   - Function calls are { funcid, args }.
  *
@@ -33,9 +33,49 @@ import type {
 import { EngineUnsupportedError } from '../errors.ts';
 import { functionRegistry } from '../functions/registry.ts';
 import { assertLikeEscape, tokenizeLike } from '../expressions/like.ts';
+import { alasql } from './parse.ts';
 
 interface AlaSqlNode {
 	[key: string]: unknown;
+}
+
+type AlaSqlClass = new (...args: never[]) => object;
+const { NumValue, StringValue, LogicValue, NullValue } = (alasql as unknown as { yy: Record<string, AlaSqlClass> }).yy;
+
+const SELECT_KEYS: ReadonlySet<string> = new Set([
+	'columns',
+	'from',
+	'joins',
+	'where',
+	'group',
+	'having',
+	'order',
+	'limit',
+	'offset',
+	'top',
+	'percent',
+	'distinct',
+	'all',
+]);
+const INSERT_KEYS: ReadonlySet<string> = new Set(['into', 'columns', 'values']);
+const UPDATE_KEYS: ReadonlySet<string> = new Set(['table', 'columns', 'where']);
+const DELETE_KEYS: ReadonlySet<string> = new Set(['table', 'where']);
+const TABLE_KEYS: ReadonlySet<string> = new Set(['databaseid', 'tableid', 'as']);
+const JOIN_KEYS: ReadonlySet<string> = new Set(['joinmode', 'table', 'as', 'on', 'using']);
+const SORT_KEYS: ReadonlySet<string> = new Set(['expression', 'direction']);
+const CALL_KEYS: ReadonlySet<string> = new Set(['aggregatorid', 'funcid', 'args', 'expression', 'distinct', 'as']);
+
+function assertSupportedKeys(node: AlaSqlNode, supported: ReadonlySet<string>, what: string): void {
+	for (const key in node) {
+		if (!Object.hasOwn(node, key) || supported.has(key) || node[key] == null) continue;
+		throw new EngineUnsupportedError(`${what} ${key} is not supported`, node);
+	}
+}
+
+function isLiteralNode(node: AlaSqlNode): boolean {
+	return (
+		node instanceof NumValue || node instanceof StringValue || node instanceof LogicValue || node instanceof NullValue
+	);
 }
 
 /**
@@ -63,6 +103,7 @@ export function normalizeStatement(stmt: AlaSqlNode, variant: string): Statement
  * for now so 'auto' mode falls back to legacy.
  */
 function normalizeInsert(stmt: AlaSqlNode): InsertNode {
+	assertSupportedKeys(stmt, INSERT_KEYS, 'INSERT');
 	const into = stmt.into as AlaSqlNode | undefined;
 	if (!into) throw new EngineUnsupportedError('INSERT requires an INTO clause', stmt);
 	const table = normalizeTableRef(into);
@@ -95,6 +136,7 @@ function normalizeInsert(stmt: AlaSqlNode): InsertNode {
  * columnid }, expression }], where }.
  */
 function normalizeUpdate(stmt: AlaSqlNode): UpdateNode {
+	assertSupportedKeys(stmt, UPDATE_KEYS, 'UPDATE');
 	const tableNode = stmt.table as AlaSqlNode | undefined;
 	if (!tableNode) throw new EngineUnsupportedError('UPDATE requires a table', stmt);
 	const table = normalizeTableRef(tableNode);
@@ -114,6 +156,7 @@ function normalizeUpdate(stmt: AlaSqlNode): UpdateNode {
 
 /** AlaSQL DELETE shape: { table: { databaseid, tableid }, where }. */
 function normalizeDelete(stmt: AlaSqlNode): DeleteNode {
+	assertSupportedKeys(stmt, DELETE_KEYS, 'DELETE');
 	const tableNode = stmt.table as AlaSqlNode | undefined;
 	if (!tableNode) throw new EngineUnsupportedError('DELETE requires a table', stmt);
 	const table = normalizeTableRef(tableNode);
@@ -122,6 +165,7 @@ function normalizeDelete(stmt: AlaSqlNode): DeleteNode {
 }
 
 function normalizeSelect(stmt: AlaSqlNode): SelectNode {
+	assertSupportedKeys(stmt, SELECT_KEYS, 'SELECT');
 	if (!Array.isArray(stmt.from) || stmt.from.length === 0) {
 		throw new EngineUnsupportedError('SELECT requires a FROM clause', stmt);
 	}
@@ -194,6 +238,7 @@ function extractWhere(where: AlaSqlNode): AlaSqlNode {
 }
 
 function normalizeTableRef(node: AlaSqlNode): TableRefNode {
+	assertSupportedKeys(node, TABLE_KEYS, 'table reference');
 	const database = (node.databaseid as string | undefined) ?? '';
 	const table = (node.tableid as string | undefined) ?? '';
 	if (!table) throw new EngineUnsupportedError('FROM requires a table name', node);
@@ -207,6 +252,7 @@ function normalizeTableRef(node: AlaSqlNode): TableRefNode {
  * suffixed with ' OUTER'). RIGHT/FULL OUTER are rejected per the v1 plan.
  */
 function normalizeJoin(node: AlaSqlNode): JoinNode {
+	assertSupportedKeys(node, JOIN_KEYS, 'JOIN');
 	const rawMode = String(node.joinmode ?? 'INNER').toUpperCase();
 	let type: JoinNode['type'];
 	if (rawMode.startsWith('LEFT')) type = 'left';
@@ -271,10 +317,12 @@ function aggregateLabel(expr: ExprNode): string | undefined {
 }
 
 function normalizeSort(node: AlaSqlNode): SortNode {
-	return {
-		expr: normalizeExpr(node.expression as AlaSqlNode),
-		descending: node.direction === 'DESC',
-	};
+	assertSupportedKeys(node, SORT_KEYS, 'ORDER BY');
+	const expr = normalizeExpr(node.expression as AlaSqlNode);
+	if (expr.kind === 'literal' && typeof expr.value === 'number') {
+		throw new EngineUnsupportedError('ORDER BY a column position is not supported', node);
+	}
+	return { expr, descending: node.direction === 'DESC' };
 }
 
 /** Largest row count the legacy engine handles before its 32-bit coercion diverges. */
@@ -328,6 +376,7 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 	}
 
 	if (node.aggregatorid != null && node.expression != null) {
+		assertSupportedKeys(node, CALL_KEYS, 'aggregate');
 		// AlaSQL uses aggregatorid='REDUCE' with funcid set for user-defined aggregates
 		// (e.g. MEDIAN). Use funcid as the real name when aggregatorid is REDUCE.
 		const rawName =
@@ -347,12 +396,15 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 	}
 
 	if (node.funcid != null) {
+		assertSupportedKeys(node, CALL_KEYS, 'function call');
 		const fnName = String(node.funcid).toLowerCase();
 		const args = Array.isArray(node.args) ? (node.args as AlaSqlNode[]).map(normalizeExpr) : [];
 		// If this funcCall is a registered aggregate (e.g. PROD, MEAN that AlaSQL
 		// doesn't recognize as aggregates), treat it as an aggCall.
 		const desc = functionRegistry.lookup(fnName);
 		if (desc?.kind === 'aggregate') {
+			if (args.length > 1)
+				throw new EngineUnsupportedError(`${fnName} with ${args.length} arguments is not supported`, node);
 			const arg: ExprNode | { kind: 'star' } = args.length === 0 ? { kind: 'star' } : args[0];
 			return { kind: 'aggCall', name: fnName, arg, distinct: !!node.distinct };
 		}
@@ -375,7 +427,7 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 		};
 	}
 
-	if (Object.prototype.hasOwnProperty.call(node, 'value') && node.left == null && node.op == null) {
+	if (isLiteralNode(node)) {
 		const val = node.value;
 		const sqlType =
 			val === null
@@ -469,7 +521,7 @@ function normalizeExpr(node: AlaSqlNode | null | undefined): ExprNode {
 				if (isEmpty) {
 					return { kind: 'isNull', expr: normalizeExpr(node.left as AlaSqlNode), negated };
 				}
-				if (right != null && Object.prototype.hasOwnProperty.call(right, 'value') && right.value == null) {
+				if (right instanceof NullValue) {
 					return { kind: 'isNull', expr: normalizeExpr(node.left as AlaSqlNode), negated };
 				}
 				throw new EngineUnsupportedError(`IS expression with non-null right side is not supported`, node);
