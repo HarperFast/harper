@@ -113,8 +113,9 @@ suite(
 			// killHarper terminates a Windows process without a clean close, and the range write is not write-ahead
 			// logged (#4606), so the restart there can find no stored range and take a new one
 			if (process.platform === 'win32' && Math.min(...after) !== Math.max(...before) + 1) {
-				const issued = new Set(before);
-				ok(!after.some((id: number) => issued.has(id)), 'the restart reissued an id');
+				const [low, high] = [Math.min(...after), Math.max(...after)];
+				strictEqual(high - low + 1, after.length, 'the restarted ids are not one new range');
+				ok(high < Math.min(...before) || low > Math.max(...before), 'the new range overlaps the ids issued before');
 			} else {
 				strictEqual(Math.min(...after), Math.max(...before) + 1, 'the restart did not continue the stored range');
 			}
