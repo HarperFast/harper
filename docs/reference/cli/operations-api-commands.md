@@ -269,10 +269,10 @@ harper deploy target=https://server.com:9925 replicated=true
 
 **Restart after deployment** (with replication):
 
-After deploying to a clustered environment, restart all nodes to apply changes:
+After deploying to a clustered environment, restart the HTTP workers on every node, one node at a time, to apply changes:
 
 ```bash
-harper restart target=https://server.com:9925 replicated=true
+harper restart_service service=http_workers replicated=true target=https://server.com:9925
 ```
 
 For more information on Harper applications and components, see:
@@ -374,8 +374,9 @@ harper deploy \
   replicated=true \
   package=https://github.com/myorg/my-component
 
-# Restart the cluster
-harper restart \
+# Restart the cluster's HTTP workers, one node at a time
+harper restart_service \
+  service=http_workers \
   target=https://cluster-node-1.example.com:9925 \
   replicated=true
 

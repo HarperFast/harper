@@ -26,7 +26,7 @@ harper get_components
 harper set_configuration logging_level=info
 ```
 
-When no `target` parameter is specified, the CLI uses `HARPER_CLI_TARGET` or `CLI_TARGET` if set, then the target saved by a previous `harper login`, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. See [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
+When no `target` parameter is specified, the CLI uses `HARPER_CLI_TARGET` or `CLI_TARGET` if set, then the target saved by a previous `harper login`, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. [`harper restart`](./commands.md#harper-restart) is the exception: without `target`, it always uses the local instance. See [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
 
 ## Remote Operations
 
@@ -176,7 +176,7 @@ export HARPER_CLI_PASSWORD=$SECURE_PASSWORD  # from secret manager
 
 # Execute operations without passing credentials or target (if set)
 harper deploy target=https://prod-server.com:9925 replicated=true
-harper restart target=https://prod-server.com:9925 replicated=true
+harper restart_service service=http_workers target=https://prod-server.com:9925 replicated=true
 
 # The environment variables authenticate the admin; username/password remain payload fields.
 # NEW_USER_PASSWORD is provided by a secret manager.
