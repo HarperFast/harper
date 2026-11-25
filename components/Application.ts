@@ -137,7 +137,8 @@ interface ApplicationConfig {
 	 * worker under the default `vm-current-context` loader they are the thread's, so an application that
 	 * uses them there reads and writes the BASE — silently. The same holds for code Harper does not load
 	 * itself, such as a Next.js or Vite server bundle importing `harper` natively: it reaches the fork only
-	 * in an isolated application's dedicated worker, where the package's exports take the branch view too.
+	 * in an isolated application's dedicated worker, where the package's `databases` and `tables` take the branch view
+	 * too; its other exports, `defineTable` included, stay on the base.
 	 */
 	branchedDatabases?: string[] | true;
 	/** Run in a worker thread of its own that loads no other application. */
