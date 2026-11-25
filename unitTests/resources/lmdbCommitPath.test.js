@@ -12,7 +12,11 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 async function withCompetingWrite(stage, competingWrite) {
 	let release;
-	const gate = new Promise((resolve) => (release = resolve));
+	let abandon;
+	const gate = new Promise((resolve, reject) => {
+		release = resolve;
+		abandon = reject;
+	});
 	let staged;
 	const read = new Promise((resolve) => (staged = resolve));
 	let stagingFailed = false;
@@ -21,16 +25,21 @@ async function withCompetingWrite(stage, competingWrite) {
 		staged();
 		await gate;
 	});
-	// a staging failure opens the gate for the caller below, which then rethrows it from `committed`
+	// a staging failure wakes the wait on `read`; the error is rethrown from `committed` below
 	committed.catch(() => {
 		stagingFailed = true;
 		staged();
 	});
 	await read;
 	try {
-		if (!stagingFailed) await competingWrite();
+		if (!stagingFailed) {
+			await competingWrite();
+			release();
+		}
+	} catch (error) {
+		abandon(error);
+		throw error;
 	} finally {
-		release();
 		await committed.catch(() => {});
 	}
 	await committed;
@@ -306,12 +315,15 @@ describe('bodyless audit entries', () => {
 		it('keeps each of several back-to-back entries intact', async function () {
 			const auditStore = AuditPath.auditStore;
 			const keys = [];
+			const puts = [];
+			const firstKey = Date.now();
 			for (let index = 0; index < 20; index++) {
-				const key = 5_000_000 + index;
+				const key = firstKey + index;
 				keys.push(key);
-				// no await: the store has not written an entry when the next one is encoded
-				auditStore.put(key, reloadRecord(`bodyless-${index}-${'x'.repeat(index * 3)}`, 3000.5 + index));
+				// every entry is encoded before the batch is flushed
+				puts.push(auditStore.put(key, reloadRecord(`bodyless-${index}-${'x'.repeat(index * 3)}`, 3000.5 + index)));
 			}
+			await Promise.all(puts);
 			await auditStore.flushed;
 			await waitFor(() => keys.every((key) => auditStore.get(key)), { message: 'every entry is written' });
 			for (let index = 0; index < keys.length; index++) {
