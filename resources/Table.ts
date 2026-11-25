@@ -14628,14 +14628,20 @@ export function makeTable(options): TableResourceClass {
 		return link && (link.timestamp || link.transaction?.getTimestamp());
 	}
 
+	function unreservedClockHandle(context: Context): any {
+		if (!isRocksDB || context?.timestamp) return;
+		const link = heldLink(context);
+		const handle = link?.transaction;
+		if (handle && !link.timestamp && reservedLocalKey(handle) === undefined) return handle;
+	}
+
 	// A fill handed to a transaction from outside its snapshot can be versioned above its clock; a clock no write has
 	// reserved yet moves past it, so the transaction's own later write still supersedes the fill. A read never mints
 	// the key: the write's reservation issues and covers it.
 	function advanceClockPast(context: Context, version: number): void {
-		if (!isRocksDB || context?.timestamp || !(version > 0)) return;
-		const link = heldLink(context);
-		const handle = link?.transaction;
-		if (!handle || link.timestamp || reservedLocalKey(handle) !== undefined || handle.getTimestamp() > version) return;
+		if (!(version > 0)) return;
+		const handle = unreservedClockHandle(context);
+		if (!handle || handle.getTimestamp() > version) return;
 		const clock = (primaryStore as RocksDatabase).getMonotonicTimestamp();
 		if (clock > version) handle.setTimestamp(clock);
 	}
@@ -15387,7 +15393,6 @@ export function makeTable(options): TableResourceClass {
 							}
 						}
 					} else sourceVersion = sourceTimestamp;
-					if (sourceVersion > versionCap) sourceVersion = versionCap;
 					hasChanges = invalidated || (validReportedVersion && reportedVersion > existingVersion) || !existingRecord;
 					const resolveDuration = performance.now() - start;
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
@@ -15481,6 +15486,17 @@ export function makeTable(options): TableResourceClass {
 					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
+					// The requester's snapshot can predate a fill committed since; a first fill capped below that one would be
+					// discarded, so it goes uncapped when the requester's clock can still move past it.
+					if (
+						sourceVersion > versionCap &&
+						updatedRecord &&
+						existingVersion == null &&
+						unreservedClockHandle(context) &&
+						primaryStore.getEntry(id)?.version >= versionCap
+					)
+						versionCap = undefined;
+					if (sourceVersion > versionCap) sourceVersion = versionCap;
 					resolved = true;
 					const resolvedVersion =
 						isRocksDB && updatedRecord && existingVersion != null

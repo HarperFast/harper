@@ -10,7 +10,7 @@ const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 
 describe('Write after ensureLoaded() on a caching table', function () {
-	let Target, sourceGets, reportLastModified, sourceGate, sourceStarted;
+	let Target, sourceGets, reportLastModified, sourceGate, sourceStarted, sourceValue;
 	before(function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -31,7 +31,7 @@ describe('Write after ensureLoaded() on a caching table', function () {
 						sourceStarted();
 						await sourceGate;
 					}
-					return { id: this.getId(), value: 7 };
+					return { id: this.getId(), value: sourceValue };
 				}
 				put() {}
 			}
@@ -42,6 +42,7 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		sourceGets = 0;
 		reportLastModified = false;
 		sourceGate = undefined;
+		sourceValue = 7;
 	});
 
 	// the fill holds the record lock until its background commit settles
@@ -121,6 +122,39 @@ describe('Write after ensureLoaded() on a caching table', function () {
 		await otherRequest;
 		assert.equal(sourceGets, 2);
 		assert.equal(await settledValue('waited'), 8);
+	});
+
+	async function fillAfterFirstRead(id, context) {
+		await Target.get('warm', context);
+		assert.equal((await Target.get(id)).value, 7);
+		assert.equal(await settledValue(id), 7);
+		sourceValue = 9;
+		assert.equal((await Target.get(id, context)).value, 9);
+	}
+
+	it("caches a fill over one another request committed after this transaction's first read", async function () {
+		const context = {};
+		await transaction(context, () => fillAfterFirstRead('successive', context));
+		assert.equal(await settledValue('successive'), 9);
+	});
+
+	it("keeps a write made after a fill over one committed after this transaction's first read", async function () {
+		const context = {};
+		await transaction(context, async () => {
+			await fillAfterFirstRead('successive-write', context);
+			await Target.put('successive-write', { value: 8 }, context);
+		});
+		assert.equal(await settledValue('successive-write'), 8);
+	});
+
+	it('keeps a write made after a fill over one committed since, when the transaction already wrote', async function () {
+		const context = {};
+		await transaction(context, async () => {
+			await Target.put('successive-earlier', { value: 1 }, context);
+			await fillAfterFirstRead('successive-written', context);
+			await Target.put('successive-written', { value: 8 }, context);
+		});
+		assert.equal(await settledValue('successive-written'), 8);
 	});
 
 	it('still caches a fill made by a plain read', async function () {
