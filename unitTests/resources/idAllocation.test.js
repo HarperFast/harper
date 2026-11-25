@@ -306,11 +306,24 @@ describe('Auto-increment id allocation as the third record structure', function 
 		writeLegacyAllocation(store, initial);
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'a queued extension stored the range');
-		// a sibling thread issues past the queued proposal
-		Atomics.add(sharedCounter(store), 0, 0x500n);
+		// a sibling thread issues past the stored end
+		Atomics.add(sharedCounter(store), 0, 0x250n);
 		const nextId = IdTable.getNewId();
 		assert.strictEqual(readAllocation(store).start, nextId, 'the range was not stored from the live id');
 		assert(readAllocation(store).end > nextId, 'the range in use was not stored');
+	});
+
+	it('stores the range again after the table is cleared', async function () {
+		const { IdTable } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		await IdTable.post({ a: 'before the clear' });
+		await IdTable.clear();
+		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'precondition: the clear removed the range');
+		for (let i = 0; i < 0x400; i++) await IdTable.post({ a: `after${i}` });
+		assertReadableAllocation(store);
+		let count = 0;
+		for await (const _record of IdTable.search({})) count++;
+		assert.strictEqual(count, 0x400, 'rows were lost or overwritten');
 	});
 
 	it('stores the range in use again when the stored allocation becomes unreadable mid-range', async function () {

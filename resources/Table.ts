@@ -4311,6 +4311,7 @@ export function makeTable(options): TableResourceClass {
 			const asyncIdExpansionThreshold = type === 'Int' ? 0x200 : 0x100000;
 			if (nextId + asyncIdExpansionThreshold >= idIncrementer.maxSafeId) {
 				const updateEnd = (inTxn) => {
+					const storedMaxSafeId = idIncrementer.maxSafeId;
 					// we update the end of the allocation range after verifying we don't have any conflicting ids in front of us
 					idIncrementer.maxSafeId = nextId + (type === 'Int' ? 0x3ff : 0x3fffff);
 					let idAfter = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
@@ -4335,8 +4336,11 @@ export function makeTable(options): TableResourceClass {
 							return;
 						}
 						if (!updatedIdAllocation) {
-							// only an extension from the live counter, which every thread's bound trails, may store it
-							if (!inTxn || newestId >= idIncrementer.maxSafeId) return;
+							// a queued proposal starts from an older id, so it can trail another thread's bound
+							if (!inTxn || newestId >= idIncrementer.maxSafeId) {
+								idIncrementer.maxSafeId = storedMaxSafeId;
+								return;
+							}
 							logger.warn?.(`Id range allocation for table ${tableName} could not be read, storing it again`);
 						}
 						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
