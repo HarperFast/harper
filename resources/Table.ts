@@ -102,6 +102,7 @@ import {
 	reserveLocalKey,
 	reservedAroundCallerValue,
 	reservedLocalKey,
+	timestampBelow,
 } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
@@ -14615,6 +14616,31 @@ export function makeTable(options): TableResourceClass {
 		};
 	}
 
+	function clockLink(context: Context): any {
+		if (!isRocksDB || context?.timestamp) return;
+		for (let txn: any = context?.transaction; txn && !isReleasedTransaction(txn); txn = txn.next) {
+			if (txn.db?.path !== primaryStore.path) continue;
+			return txn.open === TRANSACTION_STATE.OPEN ? txn : undefined;
+		}
+	}
+
+	function pinnedClock(link: any): number | undefined {
+		return link && (link.timestamp || reservedLocalKey(link.transaction));
+	}
+
+	// A fill handed to a transaction from outside its snapshot can be versioned above its clock; a clock no write has
+	// pinned yet moves past it, so the transaction's own later write still supersedes the fill. A read never mints
+	// the key: the write's reservation issues and covers it.
+	function advanceClockPast(link: any, version: number): void {
+		if (!pinnedClock(link)) moveClockPast(link?.transaction, version);
+	}
+
+	function moveClockPast(handle: any, version: number): void {
+		if (!handle || !(version > 0) || handle.getTimestamp() > version) return;
+		const clock = (primaryStore as RocksDatabase).getMonotonicTimestamp();
+		if (clock > version) handle.setTimestamp(clock);
+	}
+
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
 		if (isReleasedTransaction(transaction)) transaction = undefined;
@@ -15262,6 +15288,7 @@ export function makeTable(options): TableResourceClass {
 					(outcome.value == null || (heldFill.sharable ??= isSharableRecord(outcome.value)))
 				) {
 					setLoadedFromSource(target, false);
+					advanceClockPast(clockLink(context), outcome.version);
 					return outcome;
 				}
 				if (heldFill?.source === source && heldFill.failure) throw heldFill.failure;
@@ -15270,6 +15297,7 @@ export function makeTable(options): TableResourceClass {
 			} else {
 				// served from cache after waiting for another request to resolve
 				setLoadedFromSource(target, false);
+				advanceClockPast(clockLink(context), entry.version);
 				return entry;
 			}
 		}
@@ -15444,6 +15472,13 @@ export function makeTable(options): TableResourceClass {
 					// a reload can rebind createdTimeProperty before the commit below runs
 					createdTimeToAssign =
 						createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null ? createdTimeProperty : undefined;
+					// decided at resolve, as a write during the source call can pin the requester's clock
+					const requesterLink = clockLink(context);
+					const requesterPin = pinnedClock(requesterLink);
+					if (requesterPin > 0) {
+						const cap = timestampBelow(requesterPin);
+						if (sourceVersion > cap && !(existingVersion >= cap)) sourceVersion = cap;
+					}
 					resolved = true;
 					const resolvedVersion =
 						isRocksDB && updatedRecord && existingVersion != null
@@ -15477,7 +15512,10 @@ export function makeTable(options): TableResourceClass {
 						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
 						entryMap.set(updatedRecord, resolvedEntry);
 					}
-					if (!issuanceFailed && !sourceContext.noCacheStore) sharedEntry = resolvedEntry;
+					if (!issuanceFailed && !sourceContext.noCacheStore) {
+						sharedEntry = resolvedEntry;
+						if (!requesterPin) moveClockPast(requesterLink?.transaction, resolvedVersion);
+					}
 					resolve(resolvedEntry);
 				} catch (error) {
 					// A source may reject with anything at all, so deciding how to settle is itself
