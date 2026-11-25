@@ -169,10 +169,8 @@ const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
 // tracking began. The value records how far the guess reached. See `establishAuditFloor`.
 const AUDIT_FLOOR_BOOTSTRAP_KEY = Symbol.for('audit-floor-bootstrap');
 /**
- * The floor's own eight bytes, deliberately NOT the FLOAT_TARGET/FLOAT_BUFFER pair the `last-removed`
- * marker uses: decoding a floor writes into its buffer on every read, including the pre-check on each
- * prune, while `updateLastRemoved` hands the shared buffer to an async `put` it has not yet consumed.
- * Sharing them would let a floor read rewrite a marker still in flight.
+ * The floor's own eight bytes, apart from the FLOAT_TARGET/FLOAT_BUFFER pair the `last-removed` marker
+ * uses: decoding a floor writes into its buffer on every read, including the pre-check on each prune.
  */
 const FLOOR_TARGET = new Float64Array(1);
 const FLOOR_BUFFER = new Uint8Array(FLOOR_TARGET.buffer);
@@ -621,7 +619,7 @@ function warnTombstoneRemovalFailure(error: unknown) {
 
 function updateLastRemoved(auditStore, lastKey) {
 	FLOAT_TARGET[0] = lastKey;
-	return auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER);
+	return auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER.slice());
 }
 
 export function getLastRemoved(auditStore) {
@@ -2416,7 +2414,10 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encodedRecord) {
 		return Buffer.concat([header, encodedRecord]);
-	} else return header;
+	} else {
+		// lmdb-js writes from the returned buffer's address later, so it cannot alias ENTRY_HEADER
+		return Buffer.from(header);
+	}
 	function writeValue(value) {
 		const valueLengthPosition = position;
 		position += 1;
