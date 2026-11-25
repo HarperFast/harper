@@ -1021,7 +1021,7 @@ export function initConfig(force = false) {
 			for (const key in DEPRECATED_CONFIG) {
 				if (flatConfigObj[key])
 					logger.error(
-						`Config ${DEPRECATED_CONFIG[key]} has been deprecated. Please check https://docs.harperdb.io/docs/ for further details.`
+						`Config ${DEPRECATED_CONFIG[key]} has been deprecated. Please check https://docs.harper.fast/ for further details.`
 					);
 			}
 		}

@@ -1,6 +1,6 @@
 # Harper documentation source
 
-This directory holds the source of the Harper v5 [reference](https://docs.harperdb.io/reference/v5) and the release notes of the open minor release. A PR that changes behavior changes its docs here, in the same PR.
+This directory holds the source of the Harper v5 [reference](https://docs.harper.fast/reference/v5) and the release notes of the open minor release. A PR that changes behavior changes its docs here, in the same PR.
 
 The site itself — theme, the Learn and Fabric sections, the archived v4 reference, older release notes, redirects for old URLs, search and deployment — lives in [HarperFast/documentation](https://github.com/HarperFast/documentation). Its build assembles the published pages from this directory and from `docs/` in [HarperFast/harper-pro](https://github.com/HarperFast/harper-pro), and redeploys when what it publishes changes ([when docs publish](#when-docs-publish)).
 

@@ -22,7 +22,7 @@ Harper is an open-source Node.js unified development platform that fuses databas
 
 `npm i -g harper`
 
-Get started building Harper applications by following our Learn guide: https://docs.harperdb.io/learn
+Get started building Harper applications by following our Learn guide: https://docs.harper.fast/learn
 
 ## Contributing to Harper
 

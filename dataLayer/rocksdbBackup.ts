@@ -1318,7 +1318,7 @@ the files back down in two places:
      (see blobs/README.md). Then start Harper.
 
 For a server-managed, in-place restore instead, use the managed backup workflow (create_backup /
-restore_backup): https://docs.harperdb.io/reference/v5/operations-api/operations
+restore_backup): https://docs.harper.fast/reference/v5/operations-api/operations
 `;
 }
 

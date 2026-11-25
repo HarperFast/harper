@@ -42,7 +42,7 @@ interface Section {
 const SECTIONS: Section[] = [
 	{ blocks: [{ text: 'Usage: harperdb [command]' }] },
 	{ blocks: [{ text: `With no command, harper will simply run ${PRODUCT_NAME} (in the foreground)` }] },
-	{ blocks: [{ text: 'Documentation: https://docs.harperdb.io/' }] },
+	{ blocks: [{ text: 'Documentation: https://docs.harper.fast/' }] },
 	{
 		blocks: [
 			{
@@ -144,7 +144,7 @@ const SECTIONS: Section[] = [
 			{
 				text: [
 					'Run an API operation and return the result to the CLI (not all operations are supported). See the full',
-					'list of operations at: https://docs.harperdb.io/reference/v5/operations-api/operations',
+					'list of operations at: https://docs.harper.fast/reference/v5/operations-api/operations',
 				].join(' '),
 				indent: 4,
 			},
