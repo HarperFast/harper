@@ -8994,8 +8994,7 @@ export function makeTable(options): TableResourceClass {
 						resolvedResults?.getColumns ? resolvedResults.getColumns() : (earlyColumns ??= getColumns());
 					let readers = 0;
 					gatedResults.iterate = (options: any = {}) => {
-						readers++;
-						return deferredIterator(
+						const reader = deferredIterator(
 							options,
 							() =>
 								authorization.then((state: any) => {
@@ -9010,6 +9009,8 @@ export function makeTable(options): TableResourceClass {
 							'Can not synchronously iterate while allowRead is asynchronous',
 							acquire
 						);
+						readers++;
+						return reader;
 					};
 					gatedResults.onDone = () => {
 						gatedResults.onDone = null;

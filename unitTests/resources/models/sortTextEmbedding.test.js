@@ -1031,10 +1031,19 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					return verdict.promise;
 				}
 			}
-			const iterator = new Pending(null, { user: { username: 'reader' } })
-				.search({ sort: { attribute: 'embedding', text: 'red fruit' }, checkPermission: true })
-				[Symbol.asyncIterator]();
-			await iterator.return();
+			const gated = new Pending(null, { user: { username: 'reader' } }).search({
+				sort: { attribute: 'embedding', text: 'red fruit' },
+				checkPermission: true,
+			});
+			// a reader whose construction throws is not counted as one still reading
+			const badOptions = {
+				async: true,
+				get continueOnRecoverableError() {
+					throw new Error('bad options');
+				},
+			};
+			assert.throws(() => gated.iterate(badOptions), /bad options/);
+			await gated[Symbol.asyncIterator]().return();
 			verdict.resolve(true);
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			assert.equal(embed.calls.length, 0);
