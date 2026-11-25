@@ -27,7 +27,6 @@ function writeAllocation(store, allocation) {
 	store.putSync(ID_ALLOCATION, allocation);
 }
 
-// the form written before harper#1762
 function writeLegacyAllocation(store, allocation) {
 	clearNextEncoding();
 	store.putSync(ID_ALLOCATION, allocation);
@@ -220,7 +219,6 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert.strictEqual(result.inserted_hashes.length, count, 'not every record was inserted');
 	}
 
-	// an id issued twice overwrites a row
 	async function idsByPrefix(IdTable, expectedRows) {
 		const ids = {};
 		let count = 0;
@@ -262,7 +260,6 @@ describe('Auto-increment id allocation as the third record structure', function 
 		await waitFor(() => readAllocation(store).end > initial.end, {
 			message: 'the background extension was not stored',
 		});
-		// a bulk insert reaches the synchronous extension, inside the request
 		await insertWithoutIds(IdTable, 1500, 'bulk');
 		written += 1500;
 		// drains a background extension the insert queued
@@ -298,6 +295,25 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assertReadableAllocation(store);
 	});
 
+	it('does not store an end below ids a sibling issued after the extension was queued', async function () {
+		if (isLMDB) return this.skip();
+		const { IdTable } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		IdTable.getNewId();
+		const initial = readAllocation(store);
+		// the background extension is queued at this id, and its end is 0x3ff past it
+		getNewIdsUntil(IdTable, (id) => id + 0x200 === initial.end);
+		Atomics.add(sharedCounter(store), 0, 0x500n);
+		writeLegacyAllocation(store, initial);
+		await new Promise((resolve) => setImmediate(resolve));
+		const issuedThrough = Number(sharedCounter(store)[0]) - 1;
+		if (store.getEntry(ID_ALLOCATION))
+			assert(readAllocation(store).end >= issuedThrough, 'the stored range ends below issued ids');
+		const nextId = IdTable.getNewId();
+		assert(nextId > issuedThrough, 'an issued id was handed out again');
+		assert(readAllocation(store).end > nextId, 'the range in use was not stored');
+	});
+
 	it('stores the range in use again when the stored allocation becomes unreadable mid-range', async function () {
 		if (isLMDB) return this.skip();
 		const { IdTable } = await twoShapeTable();
@@ -308,7 +324,6 @@ describe('Auto-increment id allocation as the third record structure', function 
 		writeLegacyAllocation(store, initial);
 		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'precondition: the allocation is unreadable');
 		const ids = [firstId];
-		// within one turn, so the extension runs synchronously
 		for (let i = 0; i < 0x400; i++) ids.push(IdTable.getNewId());
 		assert.deepStrictEqual(
 			ids,

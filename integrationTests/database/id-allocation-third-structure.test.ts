@@ -109,7 +109,6 @@ suite(
 				get_attributes: ['id', 'a', 'b'],
 			});
 			strictEqual(status, 200, JSON.stringify(body));
-			// a reissued id overwrites an earlier row
 			strictEqual(body.length, 2 * BULK_ROWS + 4, 'rows were lost or overwritten');
 			const generatedIds = (restarted: boolean) =>
 				body.filter((row: any) => row.id > 2 && row.a.startsWith('restarted') === restarted).map((row: any) => row.id);

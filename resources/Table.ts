@@ -4334,9 +4334,11 @@ export function makeTable(options): TableResourceClass {
 							// the allocation was already updated by another thread
 							return;
 						}
-						// an unreadable range is stored again from the ids in use, so issued ids stay out of any new range
-						if (!updatedIdAllocation)
+						if (!updatedIdAllocation) {
+							// a delayed callback's end can trail ids issued since; the synchronous extension stores it instead
+							if (newestId >= idIncrementer.maxSafeId) return;
 							logger.warn?.(`Id range allocation for table ${tableName} could not be read, storing it again`);
+						}
 						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
 						idIncrementer.maxSafeId = replaceIdAllocation(updatedIdAllocation, {
 							start: updatedIdAllocation?.start ?? nextId,
