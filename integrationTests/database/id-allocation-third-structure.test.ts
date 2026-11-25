@@ -1,7 +1,4 @@
-/**
- * Auto-assigned Int ids in a table that already holds two record shapes (harper#1762): the stored id range is then
- * the table's third classic record structure, 0x42, which is also how a RocksDB version header starts.
- */
+// Auto-assigned Int ids in a table that already holds two record shapes (harper#1762).
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';

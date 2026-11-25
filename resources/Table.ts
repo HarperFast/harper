@@ -4336,7 +4336,6 @@ export function makeTable(options): TableResourceClass {
 							return;
 						}
 						if (!updatedIdAllocation) {
-							// a queued proposal starts from an older id, so it can trail another thread's bound
 							if (!inTxn || newestId >= idIncrementer.maxSafeId) {
 								idIncrementer.maxSafeId = storedMaxSafeId;
 								return;

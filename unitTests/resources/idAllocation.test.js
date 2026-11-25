@@ -170,8 +170,7 @@ describe('Auto-increment id allocation under concurrent allocation writes', func
 	});
 });
 
-// Classic structure ids start at 0x40, so after two record shapes the allocation's is 0x42, the first byte of a
-// RocksDB version header (harper#1762). LMDB has no such header.
+// harper#1762. LMDB has no version header.
 describe('Auto-increment id allocation as the third record structure', function () {
 	const database = 'idAllocationStructure';
 	let tableCount = 0;
@@ -301,12 +300,11 @@ describe('Auto-increment id allocation as the third record structure', function 
 		const store = IdTable.primaryStore;
 		IdTable.getNewId();
 		const initial = readAllocation(store);
-		// the background extension is queued at this id, and proposes an end 0x3ff past it
 		getNewIdsUntil(IdTable, (id) => id + 0x200 === initial.end);
 		writeLegacyAllocation(store, initial);
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(store.getEntry(ID_ALLOCATION), undefined, 'a queued extension stored the range');
-		// a sibling thread issues past the stored end
+		// as a sibling thread would
 		Atomics.add(sharedCounter(store), 0, 0x250n);
 		const nextId = IdTable.getNewId();
 		assert.strictEqual(readAllocation(store).start, nextId, 'the range was not stored from the live id');
