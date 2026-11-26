@@ -133,6 +133,55 @@ describe('Test serverUtilities.js module ', () => {
 			);
 			assert.strictEqual(request.search_operation.sql, 'SELECT * FROM data.dog');
 		});
+
+		it('bypasses verifyPerms for refresh_operation_token on roles with an operations allowlist', function () {
+			const roles = [
+				{
+					name: 'ci_deploy_only',
+					permission: {
+						super_user: false,
+						operations: ['deploy_component', 'get_job', 'get_deployment', 'registration_info'],
+					},
+					deniedOps: ['get_configuration', 'describe_all'],
+				},
+				{
+					name: 'standard_user_group',
+					permission: { super_user: false, operations: ['standard_user'] },
+					deniedOps: ['get_configuration'],
+				},
+			];
+
+			for (const { name, permission, deniedOps } of roles) {
+				const hdb_user = { active: true, username: `${name}_user`, role: { role: name, permission } };
+				const refreshFn = serverUtilities.chooseOperation({
+					operation: 'refresh_operation_token',
+					refresh_token: 'placeholder',
+					hdb_user,
+				});
+				assert.strictEqual(refreshFn.name, 'refreshOperationToken');
+
+				for (const deniedOp of deniedOps) {
+					assert.throws(
+						() => serverUtilities.chooseOperation({ operation: deniedOp, hdb_user }),
+						(error) => (error.statusCode ?? error.http_code) === 403
+					);
+				}
+			}
+
+			// A token-scoped principal still reaches refreshOperationToken, which carries scope forward.
+			const scopedUser = {
+				active: true,
+				username: 'scoped_ci_user',
+				tokenOperations: ['deploy_component'],
+				role: { role: 'ci_deploy_only', permission: { super_user: false, operations: ['deploy_component'] } },
+			};
+			const scopedRefreshFn = serverUtilities.chooseOperation({
+				operation: 'refresh_operation_token',
+				refresh_token: 'placeholder',
+				hdb_user: scopedUser,
+			});
+			assert.strictEqual(scopedRefreshFn.name, 'refreshOperationToken');
+		});
 	});
 
 	describe('registered operation authorization envelope', function () {
