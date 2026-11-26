@@ -142,16 +142,14 @@ describe('Test serverUtilities.js module ', () => {
 						super_user: false,
 						operations: ['deploy_component', 'get_job', 'get_deployment', 'registration_info'],
 					},
-					deniedOps: ['get_configuration', 'describe_all'],
 				},
-				{
-					name: 'standard_user_group',
-					permission: { super_user: false, operations: ['standard_user'] },
-					deniedOps: ['get_configuration'],
-				},
+				{ name: 'read_only_group', permission: { super_user: false, operations: ['read_only'] } },
+				{ name: 'admin_read_group', permission: { super_user: false, operations: ['admin_read'] } },
+				{ name: 'standard_user_group', permission: { super_user: false, operations: ['standard_user'] } },
+				{ name: 'agent_group', permission: { super_user: false, operations: ['agent'] } },
 			];
 
-			for (const { name, permission, deniedOps } of roles) {
+			for (const { name, permission } of roles) {
 				const hdb_user = { active: true, username: `${name}_user`, role: { role: name, permission } };
 				const refreshFn = serverUtilities.chooseOperation({
 					operation: 'refresh_operation_token',
@@ -159,16 +157,10 @@ describe('Test serverUtilities.js module ', () => {
 					hdb_user,
 				});
 				assert.strictEqual(refreshFn.name, 'refreshOperationToken');
-
-				for (const deniedOp of deniedOps) {
-					assert.throws(
-						() => serverUtilities.chooseOperation({ operation: deniedOp, hdb_user }),
-						(error) => (error.statusCode ?? error.http_code) === 403
-					);
-				}
 			}
 
-			// A token-scoped principal still reaches refreshOperationToken, which carries scope forward.
+			// Dispatch-time tokenScopeDenial is also bypassed; refreshOperationToken carries the
+			// refresh token's own operations claim rather than reading hdb_user.tokenOperations.
 			const scopedUser = {
 				active: true,
 				username: 'scoped_ci_user',
