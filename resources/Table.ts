@@ -963,10 +963,15 @@ const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', '
 const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
 const JOINED_OPENING = Symbol('joinedOpening');
 const OPENING_HOLD = Symbol('openingHold');
-/** Each joined text search opens only once every joined model call has settled, so no snapshot waits across one. */
-function holdUntilEmbedded(openings: any[]) {
+/**
+ * Starts a join's opening for the consumer that awaits it, walking the join once: every text search under it opens
+ * only after every joined model call has settled, so no snapshot waits across one. A direct reader never awaits it,
+ * so each search still opens when its own model answers.
+ */
+function startJoinedOpening(joined: any): Promise<undefined> {
+	const openings = [];
 	const holds = [];
-	const pending = [...openings];
+	const pending = [joined];
 	const seen = new Set();
 	while (pending.length) {
 		const opening = pending.pop();
@@ -974,16 +979,26 @@ function holdUntilEmbedded(openings: any[]) {
 		seen.add(opening);
 		const part = opening[JOINED_OPENING];
 		if (part) pending.push(part.from, part.other);
-		else if (opening[OPENING_HOLD]) holds.push(opening[OPENING_HOLD]);
+		else {
+			openings.push(opening);
+			if (opening[OPENING_HOLD]) holds.push(opening[OPENING_HOLD]);
+		}
 	}
-	const settled = Promise.allSettled(holds.map((hold) => hold.embedded));
-	for (const hold of holds) hold.until = settled;
+	if (holds.length > 1) {
+		const settled = Promise.allSettled(holds.map((hold) => hold.embedded));
+		for (const hold of holds) hold.until = hold.until ? Promise.all([hold.until, settled]) : settled;
+	}
+	return Promise.all(openings).then(() => undefined);
 }
 function joinOpenings(opening: any, other: any, operand: any) {
-	if (other) holdUntilEmbedded([opening, other]);
-	const joined: any = other ? Promise.all([opening, other]) : opening.then(() => undefined);
-	joined.catch(() => {});
-	joined[JOINED_OPENING] = { from: opening, other, operand };
+	let started: Promise<undefined> | undefined;
+	const joined: any = {
+		[JOINED_OPENING]: { from: opening, other, operand },
+		then: (onFulfilled?: any, onRejected?: any) =>
+			(started ??= startJoinedOpening(joined)).then(onFulfilled, onRejected),
+		catch: (onRejected?: any) => joined.then(undefined, onRejected),
+		finally: (onFinally?: any) => (started ??= startJoinedOpening(joined)).finally(onFinally),
+	};
 	joined.release = () => {
 		// a recursive walk overflows the stack on a deep chain, and a reused result is reached more than once
 		const pending = [joined];
@@ -9068,7 +9083,6 @@ export function makeTable(options): TableResourceClass {
 			const deferred: any = new ExtendedIterable();
 			let results: any;
 			let discarded = false;
-			// a join sets `until` while the model call runs
 			const hold: { embedded: Promise<unknown>; until?: Promise<unknown> } = { embedded: embedding.sort };
 			const open = (sort: any): any => {
 				if (discarded) return [];

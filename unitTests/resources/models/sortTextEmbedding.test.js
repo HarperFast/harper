@@ -970,7 +970,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
-		it('a concatenation of text searches opens no snapshot while either model call is still running', async () => {
+		it('a caller awaiting a concatenation of text searches opens no snapshot while either model call is still running', async () => {
 			const secondModel = Promise.withResolvers();
 			let firstAnswered = false;
 			__setEmbedFnForTest((input, opts) => {
@@ -987,6 +987,8 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select }, context)
 					.map((row) => row)
 					.concat(Doc.search({ sort: { attribute: 'embedding', text: 'yellow fruit' }, select }, context));
+				// as REST does, before either model answers
+				const opening = Promise.resolve(searchOpening(joined));
 				await waitFor(() => firstAnswered);
 				// a non-event: give the first search the turns it would take to open its snapshot
 				for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
@@ -996,10 +998,38 @@ describe('Vector search by sort text on an @embed attribute', () => {
 						'a snapshot waited on a model call'
 					);
 				secondModel.resolve();
-				await searchOpening(joined);
+				await opening;
 				const rows = await fromAsync(joined);
 				assert.equal(rows.length, 2 * Object.keys(DOCUMENT_VECTORS).length);
 			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
+		it('a direct reader of a concatenation reads the first text search while the second model call is still running', async () => {
+			const secondModel = Promise.withResolvers();
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('yellow fruit')
+					? secondModel.promise.then(() => embed(input, opts))
+					: embed(input, opts)
+			);
+			try {
+				const select = ['content'];
+				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select }).concat(
+					Doc.search({ sort: { attribute: 'embedding', text: 'yellow fruit' }, select })
+				);
+				const rows = [];
+				const reading = (async () => {
+					for await (const row of joined) rows.push(row);
+				})();
+				await waitFor(() => rows.length === Object.keys(DOCUMENT_VECTORS).length, {
+					message: 'the first search waited on the second model',
+				});
+				secondModel.resolve();
+				await reading;
+				assert.equal(rows.length, 2 * Object.keys(DOCUMENT_VECTORS).length);
+			} finally {
+				secondModel.resolve();
 				__setEmbedFnForTest(failingEmbed);
 			}
 		});
