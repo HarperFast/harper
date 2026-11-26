@@ -158,6 +158,25 @@ describe('application status across directory scans', function () {
 		assert.equal(statusOf('status-place-probe'), STATUS.HEALTHY);
 	});
 
+	it('loads a healthy application afresh when it returns from another thread', async () => {
+		plugin('statusSecondProbe', {});
+		const dir = await application('status-move-probe', 'statusLoadsProbe: {}\n');
+		const realGetConfigObj = configUtils.getConfigObj;
+		try {
+			await scan();
+			assert.equal(statusOf('status-move-probe'), STATUS.HEALTHY, 'precondition: loaded here');
+			configUtils.getConfigObj = () => ({ 'status-move-probe': { isolated: true } });
+			await scan();
+		} finally {
+			configUtils.getConfigObj = realGetConfigObj;
+		}
+		await fs.writeFile(path.join(dir, 'config.yaml'), 'statusSecondProbe: {}\n');
+
+		await scan();
+
+		assert.equal(statusOf('status-move-probe.statusSecondProbe'), STATUS.HEALTHY);
+	});
+
 	it('records a nested package failure under the scoped key, not as processed', async () => {
 		const dir = await application('status-host-probe', 'badpkg:\n  package: badpkg\n');
 		await nestedPackage(dir, 'badpkg', 'branchedDatabases: [data]\n');

@@ -347,8 +347,10 @@ function placementOf(appName: string): boolean {
 		return false;
 	}
 	if (shouldLoadApplicationHere(appName)) return true;
-	// placed on another thread now: a failure this thread recorded while it loaded here no longer describes it
-	if (clearLoaderFailures(appName)) forgetLoadedPaths(appName);
+	// placed on another thread now: a failure this thread recorded while it loaded here no longer describes it, and a
+	// healthy load here would be served stale if it moves back
+	clearLoaderFailures(appName);
+	if (!resources?.isWorker) forgetLoadedPaths(appName);
 	return false;
 }
 
