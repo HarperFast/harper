@@ -172,16 +172,18 @@ function forgetLoadedPaths(appName: string): void {
  * would leave the scopes and handlers of the first load in place.
  */
 function retryIfFailed(appName: string): void {
-	if (resources?.isWorker) return;
-	// a root-config `package:` lives in the components root too, but only the root load may load it
-	if ((getConfigObj()?.[appName] as any)?.package) return;
+	if (resources?.isWorker || isRootConfigPackage(appName)) return;
 	if (clearLoaderFailures(appName)) forgetLoadedPaths(appName);
+}
+
+// A root-config `package:` lives in the components root too, but only the root load may load it.
+function isRootConfigPackage(appName: string): boolean {
+	return Boolean((getConfigObj()?.[appName] as any)?.package);
 }
 
 function retireApplication(appName: string): void {
 	clearLoaderFailures(appName);
-	// as with a retry, a thread that runs plugins must not load a returning application over its first load
-	if (!resources?.isWorker) forgetLoadedPaths(appName);
+	if (!resources?.isWorker && !isRootConfigPackage(appName)) forgetLoadedPaths(appName);
 	const otherApplications = [...applicationsInLastScan, ...Object.keys(getConfigObj() ?? {})].filter((other) =>
 		other.startsWith(appName + '.')
 	);
@@ -348,9 +350,10 @@ function placementOf(appName: string): boolean {
 	}
 	if (shouldLoadApplicationHere(appName)) return true;
 	// placed on another thread now: a failure this thread recorded while it loaded here no longer describes it, and a
-	// healthy load here would be served stale if it moves back; kept, as on a retry, where only the root load may load it
+	// healthy load here would be served stale if it moves back
+	if (isRootConfigPackage(appName)) return false;
 	clearLoaderFailures(appName);
-	if (!resources?.isWorker && !(getConfigObj()?.[appName] as any)?.package) forgetLoadedPaths(appName);
+	if (!resources?.isWorker) forgetLoadedPaths(appName);
 	return false;
 }
 

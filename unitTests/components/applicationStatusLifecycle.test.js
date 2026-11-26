@@ -13,6 +13,7 @@ const configUtils = require('#src/config/configUtils');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { ComponentPreparationLockTimeoutError } = require('#js/components/componentPreparationLock');
 const { waitFor } = require('../waitFor.js');
+const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
 
 const LOADER = require.resolve('#src/components/componentLoader');
 
@@ -162,15 +163,17 @@ describe('application status across directory scans', function () {
 		plugin('statusSecondProbe', {});
 		const dir = await application('status-move-probe', 'statusLoadsProbe: {}\n');
 		const realGetConfigObj = configUtils.getConfigObj;
+		const mainWasWorker = getWorkerIndex() === 0;
+		setMainIsWorker(false); // with no worker threads, isolation is refused rather than placed elsewhere
 		try {
 			await scan();
 			assert.equal(statusOf('status-move-probe'), STATUS.HEALTHY, 'precondition: loaded here');
 			configUtils.getConfigObj = () => ({ 'status-move-probe': { isolated: true } });
 			await scan();
-			// a refusal here (no worker threads) would heal through the retry instead of the move
 			assert.notEqual(statusOf('status-move-probe'), STATUS.ERROR, 'precondition: placed on another thread');
 		} finally {
 			configUtils.getConfigObj = realGetConfigObj;
+			setMainIsWorker(mainWasWorker);
 		}
 		await fs.writeFile(path.join(dir, 'config.yaml'), 'statusSecondProbe: {}\n');
 
