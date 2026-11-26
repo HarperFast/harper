@@ -970,6 +970,40 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('a concatenation of text searches opens no snapshot while either model call is still running', async () => {
+			const secondModel = Promise.withResolvers();
+			let firstAnswered = false;
+			__setEmbedFnForTest((input, opts) => {
+				if (opts.inputType !== 'query') return embed(input, opts);
+				if (input.includes('yellow fruit')) return secondModel.promise.then(() => embed(input, opts));
+				return embed(input, opts).then((vectors) => {
+					firstAnswered = true;
+					return vectors;
+				});
+			});
+			try {
+				const context = recordingContext();
+				const select = ['content'];
+				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select }, context)
+					.map((row) => row)
+					.concat(Doc.search({ sort: { attribute: 'embedding', text: 'yellow fruit' }, select }, context));
+				await waitFor(() => firstAnswered);
+				// a non-event: give the first search the turns it would take to open its snapshot
+				for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+				if (observesSnapshot)
+					assert.ok(
+						context.storeLinks().every((txn) => !txn.readTxnsUsed),
+						'a snapshot waited on a model call'
+					);
+				secondModel.resolve();
+				await searchOpening(joined);
+				const rows = await fromAsync(joined);
+				assert.equal(rows.length, 2 * Object.keys(DOCUMENT_VECTORS).length);
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
 		it('answers a REST QUERY with the failure as its status when the table maps its search', async () => {
 			failure = new Error('backend down');
 			class MappedDoc extends Doc {

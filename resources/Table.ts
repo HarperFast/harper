@@ -962,7 +962,25 @@ const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', '
 
 const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
 const JOINED_OPENING = Symbol('joinedOpening');
+const OPENING_HOLD = Symbol('openingHold');
+/** Each joined text search opens only once every joined model call has settled, so no snapshot waits across one. */
+function holdUntilEmbedded(openings: any[]) {
+	const holds = [];
+	const pending = [...openings];
+	const seen = new Set();
+	while (pending.length) {
+		const opening = pending.pop();
+		if (!opening || seen.has(opening)) continue;
+		seen.add(opening);
+		const part = opening[JOINED_OPENING];
+		if (part) pending.push(part.from, part.other);
+		else if (opening[OPENING_HOLD]) holds.push(opening[OPENING_HOLD]);
+	}
+	const settled = Promise.allSettled(holds.map((hold) => hold.embedded));
+	for (const hold of holds) hold.until = settled;
+}
 function joinOpenings(opening: any, other: any, operand: any) {
+	if (other) holdUntilEmbedded([opening, other]);
 	const joined: any = other ? Promise.all([opening, other]) : opening.then(() => undefined);
 	joined.catch(() => {});
 	joined[JOINED_OPENING] = { from: opening, other, operand };
@@ -9050,23 +9068,27 @@ export function makeTable(options): TableResourceClass {
 			const deferred: any = new ExtendedIterable();
 			let results: any;
 			let discarded = false;
+			// a join sets `until` while the model call runs
+			const hold: { embedded: Promise<unknown>; until?: Promise<unknown> } = { embedded: embedding.sort };
+			const open = (sort: any): any => {
+				if (discarded) return [];
+				const until = hold.until;
+				if (!until) return search(sort);
+				hold.until = undefined;
+				return until.then(() => open(sort));
+			};
 			const opening: any = embedding.sort
-				.then(
-					(sort) => {
-						if (discarded) return [];
-						return search(sort);
-					},
-					(error) => {
-						if (discarded) return [];
-						throw error;
-					}
-				)
+				.then(open, (error) => {
+					if (discarded) return [];
+					throw error;
+				})
 				.then((searched) => {
 					results = searched;
 					if (discarded) searched.onDone?.();
 					return searched;
 				});
 			opening.catch(() => {});
+			opening[OPENING_HOLD] = hold;
 			opening.release = () => cleanUp(() => deferred.onDone?.());
 			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false, joinOpenings);
 			deferred.iterate = (options: any = {}) =>
@@ -14628,6 +14650,7 @@ export function makeTable(options): TableResourceClass {
 		let texts = 0;
 		for (let order = sort; order; order = order.next) {
 			if (order.text === undefined) continue;
+			if (order !== sort) assertSortAttribute(order.attribute);
 			// every text is billed before the row limit applies
 			if (++texts > MAX_SORT_TEXTS) throw new ClientError(`A sort can embed at most ${MAX_SORT_TEXTS} texts`);
 			const name = Array.isArray(order.attribute) ? order.attribute.join('.') : order.attribute;

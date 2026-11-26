@@ -61,10 +61,12 @@ describe('A sort level after the first', () => {
 
 	it('is refused when it names no attribute', async () => {
 		for (const Table of [Sealed, Open]) {
-			for (const next of [{ descending: true }, { attribute: [] }, { attribute: '' }, { attribute: [''] }]) {
+			// a level with text is checked before its model call, so it gets the same 400
+			const nexts = [{ descending: true }, { attribute: [] }, { attribute: '' }, { attribute: [''] }];
+			for (const next of [...nexts, { attribute: '', text: 'q' }, { attribute: [''], text: 'q' }]) {
 				await assert.rejects(
 					async () => fromAsync(Table.search({ sort: { attribute: 'tag', next } })),
-					/Sort requires an attribute/
+					(error) => error.statusCode === 400 && /Sort requires an attribute/.test(error.message)
 				);
 			}
 		}
