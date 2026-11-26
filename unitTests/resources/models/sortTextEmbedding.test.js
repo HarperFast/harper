@@ -970,7 +970,7 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
-		it('a caller awaiting a concatenation of text searches opens no snapshot while either model call is still running', async () => {
+		it('a concatenation of text searches opens no snapshot while either model call is still running, however late its opening is awaited', async () => {
 			const secondModel = Promise.withResolvers();
 			let firstAnswered = false;
 			__setEmbedFnForTest((input, opts) => {
@@ -981,22 +981,26 @@ describe('Vector search by sort text on an @embed attribute', () => {
 					return vectors;
 				});
 			});
-			try {
-				const context = recordingContext();
-				const select = ['content'];
-				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select }, context)
-					.map((row) => row)
-					.concat(Doc.search({ sort: { attribute: 'embedding', text: 'yellow fruit' }, select }, context));
-				// as REST does, before either model answers
-				const opening = Promise.resolve(searchOpening(joined));
-				await waitFor(() => firstAnswered);
-				// a non-event: give the first search the turns it would take to open its snapshot
+			// a non-event: give the first search the turns it would take to open its snapshot
+			const noSnapshot = async (message) => {
 				for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
 				if (observesSnapshot)
 					assert.ok(
 						context.storeLinks().every((txn) => !txn.readTxnsUsed),
-						'a snapshot waited on a model call'
+						message
 					);
+			};
+			const context = recordingContext();
+			try {
+				const select = ['content'];
+				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select }, context)
+					.map((row) => row)
+					.concat(Doc.search({ sort: { attribute: 'embedding', text: 'yellow fruit' }, select }, context));
+				await waitFor(() => firstAnswered);
+				await noSnapshot('the first search opened before anyone awaited the concatenation');
+				// as REST does, after the first model answered
+				const opening = Promise.resolve(searchOpening(joined));
+				await noSnapshot('the first search opened while the second model was still running');
 				secondModel.resolve();
 				await opening;
 				const rows = await fromAsync(joined);

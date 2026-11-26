@@ -962,15 +962,10 @@ const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', '
 
 const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
 const JOINED_OPENING = Symbol('joinedOpening');
-const OPENING_HOLD = Symbol('openingHold');
-/**
- * Starts a join's opening for the consumer that awaits it, walking the join once: every text search under it opens
- * only after every joined model call has settled, so no snapshot waits across one. A direct reader never awaits it,
- * so each search still opens when its own model answers.
- */
+const OPENING_EMBEDDED = Symbol('openingEmbedded');
+/** A text search starts its read when its opening is awaited, so a join starts none until every joined model call answers. */
 function startJoinedOpening(joined: any): Promise<undefined> {
 	const openings = [];
-	const holds = [];
 	const pending = [joined];
 	const seen = new Set();
 	while (pending.length) {
@@ -979,16 +974,11 @@ function startJoinedOpening(joined: any): Promise<undefined> {
 		seen.add(opening);
 		const part = opening[JOINED_OPENING];
 		if (part) pending.push(part.from, part.other);
-		else {
-			openings.push(opening);
-			if (opening[OPENING_HOLD]) holds.push(opening[OPENING_HOLD]);
-		}
+		else openings.push(opening);
 	}
-	if (holds.length > 1) {
-		const settled = Promise.allSettled(holds.map((hold) => hold.embedded));
-		for (const hold of holds) hold.until = hold.until ? Promise.all([hold.until, settled]) : settled;
-	}
-	return Promise.all(openings).then(() => undefined);
+	return Promise.all(openings.map((opening) => opening[OPENING_EMBEDDED]))
+		.then(() => Promise.all(openings))
+		.then(() => undefined);
 }
 function joinOpenings(opening: any, other: any, operand: any) {
 	let started: Promise<undefined> | undefined;
@@ -9083,26 +9073,33 @@ export function makeTable(options): TableResourceClass {
 			const deferred: any = new ExtendedIterable();
 			let results: any;
 			let discarded = false;
-			const hold: { embedded: Promise<unknown>; until?: Promise<unknown> } = { embedded: embedding.sort };
-			const open = (sort: any): any => {
-				if (discarded) return [];
-				const until = hold.until;
-				if (!until) return search(sort);
-				hold.until = undefined;
-				return until.then(() => open(sort));
+			let started: Promise<any> | undefined;
+			// a model call has no deadline, so the read starts only once a reader or a caller awaiting the opening asks for it
+			const start = () => {
+				if (started) return started;
+				started = embedding.sort
+					.then(
+						(sort) => (discarded ? [] : search(sort)),
+						(error) => {
+							if (discarded) return [];
+							throw error;
+						}
+					)
+					.then((searched) => {
+						results = searched;
+						if (discarded) searched.onDone?.();
+						return searched;
+					});
+				started.catch(() => {});
+				return started;
 			};
-			const opening: any = embedding.sort
-				.then(open, (error) => {
-					if (discarded) return [];
-					throw error;
-				})
-				.then((searched) => {
-					results = searched;
-					if (discarded) searched.onDone?.();
-					return searched;
-				});
-			opening.catch(() => {});
-			opening[OPENING_HOLD] = hold;
+			embedding.sort.catch(() => {});
+			const opening: any = {
+				[OPENING_EMBEDDED]: embedding.sort,
+				then: (onFulfilled?: any, onRejected?: any) => start().then(onFulfilled, onRejected),
+				catch: (onRejected?: any) => start().catch(onRejected),
+				finally: (onFinally?: any) => start().finally(onFinally),
+			};
 			opening.release = () => cleanUp(() => deferred.onDone?.());
 			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false, joinOpenings);
 			deferred.iterate = (options: any = {}) =>
