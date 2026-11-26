@@ -415,6 +415,36 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert.strictEqual((await IdTable.get(storedId)).a, 'stored');
 	});
 
+	it('keeps the range a sibling relocated to after the extension read the counter', async function () {
+		const { IdTable } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		IdTable.getNewId();
+		const initial = readAllocation(store);
+		getNewIdsUntil(IdTable, (id) => id + 0x200 === initial.end);
+		const siblingStart = initial.start < 1_000_000_000 ? 1_800_000_000 : 200_000_000;
+		const sibling = { ...initial, start: siblingStart, end: siblingStart + 0x400 };
+		const getKeys = store.getKeys;
+		let relocated = false;
+		// the queued extension's scan runs after its counter read and before its range read
+		store.getKeys = function (options) {
+			if (!relocated) {
+				relocated = true;
+				writeAllocation(store, sibling);
+				Atomics.store(sharedCounter(store), 0, BigInt(sibling.start + 1));
+			}
+			return getKeys.call(this, options);
+		};
+		try {
+			await new Promise((resolve) => setImmediate(resolve));
+		} finally {
+			store.getKeys = getKeys;
+		}
+		assert(relocated, 'precondition: the queued extension ran');
+		assert.deepStrictEqual(readAllocation(store), sibling, 'the extension replaced the range a sibling relocated to');
+		const nextId = IdTable.getNewId();
+		assert(nextId > sibling.start && nextId <= sibling.end, `id ${nextId} is outside the sibling's range`);
+	});
+
 	it('issues unique ids after a clear, and a reopen continues above them', async function () {
 		const { IdTable, definition } = await twoShapeTable('TwoShapesClear');
 		await IdTable.post({ a: 'before the clear' });

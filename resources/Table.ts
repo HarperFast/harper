@@ -4360,6 +4360,17 @@ export function makeTable(options): TableResourceClass {
 						readTxn?.done();
 					}
 					const updatedIdAllocation = readIdAllocation();
+					const liveId = Number(idIncrementer[0]);
+					if (
+						updatedIdAllocation &&
+						!(updatedIdAllocation.start <= newestId && newestId <= updatedIdAllocation.end) &&
+						updatedIdAllocation.start < liveId &&
+						liveId <= updatedIdAllocation.end
+					) {
+						// a sibling relocated the counter into the stored range after this extension read it
+						idIncrementer.maxSafeId = updatedIdAllocation.end;
+						return;
+					}
 					// a range that does not hold the counter (missing, or another range) cannot bound the ids it issues
 					const storedHoldsCounter = updatedIdAllocation?.start <= newestId;
 					if (proposedEnd < idAfter) {
