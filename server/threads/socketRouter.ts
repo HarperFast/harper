@@ -193,8 +193,8 @@ let poolSize = 0;
 let dedicatedPoolsStarted = false;
 let dedicatedWorkerCount = 0;
 const refusedIsolated = new Set<string>(); // reported once, not on every reconcile
-// What this thread reported of each dedicated worker, by revision (every status write replaces `lastChecked`): once an
-// application is no longer isolated, the main thread may load it from its cache, which writes nothing over it.
+// What this thread reported of each dedicated worker, by revision (every status write replaces `lastChecked`): a later
+// ready, or the application no longer being isolated, replaces or clears only a report that is still this thread's.
 const dedicatedWorkerReports = new Map<string, Date>();
 
 function reportDedicatedWorker(application: string, report: () => void) {
