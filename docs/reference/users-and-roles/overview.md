@@ -76,10 +76,12 @@ When creating or altering a role, you define a `permission` object:
 
 The `operations` field in a permission object restricts which Operations API calls this role can make. When set, it acts as a two-gate check:
 
-1. Only listed operations are reachable — any unlisted operation is denied regardless of table CRUD permissions.
+1. Only listed operations are reachable — any unlisted operation is denied regardless of table CRUD permissions, apart from the authentication and session operations below.
 2. For data operations that pass gate one, table-level CRUD permissions still apply as normal.
 
 Operations normally restricted to `super_user` can be selectively granted by including them in the list. If `operations` is not set, the role can call any non-`super_user` operation, subject to table CRUD permissions.
+
+The authentication and session operations (`create_authentication_tokens`, `login`, `logout`, `exchange_oidc_token`, and — starting in v5.3.7 and v5.4.3 — `refresh_operation_token`) bypass the `operations` list because each authenticates its own credential or session; any operation token minted by `refresh_operation_token` still enforces the role's `operations` list.
 
 List an aliased operation by its canonical name. `create_database`, `drop_database`, `describe_schema`, `search_by_hash`, `add_component`, `package_component`, `deploy_component`, and `delete_files_before` each grant their legacy spelling too (`create_schema`, `drop_schema`, `describe_database`, `search_by_id`, `add_custom_function_project`, `package_custom_function_project`, `deploy_custom_function_project`, `delete_records_before`), but a list that names only the legacy spelling grants neither.
 
@@ -87,7 +89,7 @@ A few `super_user` operations cannot be granted by listing them: the secrets-sto
 
 <VersionBadge type="changed" version="v5.3.0" />
 
-An operation the list omits is denied whatever else the role carries — the list is checked ahead of every other permission on the role. Earlier v5 releases let table DDL and SQL around it; both now go through it. The authentication and session operations (`create_authentication_tokens`, `refresh_operation_token`, `login`, `logout`, and `exchange_oidc_token`) bypass the list because each authenticates its own credential; any operation token minted by `refresh_operation_token` still enforces the role's `operations` list.
+An operation the list omits is denied whatever else the role carries — the list is checked ahead of every other permission on the role. Earlier v5 releases let table DDL and SQL around it; both now go through it.
 
 Earlier releases also let a role list `deploy_component`, `add_component`, `drop_component`, `package_component`, `set_component_file`, `set_custom_function`, `drop_custom_function`, `drop_custom_function_project`, `restart_service`, `set_configuration`, `get_status`, `set_status`, `clear_status`, `install_node_modules`, `delete_files_before`, `delete_audit_logs_before`, `delete_transaction_logs_before`, `cleanup_orphan_blobs`, `search_jobs_by_start_date`, and `registration_info` but refused the call, whatever else the role carried. They are granted as listed now. `catchup`, which earlier releases granted to a role that listed it, no longer can be.
 
