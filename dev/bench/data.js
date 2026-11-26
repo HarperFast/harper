@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795684074247,
+  "lastUpdate": 1795684079028,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -38025,6 +38025,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1810.3,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ethan Arrowood",
+            "username": "Ethan-Arrowood",
+            "email": "ethan@arrowood.dev"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9e6cc451e398d96417153ce747839f7d79937d1c",
+          "message": "Point docs links at docs.harper.fast (#4591)",
+          "timestamp": "2026-11-25T07:53:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/9e6cc451e398d96417153ce747839f7d79937d1c"
+        },
+        "date": 1795684077889,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 30296.49,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 30296.49,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 485.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1932.9,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 2886.4,
             "unit": "ms"
           }
         ]
