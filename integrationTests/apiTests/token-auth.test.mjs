@@ -393,7 +393,7 @@ suite('Token authentication', (ctx) => {
 			username: 'standard_user_refresh_user',
 			operations: ['standard_user'],
 			allowedOp: 'user_info',
-			deniedOps: ['get_configuration'],
+			deniedOps: ['get_configuration', 'registration_info'],
 		},
 	]) {
 		test(
