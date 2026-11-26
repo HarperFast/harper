@@ -4366,8 +4366,8 @@ export function makeTable(options): TableResourceClass {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
 						if (storedHoldsCounter && updatedIdAllocation.end > proposedEnd - 100) {
-							// the allocation was already updated by another thread
-							idIncrementer.maxSafeId = updatedIdAllocation.end;
+							// the allocation was already updated by another thread; its end can lie past the key this scan found
+							idIncrementer.maxSafeId = Math.min(updatedIdAllocation.end, idAfter - 1);
 							return;
 						}
 						if (!storedHoldsCounter)

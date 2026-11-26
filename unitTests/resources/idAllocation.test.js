@@ -53,6 +53,32 @@ function getNewIdsUntil(IdTable, done) {
 	assert.fail(`condition not reached within ${MAX_IDS} ids`);
 }
 
+function startIdThread(workerData) {
+	const thread = new Worker(__dirname + '/fixtures/idAllocationThread.js', { workerData });
+	const exited = once(thread, 'exit');
+	exited.catch(() => {});
+	return { thread, exited };
+}
+
+function nextMessage(thread) {
+	return once(thread, 'message', { signal: AbortSignal.timeout(30_000) });
+}
+
+async function stopIdThreads(threads) {
+	// as create.test.js: a graceful exit closes the worker's handles; terminate is the fallback
+	await Promise.allSettled(
+		threads.map(async ({ thread, exited }) => {
+			const fallback = setTimeout(() => thread.terminate().catch(() => {}), 1000);
+			thread.postMessage({ type: 'shutdown' });
+			try {
+				await exited;
+			} finally {
+				clearTimeout(fallback);
+			}
+		})
+	);
+}
+
 // LMDB serializes write transactions, so a sibling commit cannot land inside this thread's allocation transaction.
 describe('Auto-increment id allocation under concurrent allocation writes', function () {
 	before(function () {
@@ -371,6 +397,24 @@ describe('Auto-increment id allocation as the third record structure', function 
 		assert(stored.start <= lastId + 1 && stored.end > lastId, 'the stored range does not hold the ids issued');
 	});
 
+	it('does not issue a stored id below a longer stored end it takes', async function () {
+		const { IdTable } = await twoShapeTable();
+		const store = IdTable.primaryStore;
+		IdTable.getNewId();
+		const initial = readAllocation(store);
+		// a sibling stored a far end, and a row lies past what this thread's queued extension proposes
+		writeAllocation(store, { ...initial, end: initial.end + 0x10000 });
+		const storedId = initial.end + 0x300;
+		await IdTable.put({ id: storedId, a: 'stored' });
+		getNewIdsUntil(IdTable, (id) => id + 0x200 === initial.end);
+		await new Promise((resolve) => setImmediate(resolve));
+		getNewIdsUntil(IdTable, (id) => {
+			assert.notStrictEqual(id, storedId, 'the stored id was issued');
+			return id > storedId || readAllocation(store).start !== initial.start;
+		});
+		assert.strictEqual((await IdTable.get(storedId)).a, 'stored');
+	});
+
 	it('issues unique ids after a clear, and a reopen continues above them', async function () {
 		const { IdTable, definition } = await twoShapeTable('TwoShapesClear');
 		await IdTable.post({ a: 'before the clear' });
@@ -408,19 +452,16 @@ describe('Auto-increment id allocation as the third record structure', function 
 		for (let i = 0; i < 10; i++) await IdTable.post({ a: `before${i}` });
 		store.removeSync(ID_ALLOCATION);
 		const liveId = Number(sharedCounter(store)[0]);
-		const thread = new Worker(__dirname + '/fixtures/idAllocationThread.js', { workerData: { definition } });
-		const exited = once(thread, 'exit', { signal: AbortSignal.timeout(30_000) });
+		const worker = startIdThread({ definition });
 		try {
-			thread.postMessage({ type: 'newId' });
-			const [{ id, start, end }] = await once(thread, 'message', { signal: AbortSignal.timeout(30_000) });
+			const reply = nextMessage(worker.thread);
+			worker.thread.postMessage({ type: 'newId' });
+			const [{ id, start, end, error }] = await reply;
+			assert.strictEqual(error, undefined, `the thread failed to take an id: ${error}`);
 			assert.strictEqual(id, liveId, 'the thread did not continue the live counter');
 			assert(start <= id + 1 && end > id, `the stored range [${start}, ${end}] does not cover id ${id}`);
 		} finally {
-			// as create.test.js: a graceful exit closes the worker's handles; terminate is the fallback
-			const fallback = setTimeout(() => thread.terminate().catch(() => {}), 1000);
-			thread.postMessage({ type: 'shutdown' });
-			await exited;
-			clearTimeout(fallback);
+			await stopIdThreads([worker]);
 		}
 	});
 
@@ -500,29 +541,21 @@ describe('Auto-increment ids after a restart whose stored range ends below store
 		const { IdTable, definition, storedIds } = await staleEndTable('StaleEndThreads', 40);
 		const threads = [];
 		try {
-			for (let i = 0; i < 3; i++) {
-				const thread = new Worker(__dirname + '/fixtures/idAllocationThread.js', {
-					workerData: { definition, announceReady: true },
-				});
-				threads.push({ thread, exited: once(thread, 'exit', { signal: AbortSignal.timeout(60_000) }) });
-			}
-			await Promise.all(threads.map(({ thread }) => once(thread, 'message', { signal: AbortSignal.timeout(30_000) })));
-			const replies = threads.map(({ thread }) => once(thread, 'message', { signal: AbortSignal.timeout(30_000) }));
+			for (let i = 0; i < 3; i++) threads.push(startIdThread({ definition, announceReady: true }));
+			await Promise.all(threads.map(({ thread }) => nextMessage(thread)));
+			const replies = Promise.allSettled(threads.map(({ thread }) => nextMessage(thread)));
 			for (const { thread } of threads) thread.postMessage({ type: 'newId' });
 			const ids = [IdTable.getNewId()];
-			for (const [reply] of await Promise.all(replies)) {
-				assert.strictEqual(reply.error, undefined, `a thread failed to take an id: ${reply.error}`);
-				ids.push(reply.id);
+			for (const result of await replies) {
+				assert.strictEqual(result.status, 'fulfilled', `a thread did not answer: ${result.reason}`);
+				const [{ id, error }] = result.value;
+				assert.strictEqual(error, undefined, `a thread failed to take an id: ${error}`);
+				ids.push(id);
 			}
 			for (const id of ids) assert(!storedIds.includes(id), `id ${id} is already stored`);
 			assert.strictEqual(new Set(ids).size, ids.length, `an id was issued twice: ${ids}`);
 		} finally {
-			for (const { thread, exited } of threads) {
-				const fallback = setTimeout(() => thread.terminate().catch(() => {}), 1000);
-				thread.postMessage({ type: 'shutdown' });
-				await exited;
-				clearTimeout(fallback);
-			}
+			await stopIdThreads(threads);
 		}
 		await assertStoredRowsKept(IdTable, storedIds);
 	});
@@ -552,7 +585,6 @@ describe('Auto-increment ids after a restart whose stored range ends below store
 		const store = IdTable.primaryStore;
 		const readMethod = isLMDB ? 'getBinary' : 'getBinarySync';
 		const read = store[readMethod];
-		// every id reads as stored, as if the counter could not leave stored rows
 		store[readMethod] = function (key, options) {
 			return typeof key === 'number' ? Buffer.from([1]) : read.call(this, key, options);
 		};
