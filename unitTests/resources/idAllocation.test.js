@@ -9,6 +9,7 @@ const { Worker } = require('node:worker_threads');
 const { once } = require('node:events');
 const insert = require('#src/dataLayer/insert');
 const { asBinary } = require('#src/resources/asBinary');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { waitFor } = require('../waitFor');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -444,5 +445,123 @@ describe('Auto-increment id allocation as the third record structure', function 
 		const stored = readAllocation(store);
 		assert(stored.start > initial.start && stored.start < initial.end, 'expected the range in use to be stored');
 		assert(stored.end > initial.end, 'expected the range to be extended');
+	});
+});
+
+// harper#4609: the range write is not write-ahead logged (#4606), so a hard kill can lose the newest range end while
+// the transaction log replays the rows issued under it. These tables start in that state, before the allocator runs.
+describe('Auto-increment ids after a restart whose stored range ends below stored rows', function () {
+	const database = 'idAllocationStaleEnd';
+	let identity;
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const Probe = table({
+			table: 'StaleEndProbe',
+			database,
+			attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
+		});
+		Probe.getNewId();
+		const { nodeName, pid } = readAllocation(Probe.primaryStore);
+		identity = { nodeName, pid };
+	});
+
+	async function staleEndTable(name, rowsPastEnd) {
+		const definition = {
+			table: name,
+			database,
+			attributes: [
+				{ name: 'id', type: 'Int', isPrimaryKey: true },
+				{ name: 'a', type: 'String' },
+			],
+		};
+		const IdTable = table(definition);
+		const store = IdTable.primaryStore;
+		const range = { start: 1000, end: 1000 + 0x400, ...identity };
+		writeAllocation(store, range);
+		const storedIds = [];
+		for (let id = range.end; id <= range.end + rowsPastEnd; id++) {
+			await IdTable.put({ id, a: `stored${id}` });
+			storedIds.push(id);
+		}
+		assert.deepStrictEqual(readAllocation(store), range, 'precondition: the range ends below stored rows');
+		assert.strictEqual(Atomics.load(sharedCounter(store), 0), 0n, 'precondition: no thread has started the allocator');
+		return { IdTable, definition, range, storedIds };
+	}
+
+	async function assertStoredRowsKept(IdTable, storedIds) {
+		for (const id of storedIds) {
+			assert.strictEqual((await IdTable.get(id))?.a, `stored${id}`, `the row at ${id} was replaced`);
+		}
+	}
+
+	it('issues no stored id to threads that start the allocator together', async function () {
+		const { IdTable, definition, storedIds } = await staleEndTable('StaleEndThreads', 40);
+		const threads = [];
+		try {
+			for (let i = 0; i < 3; i++) {
+				const thread = new Worker(__dirname + '/fixtures/idAllocationThread.js', {
+					workerData: { definition, announceReady: true },
+				});
+				threads.push({ thread, exited: once(thread, 'exit', { signal: AbortSignal.timeout(60_000) }) });
+			}
+			await Promise.all(threads.map(({ thread }) => once(thread, 'message', { signal: AbortSignal.timeout(30_000) })));
+			const replies = threads.map(({ thread }) => once(thread, 'message', { signal: AbortSignal.timeout(30_000) }));
+			for (const { thread } of threads) thread.postMessage({ type: 'newId' });
+			const ids = [IdTable.getNewId()];
+			for (const [reply] of await Promise.all(replies)) {
+				assert.strictEqual(reply.error, undefined, `a thread failed to take an id: ${reply.error}`);
+				ids.push(reply.id);
+			}
+			for (const id of ids) assert(!storedIds.includes(id), `id ${id} is already stored`);
+			assert.strictEqual(new Set(ids).size, ids.length, `an id was issued twice: ${ids}`);
+		} finally {
+			for (const { thread, exited } of threads) {
+				const fallback = setTimeout(() => thread.terminate().catch(() => {}), 1000);
+				thread.postMessage({ type: 'shutdown' });
+				await exited;
+				clearTimeout(fallback);
+			}
+		}
+		await assertStoredRowsKept(IdTable, storedIds);
+	});
+
+	it('keeps a stored row when a loadAsInstance=false collection POST takes the first id', async function () {
+		const { IdTable, range, storedIds } = await staleEndTable('StaleEndStaticPost', 1);
+		class StaticIdTable extends IdTable {
+			static loadAsInstance = false;
+		}
+		const id = await StaticIdTable.post(new RequestTarget('/'), { a: 'posted' });
+		await assertStoredRowsKept(IdTable, storedIds);
+		assert.strictEqual(id, range.end + 2, 'the POST did not take the id after the stored rows');
+		assert.strictEqual((await IdTable.get(id))?.a, 'posted');
+		assert.strictEqual(readAllocation(IdTable.primaryStore).start, range.start, 'expected the range to be extended');
+	});
+
+	it('answers a default-resource POST that takes the first id with a new row, not a 409', async function () {
+		const { IdTable, storedIds } = await staleEndTable('StaleEndPost', 1);
+		const id = await IdTable.post({ a: 'posted' });
+		assert(!storedIds.includes(id), `id ${id} is already stored`);
+		await assertStoredRowsKept(IdTable, storedIds);
+		assert.strictEqual((await IdTable.get(id))?.a, 'posted');
+	});
+
+	it('refuses with a 503 rather than issue a stored id, and recovers', async function () {
+		const { IdTable, storedIds } = await staleEndTable('StaleEndExhausted', 1);
+		const store = IdTable.primaryStore;
+		const readMethod = isLMDB ? 'getBinary' : 'getBinarySync';
+		const read = store[readMethod];
+		// every id reads as stored, as if the counter could not leave stored rows
+		store[readMethod] = function (key, options) {
+			return typeof key === 'number' ? Buffer.from([1]) : read.call(this, key, options);
+		};
+		try {
+			assert.throws(() => IdTable.getNewId(), { statusCode: 503 });
+		} finally {
+			store[readMethod] = read;
+		}
+		const id = IdTable.getNewId();
+		assert(!storedIds.includes(id), `id ${id} is already stored`);
 	});
 });

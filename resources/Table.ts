@@ -944,6 +944,7 @@ const STRIP_MAX_ATTEMPTS = 20;
 const STRIP_RETRY_BUDGET_MS = 30_000;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
 const LEGACY_HEADER_COLLISION = 0x42;
+const MAX_ID_REISSUES = 8;
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
 }
@@ -2920,6 +2921,9 @@ export function makeTable(options): TableResourceClass {
 			decodeIdAllocation(stored, legacyFirst) ?? (ambiguous ? decodeIdAllocation(stored, !legacyFirst) : undefined)
 		);
 	}
+	function isStoredKey(id: number) {
+		return (isRocksDB ? (primaryStore as RocksDatabase).getBinarySync(id) : primaryStore.getBinary(id)) != null;
+	}
 	function decodeIdAllocation(stored: Uint8Array, noMetadata: boolean) {
 		let allocation;
 		try {
@@ -4333,7 +4337,7 @@ export function makeTable(options): TableResourceClass {
 			}
 			// this is where we actually do the atomic incrementation. All the threads should be pointing to the same
 			// memory location of this incrementer, so we can be sure that the id is unique and sequential.
-			const nextId = Number(Atomics.add(idIncrementer, 0, 1n));
+			let nextId = Number(Atomics.add(idIncrementer, 0, 1n));
 			const asyncIdExpansionThreshold = type === 'Int' ? 0x200 : 0x100000;
 			if (nextId + asyncIdExpansionThreshold >= idIncrementer.maxSafeId) {
 				const updateEnd = (inTxn?: boolean) => {
@@ -4407,7 +4411,16 @@ export function makeTable(options): TableResourceClass {
 						}`
 					);
 					// if we are very close to the end, synchronously update
-					primaryStore.transactionSync(() => updateEnd(true));
+					for (let reissues = 0; ; reissues++) {
+						primaryStore.transactionSync(() => updateEnd(true));
+						// the extension scans from the live counter, which is past this id, and a hard kill can lose the range
+						// end that covered stored rows (harper#4609)
+						if (!isStoredKey(nextId)) break;
+						if (reissues === MAX_ID_REISSUES)
+							throw new ServerError(`Unable to allocate a new id in table ${tableName}`, 503);
+						logger.warn?.(`Id ${nextId} in table ${tableName} is already stored, issuing another`);
+						nextId = Number(Atomics.add(idIncrementer, 0, 1n));
+					}
 				}
 				//TODO: Add a check to recordUpdate to check if a new id infringes on the allocated id range
 			}

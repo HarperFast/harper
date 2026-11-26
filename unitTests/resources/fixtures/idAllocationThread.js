@@ -11,9 +11,15 @@ parentPort
 	.on('message', (message) => {
 		if (message.type === 'shutdown') process.exit(0);
 		if (message.type === 'newId') {
-			const id = IdTable.getNewId();
+			let id;
+			try {
+				id = IdTable.getNewId();
+			} catch (error) {
+				return parentPort.postMessage({ error: error.message });
+			}
 			const allocation = IdTable.primaryStore.getEntry(Symbol.for('id_allocation'))?.value;
 			parentPort.postMessage({ id, start: allocation?.start, end: allocation?.end });
 		}
 	})
 	.ref();
+if (workerData.announceReady) parentPort.postMessage({ ready: true });
