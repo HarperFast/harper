@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795677308219,
+  "lastUpdate": 1795684074247,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -31203,6 +31203,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 569625,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Ethan Arrowood",
+            "username": "Ethan-Arrowood",
+            "email": "ethan@arrowood.dev"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9e6cc451e398d96417153ce747839f7d79937d1c",
+          "message": "Point docs links at docs.harper.fast (#4591)",
+          "timestamp": "2026-11-25T07:53:19Z",
+          "url": "https://github.com/HarperFast/harper/commit/9e6cc451e398d96417153ce747839f7d79937d1c"
+        },
+        "date": 1795684070829,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 20285,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 10161,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 12776,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 15192832,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 2990,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 630115,
             "unit": "ops"
           }
         ]
