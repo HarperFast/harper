@@ -420,7 +420,6 @@ suite('Token authentication', (ctx) => {
 					})
 					.expect(200);
 
-				// Log in with create_authentication_tokens
 				const loginResp = await request(client.operationsURL)
 					.post('')
 					.set('Content-Type', 'application/json')
@@ -429,7 +428,6 @@ suite('Token authentication', (ctx) => {
 				assert.ok(loginResp.body.operation_token, loginResp.text);
 				assert.ok(loginResp.body.refresh_token, loginResp.text);
 
-				// Refresh using the refresh token succeeds even though operations omits refresh_operation_token
 				const refreshResp = await request(client.operationsURL)
 					.post('')
 					.set('Content-Type', 'application/json')
@@ -439,7 +437,6 @@ suite('Token authentication', (ctx) => {
 				const refreshedOpToken = refreshResp.body.operation_token;
 				assert.ok(refreshedOpToken, refreshResp.text);
 
-				// Refreshed operation token can call an allowed op and is still denied unlisted ops
 				await request(client.operationsURL)
 					.post('')
 					.set('Content-Type', 'application/json')
@@ -455,7 +452,6 @@ suite('Token authentication', (ctx) => {
 						.expect(403);
 				}
 
-				// Refresh with an operation token in Authorization header (no refresh_token in body) fails
 				await request(client.operationsURL)
 					.post('')
 					.set('Content-Type', 'application/json')
@@ -463,7 +459,6 @@ suite('Token authentication', (ctx) => {
 					.send({ operation: 'refresh_operation_token' })
 					.expect(400);
 
-				// Refresh with an operation token passed in refresh_token body field fails
 				await request(client.operationsURL)
 					.post('')
 					.set('Content-Type', 'application/json')
@@ -471,7 +466,6 @@ suite('Token authentication', (ctx) => {
 					.send({ operation: 'refresh_operation_token', refresh_token: refreshedOpToken })
 					.expect(401);
 
-				// Refresh with a garbage token in Authorization header fails
 				await request(client.operationsURL)
 					.post('')
 					.set('Content-Type', 'application/json')
@@ -479,7 +473,6 @@ suite('Token authentication', (ctx) => {
 					.send({ operation: 'refresh_operation_token' })
 					.expect(401);
 
-				// Refresh with a garbage token in refresh_token body field fails
 				await request(client.operationsURL)
 					.post('')
 					.set('Content-Type', 'application/json')

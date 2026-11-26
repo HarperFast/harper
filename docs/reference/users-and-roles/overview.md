@@ -87,7 +87,7 @@ A few `super_user` operations cannot be granted by listing them: the secrets-sto
 
 <VersionBadge type="changed" version="v5.3.0" />
 
-An operation the list omits is denied whatever else the role carries — the list is checked ahead of every other permission on the role. Earlier v5 releases let table DDL and SQL around it; both now go through it.
+An operation the list omits is denied whatever else the role carries — the list is checked ahead of every other permission on the role. Earlier v5 releases let table DDL and SQL around it; both now go through it. The authentication and session operations (`create_authentication_tokens`, `refresh_operation_token`, `login`, `logout`, and `exchange_oidc_token`) bypass the list because each authenticates its own credential; any operation token minted by `refresh_operation_token` still enforces the role's `operations` list.
 
 Earlier releases also let a role list `deploy_component`, `add_component`, `drop_component`, `package_component`, `set_component_file`, `set_custom_function`, `drop_custom_function`, `drop_custom_function_project`, `restart_service`, `set_configuration`, `get_status`, `set_status`, `clear_status`, `install_node_modules`, `delete_files_before`, `delete_audit_logs_before`, `delete_transaction_logs_before`, `cleanup_orphan_blobs`, `search_jobs_by_start_date`, and `registration_info` but refused the call, whatever else the role carried. They are granted as listed now. `catchup`, which earlier releases granted to a role that listed it, no longer can be.
 
