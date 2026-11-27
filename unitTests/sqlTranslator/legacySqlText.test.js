@@ -110,6 +110,18 @@ describe('legacy SQL text', function () {
 		}
 	});
 
+	it('refuses an expanded `*` column named with a backslash, a line break or __proto__, which AlaSQL will not parse back', function () {
+		for (const name of ['a\\b', 'ab\\', 'a\nb', '__proto__']) {
+			const statement = parse('SELECT 1 FROM dev.t');
+			statement.columns = [new alasql.yy.Column({ columnid: name })];
+			assert.throws(
+				() => assertLegacySqlText(statement),
+				(err) => err.statusCode === 400,
+				JSON.stringify(name)
+			);
+		}
+	});
+
 	it('writes numbers in plain decimal, which reads back as the same number', function () {
 		for (const literal of [
 			'10000000000000000000000000',

@@ -152,8 +152,7 @@ class sqlStatementBucket {
 			// The `sql` operation binds no parameters, but legacy SQL runs every statement against its own rows.
 			else if (node instanceof (alasql as any).yy.ParamValue) accessors.push('parameter');
 			// A JSON literal's `__proto__` key hides an expression in the prototype, where every walk here
-			// (own properties only) misses it but AlaSQL's JSON compiler still evaluates it. AlaSQL 4.22.3+ rejects
-			// the token at parse time, so this only fires for an AST the parser did not build.
+			// (own properties only) misses it but AlaSQL's JSON compiler still evaluates it.
 			else if (!isKnownPrototype(Object.getPrototypeOf(node))) accessors.push('JSON literal with __proto__');
 		}
 		return accessors;

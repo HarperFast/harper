@@ -169,9 +169,7 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 				]) {
 					assertRefused(await asReader(sql), sql);
 				}
-				// AlaSQL 4.22.3+ refuses the `__proto__` token while parsing, which happens before any permission
-				// check, so this one answers 400 rather than 403 and still carries no row data. The bucket's own
-				// refusal (unitTests/sqlTranslator/column-attribution.test.js) covers an AST the parser did not build.
+				// AlaSQL refuses the `__proto__` token while parsing, before any permission check, so this answers 400.
 				const protoSql = "SELECT {__proto__:{rec:_}} AS obj FROM data.ColPermRight r WHERE r.label LIKE '%shared%'";
 				const protoRes = await asReader(protoSql);
 				strictEqual(
