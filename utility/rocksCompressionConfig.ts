@@ -25,12 +25,7 @@ export function supportedRocksCompression(): readonly string[] {
 	return buildCodecs ?? ROCKS_COMPRESSION_ALGORITHMS;
 }
 
-/**
- * The codec `storage.rocks.compression` names, read the way the database open reads it: unset or
- * blank is `undefined` (storage.compression decides), anything else is trimmed and lowercased and must
- * be a codec this build provides. Config validation calls this too, so a value `set_configuration`
- * accepts is one the next start opens.
- */
+/** Config validation calls this too, so a value `set_configuration` accepts is one the next start opens. */
 export function parseRocksCompression(configured: unknown): string | undefined {
 	if (configured === undefined || configured === null) return undefined;
 	const requested = String(configured).trim().toLowerCase();

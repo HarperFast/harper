@@ -419,7 +419,7 @@ const rocksCompressionConstraints = Joi.any()
  * Validates the flattenConfig() output, which is what the readers get: flattening lowercases keys and
  * merges customFunctions.network over http, and http under operationsApi.network, after the nested
  * schema has run. Node's ranges apply here, so an operationsApi.network timeout of 0 inherited from
- * http is valid.
+ * http is valid; headersTimeout keeps its floor of 1, as 0 would remove the header deadline.
  */
 export function effectiveConfigValidator(flatConfig) {
 	const params = hdbTerms.CONFIG_PARAMS;
@@ -429,10 +429,10 @@ export function effectiveConfigValidator(flatConfig) {
 		[params.HTTP_MAXHEADERSIZE, maxHeaderSizeConstraints],
 		[params.HTTP_KEEPALIVETIMEOUT, keepAliveTimeoutConstraints],
 		[params.HTTP_TIMEOUT, httpTimeoutConstraints],
-		[params.HTTP_HEADERSTIMEOUT, httpTimeoutConstraints],
+		[params.HTTP_HEADERSTIMEOUT, httpTimeoutConstraints.min(1)],
 		[params.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT, keepAliveTimeoutConstraints],
 		[params.OPERATIONSAPI_NETWORK_TIMEOUT, httpTimeoutConstraints],
-		[params.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT, httpTimeoutConstraints],
+		[params.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT, httpTimeoutConstraints.min(1)],
 		[params.STORAGE_ROCKS_COMPRESSION, rocksCompressionConstraints],
 		[params.STORAGE_ROCKS_BLOCKCACHESIZE, rocksByteSizeConstraints],
 		[params.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE, rocksByteSizeConstraints],
@@ -459,12 +459,12 @@ export function effectiveConfigValidator(flatConfig) {
 				const headersTimeout = value[`${prefix}_headerstimeout`];
 				const requestTimeout = configuredTimeout ?? NODE_DEFAULT_REQUEST_TIMEOUT_MS;
 				if (!Number.isInteger(headersTimeout) || !Number.isInteger(requestTimeout)) continue;
-				if (headersTimeout > 0 && requestTimeout > 0 && headersTimeout > requestTimeout) {
+				if (requestTimeout > 0 && headersTimeout > requestTimeout) {
 					const label = section.replaceAll('_', '.');
 					const source = configuredTimeout === undefined ? ", Node.js's default" : '';
 					const inherited = section === 'http' ? '' : ' Unset operationsApi.network values come from http.';
 					return helpers.message(
-						`'${label}.headersTimeout' (${headersTimeout}) must not be greater than '${label}.timeout' (${requestTimeout}${source}) unless one of them is 0, or Node.js refuses to start the server.${inherited}`
+						`'${label}.headersTimeout' (${headersTimeout}) must not be greater than '${label}.timeout' (${requestTimeout}${source}) unless that is 0, or Node.js refuses to start the server.${inherited}`
 					);
 				}
 			}

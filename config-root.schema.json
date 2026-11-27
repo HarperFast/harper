@@ -130,7 +130,7 @@
 					"type": "integer",
 					"minimum": 1,
 					"maximum": 2147483647,
-					"description": "Milliseconds to wait for complete HTTP headers. At most http.timeout unless either is 0. Default: 60000"
+					"description": "Milliseconds to wait for complete HTTP headers. At most http.timeout unless http.timeout is 0. Default: 60000"
 				},
 				"maxHeaderSize": {
 					"type": "integer",
@@ -1328,7 +1328,7 @@
 			"maximum": 2147483.647,
 			"not": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 0.001 },
 			"pattern": "^(?:0(?:\\.0+)?[smhHdD]?|(?:(?:[1-9]\\d{0,5}|1\\d{6}|20\\d{5}|21[0-3]\\d{4}|214[0-6]\\d{3}|2147[0-3]\\d{2}|21474[0-7]\\d|214748[0-2])(?:\\.\\d+)?|2147483(?:\\.0+)?|0\\.0{0,2}[1-9]\\d*)s?|(?:(?:[1-9]\\d{0,3}|[1-2]\\d{4}|3[0-4]\\d{3}|35[0-6]\\d{2}|357[0-8]\\d|35790)(?:\\.\\d+)?|35791(?:\\.0+)?|0\\.0{0,3}[1-9]\\d*)m|(?:(?:[1-9]\\d{0,1}|[1-4]\\d{2}|5[0-8]\\d|59[0-5])(?:\\.\\d+)?|596(?:\\.0+)?|0\\.0{0,5}[1-9]\\d*)[hH]|(?:(?:[1-9]|1\\d|2[0-3])(?:\\.\\d+)?|24(?:\\.0+)?|0\\.0{0,6}[1-9]\\d*)[dD])$",
-			"description": "0, or a duration from 1 ms to 2147483647 ms (about 24.8 days, the longest timer Node.js schedules): a number of seconds, or a string such as '30s', '5m', '1h' or '1d' (s, m, h or d; for milliseconds use a fraction of a second such as '0.5s')."
+			"description": "0, or a duration from 1 ms to 2147483647 ms (about 24.8 days, the longest timer Node.js schedules): a number of seconds, or a string such as '30s', '5m', '1h' or '1d' (s, m, h or d; for milliseconds use a fraction of a second such as '0.5s'). This schema flags a string past the last whole unit under that ceiling (24d, 596h, 35791m or 2147483s), such as '24.5d', which Harper accepts."
 		},
 		"studioPageKey": {
 			"type": "string",

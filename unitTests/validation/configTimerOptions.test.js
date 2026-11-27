@@ -238,7 +238,6 @@ describe('HTTP server options', () => {
 		describe(path, () => {
 			it('accepts typical values and its bounds', () => {
 				for (const value of [min, 1000, 30000, 60000, 16384]) assertAccepted(path, value);
-				// a headersTimeout above the request timeout is the pair rule's case
 				const timeoutPath = path.replace(option, 'timeout');
 				const atMax = configOf({ [path]: max, ...(pairedWithTimeout && { [timeoutPath]: MAX_TIMER_DELAY_MS }) });
 				assert.strictEqual(validationError(atMax), undefined, `${path}: ${max}`);
@@ -305,6 +304,15 @@ describe('HTTP server options', () => {
 			validationError(config)?.message ?? '',
 			/'operationsApi\.network\.headersTimeout' \(100000\) must not be greater than 'operationsApi\.network\.timeout' \(60000\)/
 		);
+	});
+
+	it('keeps the headersTimeout floor of 1 for a lower-cased key or a customFunctions.network override', () => {
+		for (const path of ['http.headerstimeout', 'customFunctions.network.headersTimeout'])
+			assert.match(
+				validationError(configWith(path, 0))?.message ?? '',
+				/'(http|operationsApi\.network)\.headersTimeout' must be greater than or equal to 1/,
+				path
+			);
 	});
 
 	it('accepts an operations API timeout of 0 inherited from http, which createServer allows', () => {
