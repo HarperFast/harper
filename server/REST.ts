@@ -93,17 +93,23 @@ function finalizeResponse(
 		// have a valid Headers object) or it will throw an error
 		responseData.headers = responseHeaders;
 	if (preconditionsEnabled && (method === 'GET' || method === 'HEAD') && hasPreconditions(request.headers.asObject)) {
+		const candidate = {
+			status: responseData.status ?? status ?? 200,
+			headers: responseHeaders,
+			body: responseData.body,
+		};
 		const conditional = applyReadPreconditions(
-			{ status: responseData.status ?? status ?? 200, headers: responseHeaders, body: responseData.body },
+			candidate,
 			request,
 			method,
 			request.lastModified,
 			responseData.body === undefined ? ('data' in responseData ? responseData.data : responseData) : undefined
 		);
 		if (conditional.status === 304) {
-			if (!responseData.body && !discardedByPreconditions.has(conditional)) {
-				discardedByPreconditions.add(conditional);
-				discardReadResponse(conditional, readSource(responseData));
+			// a 304 the resource chose itself
+			if (conditional === candidate && !responseData.body) {
+				(candidate as any)[READ_DISCARDED] = true;
+				discardReadResponse(candidate, readSource(responseData));
 			}
 			return conditional;
 		}
@@ -278,14 +284,15 @@ const NO_BODY = Object.freeze({ body: undefined });
 // Never throws: a failure to release must not replace the response or error it runs for. A value without headers
 // is not a response, so its own `body` field is left alone.
 function discardUnsent(response, value) {
+	let target = response === value ? NO_BODY : response;
 	let source;
 	try {
-		if (response === value && !value?.headers) response = NO_BODY;
+		if (target === NO_BODY && value?.headers) target = value;
 		source = readSource(value);
 	} catch (error) {
 		logDiscardError(error);
 	}
-	discardReadResponse(response, source);
+	discardReadResponse(target, source);
 }
 
 function ownDiscard(result) {
@@ -310,10 +317,10 @@ function setReadValidators(headers, lastModification: number, httpOptions) {
 		headers.set('Last-Modified', new Date(lastModification).toUTCString());
 }
 
-// 304s built here whose read was already discarded, unlike a 304 a resource returns itself
-const discardedByPreconditions = new WeakSet<object>();
+// Marks a 304 built here whose read was already discarded, unlike a 304 a resource returns itself.
+const READ_DISCARDED = Symbol('readDiscarded');
 
-// Discards the read only when it answers 304, as its last step; when it throws, the read stays the caller's.
+// Discards the read only when it answers 304; when it throws, the read stays the caller's.
 function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
 	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
 	const incoming = request.headers.asObject;
@@ -342,11 +349,10 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 	// Only foreign (possibly immutable) Response headers need a copy.
 	const headers =
 		response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
-	for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
-	const notModified = { status: 304, headers, body: undefined };
-	discardedByPreconditions.add(notModified);
+	// after the last step that can throw, and before the strip so an onDone that sets headers cannot restore them
 	discardReadResponse(response, sourceData);
-	return notModified;
+	for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
+	return { status: 304, headers, body: undefined, [READ_DISCARDED]: true };
 }
 
 async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
@@ -662,7 +668,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				target,
 				resource
 			);
-			unsent = response.status === 304 && discardedByPreconditions.has(response) ? undefined : response;
+			unsent = response.status === 304 && response[READ_DISCARDED] ? undefined : response;
 			const startup = readStreamStartup(response.body, request.method, method);
 			if (startup) await startup;
 			if (deferred) {
@@ -740,7 +746,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					: responseObject;
 			if (conditional.status === 304) {
 				unsent = undefined;
-				if (!discardedByPreconditions.has(conditional)) discardReadResponse(conditional, responseData);
+				if (conditional === responseObject) discardReadResponse(conditional, responseData);
 				if ((target as any)?.isCollection) addVaryHeader(conditional.headers, 'Prefer');
 				return conditional;
 			}

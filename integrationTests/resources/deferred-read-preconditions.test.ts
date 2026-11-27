@@ -20,12 +20,18 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 		await teardownHarper(ctx);
 	});
 
-	const request = (method: string, path: string, headers: Record<string, string> = {}, body?: string) =>
+	const request = (
+		method: string,
+		path: string,
+		headers: Record<string, string> = {},
+		body?: string,
+		signal = AbortSignal.timeout(15_000)
+	) =>
 		fetch(`${base}/${path}`, {
 			method,
 			headers: { Authorization: auth, Accept: 'application/x-ndjson', ...headers },
 			body,
-			signal: AbortSignal.timeout(15_000),
+			signal,
 		});
 
 	for (const path of ['DeferredStream/', 'DeferredEnvelope/']) {
@@ -117,22 +123,23 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 	test('releases the search of a read it answers 406 without waiting for the transaction monitor', async () => {
 		const probe = `probe-${Date.now()}`;
 		// well inside storage.maxTransactionOpenTime (30 s by default), after which the monitor would release it
-		const deadline = performance.now() + 5_000;
-		const rejected = await request('GET', 'ReleaseProbe/?category=books', {
-			'Accept': 'application/x-unsupported',
-			'X-Release-Probe': probe,
-		});
+		const signal = AbortSignal.timeout(5_000);
+		const rejected = await request(
+			'GET',
+			'ReleaseProbe/?category=books',
+			{ 'Accept': 'application/x-unsupported', 'X-Release-Probe': probe },
+			undefined,
+			signal
+		);
 		strictEqual(rejected.status, 406);
 		await rejected.text();
 		let released = 0;
-		while (released !== 200 && performance.now() < deadline) {
-			const response = await request('GET', `ReleasedRead/${probe}`, { Accept: 'application/json' });
+		while (released !== 200) {
+			const response = await request('GET', `ReleasedRead/${probe}`, { Accept: 'application/json' }, undefined, signal);
 			released = response.status;
 			await response.text();
-			if (released !== 200) await delay(50);
+			if (released !== 200) await delay(50, undefined, { signal });
 		}
-		strictEqual(released, 200, 'the search was released');
-		ok(performance.now() <= deadline, 'released before the deadline');
 		const read = await request('GET', 'ReleaseProbe/?category=books', { Accept: 'application/json' });
 		strictEqual(read.status, 200);
 		ok(Array.isArray(await read.json()));
