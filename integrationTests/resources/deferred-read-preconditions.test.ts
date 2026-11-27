@@ -124,6 +124,7 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 		const probe = `probe-${Date.now()}`;
 		// well inside storage.maxTransactionOpenTime (30 s by default), after which the monitor would release it
 		const signal = AbortSignal.timeout(5_000);
+		const started = performance.now();
 		const rejected = await request(
 			'GET',
 			'ReleaseProbe/?category=books',
@@ -140,6 +141,7 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 			await response.text();
 			if (released !== 200) await delay(50, undefined, { signal });
 		}
+		ok(performance.now() - started < 5_000, 'released within the budget');
 		const read = await request('GET', 'ReleaseProbe/?category=books', { Accept: 'application/json' });
 		strictEqual(read.status, 200);
 		ok(Array.isArray(await read.json()));

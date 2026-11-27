@@ -766,12 +766,10 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 				const request = { method, url: `/${route}/?seq=gt=0`, user: reader, headers: new Headers(headers) };
 				request.headers.asObject = headers;
 				trackContext(request);
-				// the Problem Details body fails on the same Accept, so the handler rejects
 				const failure = await handler(request, () => ({ status: 404 })).then(
 					() => undefined,
 					(error) => error
 				);
-				// a source behind an async allowRead closes once its authorization settles
 				await waitFor(() => state.onDoneCalls + state.returned > 0 && !getTxnMetrics().hasOpenTxn).catch(() => {});
 				await new Promise((r) => setImmediate(r));
 				const { readTxnsUsed, hasOpenTxn } = getTxnMetrics();

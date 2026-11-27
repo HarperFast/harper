@@ -106,7 +106,6 @@ function finalizeResponse(
 			responseData.body === undefined ? ('data' in responseData ? responseData.data : responseData) : undefined
 		);
 		if (conditional.status === 304) {
-			// a 304 the resource chose itself
 			if (conditional === candidate && !responseData.body) {
 				(candidate as any)[READ_DISCARDED] = true;
 				discardReadResponse(candidate, readSource(responseData));
@@ -683,7 +682,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				deferred && conditionalRead
 					? applyReadPreconditions(response, request, method, lastModification, data)
 					: response;
-			// a 304 applyReadPreconditions built is a new object, its read already discarded
 			if (request.method === 'HEAD' && unsent !== undefined && conditional === response) {
 				unsent = undefined;
 				discardReadResponse(conditional, data);
@@ -799,9 +797,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 						target,
 						resource
 					);
-				} catch (preconditionError) {
+				} catch (finalizeError) {
 					discardUnsent(error, error);
-					error = preconditionError;
+					error = finalizeError;
 				}
 			}
 		}
