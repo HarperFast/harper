@@ -572,6 +572,7 @@ export const CONFIG_PARAMS = {
 	AUTHENTICATION_COOKIE_DOMAINS: 'authentication_cookie_domains',
 	AUTHENTICATION_COOKIE_EXPIRES: 'authentication_cookie_expires',
 	AUTHENTICATION_ENABLESESSIONS: 'authentication_enableSessions',
+	AUTHENTICATION_MAXLOGINTOKENTIMEOUT: 'authentication_maxLoginTokenTimeout',
 	AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'authentication_operationTokenTimeout',
 	AUTHENTICATION_REFRESHTOKENTIMEOUT: 'authentication_refreshTokenTimeout',
 	AUTHENTICATION_HASHFUNCTION: 'authentication_hashFunction',

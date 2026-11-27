@@ -491,6 +491,10 @@ export function configValidator(configJson, skipFsValidation = false) {
 				}),
 				enableSessions: boolean,
 				hashFunction: string.valid('md5', 'sha256', 'argon2id').optional().empty(null),
+				// a duration convertToMS reads as at least a second (tokenAuthentication.ts maxLoginTokenSeconds)
+				maxLoginTokenTimeout: Joi.alternatives(number.min(1), string.pattern(/^[1-9][0-9]*(\.[0-9]+)?[smhHdD]?$/))
+					.optional()
+					.empty(null),
 			}),
 			boolean
 		).optional(),

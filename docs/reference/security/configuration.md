@@ -14,6 +14,7 @@ authentication:
   authorizeLocal: true
   cacheTTL: 30000
   enableSessions: true
+  maxLoginTokenTimeout: 5m
   operationTokenTimeout: 1d
   refreshTokenTimeout: 30d
   hashFunction: sha256
@@ -60,6 +61,14 @@ _Type: boolean — Default: `true`_
 Enables cookie-based sessions to maintain an authenticated session across requests. This is the preferred authentication mechanism for web browsers: cookies hold the token securely without exposing it to JavaScript, reducing XSS vulnerability risk.
 
 See [Local request identity](#local-request-identity) for why transport trust does not authenticate a session.
+
+### `maxLoginTokenTimeout`
+
+_Type: string (duration) or number — Default: `5m`_
+
+<VersionBadge version="v5.4.3" />
+
+The longest a [login token](../operations-api/operations.md#login-tokens) stays valid. A login token requested with a longer `expires_in` is issued with this lifetime instead; one requested without `expires_in` lasts one minute, or this long if that is shorter. Takes a number of seconds or a duration such as `90s`, `5m` or `1h` (`s`, `m`, `h` or `d`), at least one second. It applies to tokens minted after the change; a token already issued keeps its expiry.
 
 ### `operationTokenTimeout`
 

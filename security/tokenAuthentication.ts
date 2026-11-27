@@ -15,7 +15,14 @@ const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
 import { withoutSystemGrants } from './systemRolePermissions.ts';
 import * as password from '../utility/password.ts';
-import { findAndValidateUser, getSuperUser, isLocalPrincipal, type User } from './user.ts';
+import {
+	credentialBinding,
+	findAndValidateUser,
+	findLoginTokenUser,
+	getSuperUser,
+	isLocalPrincipal,
+	type User,
+} from './user.ts';
 import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
 import {
 	WORKLOAD_IDENTITY_CLAIM,
@@ -32,6 +39,7 @@ import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
+import { convertToMS } from '../utility/common_utils.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 try {
 	env.initSync();
@@ -42,10 +50,20 @@ type StringValue = SignOptions['expiresIn'];
 const operationTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
 const refreshTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
 // Default lifetime of a login-purpose token (see TOKEN_TYPE.LOGIN below). It only exists to be
-// exchanged for a session cookie, so it defaults far shorter than an operation token; callers can
-// still override via expires_in.
+// exchanged for a session cookie, so it defaults far shorter than an operation token; expires_in can
+// change it, up to authentication.maxLoginTokenTimeout.
 const LOGIN_TOKEN_TIMEOUT: StringValue = '1m';
+const MAX_LOGIN_TOKEN_TIMEOUT = '5m';
+// The stored-record binding a login token carries (security/user.ts credentialBinding).
+const LOGIN_BINDING_CLAIM = 'user_binding';
 const RSA_ALGORITHM: Algorithm = 'RS256';
+
+// Parsed as the config's own durations are (convertToMS: a bare number is seconds), not as jsonwebtoken reads expires_in.
+function maxLoginTokenSeconds(): number {
+	const seconds = Math.floor(convertToMS(env.get(CONFIG_PARAMS.AUTHENTICATION_MAXLOGINTOKENTIMEOUT)) / 1000);
+	// an unusable value keeps the default cap rather than lifting it
+	return Number.isFinite(seconds) && seconds >= 1 ? seconds : convertToMS(MAX_LOGIN_TOKEN_TIMEOUT) / 1000;
+}
 
 const TOKEN_TYPE = {
 	OPERATION: 'operation',
@@ -194,7 +212,10 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 			throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_USER_TO_MINT_FOR, HTTP_STATUS_CODES.CONFLICT);
 	}
 
+	// a login token's binding is keyed by the signing key
+	const loginKeys: JWTRSAKeys | undefined = authObj?.purpose === 'login' ? await getJWTRSAKeys() : undefined;
 	let user: any;
+	let loginBinding: string | undefined;
 	try {
 		// Trusted bypass is dispatch/async-context state (set by a component calling
 		// server.operation(..., false)), never a body field — authObj.bypass_auth is
@@ -213,6 +234,9 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 			// the password would have been checked by authHandler before getting here
 			validatePassword = false;
 		}
+		// Read before the password check, so a password change landing between the two binds the token to the
+		// record it replaced, which never redeems.
+		if (loginKeys) loginBinding = credentialBinding(authObj.username, loginKeys.privateKey);
 		user = await findAndValidateUser(authObj.username, authObj.password, validatePassword);
 	} catch (err) {
 		logger.error(err);
@@ -232,21 +256,15 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	} = { username: authObj.username, super_user: superUser };
 	if (authObj.role) payload.role = authObj.role;
 
-	const keys: JWTRSAKeys = await getJWTRSAKeys();
+	const keys: JWTRSAKeys = loginKeys ?? (await getJWTRSAKeys());
 
 	if (authObj.purpose === 'login') {
-		// Login-scoped exchange token: no refresh token, no user record update — it's a one-shot
-		// ticket for the `login` operation to trade for a session cookie, not a standing credential.
-		const loginToken = jwt.sign(
-			{ username: authObj.username },
-			{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
-			{
-				expiresIn: (authObj.expires_in ?? LOGIN_TOKEN_TIMEOUT) as StringValue,
-				algorithm: RSA_ALGORITHM,
-				subject: TOKEN_TYPE.LOGIN,
-			} satisfies SignOptions
-		);
-		return { operation_token: loginToken };
+		// Login-scoped exchange token: no refresh token, no user record update — a short-lived ticket for the
+		// `login` operation to trade for a session cookie, not a standing credential. With no active record to bind
+		// it to (a dropped user's still-valid credential), there is nothing to mint.
+		if (!loginBinding)
+			throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+		return { operation_token: signLoginToken(authObj.username, loginBinding, authObj.expires_in, keys) };
 	}
 
 	const operationToken = jwt.sign(
@@ -284,6 +302,25 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		operation_token: operationToken,
 		refresh_token: refreshToken,
 	};
+}
+
+function signLoginToken(
+	username: string,
+	binding: string,
+	expiresIn: AuthObject['expires_in'],
+	keys: JWTRSAKeys
+): string {
+	const sign = (lifetime: StringValue) =>
+		jwt.sign(
+			{ username, [LOGIN_BINDING_CLAIM]: binding },
+			{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
+			{ expiresIn: lifetime, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE.LOGIN } satisfies SignOptions
+		);
+	const maxSeconds = maxLoginTokenSeconds();
+	// The requested lifetime is measured on the signed token, so it is read exactly as jsonwebtoken reads expires_in.
+	const token = sign((expiresIn ?? LOGIN_TOKEN_TIMEOUT) as StringValue);
+	const { iat, exp } = jwt.decode(token, { json: true });
+	return exp - iat > maxSeconds ? sign(maxSeconds) : token;
 }
 
 /**
@@ -432,7 +469,8 @@ export async function validateRefreshToken(token: string, deferInvalidTokenWarn 
 /**
  * Validates a login-purpose token minted via createTokens({ purpose: 'login' }). Used solely by
  * the `login` operation to exchange the token for an httpOnly session cookie — this is the only
- * place a `sub: 'login'` token is accepted.
+ * place a `sub: 'login'` token is accepted, and only while its username's stored record is still
+ * the active one it was bound to at mint (security/user.ts findLoginTokenUser).
  */
 export async function validateLoginToken(token: string): Promise<any> {
 	return validateToken(token, TOKEN_TYPE.LOGIN);
@@ -462,6 +500,11 @@ async function validateToken(token: string, tokenType: string, deferInvalidToken
 		// If a role is present, it means the token is not an operation token. The validation of
 		// the token will happen in the respective function/component that uses the token.
 		if (tokenVerified.role) {
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+		}
+		if (tokenType === TOKEN_TYPE.LOGIN) {
+			const loginUser = findLoginTokenUser(tokenVerified.username, tokenVerified[LOGIN_BINDING_CLAIM], keys.privateKey);
+			if (loginUser) return loginUser;
 			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
