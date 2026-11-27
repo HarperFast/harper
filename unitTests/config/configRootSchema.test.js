@@ -106,7 +106,6 @@ function schemaNodeAt(path) {
 	return path.split('.').reduce((node, key) => objectShape(node).properties[key], schema);
 }
 
-/** The installed defaults with each `path: value` applied, as validateConfig() checks them. */
 function joiAccepts(settings) {
 	const config = { ...structuredClone(defaults), rootPath: '/tmp/harper-schema-test' };
 	for (const [path, value] of Object.entries(settings)) {
@@ -119,7 +118,6 @@ function joiAccepts(settings) {
 	);
 }
 
-/** The samples only the schema admits, and those only Joi admits. */
 function disagreements(path, samples, extraSettings = {}) {
 	const node = schemaNodeAt(path);
 	const schemaOnly = [];
@@ -337,10 +335,13 @@ describe('config-root.schema.json matches the configuration Harper reads', () =>
 		const unavailable = samples.filter(
 			(value) => typeof value === 'string' && value.trim() && !supportedCompression.includes(value.trim().toLowerCase())
 		);
-		assert.deepStrictEqual(disagreements('storage.rocks.compression', [...samples, 'lz5', 'gzip', true, 5, {}]), {
-			schemaOnly: unavailable,
-			joiOnly: [],
-		});
+		assert.deepStrictEqual(
+			disagreements('storage.rocks.compression', [...samples, 'lz5', 'gzip', true, 5, {}, ['lz4']]),
+			{
+				schemaOnly: unavailable,
+				joiOnly: [],
+			}
+		);
 		assert.ok(
 			supportedCompression.every((codec) => spellings.includes(codec)),
 			String(supportedCompression)

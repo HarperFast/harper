@@ -19,7 +19,6 @@ const { preserveRootConfig } = require('../rootConfigFixture.js');
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 const defaults = YAML.parse(readFileSync(join(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));
 
-/** The installed defaults with each `path: value` applied; an undefined value removes the key. */
 function configOf(settings) {
 	const config = { ...structuredClone(defaults), rootPath: '/tmp/harper-timer-options-test' };
 	for (const [path, value] of Object.entries(settings)) {
@@ -33,7 +32,6 @@ function configOf(settings) {
 }
 const configWith = (path, value) => configOf({ [path]: value });
 
-/** The error validateConfig() would raise: the nested schema first, then the flattened pass. */
 function validationError(config) {
 	return (
 		configValidator(structuredClone(config), true).error ??
@@ -170,7 +168,17 @@ describe('storage.rocks', () => {
 
 	it('rejects a codec name the build cannot open, without echoing the value', () => {
 		const missingFromBuild = ROCKS_COMPRESSION_ALGORITHMS.filter((codec) => !supportedCompression.includes(codec));
-		for (const value of [...missingFromBuild, 'lz5', 'gzip', 'definitely-not-a-codec', 'secret-token', true, 5, {}]) {
+		for (const value of [
+			...missingFromBuild,
+			'lz5',
+			'gzip',
+			'definitely-not-a-codec',
+			'secret-token',
+			true,
+			5,
+			{},
+			['lz4'],
+		]) {
 			assertRejected('storage.rocks.compression', value);
 			const { message } = validationError(configWith('storage.rocks.compression', value));
 			assert.ok(!message.includes('secret-token') && !message.includes('lz5'), message);

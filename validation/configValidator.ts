@@ -353,8 +353,8 @@ const readRequestQueueLimitConstraints = Joi.alternatives([number.integer().min(
 	.prefs({ convert: false })
 	.optional();
 
-// Node runs a timer whose delay is above 2^31-1 ms after 1 ms instead.
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
+// Node runs a timer whose delay is above this after 1 ms instead.
+const MAX_TIMER_DELAY_MS = hdbTerms.MAX_SET_TIMEOUT_MS;
 // Node arms a keep-alive socket's timer at keepAliveTimeout plus keepAliveTimeoutBuffer (1000 ms).
 const MAX_KEEP_ALIVE_TIMEOUT_MS = MAX_TIMER_DELAY_MS - 1000;
 // requestTimeout createServer uses when none is passed; headersTimeout must not exceed it.
@@ -402,15 +402,18 @@ const heapSnapshotNearLimitConstraints = boolean.allow(null).prefs({ convert: fa
 // Whole bytes: resolveRocksMemoryConfig floors a fraction, and a writeBufferManagerSize of 0 disables
 // the WriteBufferManager. It ignores a string, hence `convert: false`.
 const rocksByteSizeConstraints = number.integer().min(0).allow(null).prefs({ convert: false });
-const rocksCompressionConstraints = Joi.any().custom((value, helpers: any) => {
-	try {
-		parseRocksCompression(value);
-		return value;
-	} catch {
+const rocksCompressionConstraints = Joi.any()
+	.custom((value, helpers: any) => {
+		try {
+			if (typeof value === 'string') {
+				parseRocksCompression(value);
+				return value;
+			}
+		} catch {}
 		// The rejected value is not echoed: it may be a secret pasted under the wrong key.
 		return helpers.message(`{{#label}} must be one of: ${supportedRocksCompression().join(', ')}`);
-	}
-});
+	})
+	.allow(null);
 
 /**
  * Validates the flattenConfig() output, which is what the readers get: flattening lowercases keys and
