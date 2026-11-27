@@ -201,7 +201,7 @@ operationsApi:
 - `componentFile.maxSize` — Maximum file size in bytes returned by `get_component_file`. Requests for files larger than this limit are rejected with HTTP 413. _Default_: `5242880` (5 MB)
 - `network.cors` / `network.corsAccessList` — CORS settings. `network.corsAccessList` takes the same entries as [`http.corsAccessList`](../http/configuration.md#httpcorsaccesslist)
 - `network.domainSocket` — Unix socket path for CLI communication; _Default_: `<rootPath>/operations-server`
-- `network.headersTimeout` / `network.keepAliveTimeout` / `network.timeout` — Timeout settings (ms)
+- `network.headersTimeout` / `network.keepAliveTimeout` / `network.timeout` — Timeout settings (ms), at least `1`; an unset one takes the `http` value. Bounded as the [HTTP timeouts](../http/configuration.md#timeouts-and-limits) are
 - `network.port` — Operations API port; _Default_: `9925`
 - `network.securePort` — HTTPS port; _Default_: `null`
 - `tls` — TLS override for the Operations API; sub-options: `certificate`, `certificateAuthority`, `privateKey`. See [`tls`](#tls)
@@ -353,7 +353,7 @@ storage:
 - `blobPaths` — Blob storage directory or directories; _Default_: `<rootPath>/blobs` (Added in: v4.5.0)
 - `pageSize` — Database page size (bytes); _Default_: OS default
 - `reclamation.threshold` — Free-space ratio below which reclamation begins evicting from caching tables and [demoting local replicas](../database/storage-tuning.md#local-replicas-under-storage-pressure); _Default_: `0.4` (Added in: v4.5.0)
-- `reclamation.interval` — Free-space check interval; _Default_: `1h`
+- `reclamation.interval` — Free-space check interval, from 1 second to about 24.8 days; _Default_: `1h`. See [`storage.reclamation.interval`](../database/storage-tuning.md#storagereclamationinterval)
 - `reclamation.evictionFactor` — Heuristic factor for early eviction under disk pressure; _Default_: `100000`. See [Storage Tuning — Reclamation](../database/storage-tuning.md#storage-reclamation)
 - `rocks.blockCacheSize` — RocksDB shared block cache size in bytes; _Default_: 25% of constrained memory. See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)
 - `rocks.writeBufferManagerSize` — Process-wide cap (bytes) on RocksDB memtable memory across all databases. `0` disables; _Default_: one third of `blockCacheSize` (enabled). See [Storage Tuning — RocksDB Memory](../database/storage-tuning.md#rocksdb-memory) (Added in: v5.1.0)

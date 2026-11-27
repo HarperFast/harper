@@ -68,13 +68,15 @@ http:
 
 ## Timeouts and Limits
 
+<VersionBadge type="changed" version="v5.5.0" /> These values must be whole numbers, not quoted strings. Harper rejects a value Node.js would refuse when the configuration is set or loaded, rather than failing to start the server: a negative or fractional number, a quoted number, or a timeout above 2147483647 ms (about 24.8 days, the longest timer Node.js schedules). The operations API takes any `operationsApi.network` timeout it does not set from these, and is held to the same rules.
+
 ### `http.headersTimeout`
 
 Type: `integer`
 
 Default: `60000` (ms)
 
-Maximum time in milliseconds the server waits to receive the complete HTTP headers for a request.
+Maximum time in milliseconds the server waits to receive the complete HTTP headers for a request. At least `1`, and no more than `http.timeout` unless either is `0`; with `http.timeout` unset, no more than Node.js's default request timeout of `300000`.
 
 ### `http.keepAliveTimeout`
 
@@ -82,7 +84,7 @@ Type: `integer`
 
 Default: `30000` (ms)
 
-Milliseconds of inactivity after which the server closes an idle keep-alive connection.
+Milliseconds of inactivity after which the server closes an idle keep-alive connection. `0` turns the timeout off. At most `2147482647`: Node.js adds one second before arming the timer.
 
 ### `http.timeout`
 
@@ -90,7 +92,7 @@ Type: `integer`
 
 Default: `120000` (ms)
 
-Maximum time in milliseconds before a request times out.
+Maximum time in milliseconds before a request times out. `0` turns the timeout off. On the operations API, it also bounds how long an operation forwarded to another thread may take.
 
 ### `http.maxHeaderSize`
 

@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 const { parse } = require('yaml');
-const { configValidator, effectiveHttpConfigValidator } = require('#src/validation/configValidator');
+const { configValidator, effectiveConfigValidator } = require('#src/validation/configValidator');
 const { flattenConfig } = require('#src/config/configUtils');
 
 function validate(limit, allowHeaders) {
@@ -50,7 +50,7 @@ describe('read queue CORS header configuration', () => {
 });
 
 describe('effective HTTP admission configuration', () => {
-	const effectiveError = (config) => effectiveHttpConfigValidator(flattenConfig(config)).error;
+	const effectiveError = (config) => effectiveConfigValidator(flattenConfig(config)).error;
 	for (const [label, config] of [
 		[
 			'a customFunctions.network allow-headers override',

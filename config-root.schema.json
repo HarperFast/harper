@@ -128,10 +128,14 @@
 				},
 				"headersTimeout": {
 					"type": "integer",
-					"description": "Milliseconds to wait for complete HTTP headers. Default: 60000"
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Milliseconds to wait for complete HTTP headers. At most http.timeout unless either is 0. Default: 60000"
 				},
 				"maxHeaderSize": {
 					"type": "integer",
+					"minimum": 0,
+					"maximum": 9007199254740991,
 					"description": "Maximum allowed size of HTTP headers in bytes. Default: 16394"
 				},
 				"requestQueueLimit": {
@@ -142,11 +146,21 @@
 					"oneOf": [{ "type": ["integer", "null"], "minimum": 0 }, { "const": false }],
 					"description": "Max event-loop delay (ms) before GET, HEAD and OPTIONS are rejected with 503 on every HTTP listener, including the operations API: a read arriving after the current loop iteration has run longer than this is answered immediately without running its handler. Reads are never queued; admitted reads dispatch immediately. Not an in-flight concurrency limit, and blind to a stall that ended before the first read after an idle period. Default (also when null): 5000. 0 rejects every read while reads keep arriving (only the first read after an idle iteration is admitted); false disables read admission. Use actual numbers/booleans, not quoted strings. A rejected OPTIONS preflight surfaces as a CORS failure in browsers because preflight requires a 2xx response. Takes effect on restart."
 				},
-				"keepAliveTimeout": { "type": "integer", "description": "Keep-alive inactivity timeout in ms. Default: 30000" },
+				"keepAliveTimeout": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 2147482647,
+					"description": "Keep-alive inactivity timeout in ms; 0 turns it off. Default: 30000"
+				},
 				"port": { "type": "integer", "description": "HTTP port. Default: 9926" },
 				"securePort": { "type": ["integer", "null"], "description": "HTTPS port. Requires valid certificate + key." },
 				"http2": { "type": "boolean", "description": "Enable HTTP/2. Default: false" },
-				"timeout": { "type": "integer", "description": "Request timeout (ms). Default: 120000" },
+				"timeout": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 2147483647,
+					"description": "Request timeout (ms); 0 turns it off. Default: 120000"
+				},
 				"mtls": {
 					"description": "Enable and configure mTLS authentication for HTTP.",
 					"oneOf": [
@@ -289,7 +303,10 @@
 					"type": "integer",
 					"description": "Most applications marked isolated that get a dedicated worker thread; the rest fail to load. Default 8."
 				},
-				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." },
+				"heapSnapshotNearLimit": {
+					"type": ["boolean", "null"],
+					"description": "Take a heap snapshot when near the heap limit."
+				},
 				"preload": {
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
 					"description": "Module(s) to preload via --import (ESM/loader-hook registration) before any Harper or app module on each worker thread, e.g. an APM agent's 'dd-trace/register.js' — the entry that instruments worker threads. Bare specifiers resolve against installed components' node_modules; absolute paths are also accepted."
@@ -662,11 +679,26 @@
 							"type": "string",
 							"description": "Unix domain socket path for CLI access, relative to rootPath. Unset, or the installed placeholder hdb/operations-server, means <rootPath>/operations-server."
 						},
-						"headersTimeout": { "type": "integer" },
-						"keepAliveTimeout": { "type": "integer" },
+						"headersTimeout": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647,
+							"description": "Milliseconds to wait for complete HTTP headers. At most operationsApi.network.timeout unless that is 0. Default: http.headersTimeout"
+						},
+						"keepAliveTimeout": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147482647,
+							"description": "Keep-alive inactivity timeout in ms. Default: http.keepAliveTimeout"
+						},
 						"port": { "type": "integer", "description": "Operations API HTTP port. Default: 9925" },
 						"securePort": { "type": ["integer", "null"] },
-						"timeout": { "type": "integer" }
+						"timeout": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647,
+							"description": "Request timeout (ms), which also bounds an operation forwarded to another thread. Default: http.timeout"
+						}
 					}
 				},
 				"componentFile": {
@@ -820,7 +852,20 @@
 					"properties": {
 						"compression": {
 							"type": ["string", "null"],
-							"description": "RocksDB block and blob compression codec for every column family. Default: null (derive from storage.compression)."
+							"pattern": "^\\s*(?:[Nn][Oo][Nn][Ee]|[Ss][Nn][Aa][Pp][Pp][Yy]|[Zz][Ll][Ii][Bb]|[Bb][Zz][Ii][Pp]2|[Ll][Zz]4(?:[Hh][Cc])?|[Xx][Pp][Rr][Ee][Ss][Ss]|[Zz][Ss][Tt][Dd])?\\s*$",
+							"description": "RocksDB block and blob compression codec for every column family: none, snappy, zlib, bzip2, lz4, lz4hc, xpress or zstd. Which of them are available depends on the platform build; Harper rejects one its build lacks. Default: null (derive from storage.compression)."
+						},
+						"blockCacheSize": {
+							"type": ["integer", "null"],
+							"minimum": 0,
+							"maximum": 9007199254740991,
+							"description": "RocksDB shared block cache size in bytes; 0 or unset uses 25% of constrained memory."
+						},
+						"writeBufferManagerSize": {
+							"type": ["integer", "null"],
+							"minimum": 0,
+							"maximum": 9007199254740991,
+							"description": "Process-wide cap (bytes) on RocksDB memtable memory across all databases; 0 disables it. Unset uses one third of blockCacheSize."
 						}
 					}
 				},
@@ -830,15 +875,21 @@
 					"description": "Keep backups created by compactOnStart. Default: false"
 				},
 				"maxTransactionQueueTime": {
-					"type": "string",
-					"description": "Max write queue time before rejecting (e.g. '45s')."
+					"allOf": [{ "$ref": "#/definitions/timerDuration" }],
+					"description": "Max write queue time before rejecting (e.g. '45s'); 0 uses the default. Default: 45s"
+				},
+				"maxTransactionOpenTime": {
+					"type": ["number", "null"],
+					"minimum": 1,
+					"maximum": 2147483647,
+					"description": "Milliseconds a transaction may stay open without activity before Harper aborts its uncommitted writes or releases its read snapshot. A number of milliseconds, not a duration string. Default: 30000"
 				},
 				"maxLockClockSkew": {
 					"type": ["string", "number"],
 					"description": "Maximum clock lead in which a record lock may admit stored state and advance the local transaction-log clock above it. Above the limit, lock() fails with LockUnavailableError until wall time catches up; check for a future context.timestamp or source peer clock skew, or wait. A string accepts ms, s, m, h, or d (e.g. '500ms' or '5s'); a number is seconds. Default: '5s'."
 				},
 				"longTransactionReportThreshold": {
-					"type": ["string", "number"],
+					"allOf": [{ "$ref": "#/definitions/timerDuration" }],
 					"description": "How old a RocksDB transaction handle must be before it is reported in the log (e.g. '5m'). A handle this old can hold write intents that park other writers' commits and pin a read snapshot. Set to 0 to disable the reporting. Default: '5m'"
 				},
 				"noReadAhead": { "type": "boolean", "description": "Advise OS to not read ahead. Default: false" },
@@ -904,9 +955,9 @@
 						"interval": {
 							"type": ["string", "number", "null"],
 							"minimum": 1,
-							"maximum": 2147483,
-							"pattern": "^[1-9][0-9]*(\\.[0-9]+)?[smhHdD]?$",
-							"description": "Free-space check interval: a number of seconds, or a duration such as '30m', '1h' or '1d' (s, m, h or d, starting with a whole number). Between 1 second and about 24 days, the longest timer Node.js schedules; a longer one fires every millisecond. Default: 1h"
+							"maximum": 2147483.647,
+							"pattern": "^(?:(?:(?:[1-9]\\d{0,5}|1\\d{6}|20\\d{5}|21[0-3]\\d{4}|214[0-6]\\d{3}|2147[0-3]\\d{2}|21474[0-7]\\d|214748[0-2])(?:\\.\\d+)?|2147483(?:\\.0+)?)s?|(?:(?:[1-9]\\d{0,3}|[1-2]\\d{4}|3[0-4]\\d{3}|35[0-6]\\d{2}|357[0-8]\\d|35790)(?:\\.\\d+)?|35791(?:\\.0+)?|0\\.[1-9]\\d*)m|(?:(?:[1-9]\\d{0,1}|[1-4]\\d{2}|5[0-8]\\d|59[0-5])(?:\\.\\d+)?|596(?:\\.0+)?|0\\.0{0,2}[1-9]\\d*)[hH]|(?:(?:[1-9]|1\\d|2[0-3])(?:\\.\\d+)?|24(?:\\.0+)?|0\\.0{0,3}[1-9]\\d*)[dD])$",
+							"description": "Free-space check interval: a number of seconds, or a duration such as '30m', '1h' or '1d' (s, m, h or d). Between 1 second and 2147483647 ms (about 24.8 days), the longest timer Node.js schedules; a longer one fires every millisecond. Default: 1h"
 						},
 						"evictionFactor": {
 							"type": ["number", "null"],
@@ -921,7 +972,7 @@
 					"additionalProperties": true,
 					"properties": {
 						"coolingInterval": {
-							"type": ["string", "number"],
+							"allOf": [{ "$ref": "#/definitions/timerDuration" }],
 							"description": "How often to advise mapped transaction-log pages cold (MADV_COLD) so the kernel reclaims them first under memory pressure (e.g. '30s'). Non-destructive; helps memory reclamation during replication catch-up. Set to 0 to disable. Default: '30s'"
 						}
 					}
@@ -1271,6 +1322,14 @@
 	"additionalProperties": true,
 
 	"definitions": {
+		"timerDuration": {
+			"type": ["string", "number", "null"],
+			"minimum": 0,
+			"maximum": 2147483.647,
+			"not": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 0.001 },
+			"pattern": "^(?:0(?:\\.0+)?[smhHdD]?|(?:(?:[1-9]\\d{0,5}|1\\d{6}|20\\d{5}|21[0-3]\\d{4}|214[0-6]\\d{3}|2147[0-3]\\d{2}|21474[0-7]\\d|214748[0-2])(?:\\.\\d+)?|2147483(?:\\.0+)?|0\\.0{0,2}[1-9]\\d*)s?|(?:(?:[1-9]\\d{0,3}|[1-2]\\d{4}|3[0-4]\\d{3}|35[0-6]\\d{2}|357[0-8]\\d|35790)(?:\\.\\d+)?|35791(?:\\.0+)?|0\\.0{0,3}[1-9]\\d*)m|(?:(?:[1-9]\\d{0,1}|[1-4]\\d{2}|5[0-8]\\d|59[0-5])(?:\\.\\d+)?|596(?:\\.0+)?|0\\.0{0,5}[1-9]\\d*)[hH]|(?:(?:[1-9]|1\\d|2[0-3])(?:\\.\\d+)?|24(?:\\.0+)?|0\\.0{0,6}[1-9]\\d*)[dD])$",
+			"description": "0, or a duration from 1 ms to 2147483647 ms (about 24.8 days, the longest timer Node.js schedules): a number of seconds, or a string such as '30s', '5m', '1h' or '1d' (s, m, h or d; for milliseconds use a fraction of a second such as '0.5s')."
+		},
 		"studioPageKey": {
 			"type": "string",
 			"maxLength": 128,
