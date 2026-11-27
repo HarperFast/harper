@@ -478,28 +478,6 @@ describe('REST deferred reads', () => {
 			}
 		});
 
-		it('leaves a source whose onDone has already run', async () => {
-			let opened = 0;
-			resources.set(
-				'AlreadyReleased',
-				class extends Resource {
-					static get() {
-						return {
-							onDone: null,
-							[Symbol.asyncIterator]() {
-								opened++;
-								return { next: () => Promise.resolve({ done: true, value: undefined }) };
-							},
-						};
-					}
-				},
-				{ rest: true }
-			);
-			assert.strictEqual((await request('HEAD', '/AlreadyReleased/', { accept: 'application/json' })).status, 200);
-			await rejectsWith(request('GET', '/AlreadyReleased/', unsupported), 406);
-			assert.strictEqual(opened, 0);
-		});
-
 		it('closes it once when its stream fails to start', async () => {
 			for (const method of ['GET', 'HEAD']) {
 				closes = 0;

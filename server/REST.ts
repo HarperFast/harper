@@ -101,7 +101,6 @@ function finalizeResponse(
 			responseData.body === undefined ? ('data' in responseData ? responseData.data : responseData) : undefined
 		);
 		if (conditional.status === 304) {
-			// a 304 the resource chose itself never sends its data
 			if (!responseData.body && !discardedByPreconditions.has(conditional)) {
 				discardedByPreconditions.add(conditional);
 				discardReadResponse(conditional, readSource(responseData));
@@ -252,8 +251,7 @@ function isDeferredRead(data): boolean {
 function discardReadResponse(response, sourceData) {
 	try {
 		if (typeof sourceData?.onDone === 'function') ownDiscard(sourceData.onDone());
-		// a null onDone has already run: the source holds nothing to release
-		else if (sourceData?.onDone !== null && !closesSourceOnDiscard(response.body) && isDeferredRead(sourceData)) {
+		else if (!closesSourceOnDiscard(response.body) && isDeferredRead(sourceData)) {
 			// A serializer that never started never opened the source; return() on a fresh iterator is how one
 			// without onDone (a transform of search results) releases what it holds.
 			const iterator = sourceData[Symbol.asyncIterator]
@@ -280,11 +278,14 @@ const NO_BODY = Object.freeze({ body: undefined });
 // Never throws: a failure to release must not replace the response or error it runs for. A value without headers
 // is not a response, so its own `body` field is left alone.
 function discardUnsent(response, value) {
+	let source;
 	try {
-		discardReadResponse(response === value && !value?.headers ? NO_BODY : response, readSource(value));
+		if (response === value && !value?.headers) response = NO_BODY;
+		source = readSource(value);
 	} catch (error) {
 		logDiscardError(error);
 	}
+	discardReadResponse(response, source);
 }
 
 function ownDiscard(result) {
@@ -361,7 +362,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	let target: RequestTarget;
 	let resource: typeof Resource;
 	let responseData;
-	// set while the try owns a read it has neither returned nor discarded
 	let unsent;
 	try {
 		request.responseHeaders = headers;
@@ -677,7 +677,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				deferred && conditionalRead
 					? applyReadPreconditions(response, request, method, lastModification, data)
 					: response;
-			if (request.method === 'HEAD' && !(conditional.status === 304 && discardedByPreconditions.has(conditional))) {
+			// a 304 applyReadPreconditions built is a new object, its read already discarded
+			if (request.method === 'HEAD' && unsent !== undefined && conditional === response) {
 				unsent = undefined;
 				discardReadResponse(conditional, data);
 				if (!(conditional instanceof Response)) conditional.body = undefined;
@@ -764,11 +765,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		const response = deferredReadConditions
 			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
-		if (
-			request.method === 'HEAD' &&
-			responseData !== undefined &&
-			!(response.status === 304 && discardedByPreconditions.has(response))
-		) {
+		if (request.method === 'HEAD' && responseData !== undefined && response === responseObject) {
 			unsent = undefined;
 			discardReadResponse(response, responseData);
 			response.body = undefined; // we want everything else to be the same as GET, but then omit the body
