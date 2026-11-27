@@ -1029,7 +1029,9 @@ export function closesSourceOnDiscard(stream): boolean {
 
 export function discardSerializedStream(stream) {
 	if (typeof stream?.then === 'function') {
-		Promise.resolve(stream).then(discardSerializedStream, () => {});
+		Promise.resolve(stream)
+			.then(discardSerializedStream)
+			.catch(() => {});
 		return;
 	}
 	stream?.[streamStartup]?.cancel?.();

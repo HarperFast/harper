@@ -4,6 +4,8 @@ import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error client.mjs has no type declarations
 import { createApiClient } from '../apiTests/utils/client.mjs';
+// @ts-expect-error operations.mjs has no type declarations
+import { waitFor } from '../apiTests/utils/operations.mjs';
 
 const STARTUP_LAST_MODIFIED = new Date(Date.UTC(2026, 0, 2, 3, 4, 5)).toUTCString();
 
@@ -111,5 +113,28 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 		const plan = await request('GET', 'AllowedExplain/?category=books', { Accept: 'application/json' });
 		strictEqual(plan.status, 200);
 		ok(Array.isArray((await plan.json()).conditions), 'GET returns the query plan');
+	});
+
+	test('releases the search of a read it answers 406 without waiting for the transaction monitor', async () => {
+		const probe = `probe-${Date.now()}`;
+		const rejected = await request('GET', 'ReleaseProbe/?category=books', {
+			'Accept': 'application/x-unsupported',
+			'X-Release-Probe': probe,
+		});
+		strictEqual(rejected.status, 406);
+		await rejected.text();
+		// the monitor reclaims an abandoned read only after storage.maxTransactionOpenTime, 30 s by default
+		const released = await waitFor(
+			async () => {
+				const response = await request('GET', `ReleasedRead/${probe}`, { Accept: 'application/json' });
+				await response.text();
+				return response.status;
+			},
+			{ until: (status: number) => status === 200, timeoutSeconds: 5, intervalMs: 50 }
+		);
+		strictEqual(released, 200, 'the search was released');
+		const read = await request('GET', 'ReleaseProbe/?category=books', { Accept: 'application/json' });
+		strictEqual(read.status, 200);
+		ok(Array.isArray(await read.json()));
 	});
 });

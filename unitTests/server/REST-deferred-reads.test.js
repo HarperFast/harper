@@ -355,4 +355,145 @@ describe('REST deferred reads', () => {
 		process.off('unhandledRejection', onUnhandled);
 		assert.deepStrictEqual(unhandled, []);
 	});
+
+	describe('a read the response never sends', () => {
+		let closes = 0;
+		const unsupported = { accept: 'application/x-unsupported' };
+		const staleIfMatch = { 'accept': 'application/json', 'if-match': '"stale"' };
+		function countedSource(context, failAtStartup = false) {
+			context.responseHeaders.set('ETag', '"own"');
+			const source = (async function* () {
+				if (failAtStartup) throw new ClientError('conflict at startup', 409);
+				yield { id: 1 };
+			})();
+			// counts every call, so a second disposal of the same read shows
+			source.onDone = () => closes++;
+			return source;
+		}
+		const rejectsWith = (promise, status) => assert.rejects(promise, (error) => error.statusCode === status);
+
+		before(() => {
+			resources.set(
+				'Counted',
+				class extends Resource {
+					static get(_target, context) {
+						return countedSource(context);
+					}
+					static post(_target, _data, context) {
+						return countedSource(context);
+					}
+				},
+				{ rest: true }
+			);
+			resources.set(
+				'CountedEnvelope',
+				class extends Resource {
+					static get(_target, context) {
+						return { headers: new Headers({ 'X-Envelope': 'true' }), data: countedSource(context) };
+					}
+				},
+				{ rest: true }
+			);
+			resources.set(
+				'ThrownCounted',
+				class extends Resource {
+					static get(_target, context) {
+						const response = new Response(null, { headers: { 'X-Thrown': 'true' } });
+						response.data = countedSource(context);
+						throw response;
+					}
+				},
+				{ rest: true }
+			);
+			resources.set(
+				'CountedFailsAtStartup',
+				class extends Resource {
+					static get(_target, context) {
+						return countedSource(context, true);
+					}
+				},
+				{ rest: true }
+			);
+		});
+
+		it('closes it once when serializing it fails', async () => {
+			for (const [method, name] of [
+				['GET', 'Counted'],
+				['HEAD', 'Counted'],
+				['POST', 'Counted'],
+				['GET', 'CountedEnvelope'],
+				['HEAD', 'CountedEnvelope'],
+				['GET', 'ThrownCounted'],
+				['HEAD', 'ThrownCounted'],
+			]) {
+				closes = 0;
+				await rejectsWith(request(method, `/${name}/`, unsupported), 406);
+				assert.strictEqual(closes, 1, `${method} ${name}`);
+			}
+		});
+
+		it('closes it once when a precondition fails', async () => {
+			for (const name of ['Counted', 'CountedEnvelope', 'ThrownCounted']) {
+				for (const method of ['GET', 'HEAD']) {
+					closes = 0;
+					const response = await request(method, `/${name}/`, staleIfMatch);
+					assert.strictEqual(response.status, 412, `${method} ${name}`);
+					assert.strictEqual(closes, 1, `${method} ${name}`);
+				}
+			}
+		});
+
+		it('closes it once when its stream fails to start', async () => {
+			for (const method of ['GET', 'HEAD']) {
+				closes = 0;
+				const response = await request(method, '/CountedFailsAtStartup/', ndjson);
+				assert.strictEqual(response.status, 409, method);
+				assert.strictEqual(closes, 1, method);
+			}
+		});
+
+		it('closes it once when the response fails after its HEAD discard', async () => {
+			resources.set(
+				'GetterBody',
+				class extends Resource {
+					static get(_target, context) {
+						return {
+							headers: new Headers(),
+							get body() {
+								return '{}';
+							},
+							data: countedSource(context),
+						};
+					}
+				},
+				{ rest: true }
+			);
+			closes = 0;
+			const response = await request('HEAD', '/GetterBody/', { accept: 'application/json' });
+			assert.strictEqual(response.status, 500);
+			assert.strictEqual(closes, 1);
+		});
+
+		it('answers the error status when closing its body fails', async () => {
+			resources.set(
+				'BodyFailsToClose',
+				class extends Resource {
+					static get(_target, context) {
+						context.responseHeaders.set('ETag', '"own"');
+						return {
+							headers: new Headers(),
+							body: {
+								destroy() {
+									throw new Error('destroy failed');
+								},
+							},
+						};
+					}
+				},
+				{ rest: true }
+			);
+			const response = await request('GET', '/BodyFailsToClose/', staleIfMatch);
+			assert.strictEqual(response.status, 412);
+		});
+	});
 });
