@@ -390,7 +390,7 @@ function timerDurationConstraints({ minMs, zeroAllowed }: { minMs: number; zeroA
 		.allow(null);
 }
 const coolingIntervalConstraints = timerDurationConstraints({ minMs: 1, zeroAllowed: true });
-const reclamationIntervalConstraints = timerDurationConstraints({ minMs: 1000, zeroAllowed: false });
+const reclamationIntervalConstraints = timerDurationConstraints({ minMs: 1000, zeroAllowed: true });
 const maxTransactionQueueTimeConstraints = timerDurationConstraints({ minMs: 1, zeroAllowed: true });
 const longTransactionReportThresholdConstraints = timerDurationConstraints({ minMs: 1, zeroAllowed: true });
 // Milliseconds, not a duration: the monitor passes it to setInterval unconverted. Its reader coerces a

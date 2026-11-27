@@ -492,7 +492,7 @@ Default: `1h`
 
 How often Harper checks free space against the threshold. Lower intervals catch fast-filling volumes sooner at the cost of more periodic I/O.
 
-<VersionBadge type="changed" version="v5.5.0" /> Give a number of seconds or a string with an `s`, `m`, `h` or `d` unit, from 1 second to 2147483647 ms (about 24.8 days, the longest timer Node.js schedules), for example `30m`, `0.5h` or `24d`. Harper rejects any other value when the configuration is set or loaded. To turn reclamation off, set `storage.reclamation.threshold` to `0`.
+<VersionBadge type="changed" version="v5.5.0" /> Give a number of seconds or a string with an `s`, `m`, `h` or `d` unit, from 1 second to 2147483647 ms (about 24.8 days, the longest timer Node.js schedules), for example `30m`, `0.5h` or `24d`; `0` uses the default. Harper rejects any other value when the configuration is set or loaded. To turn reclamation off, set `storage.reclamation.threshold` to `0`.
 
 ### `storage.reclamation.evictionFactor`
 

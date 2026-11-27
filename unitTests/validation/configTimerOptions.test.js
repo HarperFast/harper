@@ -73,7 +73,7 @@ const TYPICAL_DURATIONS = [30, 90, '30s', '1m', '5m', '45s', '1h', '1.5h', '0.5h
 
 const DURATIONS = [
 	{ path: 'storage.transactionLog.coolingInterval', installed: '30s', zero: true, minMs: 1 },
-	{ path: 'storage.reclamation.interval', installed: '1h', zero: false, minMs: 1000 },
+	{ path: 'storage.reclamation.interval', installed: '1h', zero: true, minMs: 1000 },
 	{ path: 'storage.maxTransactionQueueTime', installed: '45s', zero: true, minMs: 1 },
 	{ path: 'storage.longTransactionReportThreshold', installed: '5m', zero: true, minMs: 1 },
 ];

@@ -954,10 +954,11 @@
 						},
 						"interval": {
 							"type": ["string", "number", "null"],
-							"minimum": 1,
+							"minimum": 0,
 							"maximum": 2147483.647,
-							"pattern": "^(?:(?:(?:[1-9]\\d{0,5}|1\\d{6}|20\\d{5}|21[0-3]\\d{4}|214[0-6]\\d{3}|2147[0-3]\\d{2}|21474[0-7]\\d|214748[0-2])(?:\\.\\d+)?|2147483(?:\\.0+)?)s?|(?:(?:[1-9]\\d{0,3}|[1-2]\\d{4}|3[0-4]\\d{3}|35[0-6]\\d{2}|357[0-8]\\d|35790)(?:\\.\\d+)?|35791(?:\\.0+)?|0\\.[1-9]\\d*)m|(?:(?:[1-9]\\d{0,1}|[1-4]\\d{2}|5[0-8]\\d|59[0-5])(?:\\.\\d+)?|596(?:\\.0+)?|0\\.0{0,2}[1-9]\\d*)[hH]|(?:(?:[1-9]|1\\d|2[0-3])(?:\\.\\d+)?|24(?:\\.0+)?|0\\.0{0,3}[1-9]\\d*)[dD])$",
-							"description": "Free-space check interval: a number of seconds, or a duration such as '30m', '1h' or '1d' (s, m, h or d). Between 1 second and 2147483647 ms (about 24.8 days), the longest timer Node.js schedules; a longer one fires every millisecond. Default: 1h"
+							"not": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+							"pattern": "^(?:0(?:\\.0+)?[smhHdD]?|(?:(?:[1-9]\\d{0,5}|1\\d{6}|20\\d{5}|21[0-3]\\d{4}|214[0-6]\\d{3}|2147[0-3]\\d{2}|21474[0-7]\\d|214748[0-2])(?:\\.\\d+)?|2147483(?:\\.0+)?)s?|(?:(?:[1-9]\\d{0,3}|[1-2]\\d{4}|3[0-4]\\d{3}|35[0-6]\\d{2}|357[0-8]\\d|35790)(?:\\.\\d+)?|35791(?:\\.0+)?|0\\.[1-9]\\d*)m|(?:(?:[1-9]\\d{0,1}|[1-4]\\d{2}|5[0-8]\\d|59[0-5])(?:\\.\\d+)?|596(?:\\.0+)?|0\\.0{0,2}[1-9]\\d*)[hH]|(?:(?:[1-9]|1\\d|2[0-3])(?:\\.\\d+)?|24(?:\\.0+)?|0\\.0{0,3}[1-9]\\d*)[dD])$",
+							"description": "Free-space check interval: a number of seconds, or a duration such as '30m', '1h' or '1d' (s, m, h or d). Between 1 second and 2147483647 ms (about 24.8 days), the longest timer Node.js schedules; a longer one fires every millisecond. 0 uses the default. Default: 1h"
 						},
 						"evictionFactor": {
 							"type": ["number", "null"],

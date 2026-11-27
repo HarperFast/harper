@@ -220,14 +220,16 @@ describe('config-root.schema.json matches the configuration Harper reads', () =>
 		const { threshold, interval, evictionFactor } = schema.properties.storage.properties.reclamation.properties;
 		assert.deepStrictEqual([threshold.minimum, threshold.maximum], [0, 1]);
 		assert.strictEqual(evictionFactor.exclusiveMinimum, 0);
-		assert.ok(convertToMS(interval.minimum) >= 1000);
+		assert.strictEqual(interval.minimum, 0, 'the default selector');
+		assert.ok(convertToMS(interval.not.exclusiveMaximum) >= 1000);
 		assert.ok(convertToMS(interval.maximum) <= 2 ** 31 - 1, 'setTimeout limit');
 		const duration = new RegExp(interval.pattern);
 		for (const accepted of ['1', '90', '30m', '1.5h', '1d'])
 			assert.ok(duration.test(accepted) && convertToMS(accepted) >= 1000, accepted);
 		for (const rejected of ['-1h', '0.001', '0.5', '10ms', '1M', '1y', 'soon', '25d', '600h', '597h', '35792m'])
 			assert.ok(!duration.test(rejected), rejected);
-		for (const accepted of ['24d', '596h', '35791m', '2147483', '0.5h']) assert.ok(duration.test(accepted), accepted);
+		for (const accepted of ['24d', '596h', '35791m', '2147483', '0.5h', '0', '0s'])
+			assert.ok(duration.test(accepted), accepted);
 	});
 
 	const DURATION_SAMPLES = [
