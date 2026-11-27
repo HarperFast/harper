@@ -164,12 +164,20 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 					`SELECT VALUE FROM data.ColPermRight r WHERE r.label = 'shared'`,
 					`SELECT _->id AS k FROM data.ColPermRight r WHERE r.label = 'shared'`,
 					"SELECT ``p`` AS rec FROM data.ColPermRight r WHERE r.label = 'shared'",
-					"SELECT {__proto__:{rec:_}} AS obj FROM data.ColPermRight r WHERE r.label LIKE '%shared%'",
 					`SELECT ? AS v FROM data.ColPermRight r WHERE r.label = 'shared'`,
 					`UPDATE data.ColPermLeft SET label = ? WHERE id = 'l2'`,
 				]) {
 					assertRefused(await asReader(sql), sql);
 				}
+				// AlaSQL refuses the `__proto__` token while parsing, before any permission check, so this answers 400.
+				const protoSql = "SELECT {__proto__:{rec:_}} AS obj FROM data.ColPermRight r WHERE r.label LIKE '%shared%'";
+				const protoRes = await asReader(protoSql);
+				strictEqual(
+					protoRes.status,
+					400,
+					`${protoSql} -> ${protoRes.status} ${JSON.stringify(protoRes.body).slice(0, 300)}`
+				);
+				ok(!JSON.stringify(protoRes.body).includes(RIGHT_PK), 'the refusal must not carry the primary key value');
 			});
 
 			test('JOIN USING on a permitted column is authorized and matches the equivalent ON', async () => {
