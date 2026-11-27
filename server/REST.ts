@@ -677,7 +677,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				deferred && conditionalRead
 					? applyReadPreconditions(response, request, method, lastModification, data)
 					: response;
-			if (request.method === 'HEAD' && !discardedByPreconditions.has(conditional)) {
+			if (request.method === 'HEAD' && !(conditional.status === 304 && discardedByPreconditions.has(conditional))) {
 				unsent = undefined;
 				discardReadResponse(conditional, data);
 				if (!(conditional instanceof Response)) conditional.body = undefined;
@@ -764,7 +764,11 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		const response = deferredReadConditions
 			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
-		if (request.method === 'HEAD' && responseData !== undefined && !discardedByPreconditions.has(response)) {
+		if (
+			request.method === 'HEAD' &&
+			responseData !== undefined &&
+			!(response.status === 304 && discardedByPreconditions.has(response))
+		) {
 			unsent = undefined;
 			discardReadResponse(response, responseData);
 			response.body = undefined; // we want everything else to be the same as GET, but then omit the body
