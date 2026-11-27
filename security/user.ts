@@ -21,6 +21,8 @@ export {
 	listUsers,
 	listUsersExternal,
 	findAndValidateUser,
+	credentialBinding,
+	findLoginTokenUser,
 	getUserImpl,
 	getUserWithRole,
 	isCurrentUser,
@@ -120,6 +122,7 @@ import _validate from 'validate.js';
 const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'node:util';
+import { createHmac } from 'node:crypto';
 import { systemSchema } from '../utility/systemSchema.js';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
@@ -1035,6 +1038,34 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 		}
 	}
 	return user;
+}
+
+/**
+ * A keyed digest of the active hdb_user record `username` names, or undefined when none is active. It covers the
+ * password hash, which every password write re-salts, and the creation time, which recreating the name resets, but
+ * not the refresh token or role, which ordinary token mints and role changes rewrite.
+ */
+function credentialBinding(username: string, key: string): string | undefined {
+	if (typeof username !== 'string' || username === '') return undefined;
+	return bindingOf(readEntry(systemStore(USER_TABLE_NAME), username)?.value, key);
+}
+
+/**
+ * The user a login token names, built from the same read whose record has the token's `binding`, or undefined. One
+ * read, so a record dropped or replaced between a binding check and a separate lookup cannot become the principal.
+ */
+function findLoginTokenUser(username: string, binding: unknown, key: string): User | undefined {
+	if (typeof binding !== 'string') return undefined;
+	const entries = readUserEntries(username);
+	if (bindingOf(entries.user?.value, key) !== binding) return undefined;
+	return userView(username, entries);
+}
+
+function bindingOf(record: any, key: string): string | undefined {
+	if (!record?.active || !key) return undefined;
+	return createHmac('sha256', key)
+		.update(JSON.stringify([record.username, record.password ?? null, record.__createdtime__ ?? null]))
+		.digest('base64url');
 }
 
 async function getSuperUser(): Promise<User | undefined> {

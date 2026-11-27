@@ -215,6 +215,8 @@ authentication:
 
 Valid duration string values follow the [`jsonwebtoken` package format](https://github.com/auth0/node-jsonwebtoken#token-expiration-exp-claim) (e.g., `1d`, `12h`, `60m`). See [Security / Configuration](./configuration.md) for the full authentication config reference.
 
+A [login token](../operations-api/operations.md#login-tokens), which the `login` operation trades for a session cookie, lasts one minute by default and never longer than [`authentication.maxLoginTokenTimeout`](./configuration.md#maxlogintokentimeout) (default `5m`), whatever `expires_in` it is requested with.
+
 ## When to Use JWT Auth
 
 JWT authentication is preferred over Basic Auth when:

@@ -102,6 +102,14 @@ Live-subscription rechecks re-read a principal by name and require a role (#1414
 - `latchRoleRequirement` holds an admission behind which a recheck or MCP refresh found a record (an inactive refusal counts), plus the contexts it used, for the process's life; an admission that arrived with a role or a record is instead re-derived at each registration. Either way every later subscription of it, by any view, needs a role even after `drop_user`. A record created and dropped unseen latches nothing (#4382).
 - #4071's fixed principals (`_scopedToken`, `isRecordlessPrincipal`) and `isLocalPrincipal` are checked first and are never re-read. Enforced by `unitTests/server/liveSubscriptionAuth.test.js`, `unitTests/security/userRecordLookups.test.js` and `integrationTests/security/certificate-principal-subscriptions.test.ts`.
 
+### A login token is bound to the record it was minted from (`security/tokenAuthentication.ts`)
+
+A `purpose: 'login'` token carries `user_binding` (`credentialBinding`): an HMAC over the active `hdb_user` record's password hash and `__createdtime__`, keyed by the JWT private key because the claim is readable. Every password write re-salts and recreating a name resets the created time, so either ends the token; refresh-token rewrites and role changes do not (an entry-version binding would end it on every ordinary mint for that user). No active record, no token.
+
+- Mint reads the binding before the password check, so a concurrent password change binds the replaced record and fails closed.
+- `validateToken` returns `findLoginTokenUser`, whose binding check and principal come from one `readUserEntries` read (RocksDB reads share no snapshot), never a separate lookup.
+- `maxLoginTokenSeconds` caps the lifetime, measured on the signed token: jsonwebtoken and `convertToMS` parse durations differently (`unitTests/security/loginToken.test.js`, `integrationTests/security/login-token-binding.test.ts`).
+
 ### A component grant answers to its names ahead of every operations listing (`security/componentGrant.ts`)
 
 `component_deploy` (harper#3046; avoiding `RESERVED_DATABASE_NAMES` collisions with `components`) scopes `deploy_component`, `drop_component`, `get_deployment`, `list_deployments`, and `get_components` by `names` patterns (`componentNameMatches` in `utility/componentNames.ts`, shared with deploy credentials, harper#3090).
