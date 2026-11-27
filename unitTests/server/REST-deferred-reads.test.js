@@ -478,6 +478,36 @@ describe('REST deferred reads', () => {
 			}
 		});
 
+		it('closes the source it serialized when the envelope later answers another', async () => {
+			let shifted = false;
+			let decoyCloses = 0;
+			resources.set(
+				'ShiftingData',
+				class extends Resource {
+					static get(_target, context) {
+						context.responseHeaders.set('ETag', '"own"');
+						const source = (async function* () {
+							shifted = true;
+							yield { id: 1 };
+						})();
+						source.onDone = () => closes++;
+						const decoy = { onDone: () => decoyCloses++ };
+						return {
+							headers: new Headers(),
+							get data() {
+								return shifted ? decoy : source;
+							},
+						};
+					}
+				},
+				{ rest: true }
+			);
+			closes = 0;
+			const response = await request('GET', '/ShiftingData/', { ...ndjson, 'if-match': '"stale"' });
+			assert.strictEqual(response.status, 412);
+			assert.deepStrictEqual({ closes, decoyCloses }, { closes: 1, decoyCloses: 0 });
+		});
+
 		it('closes it once when its stream fails to start', async () => {
 			for (const method of ['GET', 'HEAD']) {
 				closes = 0;

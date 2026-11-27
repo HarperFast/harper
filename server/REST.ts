@@ -282,12 +282,11 @@ const NO_BODY = Object.freeze({ body: undefined });
 
 // Never throws: a failure to release must not replace the response or error it runs for. A value without headers
 // is not a response, so its own `body` field is left alone.
-function discardUnsent(response, value) {
+function discardUnsent(response, value, source?) {
 	let target = response === value ? NO_BODY : response;
-	let source;
 	try {
 		if (target === NO_BODY && value?.headers) target = value;
-		source = readSource(value);
+		source ??= readSource(value);
 	} catch (error) {
 		logDiscardError(error);
 	}
@@ -348,9 +347,9 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 	// Only foreign (possibly immutable) Response headers need a copy.
 	const headers =
 		response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
-	// after the last step that can throw, and before the strip so an onDone that sets headers cannot restore them
-	discardReadResponse(response, sourceData);
 	for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
+	// last: whatever throws before it leaves the read to the caller
+	discardReadResponse(response, sourceData);
 	return { status: 304, headers, body: undefined, [READ_DISCARDED]: true };
 }
 
@@ -368,6 +367,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	let resource: typeof Resource;
 	let responseData;
 	let unsent;
+	// the source serialized from an envelope, which its own data getter may no longer return
+	let unsentSource;
 	try {
 		request.responseHeaders = headers;
 		request.response = {
@@ -655,6 +656,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
 			const data = 'data' in responseData ? responseData.data : responseData;
+			unsentSource = data;
 			const deferred =
 				(method === 'GET' || method === 'HEAD') && responseData.body === undefined && isDeferredRead(data);
 			const response = finalizeResponse(
@@ -667,7 +669,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				target,
 				resource
 			);
-			unsent = response.status === 304 && response[READ_DISCARDED] ? undefined : response;
+			unsent = response.status === 304 && response !== responseData && response[READ_DISCARDED] ? undefined : response;
 			const startup = readStreamStartup(response.body, request.method, method);
 			if (startup) await startup;
 			if (deferred) {
@@ -777,7 +779,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		return response;
 	} catch (error) {
 		// before the error is serialized, which can fail on the same Accept header
-		if (unsent) discardUnsent(unsent, responseData);
+		if (unsent) discardUnsent(unsent, responseData, unsentSource);
 		cancelMultipartBody(request.data);
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
