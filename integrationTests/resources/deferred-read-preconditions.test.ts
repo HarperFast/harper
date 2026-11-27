@@ -1,11 +1,10 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error client.mjs has no type declarations
 import { createApiClient } from '../apiTests/utils/client.mjs';
-// @ts-expect-error operations.mjs has no type declarations
-import { waitFor } from '../apiTests/utils/operations.mjs';
 
 const STARTUP_LAST_MODIFIED = new Date(Date.UTC(2026, 0, 2, 3, 4, 5)).toUTCString();
 
@@ -123,15 +122,15 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 		});
 		strictEqual(rejected.status, 406);
 		await rejected.text();
-		// the monitor reclaims an abandoned read only after storage.maxTransactionOpenTime, 30 s by default
-		const released = await waitFor(
-			async () => {
-				const response = await request('GET', `ReleasedRead/${probe}`, { Accept: 'application/json' });
-				await response.text();
-				return response.status;
-			},
-			{ until: (status: number) => status === 200, timeoutSeconds: 5, intervalMs: 50 }
-		);
+		// well inside storage.maxTransactionOpenTime (30 s by default), after which the monitor would release it
+		const deadline = Date.now() + 5_000;
+		let released = 0;
+		while (released !== 200 && Date.now() < deadline) {
+			const response = await request('GET', `ReleasedRead/${probe}`, { Accept: 'application/json' });
+			released = response.status;
+			await response.text();
+			if (released !== 200) await delay(50);
+		}
 		strictEqual(released, 200, 'the search was released');
 		const read = await request('GET', 'ReleaseProbe/?category=books', { Accept: 'application/json' });
 		strictEqual(read.status, 200);

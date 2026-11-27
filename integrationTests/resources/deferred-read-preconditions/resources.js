@@ -51,7 +51,6 @@ export class AllowedExplain extends AllowedItem {
 	}
 }
 
-// Records when its search is released, so a test can tell a prompt release from the transaction monitor's.
 export class ReleaseProbe extends tables.CountedRow {
 	static loadAsInstance = false;
 	get(target) {
@@ -60,7 +59,7 @@ export class ReleaseProbe extends tables.CountedRow {
 		const onDone = results.onDone;
 		results.onDone = () => {
 			onDone.call(results);
-			if (probe) tables.ReleasedRead.put({ id: probe });
+			if (probe) Promise.resolve(tables.ReleasedRead.put({ id: probe })).catch(() => {});
 		};
 		return results;
 	}

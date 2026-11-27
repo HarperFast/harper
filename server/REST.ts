@@ -263,7 +263,6 @@ function discardReadResponse(response, sourceData) {
 	}
 }
 
-// A response value's read: an envelope's data, else the value itself.
 function readSource(value) {
 	return value?.headers && 'data' in value ? value.data : value;
 }
@@ -351,7 +350,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	let target: RequestTarget;
 	let resource: typeof Resource;
 	let responseData;
-	// The response carrying responseData's read until it is returned or discarded; the catch discards it.
+	// the response whose read the catch discards, until the try returns or discards it
 	let unsent;
 	try {
 		request.responseHeaders = headers;
@@ -607,7 +606,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 								? (result.status ?? request.response.status)
 								: request.response.status;
 							if (unapplied(writeCondition) && !(replyStatus >= 400)) {
-								if (result?.headers) discardSerializedStream(result.body);
+								if (result != null) discardUnsent(result, result);
 								throw new ClientError('The resource did not apply the write precondition', 501);
 							}
 							return result;
@@ -652,7 +651,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				target,
 				resource
 			);
-			unsent = discardedByPreconditions.has(response) ? undefined : response;
+			unsent = response.status === 304 && discardedByPreconditions.has(response) ? undefined : response;
 			const startup = readStreamStartup(response.body, request.method, method);
 			if (startup) await startup;
 			if (deferred) {
@@ -729,6 +728,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					: responseObject;
 			if (conditional.status === 304) {
 				unsent = undefined;
+				// a 304 the resource chose itself sends no body either
+				if (!discardedByPreconditions.has(conditional)) discardReadResponse(conditional, responseData);
 				if ((target as any)?.isCollection) addVaryHeader(conditional.headers, 'Prefer');
 				return conditional;
 			}

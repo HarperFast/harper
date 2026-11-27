@@ -1006,11 +1006,27 @@ describe('REST preconditions with real table transactions', () => {
 				throw new Response('ok', { status: 200 });
 			}
 		}
+		let closes = 0;
+		class ReturnsRead extends Row {
+			patch() {
+				return { onDone: () => closes++ };
+			}
+		}
+		class ReturnsReadEnvelope extends Row {
+			patch() {
+				return { headers: {}, data: { onDone: () => closes++ } };
+			}
+		}
 		resources.set('Noop', Noop, { rest: true });
 		resources.set('ThrownSuccess', ThrownSuccess, { rest: true });
+		resources.set('ReturnsRead', ReturnsRead, { rest: true });
+		resources.set('ReturnsReadEnvelope', ReturnsReadEnvelope, { rest: true });
 		assert.strictEqual((await request('POST', '/Row/', { n: 2 }, { 'if-none-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/Noop/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/ThrownSuccess/read', { n: 2 }, { 'if-match': '*' })).status, 501);
+		for (const path of ['/ReturnsRead/read', '/ReturnsReadEnvelope/read'])
+			assert.strictEqual((await request('PATCH', path, { n: 2 }, { 'if-match': '*' })).status, 501, path);
+		assert.strictEqual(closes, 2, 'the read each handler returned is closed');
 		assert.strictEqual((await Row.get('read')).n, 1);
 	});
 

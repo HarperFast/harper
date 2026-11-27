@@ -366,7 +366,6 @@ describe('REST deferred reads', () => {
 				if (failAtStartup) throw new ClientError('conflict at startup', 409);
 				yield { id: 1 };
 			})();
-			// counts every call, so a second disposal of the same read shows
 			source.onDone = () => closes++;
 			return source;
 		}
@@ -380,6 +379,9 @@ describe('REST deferred reads', () => {
 						return countedSource(context);
 					}
 					static post(_target, _data, context) {
+						return countedSource(context);
+					}
+					static query(_target, _data, context) {
 						return countedSource(context);
 					}
 				},
@@ -421,6 +423,7 @@ describe('REST deferred reads', () => {
 				['GET', 'Counted'],
 				['HEAD', 'Counted'],
 				['POST', 'Counted'],
+				['QUERY', 'Counted'],
 				['GET', 'CountedEnvelope'],
 				['HEAD', 'CountedEnvelope'],
 				['GET', 'ThrownCounted'],
@@ -441,6 +444,23 @@ describe('REST deferred reads', () => {
 					assert.strictEqual(closes, 1, `${method} ${name}`);
 				}
 			}
+		});
+
+		it('closes it when the resource answers 304 itself', async () => {
+			resources.set(
+				'OwnPlainNotModified',
+				class extends Resource {
+					static get(_target, context) {
+						context.response.status = 304;
+						return countedSource(context);
+					}
+				},
+				{ rest: true }
+			);
+			closes = 0;
+			const response = await request('GET', '/OwnPlainNotModified/', { accept: 'application/json' });
+			assert.strictEqual(response.status, 304);
+			assert.strictEqual(closes, 1);
 		});
 
 		it('closes it once when its stream fails to start', async () => {
