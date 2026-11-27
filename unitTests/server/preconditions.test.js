@@ -1017,16 +1017,28 @@ describe('REST preconditions with real table transactions', () => {
 				return { headers: {}, data: { onDone: () => closes++ } };
 			}
 		}
+		let destroyed = 0;
+		class ReturnsRecordWithBody extends Row {
+			patch() {
+				return { id: 'read', body: { destroy: () => destroyed++ } };
+			}
+		}
 		resources.set('Noop', Noop, { rest: true });
 		resources.set('ThrownSuccess', ThrownSuccess, { rest: true });
 		resources.set('ReturnsRead', ReturnsRead, { rest: true });
 		resources.set('ReturnsReadEnvelope', ReturnsReadEnvelope, { rest: true });
+		resources.set('ReturnsRecordWithBody', ReturnsRecordWithBody, { rest: true });
 		assert.strictEqual((await request('POST', '/Row/', { n: 2 }, { 'if-none-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/Noop/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		assert.strictEqual((await request('PATCH', '/ThrownSuccess/read', { n: 2 }, { 'if-match': '*' })).status, 501);
 		for (const path of ['/ReturnsRead/read', '/ReturnsReadEnvelope/read'])
 			assert.strictEqual((await request('PATCH', path, { n: 2 }, { 'if-match': '*' })).status, 501, path);
 		assert.strictEqual(closes, 2, 'the read each handler returned is closed');
+		assert.strictEqual(
+			(await request('PATCH', '/ReturnsRecordWithBody/read', { n: 2 }, { 'if-match': '*' })).status,
+			501
+		);
+		assert.strictEqual(destroyed, 0, "a record's own body field is not a response body");
 		assert.strictEqual((await Row.get('read')).n, 1);
 	});
 

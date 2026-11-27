@@ -116,14 +116,14 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 
 	test('releases the search of a read it answers 406 without waiting for the transaction monitor', async () => {
 		const probe = `probe-${Date.now()}`;
+		// well inside storage.maxTransactionOpenTime (30 s by default), after which the monitor would release it
+		const deadline = Date.now() + 5_000;
 		const rejected = await request('GET', 'ReleaseProbe/?category=books', {
 			'Accept': 'application/x-unsupported',
 			'X-Release-Probe': probe,
 		});
 		strictEqual(rejected.status, 406);
 		await rejected.text();
-		// well inside storage.maxTransactionOpenTime (30 s by default), after which the monitor would release it
-		const deadline = Date.now() + 5_000;
 		let released = 0;
 		while (released !== 200 && Date.now() < deadline) {
 			const response = await request('GET', `ReleasedRead/${probe}`, { Accept: 'application/json' });
@@ -132,6 +132,7 @@ suite('Deferred collection read preconditions', { skip: process.platform === 'wi
 			if (released !== 200) await delay(50);
 		}
 		strictEqual(released, 200, 'the search was released');
+		ok(Date.now() <= deadline, 'released before the deadline');
 		const read = await request('GET', 'ReleaseProbe/?category=books', { Accept: 'application/json' });
 		strictEqual(read.status, 200);
 		ok(Array.isArray(await read.json()));

@@ -98,9 +98,16 @@ function finalizeResponse(
 			request,
 			method,
 			request.lastModified,
-			responseData.body === undefined ? readSource(responseData) : undefined
+			responseData.body === undefined ? ('data' in responseData ? responseData.data : responseData) : undefined
 		);
-		if (conditional.status === 304) return conditional;
+		if (conditional.status === 304) {
+			// a 304 the resource chose itself never sends its data
+			if (!responseData.body && !discardedByPreconditions.has(conditional)) {
+				discardedByPreconditions.add(conditional);
+				discardReadResponse(conditional, readSource(responseData));
+			}
+			return conditional;
+		}
 	}
 	// if no body, look for provided data to serialize
 	if (!responseData.body) {
@@ -245,7 +252,8 @@ function isDeferredRead(data): boolean {
 function discardReadResponse(response, sourceData) {
 	try {
 		if (typeof sourceData?.onDone === 'function') ownDiscard(sourceData.onDone());
-		else if (!closesSourceOnDiscard(response.body) && isDeferredRead(sourceData)) {
+		// a null onDone has already run: the source holds nothing to release
+		else if (sourceData?.onDone !== null && !closesSourceOnDiscard(response.body) && isDeferredRead(sourceData)) {
 			// A serializer that never started never opened the source; return() on a fresh iterator is how one
 			// without onDone (a transform of search results) releases what it holds.
 			const iterator = sourceData[Symbol.asyncIterator]
@@ -267,10 +275,13 @@ function readSource(value) {
 	return value?.headers && 'data' in value ? value.data : value;
 }
 
-// The error path's discard, which must not replace the error response it runs for.
+const NO_BODY = Object.freeze({ body: undefined });
+
+// Never throws: a failure to release must not replace the response or error it runs for. A value without headers
+// is not a response, so its own `body` field is left alone.
 function discardUnsent(response, value) {
 	try {
-		discardReadResponse(response, readSource(value));
+		discardReadResponse(response === value && !value?.headers ? NO_BODY : response, readSource(value));
 	} catch (error) {
 		logDiscardError(error);
 	}
@@ -298,7 +309,7 @@ function setReadValidators(headers, lastModification: number, httpOptions) {
 		headers.set('Last-Modified', new Date(lastModification).toUTCString());
 }
 
-// the 304s applyReadPreconditions answers after discarding the read, unlike one a resource returns itself
+// 304s built here whose read was already discarded, unlike a 304 a resource returns itself
 const discardedByPreconditions = new WeakSet<object>();
 
 // Discards the read only when it answers 304, as its last step; when it throws, the read stays the caller's.
@@ -350,7 +361,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	let target: RequestTarget;
 	let resource: typeof Resource;
 	let responseData;
-	// the response whose read the catch discards, until the try returns or discards it
+	// set while the try owns a read it has neither returned nor discarded
 	let unsent;
 	try {
 		request.responseHeaders = headers;
@@ -638,7 +649,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
-			const data = readSource(responseData);
+			const data = 'data' in responseData ? responseData.data : responseData;
 			const deferred =
 				(method === 'GET' || method === 'HEAD') && responseData.body === undefined && isDeferredRead(data);
 			const response = finalizeResponse(
@@ -728,7 +739,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					: responseObject;
 			if (conditional.status === 304) {
 				unsent = undefined;
-				// a 304 the resource chose itself sends no body either
 				if (!discardedByPreconditions.has(conditional)) discardReadResponse(conditional, responseData);
 				if ((target as any)?.isCollection) addVaryHeader(conditional.headers, 'Prefer');
 				return conditional;
@@ -762,7 +772,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		return response;
 	} catch (error) {
 		// before the error is serialized, which can fail on the same Accept header
-		if (unsent != null) discardUnsent(unsent, responseData);
+		if (unsent) discardUnsent(unsent, responseData);
 		cancelMultipartBody(request.data);
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one

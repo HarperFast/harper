@@ -457,10 +457,47 @@ describe('REST deferred reads', () => {
 				},
 				{ rest: true }
 			);
-			closes = 0;
-			const response = await request('GET', '/OwnPlainNotModified/', { accept: 'application/json' });
-			assert.strictEqual(response.status, 304);
-			assert.strictEqual(closes, 1);
+			resources.set(
+				'OwnEnvelopeNotModified',
+				class extends Resource {
+					static get(_target, context) {
+						return { status: 304, headers: new Headers(), body: null, data: countedSource(context) };
+					}
+				},
+				{ rest: true }
+			);
+			for (const [method, name, headers] of [
+				['GET', 'OwnPlainNotModified', {}],
+				['GET', 'OwnEnvelopeNotModified', { 'if-none-match': '"other"' }],
+				['HEAD', 'OwnEnvelopeNotModified', { 'if-none-match': '"other"' }],
+			]) {
+				closes = 0;
+				const response = await request(method, `/${name}/`, { accept: 'application/json', ...headers });
+				assert.strictEqual(response.status, 304, `${method} ${name}`);
+				assert.strictEqual(closes, 1, `${method} ${name}`);
+			}
+		});
+
+		it('leaves a source whose onDone has already run', async () => {
+			let opened = 0;
+			resources.set(
+				'AlreadyReleased',
+				class extends Resource {
+					static get() {
+						return {
+							onDone: null,
+							[Symbol.asyncIterator]() {
+								opened++;
+								return { next: () => Promise.resolve({ done: true, value: undefined }) };
+							},
+						};
+					}
+				},
+				{ rest: true }
+			);
+			assert.strictEqual((await request('HEAD', '/AlreadyReleased/', { accept: 'application/json' })).status, 200);
+			await rejectsWith(request('GET', '/AlreadyReleased/', unsupported), 406);
+			assert.strictEqual(opened, 0);
 		});
 
 		it('closes it once when its stream fails to start', async () => {
