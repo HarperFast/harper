@@ -119,8 +119,8 @@ function rest(tables) {
 		routeFor: () => ({ urlPath: `/sort-text-${mounts++}` }),
 		server: { http: (listener) => (handler = listener) },
 	});
-	return (method, url, data, headers = {}) => {
-		const request = { method, url, user: admin, headers: new Headers(headers), data };
+	return (method, url, data, headers = {}, context = {}) => {
+		const request = Object.assign(context, { method, url, user: admin, headers: new Headers(headers), data });
 		request.headers.asObject = headers;
 		return handler(request, () => ({ status: 404 }));
 	};
@@ -1138,6 +1138,49 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			rows.map((row) => row.content),
 			['apricot', 'cherry']
 		);
+	});
+
+	it('a REST read it answers 406 after the model call releases its search', async () => {
+		let closes = 0;
+		const counted = (results) => {
+			const onDone = results.onDone;
+			results.onDone = () => {
+				closes++;
+				return onDone.call(results);
+			};
+			return results;
+		};
+		const sort = { attribute: 'embedding', text: 'red fruit' };
+		class QueriedDoc extends Doc {
+			search(target) {
+				return counted(super.search(target));
+			}
+		}
+		class ReadDoc extends Doc {
+			static loadAsInstance = false;
+			get(target) {
+				target.sort = { ...sort };
+				return counted(this.search(target));
+			}
+		}
+		for (const [method, Table, data] of [
+			['QUERY', QueriedDoc, { sort, select: ['content'] }],
+			['GET', ReadDoc, undefined],
+		]) {
+			closes = 0;
+			embed.calls.length = 0;
+			const context = recordingContext();
+			await rejectsWith(
+				rest([Table])(method, '/SortTextEmbedDoc/', data, { accept: 'application/x-unsupported' }, context),
+				(error) => assert.equal(error.statusCode, 406, method)
+			);
+			const links = observesSnapshot ? context.storeLinks() : [];
+			assert.deepEqual(
+				{ modelCalls: queryCalls().length, closes, readTxnsUsed: links.map((txn) => txn.readTxnsUsed ?? 0) },
+				{ modelCalls: 1, closes: 1, readTxnsUsed: links.map(() => 0) },
+				method
+			);
+		}
 	});
 
 	it('a REST QUERY ranks by sort text as by its vector', async () => {

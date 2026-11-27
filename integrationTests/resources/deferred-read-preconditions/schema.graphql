@@ -7,3 +7,7 @@ type CountedRow @table @export {
 	id: ID @primaryKey
 	category: String @indexed
 }
+
+type ReleasedRead @table @export {
+	id: ID @primaryKey
+}

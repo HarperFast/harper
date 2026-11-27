@@ -93,14 +93,25 @@ function finalizeResponse(
 		// have a valid Headers object) or it will throw an error
 		responseData.headers = responseHeaders;
 	if (preconditionsEnabled && (method === 'GET' || method === 'HEAD') && hasPreconditions(request.headers.asObject)) {
+		const candidate = {
+			status: responseData.status ?? status ?? 200,
+			headers: responseHeaders,
+			body: responseData.body,
+		};
 		const conditional = applyReadPreconditions(
-			{ status: responseData.status ?? status ?? 200, headers: responseHeaders, body: responseData.body },
+			candidate,
 			request,
 			method,
 			request.lastModified,
 			responseData.body === undefined ? ('data' in responseData ? responseData.data : responseData) : undefined
 		);
-		if (conditional.status === 304) return conditional;
+		if (conditional.status === 304) {
+			if (conditional === candidate && !responseData.body) {
+				(candidate as any)[READ_DISCARDED] = true;
+				discardReadResponse(candidate, readSource(responseData));
+			}
+			return conditional;
+		}
 	}
 	// if no body, look for provided data to serialize
 	if (!responseData.body) {
@@ -255,9 +266,31 @@ function discardReadResponse(response, sourceData) {
 		}
 	} catch (error) {
 		logDiscardError(error);
-	} finally {
-		discardSerializedStream(response.body);
 	}
+	try {
+		discardSerializedStream(response.body);
+	} catch (error) {
+		logDiscardError(error);
+	}
+}
+
+function readSource(value) {
+	return value?.headers && 'data' in value ? value.data : value;
+}
+
+const NO_BODY = Object.freeze({ body: undefined });
+
+// Never throws: a failure to release must not replace the response or error it runs for. A value without headers
+// is not a response, so its own `body` field is left alone.
+function discardUnsent(response, value, source?) {
+	let target = response === value ? NO_BODY : response;
+	try {
+		if (target === NO_BODY && value?.headers) target = value;
+		source ??= readSource(value);
+	} catch (error) {
+		logDiscardError(error);
+	}
+	discardReadResponse(target, source);
 }
 
 function ownDiscard(result) {
@@ -282,9 +315,10 @@ function setReadValidators(headers, lastModification: number, httpOptions) {
 		headers.set('Last-Modified', new Date(lastModification).toUTCString());
 }
 
-// the 304s applyReadPreconditions answers after discarding the read, unlike one a resource returns itself
-const discardedByPreconditions = new WeakSet<object>();
+// Marks a 304 built here whose read was already discarded, unlike a 304 a resource returns itself.
+const READ_DISCARDED = Symbol('readDiscarded');
 
+// Discards the read only when it answers 304; when it throws, the read stays the caller's.
 function applyReadPreconditions(response, request, method: string, lastModified?: number, sourceData?) {
 	if ((method !== 'GET' && method !== 'HEAD') || response.status < 200 || response.status >= 300) return response;
 	const incoming = request.headers.asObject;
@@ -292,43 +326,31 @@ function applyReadPreconditions(response, request, method: string, lastModified?
 	const checkDate =
 		(incoming['if-match'] === undefined && incoming['if-unmodified-since'] !== undefined) ||
 		(incoming['if-none-match'] === undefined && incoming['if-modified-since'] !== undefined);
-	let result;
-	try {
-		result = evaluatePreconditions(
-			incoming,
-			method,
-			true,
-			response.headers.get('ETag'),
-			checkDate ? (parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified) : undefined
-		);
-	} catch (error) {
-		discardReadResponse(response, sourceData);
-		throw error;
-	}
-	if (result) {
-		try {
-			if (sourceData !== undefined) {
-				const binary =
-					sourceData instanceof Uint8Array || sourceData instanceof Blob || isHttpPassThroughEnvelope(sourceData);
-				if (!binary) {
-					findBestSerializer(request);
-					addVaryHeader(response.headers, 'Accept');
-				}
-				addVaryHeader(response.headers, 'Accept-Encoding');
-			}
-		} finally {
-			discardReadResponse(response, sourceData);
+	const result = evaluatePreconditions(
+		incoming,
+		method,
+		true,
+		response.headers.get('ETag'),
+		checkDate ? (parseHttpDate(response.headers.get('Last-Modified')) ?? lastModified) : undefined
+	);
+	if (!result) return response;
+	if (sourceData !== undefined) {
+		const binary =
+			sourceData instanceof Uint8Array || sourceData instanceof Blob || isHttpPassThroughEnvelope(sourceData);
+		if (!binary) {
+			findBestSerializer(request);
+			addVaryHeader(response.headers, 'Accept');
 		}
-		if (result === 412) throw new ClientError('Request precondition failed', 412);
-		// Only foreign (possibly immutable) Response headers need a copy.
-		const headers =
-			response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
-		for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
-		const notModified = { status: 304, headers, body: undefined };
-		discardedByPreconditions.add(notModified);
-		return notModified;
+		addVaryHeader(response.headers, 'Accept-Encoding');
 	}
-	return response;
+	if (result === 412) throw new ClientError('Request precondition failed', 412);
+	// Only foreign (possibly immutable) Response headers need a copy.
+	const headers =
+		response.headers === request.responseHeaders ? response.headers : mergeHeaders(new Headers(), response.headers);
+	for (const header of ['Content-Length', 'Content-Type', 'Content-Encoding']) headers.delete(header);
+	// last: whatever throws before it leaves the read to the caller
+	discardReadResponse(response, sourceData);
+	return { status: 304, headers, body: undefined, [READ_DISCARDED]: true };
 }
 
 async function http(request: Request, nextHandler, resources: Resources, httpOptions: any) {
@@ -343,6 +365,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 	// declared outside the try so a thrown Response is serialized against the same target
 	let target: RequestTarget;
 	let resource: typeof Resource;
+	let responseData;
+	let unsent;
+	// the source serialized from an envelope, which its own data getter may no longer return
+	let unsentSource;
 	try {
 		request.responseHeaders = headers;
 		request.response = {
@@ -586,7 +612,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					throw new ServerError(`Method ${method} is not recognized`, 501);
 			}
 		};
-		let responseData = await transaction(
+		responseData = await transaction(
 			request,
 			writeCondition
 				? async () => {
@@ -597,7 +623,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 								? (result.status ?? request.response.status)
 								: request.response.status;
 							if (unapplied(writeCondition) && !(replyStatus >= 400)) {
-								if (result?.headers) discardSerializedStream(result.body);
+								if (result != null) discardUnsent(result, result);
 								throw new ClientError('The resource did not apply the write precondition', 501);
 							}
 							return result;
@@ -609,6 +635,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					}
 				: dispatch
 		);
+		unsent = responseData;
 		if (writeCondition?.release) {
 			await writeCondition.release();
 			writeCondition.release = undefined;
@@ -629,6 +656,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
 			const data = 'data' in responseData ? responseData.data : responseData;
+			unsentSource = data;
 			const deferred =
 				(method === 'GET' || method === 'HEAD') && responseData.body === undefined && isDeferredRead(data);
 			const response = finalizeResponse(
@@ -641,6 +669,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				target,
 				resource
 			);
+			unsent = response.status === 304 && response !== responseData && response[READ_DISCARDED] ? undefined : response;
 			const startup = readStreamStartup(response.body, request.method, method);
 			if (startup) await startup;
 			if (deferred) {
@@ -655,7 +684,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				deferred && conditionalRead
 					? applyReadPreconditions(response, request, method, lastModification, data)
 					: response;
-			if (request.method === 'HEAD' && !discardedByPreconditions.has(conditional)) {
+			if (request.method === 'HEAD' && unsent !== undefined && conditional === response) {
+				unsent = undefined;
 				discardReadResponse(conditional, data);
 				if (!(conditional instanceof Response)) conditional.body = undefined;
 			}
@@ -673,6 +703,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			headers,
 			body: undefined,
 		};
+		unsent = responseObject;
 		// #1565 converse: a declared `@table(cacheControl: "...")`/static cacheControl is emitted on
 		// anonymous reads so a shared cache/CDN can store public responses. Emission requires the
 		// explicit declaration — "the anonymous request succeeded" alone doesn't establish that the
@@ -714,6 +745,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 					: responseObject;
 			if (conditional.status === 304) {
+				unsent = undefined;
+				if (conditional === responseObject) discardReadResponse(conditional, responseData);
 				if ((target as any)?.isCollection) addVaryHeader(conditional.headers, 'Prefer');
 				return conditional;
 			}
@@ -738,18 +771,21 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		const response = deferredReadConditions
 			? applyReadPreconditions(responseObject, request, method, lastModification, responseData)
 			: responseObject;
-		if (request.method === 'HEAD' && responseData !== undefined && !discardedByPreconditions.has(response)) {
+		if (request.method === 'HEAD' && responseData !== undefined && response === responseObject) {
+			unsent = undefined;
 			discardReadResponse(response, responseData);
 			response.body = undefined; // we want everything else to be the same as GET, but then omit the body
 		}
 		return response;
 	} catch (error) {
+		// before the error is serialized, which can fail on the same Accept header
+		if (unsent) discardUnsent(unsent, responseData, unsentSource);
 		cancelMultipartBody(request.data);
 		error ??= new Error('Unknown error occurred');
 		// a thrown Response short-circuits as the response, the same as returning one
 		if (error instanceof Response) {
 			if (unapplied(writeCondition) && error.status < 400) {
-				discardSerializedStream(error.body);
+				discardUnsent(error, error);
 				error = new ClientError('The resource did not apply the write precondition', 501);
 			} else {
 				try {
@@ -763,8 +799,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 						target,
 						resource
 					);
-				} catch (preconditionError) {
-					error = preconditionError;
+				} catch (finalizeError) {
+					discardUnsent(error, error);
+					error = finalizeError;
 				}
 			}
 		}

@@ -11,6 +11,7 @@ const { table } = require('#src/resources/databases');
 const { decode } = require('cbor-x');
 const { unpackMultiple } = require('msgpackr');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 
 const ROW_COUNT = 20;
 const LAST_MODIFIED_TS = Date.UTC(2026, 0, 1);
@@ -57,6 +58,7 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 			returned: 0,
 			mappedRows: 0,
 			stepsAfterOnDone: 0,
+			onDoneCalls: 0,
 			postDoneError: null,
 			trackedContexts: new Set(),
 		};
@@ -115,6 +117,7 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 		if (origOnDone) {
 			results.onDone = function () {
 				doneCalled = true;
+				state.onDoneCalls += 1;
 				return origOnDone();
 			};
 		}
@@ -259,6 +262,17 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 			}
 		}
 
+		class EnvelopeDiscardProbeRow extends DiscardProbeRow {
+			static loadAsInstance = false;
+			allowRead() {
+				return true;
+			}
+			get(target) {
+				trackContext(this.getContext?.());
+				return { headers: { 'X-Envelope': 'true' }, data: this.search(target) };
+			}
+		}
+
 		class ClosedUnstepped extends Resource {
 			static loadAsInstance = false;
 			allowRead() {
@@ -336,6 +350,7 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 		resources = new Resources();
 		resources.set('DiscardProbeRow', MappedDiscardProbeRow, { rest: true });
 		resources.set('DirectDiscardProbeRow', DirectDiscardProbeRow, { rest: true });
+		resources.set('EnvelopeDiscardProbeRow', EnvelopeDiscardProbeRow, { rest: true });
 		resources.set('AsyncDiscardProbeRow', AsyncDiscardProbeRow, { rest: true });
 		resources.set('ClosedUnstepped', ClosedUnstepped, { rest: true });
 		resources.set('AsyncIterableSearchCbor', AsyncIterableSearchCbor, { rest: true });
@@ -735,6 +750,55 @@ describe('REST discarded reads with CBOR and CSV content types', () => {
 
 		assert.deepStrictEqual(observed, expected);
 	});
+	it('closes the search of a read it answers 406 for an unsupported Accept', async () => {
+		const observed = {};
+		const expected = {};
+		for (const method of ['GET', 'HEAD']) {
+			for (const route of [
+				'DiscardProbeRow',
+				'DirectDiscardProbeRow',
+				'AsyncDiscardProbeRow',
+				'EnvelopeDiscardProbeRow',
+				'ClosedUnstepped',
+			]) {
+				resetState();
+				const headers = { accept: 'application/x-unsupported' };
+				const request = { method, url: `/${route}/?seq=gt=0`, user: reader, headers: new Headers(headers) };
+				request.headers.asObject = headers;
+				trackContext(request);
+				const failure = await handler(request, () => ({ status: 404 })).then(
+					() => undefined,
+					(error) => error
+				);
+				await waitFor(() => state.onDoneCalls + state.returned > 0 && !getTxnMetrics().hasOpenTxn).catch(() => {});
+				await new Promise((r) => setImmediate(r));
+				const { readTxnsUsed, hasOpenTxn } = getTxnMetrics();
+				const label = `${method} ${route}`;
+				observed[label] = {
+					status: failure?.statusCode,
+					iteratorsOpened: state.iteratorsOpened,
+					stepped: state.stepped,
+					returned: state.returned,
+					onDoneCalls: state.onDoneCalls,
+					readTxnsUsed,
+					hasOpenTxn,
+				};
+				const direct = route === 'DirectDiscardProbeRow' || route === 'EnvelopeDiscardProbeRow';
+				expected[label] = {
+					status: 406,
+					iteratorsOpened: direct ? 0 : 1,
+					stepped: 0,
+					returned: direct ? 0 : 1,
+					onDoneCalls: route === 'ClosedUnstepped' ? 0 : 1,
+					readTxnsUsed: 0,
+					hasOpenTxn: false,
+				};
+				cleanupTrackedContexts();
+			}
+		}
+		assert.deepStrictEqual(observed, expected);
+	});
+
 	it('opens no source for an unread streamed body', async () => {
 		const observed = {};
 		const expected = {};

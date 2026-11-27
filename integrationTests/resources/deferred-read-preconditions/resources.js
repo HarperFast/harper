@@ -50,3 +50,17 @@ export class AllowedExplain extends AllowedItem {
 		return this.search(target);
 	}
 }
+
+export class ReleaseProbe extends tables.CountedRow {
+	static loadAsInstance = false;
+	get(target) {
+		const probe = this.getContext().headers.get('x-release-probe');
+		const results = this.search(target);
+		const onDone = results.onDone;
+		results.onDone = () => {
+			onDone.call(results);
+			if (probe) Promise.resolve(tables.ReleasedRead.put({ id: probe })).catch(() => {});
+		};
+		return results;
+	}
+}
