@@ -72,6 +72,8 @@ The same duration also limits how long one write keeps retrying conflicts with o
 
 Lower this in latency-sensitive systems where it is better to shed load early than to let request queues grow. Raise it when occasional disk-write bursts are expected and the application can tolerate longer commit latency.
 
+<VersionBadge type="changed" version="v5.5.0" /> Give a number of seconds or a string with an `s`, `m`, `h` or `d` unit, from 1 ms to 2147483647 ms (about 24.8 days); `0` uses the default. Write a fraction of a second, such as `0.5s`, rather than `500ms`, which this option reads as 500 seconds. Harper rejects any other value when the configuration is set or loaded.
+
 ```yaml
 storage:
   maxTransactionQueueTime: 30s
@@ -85,7 +87,7 @@ Type: `number` (milliseconds)
 
 Default: `30000`
 
-The maximum time a transaction may stay open without activity. Give a number of milliseconds; unlike `maxTransactionQueueTime`, this option does not take a duration string such as `30s`. Available since v5.0.0; LMDB databases ignore it and use a fixed 30 seconds. Harper checks open transactions once per this interval, so a stalled transaction is closed between one and two intervals after its last qualifying activity:
+The maximum time a transaction may stay open without activity. Give a number of milliseconds, from `1` to `2147483647`; unlike `maxTransactionQueueTime`, this option does not take a duration string such as `30s`. Available since v5.0.0; LMDB databases ignore it and use a fixed 30 seconds. Harper checks open transactions once per this interval, so a stalled transaction is closed between one and two intervals after its last qualifying activity:
 
 - A transaction with uncommitted writes from an application request must keep writing; reads alone do not renew its timeout. When it expires, the writes are aborted and the request fails with status `422`. Split long-running work into smaller transactions.
 - A read-only transaction is renewed by reads. When it expires, its read snapshot is released; on RocksDB, a read that continues afterwards fails with `ReadSnapshotExpiredError` (status `503`).
@@ -294,7 +296,7 @@ Type: `number` (bytes)
 
 Default: 25% of constrained (cgroup) or total memory
 
-The shared LRU cache for decompressed SST blocks. Every RocksDB database in the process draws from this single pool.
+The shared LRU cache for decompressed SST blocks. Every RocksDB database in the process draws from this single pool. <VersionBadge type="changed" version="v5.5.0" /> A whole, non-negative number of bytes; `0` uses the default.
 
 The cache fills as blocks are read; it does **not** shrink on idle. Once the cache reaches its high-water mark for a workload, entries persist until LRU eviction or a manual capacity change. A long-running instance with a brief burst of activity will hold the cached blocks for the lifetime of the process.
 
@@ -318,7 +320,7 @@ Raise it (or leave at the default) when reads dominate and the working set comfo
 
 Type: `number` (bytes)
 
-Default: one third of `blockCacheSize` (enabled). Set to `0` to disable.
+Default: one third of `blockCacheSize` (enabled). Set to `0` to disable. <VersionBadge type="changed" version="v5.5.0" /> A whole, non-negative number of bytes: Harper rejects a negative or fractional value, which would otherwise turn the manager off.
 
 Harper attaches a single RocksDB `WriteBufferManager` to every opened database in the process. Total memtable memory — including active memtables, immutable memtables awaiting flush, and the maintain-window history that RocksDB's `OptimisticTransactionDB` retains for conflict checking — is capped at this size across the entire process.
 
@@ -489,6 +491,8 @@ Type: `string` (duration)
 Default: `1h`
 
 How often Harper checks free space against the threshold. Lower intervals catch fast-filling volumes sooner at the cost of more periodic I/O.
+
+<VersionBadge type="changed" version="v5.5.0" /> Give a number of seconds or a string with an `s`, `m`, `h` or `d` unit, from 1 second to 2147483647 ms (about 24.8 days, the longest timer Node.js schedules), for example `30m`, `0.5h` or `24d`; `0` uses the default. Harper rejects any other value when the configuration is set or loaded. To turn reclamation off, set `storage.reclamation.threshold` to `0`.
 
 ### `storage.reclamation.evictionFactor`
 

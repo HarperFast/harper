@@ -133,6 +133,8 @@ import {
 	resolveRocksMemoryConfig,
 	resolveVerificationTableEntries,
 } from '../utility/rocksMemoryConfig.ts';
+import { parseRocksCompression } from '../utility/rocksCompressionConfig.ts';
+import '../utility/rocksCompressionSupport.ts';
 import { plannedTableThreadCount } from '../server/threads/workerPools.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import {
@@ -341,24 +343,11 @@ export function resetRocksCompression(): void {
  * a deployment that enables compression would need its own codec, and it cannot have one.
  */
 function readDatabaseCodec(): string | undefined {
-	const explicit = readRocksCompressionConfig();
-	if (explicit) return explicit;
-	return toRocksCompression(getDefaultCompression()) as string | undefined;
-}
-
-function readRocksCompressionConfig(): string | undefined {
-	const configured = envGet(CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION);
-	if (configured === undefined || configured === null || configured === '') return undefined;
-	const requested = String(configured).trim().toLowerCase();
-	if (!requested) return undefined;
 	// Rejected here rather than at the open: an unsupported name throws inside RocksDatabase.open,
 	// which surfaces as the system database failing to load partway through startup.
-	if (!supportedCompression.includes(requested)) {
-		throw new Error(
-			`storage.rocks.compression="${requested}" is not available in this build of @harperfast/rocksdb-js. Supported: ${supportedCompression.join(', ')}`
-		);
-	}
-	return requested;
+	const explicit = parseRocksCompression(envGet(CONFIG_PARAMS.STORAGE_ROCKS_COMPRESSION));
+	if (explicit) return explicit;
+	return toRocksCompression(getDefaultCompression()) as string | undefined;
 }
 
 // I don't know if this is the best place for this, but somewhere we need to specify which tables

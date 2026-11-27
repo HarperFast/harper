@@ -153,6 +153,7 @@ jobs:
             server/replicationMembership.ts
             server/transactionLogCooling.ts
             utility/environment/systemInformation.ts
+            utility/rocksCompressionSupport.ts
             utility/lmdb/commonUtility.ts
             utility/lmdb/deleteUtility.ts
             utility/lmdb/environmentUtility.ts

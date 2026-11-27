@@ -45,6 +45,13 @@ async function initEnv() {
 	return env;
 }
 
+// The server loads rocksdb-js anyway; loading it first lets boot validation check
+// storage.rocks.compression against this build's codecs.
+async function initServerEnv() {
+	await import('../utility/rocksCompressionSupport.ts');
+	return initEnv();
+}
+
 /**
  * Resolve a default-exported function from a dynamically-imported module that
  * may have been loaded from a .ts source (ESM: `mod.default` is the function)
@@ -91,7 +98,7 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.HELP:
 			return help();
 		case SERVICE_ACTIONS_ENUM.START: {
-			const env = await initEnv();
+			const env = await initServerEnv();
 			enableCompileCache(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
 			const mod = await import('./run.ts');
 			// runStartup() is drained inside run.ts main() after initialize()
@@ -210,7 +217,7 @@ async function harper() {
 		case undefined: {
 			// run harperdb in the foreground in standard mode.
 			// runStartup() is drained inside run.ts main() after initialize().
-			const env = await initEnv();
+			const env = await initServerEnv();
 			// before run.ts, whose import graph is most of what the main thread compiles
 			enableCompileCache(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH));
 			const mod = await import('./run.ts');

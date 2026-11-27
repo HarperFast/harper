@@ -566,6 +566,68 @@ suite('Configuration', (ctx) => {
 			.expect(200);
 	});
 
+	// ── values a restart, a listener or a timer cannot use (harper#2117) ────
+
+	test('set_configuration rejects values that would stop the next start, a listener or a timer', async () => {
+		let before;
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => {
+				before = r.body;
+			})
+			.expect(200);
+		for (const [field, value, label] of [
+			['storage_rocks_compression', 'lz5', 'storage.rocks.compression'],
+			['storage_rocks_writeBufferManagerSize', -1, 'storage.rocks.writeBufferManagerSize'],
+			['storage_transactionLog_coolingInterval', '25d', 'storage.transactionLog.coolingInterval'],
+			['storage_reclamation_interval', -5, 'storage.reclamation.interval'],
+			['storage_maxTransactionQueueTime', '500ms', 'storage.maxTransactionQueueTime'],
+			['storage_maxTransactionOpenTime', '30s', 'storage.maxTransactionOpenTime'],
+			['storage_longTransactionReportThreshold', { minutes: 5 }, 'storage.longTransactionReportThreshold'],
+			['operationsApi_network_keepAliveTimeout', -1, 'operationsApi.network.keepAliveTimeout'],
+			['http_timeout', 2 ** 31, 'http.timeout'],
+			['http_headersTimeout', 600000, 'http.headersTimeout'],
+		]) {
+			await client
+				.req()
+				.send({ operation: 'set_configuration', [field]: value })
+				.expect((r) =>
+					assert.match(r.body.error ?? '', new RegExp(`validation error: '${label.replaceAll('.', '\\.')}'`), r.text)
+				)
+				.expect(400);
+		}
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => {
+				assert.deepStrictEqual(r.body.storage, before.storage, r.text);
+				assert.deepStrictEqual(r.body.http, before.http, r.text);
+				assert.deepStrictEqual(r.body.operationsApi?.network, before.operationsApi?.network, r.text);
+			})
+			.expect(200);
+	});
+
+	test('set_configuration accepts typical durations and HTTP timeouts', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'set_configuration',
+				storage_transactionLog_coolingInterval: '1m',
+				storage_reclamation_interval: '0.5h',
+				http_keepAliveTimeout: 30000,
+			})
+			.expect(200);
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => {
+				assert.equal(r.body.storage.transactionLog.coolingInterval, '1m', r.text);
+				assert.equal(r.body.storage.reclamation.interval, '0.5h', r.text);
+			})
+			.expect(200);
+	});
+
 	// ── non-superuser role restrictions ─────────────────────────────────────
 
 	test('add non-SU role and user', async () => {

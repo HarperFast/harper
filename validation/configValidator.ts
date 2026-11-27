@@ -19,6 +19,7 @@ import { bareHostViolation } from '../utility/nodeIdentity.ts';
 import { parseMaxSize } from '../utility/logging/logRotation.ts';
 import * as validator from './validationWrapper.ts';
 import { MAX_RECORD_CACHE_SIZE, MIN_RECORD_CACHE_SIZE } from '../utility/rocksMemoryConfig.ts';
+import { parseRocksCompression, supportedRocksCompression } from '../utility/rocksCompressionConfig.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_COMPONENTS_FOLDER = 'components';
@@ -352,14 +353,124 @@ const readRequestQueueLimitConstraints = Joi.alternatives([number.integer().min(
 	.prefs({ convert: false })
 	.optional();
 
-export function effectiveHttpConfigValidator(flatConfig) {
-	return Joi.object({
-		http_readrequestqueuelimit: readRequestQueueLimitConstraints,
-		http_corsaccesscontrolallowheaders: corsAllowHeadersConstraints,
-	}).validate({
-		http_readrequestqueuelimit: flatConfig.http_readrequestqueuelimit,
-		http_corsaccesscontrolallowheaders: flatConfig.http_corsaccesscontrolallowheaders,
-	});
+// Node runs a timer whose delay is above this after 1 ms instead.
+const MAX_TIMER_DELAY_MS = hdbTerms.MAX_SET_TIMEOUT_MS;
+// Node arms a keep-alive socket's timer at keepAliveTimeout plus keepAliveTimeoutBuffer (1000 ms).
+const MAX_KEEP_ALIVE_TIMEOUT_MS = MAX_TIMER_DELAY_MS - 1000;
+// requestTimeout createServer uses when none is passed; headersTimeout must not exceed it.
+const NODE_DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+// convertToMS's units without `ms` (it reads '500ms' as 500 seconds, harper#3486) or `M`/`y`: no month
+// or year fits a timer, and convertToMS reads `M` as months where minutes are usually meant.
+const TIMER_DURATION_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)?[smhHdD]?$/;
+const TIMER_DURATION_FORM =
+	"a non-negative number of seconds or a duration such as '30s', '5m', '1h' or '1d' (for milliseconds, a fraction of a second such as '0.5s')";
+
+// `convert: false` throughout: validateConfig() does not write converted values back, and createServer
+// throws on a string.
+const httpTimeoutConstraints = number.integer().min(0).max(MAX_TIMER_DELAY_MS).prefs({ convert: false });
+const keepAliveTimeoutConstraints = httpTimeoutConstraints.max(MAX_KEEP_ALIVE_TIMEOUT_MS);
+const maxHeaderSizeConstraints = number.integer().min(0).prefs({ convert: false });
+
+/**
+ * A duration a timer runs on, measured with convertToMS, the parser its reader uses. 0 passes only
+ * where it is the option's off or default sentinel.
+ */
+function timerDurationConstraints({ minMs, zeroAllowed }: { minMs: number; zeroAllowed: boolean }) {
+	const range = `${zeroAllowed ? '0 or ' : ''}a duration from ${minMs === 1000 ? '1 second' : `${minMs} ms`} to ${MAX_TIMER_DELAY_MS} ms (about 24.8 days)`;
+	return Joi.any()
+		.custom((value, helpers: any) => {
+			const ms =
+				(typeof value === 'number' && value >= 0) || (typeof value === 'string' && TIMER_DURATION_PATTERN.test(value))
+					? hdbUtils.convertToMS(value)
+					: NaN;
+			if (Number.isNaN(ms)) return helpers.message(`{{#label}} must be ${TIMER_DURATION_FORM}`);
+			if ((ms === 0 && zeroAllowed) || (ms >= minMs && ms <= MAX_TIMER_DELAY_MS)) return value;
+			return helpers.message(`{{#label}} must be ${range}`);
+		})
+		.allow(null);
+}
+const coolingIntervalConstraints = timerDurationConstraints({ minMs: 1, zeroAllowed: true });
+const reclamationIntervalConstraints = timerDurationConstraints({ minMs: 1000, zeroAllowed: true });
+const maxTransactionQueueTimeConstraints = timerDurationConstraints({ minMs: 1, zeroAllowed: true });
+const longTransactionReportThresholdConstraints = timerDurationConstraints({ minMs: 1, zeroAllowed: true });
+// Milliseconds, not a duration: the monitor passes it to setInterval unconverted. Its reader coerces a
+// quoted number, so Joi's conversion stays on.
+const maxTransactionOpenTimeConstraints = number.min(1).max(MAX_TIMER_DELAY_MS).allow(null);
+const reclamationThresholdConstraints = number.min(0).max(1).allow(null);
+// Read for truthiness, so a quoted "false" would turn snapshots on.
+const heapSnapshotNearLimitConstraints = boolean.allow(null).prefs({ convert: false });
+// Whole bytes: resolveRocksMemoryConfig floors a fraction, and a writeBufferManagerSize of 0 disables
+// the WriteBufferManager. It ignores a string, hence `convert: false`.
+const rocksByteSizeConstraints = number.integer().min(0).allow(null).prefs({ convert: false });
+const rocksCompressionConstraints = Joi.any()
+	.custom((value, helpers: any) => {
+		try {
+			if (typeof value === 'string') {
+				parseRocksCompression(value);
+				return value;
+			}
+		} catch {}
+		// The rejected value is not echoed: it may be a secret pasted under the wrong key.
+		return helpers.message(`{{#label}} must be one of: ${supportedRocksCompression().join(', ')}`);
+	})
+	.allow(null);
+
+/**
+ * Validates the flattenConfig() output, which is what the readers get: flattening lowercases keys and
+ * merges customFunctions.network over http, and http under operationsApi.network, after the nested
+ * schema has run. Node's ranges apply here, so an operationsApi.network timeout of 0 inherited from
+ * http is valid; headersTimeout keeps its floor of 1, as 0 would remove the header deadline.
+ */
+export function effectiveConfigValidator(flatConfig) {
+	const params = hdbTerms.CONFIG_PARAMS;
+	const settings: [string, Joi.Schema][] = [
+		[params.HTTP_READREQUESTQUEUELIMIT, readRequestQueueLimitConstraints],
+		[params.HTTP_CORSACCESSCONTROLALLOWHEADERS, corsAllowHeadersConstraints],
+		[params.HTTP_MAXHEADERSIZE, maxHeaderSizeConstraints],
+		[params.HTTP_KEEPALIVETIMEOUT, keepAliveTimeoutConstraints],
+		[params.HTTP_TIMEOUT, httpTimeoutConstraints],
+		[params.HTTP_HEADERSTIMEOUT, httpTimeoutConstraints.min(1)],
+		[params.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT, keepAliveTimeoutConstraints],
+		[params.OPERATIONSAPI_NETWORK_TIMEOUT, httpTimeoutConstraints],
+		[params.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT, httpTimeoutConstraints.min(1)],
+		[params.STORAGE_ROCKS_COMPRESSION, rocksCompressionConstraints],
+		[params.STORAGE_ROCKS_BLOCKCACHESIZE, rocksByteSizeConstraints],
+		[params.STORAGE_ROCKS_WRITEBUFFERMANAGERSIZE, rocksByteSizeConstraints],
+		[params.STORAGE_TRANSACTIONLOG_COOLINGINTERVAL, coolingIntervalConstraints],
+		[params.STORAGE_RECLAMATION_INTERVAL, reclamationIntervalConstraints],
+		[params.STORAGE_RECLAMATION_THRESHOLD, reclamationThresholdConstraints],
+		[params.STORAGE_MAXTRANSACTIONQUEUETIME, maxTransactionQueueTimeConstraints],
+		[params.STORAGE_MAXTRANSACTIONOPENTIME, maxTransactionOpenTimeConstraints],
+		[params.STORAGE_LONGTRANSACTIONREPORTTHRESHOLD, longTransactionReportThresholdConstraints],
+		[params.THREADS_HEAPSNAPSHOTNEARLIMIT, heapSnapshotNearLimitConstraints],
+	];
+	const rules = {};
+	const effective = {};
+	for (const [param, constraints] of settings) {
+		const key = param.toLowerCase();
+		rules[key] = constraints.label(param.replaceAll('_', '.'));
+		effective[key] = flatConfig[key];
+	}
+	return Joi.object(rules)
+		.custom((value, helpers: any) => {
+			for (const section of ['http', 'operationsApi_network']) {
+				const prefix = section.toLowerCase();
+				const configuredTimeout = value[`${prefix}_timeout`];
+				const headersTimeout = value[`${prefix}_headerstimeout`];
+				const requestTimeout = configuredTimeout ?? NODE_DEFAULT_REQUEST_TIMEOUT_MS;
+				if (!Number.isInteger(headersTimeout) || !Number.isInteger(requestTimeout)) continue;
+				if (requestTimeout > 0 && headersTimeout > requestTimeout) {
+					const label = section.replaceAll('_', '.');
+					const source = configuredTimeout === undefined ? ", Node.js's default" : '';
+					const inherited = section === 'http' ? '' : ' Unset operationsApi.network values come from http.';
+					return helpers.message(
+						`'${label}.headersTimeout' (${headersTimeout}) must not be greater than '${label}.timeout' (${requestTimeout}${source}) unless that is 0, or Node.js refuses to start the server.${inherited}`
+					);
+				}
+			}
+			return value;
+		})
+		.validate(effective, { abortEarly: false, errors: { wrap: { label: "'" } } });
 }
 export function configValidator(configJson, skipFsValidation = false) {
 	skipFsVal = skipFsValidation;
@@ -562,12 +673,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 			network: Joi.object({
 				cors: boolean.optional(),
 				corsAccessList: array.optional(),
-				headersTimeout: number.min(1).optional(),
-				keepAliveTimeout: number.min(1).optional(),
+				headersTimeout: httpTimeoutConstraints.min(1).optional(),
+				keepAliveTimeout: keepAliveTimeoutConstraints.min(1).optional(),
 				port: portConstraints,
 				domainSocket: Joi.optional().empty('hdb/operations-server').default(setDefaultRoot),
 				securePort: portConstraints,
-				timeout: number.min(1).optional(),
+				timeout: httpTimeoutConstraints.min(1).optional(),
 			}).optional(),
 			encryptedOperation: Joi.object({
 				maxAge: number.integer().min(1000).max(600000).optional(),
@@ -602,10 +713,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 			compressionThreshold: number.optional(),
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
-			headersTimeout: number.min(1).optional(),
+			headersTimeout: httpTimeoutConstraints.min(1).optional(),
+			keepAliveTimeout: keepAliveTimeoutConstraints.optional(),
+			timeout: httpTimeoutConstraints.optional(),
 			port: portConstraints,
 			securePort: portConstraints,
-			maxHeaderSize: number.optional(),
+			maxHeaderSize: maxHeaderSizeConstraints.optional(),
 			mtls: Joi.alternatives([
 				boolean.optional(),
 				Joi.object({
@@ -648,6 +761,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 					})
 				),
 				maxHeapMemory: number.min(0).optional(),
+				heapSnapshotNearLimit: heapSnapshotNearLimitConstraints.optional(),
 				maxIsolated: number.integer().min(0).optional(),
 				preload: Joi.alternatives([string, array.items(string)])
 					.allow(null)
@@ -729,6 +843,23 @@ export function configValidator(configJson, skipFsValidation = false) {
 			prefetchWrites: boolean.optional(),
 			maxFreeSpaceToLoad: number.optional(),
 			maxFreeSpaceToRetain: number.optional(),
+			rocks: Joi.object({
+				compression: rocksCompressionConstraints.optional(),
+				blockCacheSize: rocksByteSizeConstraints.optional(),
+				writeBufferManagerSize: rocksByteSizeConstraints.optional(),
+			})
+				.allow(null)
+				.optional(),
+			transactionLog: Joi.object({ coolingInterval: coolingIntervalConstraints.optional() }).allow(null).optional(),
+			reclamation: Joi.object({
+				interval: reclamationIntervalConstraints.optional(),
+				threshold: reclamationThresholdConstraints.optional(),
+			})
+				.allow(null)
+				.optional(),
+			maxTransactionQueueTime: maxTransactionQueueTimeConstraints.optional(),
+			maxTransactionOpenTime: maxTransactionOpenTimeConstraints.optional(),
+			longTransactionReportThreshold: longTransactionReportThresholdConstraints.optional(),
 		}).required(),
 		mcp: mcpSchema.optional(),
 		models: modelsSchema.optional(),
