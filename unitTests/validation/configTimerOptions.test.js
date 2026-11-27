@@ -2,10 +2,14 @@
 
 const assert = require('node:assert');
 const http = require('node:http');
+const { execFileSync } = require('node:child_process');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const YAML = require('yaml');
 const { supportedCompression } = require('../rocksdbBindings.mts').rocksdbBindings();
+const { ROCKS_COMPRESSION_ALGORITHMS } = require('#src/utility/rocksCompressionConfig');
+// What the database open and set_configuration load: validation then checks this build's codecs.
+require('#src/utility/rocksCompressionSupport');
 const { configValidator, effectiveConfigValidator } = require('#src/validation/configValidator');
 const { flattenConfig, setConfiguration, getConfigFilePath } = require('#src/config/configUtils');
 const env = require('#src/utility/environment/environmentManager');
@@ -165,7 +169,8 @@ describe('storage.rocks', () => {
 	});
 
 	it('rejects a codec name the build cannot open, without echoing the value', () => {
-		for (const value of ['lz5', 'gzip', 'definitely-not-a-codec', 'secret-token', true, 5, {}]) {
+		const missingFromBuild = ROCKS_COMPRESSION_ALGORITHMS.filter((codec) => !supportedCompression.includes(codec));
+		for (const value of [...missingFromBuild, 'lz5', 'gzip', 'definitely-not-a-codec', 'secret-token', true, 5, {}]) {
 			assertRejected('storage.rocks.compression', value);
 			const { message } = validationError(configWith('storage.rocks.compression', value));
 			assert.ok(!message.includes('secret-token') && !message.includes('lz5'), message);
@@ -185,6 +190,27 @@ describe('storage.rocks', () => {
 
 	it('accepts an empty rocks block', () => {
 		assertAccepted('storage.rocks', null);
+	});
+
+	it('validates without loading a native addon, so modules that validate config load where none can', () => {
+		const script = `
+			const { configValidator, effectiveConfigValidator } = require('#src/validation/configValidator');
+			const { flattenConfig } = require('#src/config/configUtils');
+			const config = JSON.parse(process.argv[1]);
+			const error = configValidator(structuredClone(config), true).error ?? effectiveConfigValidator(flattenConfig(config)).error;
+			process.stdout.write(String(error?.message));`;
+		for (const [compression, expected] of [
+			['lz4', 'undefined'],
+			['lz5', "'storage.rocks.compression' must be one of: " + ROCKS_COMPRESSION_ALGORITHMS.join(', ')],
+		]) {
+			const config = configWith('storage.rocks.compression', compression);
+			const output = execFileSync(process.execPath, ['--no-addons', '-e', script, JSON.stringify(config)], {
+				cwd: join(__dirname, '../..'),
+				encoding: 'utf8',
+				timeout: 30000,
+			});
+			assert.strictEqual(output.trim().split('\n').at(-1), expected);
+		}
 	});
 });
 
@@ -300,7 +326,9 @@ describe('set_configuration rejects these values with a 400 before writing', () 
 		...[-1, true, {}, '30s', MAX_TIMER_DELAY_MS + 1].map((value) => ['storage_maxTransactionOpenTime', value]),
 		...[-0.5, true, {}, 'most', 2].map((value) => ['storage_reclamation_threshold', value]),
 		...[1, {}].map((value) => ['threads_heapSnapshotNearLimit', value]),
-		...['lz5', true, {}].map((value) => ['storage_rocks_compression', value]),
+		...[...ROCKS_COMPRESSION_ALGORITHMS.filter((codec) => !supportedCompression.includes(codec)), 'lz5', true, {}].map(
+			(value) => ['storage_rocks_compression', value]
+		),
 		...[-1, 0.5, true, {}].map((value) => ['storage_rocks_writeBufferManagerSize', value]),
 		...[-1, 0.5, true, {}].map((value) => ['storage_rocks_blockCacheSize', value]),
 		...HTTP_OPTIONS.flatMap(({ path, max }) =>

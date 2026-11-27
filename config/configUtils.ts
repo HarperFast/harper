@@ -1734,6 +1734,8 @@ export async function setConfiguration(setConfigJson) {
 		if (pinnedBy && pinnedBy !== 'HARPER_DEFAULT_CONFIG')
 			throw new ClientError(`Cannot set models: ${pinnedBy} defines models. Change that variable first.`, 409);
 	}
+	// Validation then checks storage.rocks.compression against this build's codecs, not every name rocksdb-js defines.
+	await import('../utility/rocksCompressionSupport.ts');
 	try {
 		// Imported lazily: the publication lock's module loads this one.
 		const { withRootConfigPublicationLock } = await import('../components/rootConfigPublication.ts');

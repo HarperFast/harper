@@ -134,6 +134,7 @@ import {
 	resolveVerificationTableEntries,
 } from '../utility/rocksMemoryConfig.ts';
 import { parseRocksCompression } from '../utility/rocksCompressionConfig.ts';
+import '../utility/rocksCompressionSupport.ts';
 import { plannedTableThreadCount } from '../server/threads/workerPools.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.ts';
 import {

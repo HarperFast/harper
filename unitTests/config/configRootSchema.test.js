@@ -10,6 +10,7 @@ const { configValidator, effectiveConfigValidator } = require('#src/validation/c
 const { flattenConfig } = require('#src/config/configUtils');
 const { convertToMS } = require('#src/utility/common_utils');
 const { supportedCompression } = require('../rocksdbBindings.mts').rocksdbBindings();
+require('#src/utility/rocksCompressionSupport');
 const schema = require('../../config-root.schema.json');
 
 const defaults = YAML.parse(readFileSync(join(__dirname, '../../static/defaultConfig.yaml'), 'utf8'));

@@ -19,7 +19,7 @@ import { bareHostViolation } from '../utility/nodeIdentity.ts';
 import { parseMaxSize } from '../utility/logging/logRotation.ts';
 import * as validator from './validationWrapper.ts';
 import { MAX_RECORD_CACHE_SIZE, MIN_RECORD_CACHE_SIZE } from '../utility/rocksMemoryConfig.ts';
-import { parseRocksCompression, supportedCompression } from '../utility/rocksCompressionConfig.ts';
+import { parseRocksCompression, supportedRocksCompression } from '../utility/rocksCompressionConfig.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_COMPONENTS_FOLDER = 'components';
@@ -408,9 +408,7 @@ const rocksCompressionConstraints = Joi.any().custom((value, helpers: any) => {
 		return value;
 	} catch {
 		// The rejected value is not echoed: it may be a secret pasted under the wrong key.
-		return helpers.message(
-			`{{#label}} must be one of the codecs this build of @harperfast/rocksdb-js supports: ${supportedCompression.join(', ')}`
-		);
+		return helpers.message(`{{#label}} must be one of: ${supportedRocksCompression().join(', ')}`);
 	}
 });
 
