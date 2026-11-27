@@ -28,10 +28,11 @@ describe('SQL names that would escape the generated code', function () {
 		});
 	}
 
-	it('still parses names that cannot break the generated code', function () {
+	it('still parses names and result aliases that cannot break the generated code', function () {
 		for (const sql of [
 			'SELECT a FROM data.[ok name]',
 			'SELECT [ok name] FROM data.t',
+			`SELECT id AS "Customer's name" FROM data.t WHERE id = 1`,
 			"SELECT a FROM data.t WHERE a = 'O''Brien'",
 		]) {
 			assert.ok(convertSQLToAST(sql).ast.statements.length > 0, sql);
