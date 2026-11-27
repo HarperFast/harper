@@ -75,3 +75,55 @@ describe('legacy SQL search with a `__proto__` row-map key', function () {
 		assert.deepStrictEqual(rows, [{ name: 'x' }]);
 	});
 });
+
+describe('legacy SQL search with a `__proto__` GROUP BY key', function () {
+	this.timeout(0);
+	const env = [];
+
+	before(async function () {
+		env.push(
+			...(await createMockDB('id', '_', 'g', [
+				{ id: 1, grp: '__proto__' },
+				{ id: 2, grp: '__proto__' },
+				{ id: 3, grp: 'ok' },
+			]))
+		);
+	});
+
+	after(async function () {
+		await tearDownMockDB(env);
+	});
+
+	function search(sql) {
+		const validated = generateMockAST(sql);
+		return new SQLSearch(validated.statement, validated.attributes).search();
+	}
+
+	it('returns the `__proto__` group without polluting Object.prototype', async function () {
+		const ownPropsBefore = new Set(Object.getOwnPropertyNames(Object.prototype));
+		let rows;
+		let error;
+		try {
+			try {
+				rows = await search('SELECT grp, COUNT(*) FROM _.g GROUP BY grp');
+			} catch (searchError) {
+				error = searchError;
+			}
+			const addedProps = Object.getOwnPropertyNames(Object.prototype).filter((key) => !ownPropsBefore.has(key));
+			assert.strictEqual({}['COUNT(*)'], undefined, 'Object.prototype gained COUNT(*)');
+			assert.deepStrictEqual(addedProps, [], `Object.prototype gained own properties: ${addedProps.join(', ')}`);
+			assert.ifError(error);
+			assert.deepStrictEqual(
+				[...rows].sort((a, b) => String(a.grp).localeCompare(String(b.grp))),
+				[
+					{ 'grp': '__proto__', 'COUNT(*)': 2 },
+					{ 'grp': 'ok', 'COUNT(*)': 1 },
+				]
+			);
+		} finally {
+			for (const key of Object.getOwnPropertyNames(Object.prototype)) {
+				if (!ownPropsBefore.has(key)) delete Object.prototype[key];
+			}
+		}
+	});
+});

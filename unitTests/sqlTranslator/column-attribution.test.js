@@ -272,7 +272,15 @@ describe('SQL column attribution for attribute permissions', () => {
 				"SELECT {__proto__:{rec:_}} AS obj FROM data.L WHERE label = 'x'",
 				"SELECT {a:{__proto__:{rec:label}}} AS obj FROM data.L WHERE label = 'x'",
 			]) {
-				assert.ok(bucketFor(sql).getRowAccessors().includes('JSON literal with __proto__'), sql);
+				assert.throws(() => bucketFor(sql), /__proto__ is not allowed/, sql);
+			}
+			for (const hiddenValue of [
+				Object.setPrototypeOf({}, { rec: new alasql.yy.Column({ columnid: '_' }) }),
+				{ a: Object.setPrototypeOf({}, { rec: new alasql.yy.Column({ columnid: 'label' }) }) },
+			]) {
+				const ast = alasql.parse("SELECT {a:1} AS obj FROM data.L WHERE label = 'x'").statements[0];
+				ast.columns[0].value = hiddenValue;
+				assert.ok(new SqlStatementBucket(ast).getRowAccessors().includes('JSON literal with __proto__'));
 			}
 		});
 
