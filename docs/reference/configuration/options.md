@@ -434,6 +434,31 @@ See [Full-text analytics](../analytics/overview.md#full-text-analytics) for fiel
 
 ---
 
+## `status`
+
+Node status reporting. See [`get_status`](../operations-api/operations.md#set_status--get_status--clear_status).
+
+```yaml
+status:
+  drainOnLoadFailure: false
+```
+
+### `status.drainOnLoadFailure`
+
+<VersionBadge version="v5.5.0" />
+
+Type: `boolean`
+
+Default: `false`
+
+When `true`, `get_status` reports the `availability` status as `Unavailable` while any thread has a component that failed to load, so a load balancer that routes on `availability` stops sending traffic to a node whose application is answering with its load error. Only failures the component loader records count: a component that throws or times out while loading. Problems reported through `logger.status()`, the disk, memory and CPU health checks, and errors a component reports about itself do not.
+
+An operator's `Unavailable` (`set_status`) always wins. Nothing is written to `hdb_status`: once the component loads successfully the node reads its stored `availability` again. A component's failure holds until a later load of it succeeds, even if the component reports a healthy status in the meantime; a failure that stops a whole application from loading (for example an invalid `config.yaml`) can hold until the thread that recorded it restarts. Dropping a component without a restart leaves its routes, and its failure, in place until the threads restart. Each read returns the last result collected from the threads and starts a new collection when that result is more than two seconds old, so a change can take one more read to show. A thread that does not answer in time is left out of that collection.
+
+Leave it off, or turn it off, when a fault that fails every node at once (such as a bad deploy) should not take the whole cluster out of rotation.
+
+---
+
 ## `localStudio`
 
 Local Harper Studio GUI. See [Studio](../studio/overview.md).

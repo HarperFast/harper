@@ -129,6 +129,13 @@ function markLoadedUnlessReported(componentStatusName: string, message: string):
 	if (current === undefined || current === STATUS.LOADING) componentLifecycle.loaded(componentStatusName, message);
 }
 
+// Only a plugin's own load succeeding ends a load failure; an application-only entry shares its key with a
+// nested package load whose failure must stand.
+function markPluginLoaded(componentStatusName: string, message: string): void {
+	markLoadedUnlessReported(componentStatusName, message);
+	componentLifecycle.completed(componentStatusName);
+}
+
 /**
  * What a failed load reports, under `describe`'s message: the error thrown, when it can take that message, or one that
  * carries it, since a component can throw a primitive or a frozen error.
@@ -1231,7 +1238,7 @@ export async function loadComponent(
 					}
 
 					// Mark component as loaded after successful handleApplication call
-					markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+					markPluginLoaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 					noteBootExecuted(entryApplication);
 
 					continue;
@@ -1327,7 +1334,7 @@ export async function loadComponent(
 				}
 
 				// Mark component as healthy after successful loading
-				markLoadedUnlessReported(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
+				markPluginLoaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 				noteBootExecuted(entryApplication);
 			} catch (thrown) {
 				const error = loadFailure(

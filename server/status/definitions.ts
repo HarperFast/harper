@@ -28,6 +28,7 @@ export type StatusValueMap = {
 export interface StatusRecord<T extends StatusId = StatusId> {
 	id: T;
 	status: StatusValueMap[T];
+	message?: string;
 	__createdtime__?: number;
 	__updatedtime__?: number;
 }

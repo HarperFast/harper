@@ -295,6 +295,14 @@ export class CrossThreadStatusCollector {
 	}
 }
 
+export function failedLoads(threadStatuses: Map<string, ComponentStatusSummary>): string[] {
+	const failed = new Set<string>();
+	for (const [statusKey, status] of threadStatuses) {
+		if (status.loadFailed) failed.add(parseStatusKey(statusKey).componentName);
+	}
+	return [...failed];
+}
+
 /**
  * StatusAggregator Class
  * Handles aggregation of component statuses from multiple threads
