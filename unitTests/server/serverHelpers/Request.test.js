@@ -268,6 +268,17 @@ describe('Request class', function () {
 			assert.strictEqual(request.host, 'example.com');
 		});
 
+		it('should return correct hostname from authority or host header', function () {
+			assert.strictEqual(request.hostname, 'example.com:443');
+
+			delete mockNodeRequest.headers.host;
+			assert.strictEqual(request.hostname, 'example.com:443');
+
+			delete mockNodeRequest.authority;
+			mockNodeRequest.headers.host = 'example.com';
+			assert.strictEqual(request.hostname, 'example.com');
+		});
+
 		it('should return correct absoluteURL', function () {
 			assert.strictEqual(request.absoluteURL, 'https://example.com:443/api/test?param=value');
 

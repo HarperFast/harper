@@ -14,6 +14,9 @@ export const isBun = typeof globalThis.Bun !== 'undefined';
 // Some request compatible type-ing. We can handle both HTTP and HTTPS requests and the server is augmented.
 interface IncomingMessage extends NodeIncomingMessage {
 	authority?: string;
+	stream?: {
+		endAfterHeaders?: boolean;
+	};
 	socket: (Socket | TLSSocket) & {
 		authorized?: boolean; // only for TLSSocket
 		encrypted?: boolean; // only for TLSSocket
@@ -189,7 +192,7 @@ export class Request<Body = any> {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
 	}
 	get hostname() {
-		return this._nodeRequest.headers.host;
+		return this._nodeRequest.authority || this._nodeRequest.headers.host;
 	}
 	get httpVersion() {
 		return this._nodeRequest.httpVersion;
