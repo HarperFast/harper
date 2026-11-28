@@ -2,7 +2,7 @@
 
 Backup and restore, version gating, system-table bootstrap, storage migration and the legacy SQL executor.
 
-**Read this when:** touching `rocksdbBackup.ts`, `restoreMarker.ts`, `blobBackup.ts`, `hdbInfoController.ts`, `bin/copyDb.ts`, `json/systemSchema.json` or `SQLSearch.ts`.
+**Read this when:** touching `rocksdbBackup.ts`, `restoreMarker.ts`, `blobBackup.ts`, `restoreArchive.ts`, `archiveStaging.ts`, `hdbInfoController.ts`, `bin/copyDb.ts`, `json/systemSchema.json` or `SQLSearch.ts`.
 
 Index of every design note: [DESIGN.md](../DESIGN.md).
 
@@ -173,10 +173,12 @@ restore and the next startup applies it, before anything can open the target.
   pins as `superseded_pin_ids`, retired only when the successor commits, and its rollback copy, both
   only from its own repository (`rollbackCopyToInherit`): pins in another lapse with the receipt.
 - **Job ownership.** The receipt, not the row, decides the outcome. The boot sweep skips the job ids
-  `recoverRestoresAtStartup` returns, as its last scan finds them owned, while a receipt still owns them, and `settleAbandonedJob` skips a `deferred_to` row only while
+  `recoverRestoresAtStartup` returns, as its last scan finds them owned, and every `deferred_to` row, while a receipt still owns them, and `settleAbandonedJob` skips a `deferred_to` row only while
   `restoreReceiptOwnsJob` finds a receipt that settles it (`receiptSettlesJob`, committed ones
   included), so a crash between receipt and row cannot strand a job. A `cancel` with Harper stopped (`cancelRestartRestoreOffline`) can reach neither
-  the row nor a restart; it changes the files only, and the next boot settles the row.
+  the row nor a restart; it changes the files only, and the next boot's sweep settles the row as withdrawn, which it says only of a deferred row no receipt names, every receipt being readable.
+  An interrupted archive restore's receipt settles no job, but the row's message comes from it
+  (`interruptedArchiveRestoreJobs`): it refuses the operation run again, and only `resume` or `cancel` moves it.
 - **A throwing receipt write or removal may have landed.** `writeFileDurably` renames and
   `removeFileDurably` unlinks before the directory flush, so after a throw the record re-read under the
   held lock decides (`writeReceiptReconciled`, `removeReceiptReconciled`, `runRestartAttempt`'s catch);
@@ -208,6 +210,62 @@ restore and the next startup applies it, before anything can open the target.
   An online restore after which nothing keeps components off restarts too, published or failed (the
   error carries `afterRecorded`), since safe mode stays latched on every thread until a restart
   (`restoreSafeModeLifted`).
+
+### Archive restores (`dataLayer/restoreArchive.ts`, `dataLayer/archiveStaging.ts`)
+
+`restore_backup` with a `get_backup` archive writes the archive's bytes once: the upload is extracted as
+it arrives into a staged part beside each destination (`` `restore`/<key>.staged/<id>/ `` next to the
+database directory and next to each blob root), and installed by rename (harper#2639).
+
+- **The staged proof precedes destruction.** `prove-staged` runs the restore proof against the staged
+  parts while the target serves: blob references resolve through `databasePaths` set to the staged
+  roots, so replay and `assessBlobReferences` never touch the live ones, and every opened store is read
+  to its end, since the blob assessment reads only primary stores and a block is checksummed only when
+  read; a column family no table opens is opened by name and read too. The swap renames only a `proven`
+  record's parts, after rechecking each destination against current configuration; the check after it
+  opens the generation and compares the stamped generation, and is not a second proof.
+- **The swap table is decided from the disk.** Per part, whether the staged directory, the destination
+  and `previous/` exist, and whether the destination is the staged directory's recorded inode, decide
+  the action (`partAction`); a retry after any crash, on any route, runs the same table, and every
+  other combination fails closed. `previous/` sits in the part's own area so the move aside never
+  crosses a filesystem; a part on another filesystem than its destination is refused, never copied. Destinations
+  at or inside one another are refused too (`assertDestinationsApart`): moving one aside would carry
+  another's installed part away after destruction began.
+- **An engine-only archive is checked on both sides of the close (`isEngineOnly`).** Each proof
+  replays over placeholder roots and reads the referenced files in the live roots (each header, and a
+  compressed body in full, as any blob assessment does), so nothing the child runs (audit cleanup included) can remove a live
+  file; replay must run, since a live database's records are mostly still in its logs. Only the engine
+  part is staged and swapped. The second proof runs after the fence and before destruction, so a file
+  it finds stays through the swap, and is skipped when the first found no reference; only a resume
+  that finds the engine part already installed proves it there.
+- **The blob id counter never falls below a restored reference.** `getNextFileId` seeds from the
+  files in the roots, so a proof raises the `blob-file-id-floor` audit metadata to the highest id
+  its records reference (`raiseBlobFileIdFloor`), and the seed takes the higher of the two.
+- **Staging is owned by its receipt.** Until a receipt names an area, only its creator removes it (the
+  upload handler, or the job that fails before the claim). After, only settle, cancel and the startup
+  sweep do; a new restore over a non-terminal staged receipt is refused naming `resume`/`cancel`, so a
+  successor never removes one. Nor does a resume: failing with nothing replaced, it keeps the receipt it
+  resumed (`abandonOrRelease`), where a first attempt releases its own claim; with no marker that lasts
+  until startup, which drops every such claim so an untouched database loads (`dropAbandonedClaim`). The sweep keeps every area a readable receipt names, as `staging_dir` or
+  inherited in `superseded_staging_dirs`, and every area of a key whose receipt is unreadable, or that
+  has a marker and no readable receipt. A serving thread removes an area one entry at a time
+  (`rimrafSteadily`), holding the extraction lock until it is gone; a refused upload is answered without
+  waiting for it. A staged receipt is version 2,
+  which an older Harper reads as unreadable, blocking the database rather than reading the area as a
+  repository.
+- **One extraction at a time** (`archiveExtractionLock.ts`), so a statfs sample excludes every earlier
+  upload; a `quota-status.json` sample, read for up to 5 minutes, is charged with every archive
+  extracted since the report (`stagedSinceReport`): one still staged by its `staged.json`, so that
+  charge ends with the area, and one installed by the same record, which `keepInstalledCharge` moves
+  to `<staging id>.charge` in the `` `restore` `` directory before the area goes, since its bytes are
+  then live data. The move is a rename, so it needs no space; if it fails the area stays, still
+  charging, and the startup sweep tries the move again before it removes the area (`sweepMayRemove`).
+  A record or charge that cannot be read is not one that charges nothing: it stays until its own
+  time says it is too old to matter, and until then an admission that meets it is refused with 503. A charge is the full payload, with nothing taken off for the generation it replaced. A file linked into place whole, not
+  an flock: a deploy's worker restarts would strand an flock taken on an HTTP worker. A stale lock is
+  taken over only under a
+  reclaim marker named for its owner. Whoever finds a lock abandoned removes all its parts or none, by
+  whether a receipt names the engine area; the main thread does so when the holding thread exits.
 
 ## RocksDB managed backups: blob snapshots (`dataLayer/blobBackup.ts`)
 

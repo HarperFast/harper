@@ -438,9 +438,8 @@ describe('blobBackup', function () {
 		const engineOnly = { backupHasBlobs: false, allowEngineOnly: false };
 
 		it('refuses any blob-excluding backup without the opt-in, whatever the destination holds', function () {
-			// Decided from the manifest alone. Files present is the obvious hazard; empty roots are the
-			// non-obvious one, because getNextFileId re-seeds the per-database id counter by scanning the
-			// roots, so it hands out 1 again -- the id space the restored records already reference.
+			// Decided from the manifest alone: files present can belong to other records, and empty roots
+			// leave every restored reference missing.
 			writeBlob(rootA, '001/002/003', 'alpha');
 			for (const database of ['somedb', 'somedb-copy']) {
 				assert.throws(
@@ -455,8 +454,8 @@ describe('blobBackup', function () {
 				() => assertEngineOnlyRestoreAllowed('somedb', engineOnly),
 				(error) =>
 					/no longer belongs to it/.test(error.message) &&
-					/blob ids restart at 1/.test(error.message) &&
-					/not an escape/.test(error.message)
+					/as a new target database has none, every record's blob is missing/.test(error.message) &&
+					/accept_unverified_blobs/.test(error.message)
 			);
 		});
 

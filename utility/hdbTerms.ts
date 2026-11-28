@@ -324,6 +324,7 @@ export const OPERATIONS_ENUM = {
 	DELETE_JOB: 'delete_job',
 	UPDATE_JOB: 'update_job',
 	REGISTRATION_INFO: 'registration_info',
+	SERVER_INFO: 'server_info',
 	GET_STUDIO_CONFIGURATION: 'get_studio_configuration',
 	SET_CONFIGURATION: 'set_configuration',
 	DROP_ATTRIBUTE: 'drop_attribute',

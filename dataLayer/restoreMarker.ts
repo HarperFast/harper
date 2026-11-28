@@ -88,7 +88,7 @@ export function restoreMetaDir(dbPath: string): string {
  * the database-name namespace. Database directory names are unique within a databases root, so
  * their hashes are too.
  */
-function restoreMetaKey(dbPath: string): string {
+export function restoreMetaKey(dbPath: string): string {
 	return createHash('sha256').update(basename(dbPath)).digest('hex').slice(0, 32);
 }
 

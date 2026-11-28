@@ -17,7 +17,7 @@ import * as rocksdbBackup from '../../dataLayer/rocksdbBackup.ts';
 import * as opAuth from '../../utility/operation_authorization.ts';
 import * as jobs from '../jobs/jobs.ts';
 import * as terms from '../../utility/hdbTerms.ts';
-import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.ts';
+import { ClientError, hdbErrors, handleHDBError } from '../../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as restart from '../../bin/restart.ts';
 import * as util from 'node:util';
@@ -41,6 +41,7 @@ import type { OperationRequest, OperationRequestBody } from '../operationsServer
 import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
+import { getServerInfo } from '../serverInfo.ts';
 import * as deploymentOperations from '../../components/deploymentOperations.ts';
 import * as releaseOperations from '../../components/releaseOperations.ts';
 import * as secretOperations from '../../components/secretOperations.ts';
@@ -636,6 +637,15 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 	}
 }
 
+/** An archive `payload` is extracted into staging on the worker that received it, before the job is queued. */
+async function restoreBackupRequest(json: OperationRequestBody): Promise<JobResult | Record<string, unknown>> {
+	// the one route to a restore job, so a staging area named in a job is always one this server minted
+	if ((json as any).staging_id !== undefined) throw new ClientError(`'staging_id' is set by the server`);
+	if ((json as any).payload === undefined) return executeJob(json);
+	const { restoreBackupFromUpload } = await import('../../dataLayer/restoreArchive.ts');
+	return restoreBackupFromUpload(json, executeJob);
+}
+
 function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationFunctionObject> {
 	const opFuncMap = new Map<OperationFunctionName, OperationFunctionObject>();
 
@@ -697,6 +707,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.REGISTRATION_INFO,
 		new OperationFunctionObject(regDeprecated.getRegistrationInfo)
 	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.SERVER_INFO, new OperationFunctionObject(getServerInfo));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(executeJob, restart.restartService));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
@@ -867,7 +878,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.PURGE_BACKUPS, new OperationFunctionObject(rocksdbBackup.purgeBackups));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.RESTORE_BACKUP,
-		new OperationFunctionObject(executeJob, rocksdbBackup.restoreBackup)
+		new OperationFunctionObject(restoreBackupRequest, rocksdbBackup.restoreBackup)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 

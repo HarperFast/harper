@@ -29,12 +29,28 @@ function jobTable(): any {
 }
 
 // Deliberately not "rerun it": the job may have applied some of its effects before it died, and nothing
-// here can tell how far it got.
-function settle(id: any, interruption: string) {
+// here can tell how far it got. `guidance` replaces that for a job whose restore record says what moves it.
+function settle(id: any, interruption: string, deferred = false, guidance?: string) {
 	return updateJob({
 		id,
 		status: hdbTerms.JOB_STATUS_ENUM.ERROR,
-		message: `Job was interrupted: ${interruption}. Its outcome is unknown — check for partial effects before running the operation again.`,
+		message: `Job was interrupted: ${interruption}. ${guidance ?? 'Its outcome is unknown — check for partial effects before running the operation again.'}`,
+		// a settled row waits on nothing
+		...(deferred ? { deferred_to: null } : {}),
+	});
+}
+
+// A deferred row's process exits by design, and only the restore receipt that names it settles it. With
+// no such receipt the restore was withdrawn where the row could not be reached: `restore_backup
+// cancel=true` with Harper stopped, or another restore of the database replacing it. It may have begun
+// before that, so the message claims only that this job did not finish it.
+function settleWithdrawn(id: any) {
+	return updateJob({
+		id,
+		status: hdbTerms.JOB_STATUS_ENUM.ERROR,
+		message:
+			'The restore this job was waiting on was cancelled, or replaced by another restore of the database, so this job did not complete it.',
+		deferred_to: null,
 	});
 }
 
@@ -70,29 +86,34 @@ export async function reconcileInterruptedJobs(ownedElsewhere?: ReadonlySet<stri
 	if (!table) return 0;
 
 	// Collect before writing: the search walks the `status` attribute these updates change.
-	const interrupted: Array<{ id: any; owner_pid: any }> = [];
-	const ownedAtRecovery: typeof interrupted = [];
+	const interrupted: Array<{ id: any; owner_pid: any; deferred: boolean }> = [];
+	const receiptsDecide: typeof interrupted = [];
 	for (const status of UNFINISHED_JOB_STATUSES) {
 		for await (const job of table.search([{ attribute: 'status', value: status }])) {
 			if (job.owner_instance === JOB_OWNER_INSTANCE_ID) continue;
-			(ownedElsewhere?.has(String(job.id)) ? ownedAtRecovery : interrupted).push({
+			const deferred = job.deferred_to != null;
+			// a deferred row is called withdrawn only once no receipt names it, whatever the snapshot held
+			(deferred || ownedElsewhere?.has(String(job.id)) ? receiptsDecide : interrupted).push({
 				id: job.id,
 				owner_pid: job.owner_pid,
+				deferred,
 			});
 		}
 	}
 	// necessary, not sufficient: a receipt withdrawn since `ownedElsewhere` was taken no longer owns its job
-	if (ownedAtRecovery.length > 0) {
-		const stillOwned = await jobsStillOwnedByReceipts();
-		if (stillOwned) interrupted.push(...ownedAtRecovery.filter(({ id }) => !stillOwned.has(String(id))));
-	}
+	const receipts = interrupted.length + receiptsDecide.length > 0 ? await restoreReceiptsForJobs() : undefined;
+	if (receipts) interrupted.push(...receiptsDecide.filter(({ id }) => !receipts.owned.has(String(id))));
+	const everyReceiptRead = receipts?.everyReceiptRead === true;
 
 	let settled = 0;
 	let unsettled = 0;
-	for (const { id, owner_pid } of interrupted) {
+	for (const { id, owner_pid, deferred } of interrupted) {
 		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
-			await settle(id, `${owner} exited before it finished`);
+			// a receipt that cannot be read names no job, and may be the one this row was waiting on
+			await (deferred && everyReceiptRead
+				? settleWithdrawn(id)
+				: settle(id, `${owner} exited before it finished`, deferred, receipts?.interrupted.get(String(id))));
 			settled++;
 		} catch (error) {
 			// Keep going: one unwritable row must not strand the rest.
@@ -112,16 +133,31 @@ export async function settleAbandonedJob(jobId: any): Promise<boolean> {
 	if (!UNFINISHED_JOB_STATUSES.includes(job?.status)) return false;
 	// a deferred job's worker exits by design, and the restore receipt that names it settles the row
 	if (job.deferred_to && (await deferredJobStillOwned(jobId))) return false;
-	await settle(jobId, 'its worker thread exited before it finished');
+	const guidance = (await restoreReceiptsForJobs())?.interrupted.get(String(jobId));
+	await settle(jobId, 'its worker thread exited before it finished', job.deferred_to != null, guidance);
 	log.warn(`Settled job ${jobId}, whose worker thread exited before it finished`);
 	return true;
 }
 
-/** Undefined when the receipts cannot be read, so the caller keeps every job the snapshot named. */
-async function jobsStillOwnedByReceipts(): Promise<Set<string> | undefined> {
+interface RestoreReceiptsForJobs {
+	/** Jobs a receipt settles itself. */
+	owned: Set<string>;
+	/** Jobs of archive restores a receipt records as unfinished, with what to tell each. */
+	interrupted: Map<string, string>;
+	everyReceiptRead: boolean;
+}
+
+/** Undefined when the receipts cannot be scanned, so the caller keeps every job the snapshot named. */
+async function restoreReceiptsForJobs(): Promise<RestoreReceiptsForJobs | undefined> {
 	try {
-		const { jobsOwnedByRestoreReceipts } = await import('../../dataLayer/restorePublication.ts');
-		return jobsOwnedByRestoreReceipts();
+		const { interruptedArchiveRestoreJobs, jobsOwnedByRestoreReceipts, scanRestoreReceipts } =
+			await import('../../dataLayer/restorePublication.ts');
+		const scanned = scanRestoreReceipts();
+		return {
+			owned: jobsOwnedByRestoreReceipts(scanned),
+			interrupted: interruptedArchiveRestoreJobs(scanned),
+			everyReceiptRead: scanned.every(({ read }) => read.kind !== 'unreadable'),
+		};
 	} catch (error) {
 		log.error('Could not re-read which jobs restore records own; leaving the ones recovery named', error);
 	}

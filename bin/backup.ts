@@ -12,6 +12,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { buildRequest, cliOperations, resolveRequestOptions } from './cliOperations.ts';
 import { loadCredentials, normalizeTarget } from './cliCredentials.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import type { RestoreReceipt } from '../dataLayer/restoreReceipt.ts';
 import { httpRequest } from '../utility/common_utils.ts';
 import { initConfig } from '../config/configUtils.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.ts';
@@ -21,6 +22,8 @@ import {
 	deleteBackupOffline,
 	listBackupsOffline,
 	purgeBackupsOffline,
+	assertNoArchivePin,
+	readRestoreRequest,
 	requireBooleanOption,
 	restoreBackupOffline,
 	verifyBackupOffline,
@@ -48,6 +51,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 	// (cliOperations does the same on its first line).
 	dotenv.config();
 	const request = buildRequest();
+	if (command === OPERATIONS_ENUM.RESTORE_BACKUP) assertNoStrayWords();
 	const databaseName = request.database || 'data';
 
 	// We print results here (not by returning a string) so the CLI's top-level handler doesn't
@@ -90,6 +94,33 @@ export async function runBackupCommand(command: string): Promise<void> {
 				result = await cancelRestartRestoreOffline(request);
 				break;
 			}
+			if (request.file !== undefined) {
+				const { file, ...rest } = request;
+				const { restoreArchiveOffline } = await import('../dataLayer/restoreArchive.ts');
+				result = await restoreArchiveOffline(rest, String(file));
+				break;
+			}
+			const archiveRestore = requireBooleanOption(request.resume, 'resume')
+				? await archiveRestoreToResume(databaseName)
+				: undefined;
+			if (archiveRestore?.route === 'on_restart') {
+				const scheduled = `Database '${databaseName}' has a restore from an archive scheduled for startup`;
+				throw new ClientError(
+					archiveRestore.state === 'terminal'
+						? `${scheduled} that has stopped retrying; start Harper and rerun restore_backup resume=true, or withdraw it with restore_backup cancel=true`
+						: archiveRestore.state === 'applying'
+							? // a cancel now would leave the half-replaced database blocked
+								`${scheduled}, which had begun replacing it; start Harper, which retries it, and if it has stopped retrying, rerun restore_backup resume=true with Harper running`
+							: `${scheduled}, which runs it when Harper starts; start Harper, or withdraw it with restore_backup cancel=true`,
+					409
+				);
+			}
+			if (archiveRestore) {
+				readRestoreRequest(request, { offline: true });
+				const { resumeArchiveRestoreOffline } = await import('../dataLayer/restoreArchive.ts');
+				result = await resumeArchiveRestoreOffline(databaseName);
+				break;
+			}
 			// ignoring one would restore now what was asked for at the next start, or without its rollback copy
 			const needsServer = OFFLINE_RESTORE_UNSUPPORTED.filter((field) => requireBooleanOption(request[field], field));
 			if (needsServer.length > 0) {
@@ -98,6 +129,7 @@ export async function runBackupCommand(command: string): Promise<void> {
 					`restore_backup ${fields} needs the server running; start Harper and rerun. With Harper stopped, restore now by omitting ${fields} (backup_id=<id> picks the backup, the latest by default), or withdraw a pending restart restore with cancel=true`
 				);
 			}
+			assertNoArchivePin(request);
 			result = await restoreBackupOffline(
 				databaseName,
 				request.backup_id,
@@ -116,6 +148,33 @@ export async function runBackupCommand(command: string): Promise<void> {
 }
 
 const OFFLINE_RESTORE_UNSUPPORTED = ['on_restart', 'retain_previous', 'resume'];
+
+async function archiveRestoreToResume(databaseName: string): Promise<RestoreReceipt | undefined> {
+	const { resolveDatabasePath } = await import('../resources/databases.ts');
+	const { interruptedArchiveRestoreReceipt, isStagedReceipt, readRestoreReceipt } =
+		await import('../dataLayer/restoreReceipt.ts');
+	const read = readRestoreReceipt(resolveDatabasePath(databaseName));
+	if (read.kind !== 'valid' || !isStagedReceipt(read.receipt) || read.receipt.state === 'committed') return undefined;
+	const { receipt } = read;
+	return receipt.route === 'on_restart' || interruptedArchiveRestoreReceipt(receipt) ? receipt : undefined;
+}
+
+/**
+ * The request parser drops a bare word after the command, which would turn `restore_backup x.tar.gz`
+ * into a restore of the latest managed backup.
+ */
+function assertNoStrayWords(): void {
+	const words: string[] = [];
+	// buildRequest reads no `--flag value` pairs: a flag is ignored, and the word after it is a bare word too
+	for (const arg of process.argv.slice(2)) {
+		if (!arg.startsWith('-') && !arg.includes('=')) words.push(arg);
+	}
+	const stray = words[1];
+	if (stray === undefined) return;
+	throw new ClientError(
+		`harper restore_backup takes key=value arguments, and '${stray}' is not one; to restore an archive, pass file=${stray}`
+	);
+}
 
 /**
  * Whether the target of a saved `last_target` is the local instance (localhost / loopback). A

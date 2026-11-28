@@ -103,6 +103,8 @@ harper get_backup database=data out=./data.tar.gz
 harper get_backup database=data target=https://node-2.example.com:9925 out=./data.tar.gz
 ```
 
+As of v5.5.0, `restore_backup` restores this archive itself, blobs included, with the server running or stopped: `harper restore_backup database=data file=./data.tar.gz`. See [restoring a `get_backup` archive](./operations.md#restoring-a-get_backup-archive). The manual steps below remain for older versions.
+
 **If the database has no file-backed blobs,** the archive extracts into a directory that opens directly as a RocksDB database. Stop Harper, replace the database's directory under the storage path with the extracted archive, and start Harper again:
 
 Before v5.4.0, `harper stop` returns before Harper finishes closing databases, so the procedures below capture its PID and wait for the process to exit before changing files. From v5.4.0, [`harper stop`](../cli/commands.md#harper-stop) waits for the exit itself, and the loop still covers the cases where it gives up while Harper is running or finds no process to stop.

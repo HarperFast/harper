@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { randomBytes } = require('node:crypto');
 const { copyFileSync, statSync, truncateSync, unlinkSync, writeFileSync } = require('node:fs');
+const { sep } = require('node:path');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -11,6 +12,7 @@ const {
 	classifyRestoredBlobFile,
 	createCaptureMarker,
 	getFilePathForBlob,
+	readBlobFileIdFloor,
 } = require('#src/resources/blob');
 const { waitFor } = require('../waitFor.js');
 
@@ -103,16 +105,26 @@ describe('restored blob assessment', function () {
 	describe('assessBlobReferences', function () {
 		it('reports verified when every referenced file is whole, counting every record scanned', async function () {
 			const { name, Table } = newTable();
-			await putBlob(Table, 1);
-			await putBlob(Table, 2);
+			const paths = [await putBlob(Table, 1), await putBlob(Table, 2)];
 			await Table.put({ id: 3 });
 			const assessment = await assessBlobReferences({ [name]: Table });
+			// a file id up to nine hex digits is laid out as <3>/<3>/<3> under its root
+			const fileIdOf = (path) =>
+				parseInt(
+					path
+						.split(sep)
+						.slice(-3)
+						.map((segment) => segment.padStart(3, '0'))
+						.join(''),
+					16
+				);
 			assert.deepStrictEqual(assessment, {
 				blobIntegrity: 'verified',
 				recordsScanned: { [name]: 3 },
 				references: 2,
 				markers: 0,
 				failures: [],
+				highestFileId: Math.max(...paths.map(fileIdOf)),
 			});
 		});
 
@@ -169,6 +181,31 @@ describe('restored blob assessment', function () {
 			});
 			const lenient = [...Table.primaryStore.getRange({ snapshot: false })].map(({ key }) => key);
 			assert.deepStrictEqual(lenient, [1, 2, 3], 'other reads still decode leniently after the scan fails');
+		});
+	});
+
+	describe('readBlobFileIdFloor', function () {
+		const floorOf = (value) => readBlobFileIdFloor({ getBinary: () => value });
+
+		it('reads an absent floor as none and a written one as its id', function () {
+			assert.strictEqual(floorOf(undefined), 0);
+			const bytes = Buffer.alloc(8);
+			bytes.writeDoubleLE(0x1234, 0);
+			assert.strictEqual(floorOf(new Uint8Array(bytes)), 0x1234);
+		});
+
+		it('throws on a floor it cannot read, rather than seed the counter below restored ids', function () {
+			assert.throws(() => floorOf(new Uint8Array(3)), /blob file id floor .* not valid/);
+			assert.throws(() => floorOf(new Uint8Array(8).fill(0xff)), /not valid/);
+			assert.throws(
+				() =>
+					readBlobFileIdFloor({
+						getBinary() {
+							throw new Error('read failed');
+						},
+					}),
+				/read failed/
+			);
 		});
 	});
 });
