@@ -14,7 +14,7 @@ alasql.options.cache = false;
 import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
 import { generatedName } from '../sqlTranslator/legacySqlText.ts';
 import clone from 'clone';
-import RecursiveIterator from 'recursive-iterator';
+import { walkAst } from '../sqlTranslator/walkAst.ts';
 import log from '../utility/logging/harper_logger.ts';
 import * as commonUtils from '../utility/common_utils.ts';
 import harperBridge from './harperBridge/harperBridge.ts';
@@ -203,13 +203,13 @@ class SQLSearch {
 	 * @private
 	 */
 	_getColumns() {
-		let iterator = new RecursiveIterator(this.statement);
-		for (let { node, path } of iterator) {
+		let iterator = walkAst(this.statement);
+		for (let { node, root } of iterator) {
 			if (node && node.columnid) {
-				if (!this.columns[path[0]]) {
-					this.columns[path[0]] = [];
+				if (!this.columns[root]) {
+					this.columns[root] = [];
 				}
-				this.columns[path[0]].push(clone(node));
+				this.columns[root].push(clone(node));
 			}
 		}
 	}
@@ -262,7 +262,7 @@ class SQLSearch {
 
 		//check for OR statement (see not above) and update numeric hash values set as strings in the statement to evaluate the table data
 		// correctly as numbers in alasql which evaluates based on data types
-		for (let { node } of new RecursiveIterator(this.statement.where)) {
+		for (let { node } of walkAst(this.statement.where)) {
 			if (node && node.op && node.op === 'OR') {
 				totalIgnore = true;
 			}
@@ -1126,7 +1126,7 @@ class SQLSearch {
 		}
 
 		let allColumns = [];
-		let iterator = new RecursiveIterator(this.columns);
+		let iterator = walkAst(this.columns);
 		for (let { node } of iterator) {
 			if (node && node.columnid) {
 				let found = this._findColumn(node);

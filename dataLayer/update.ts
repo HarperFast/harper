@@ -15,6 +15,8 @@ const pSqlSelect = util.promisify(search.sqlSelect);
 
 import * as terms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import { astNodes } from '../sqlTranslator/sql_statement_bucket.ts';
 
 //here we call to define and import custom functions to alasql
 alasqlFunctionImporter(alasql);
@@ -29,18 +31,27 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
  * @return
  */
 async function updateData({ statement, hdb_user }: any) {
+	// legacy SQL fetches rows only for the WHERE, so a SET subquery would have nothing to read; astNodes() visits
+	// a shared node once, as a named aggregate's arguments are
+	for (const node of astNodes(statement.columns)) {
+		if (node instanceof (alasql as any).yy.Select)
+			throw new ClientError('Legacy SQL cannot run a subquery in UPDATE SET');
+	}
 	let tableInfo: any = await pGetTableSchema(statement.table.databaseid, statement.table.tableid);
 	let update_record = createUpdateRecord(statement.columns);
 
 	//convert this update statement to a SQL search capable statement
-	hdbUtils.backtickASTSchemaItems(statement);
-	let { table: from, where } = statement;
+	hdbUtils.backtickASTSchemaItems({ table: statement.table });
+	let { table: from, where, queries, exists } = statement;
 	let tableClone = clone(from);
 
-	let whereString = hdbUtils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
-
-	let selectString = `SELECT ${tableInfo.hash_attribute} FROM ${from.toString()} ${whereString}`;
-	let searchStatement = (alasql as any).parse(selectString).statements[0];
+	let searchStatement = (alasql as any).parse(`SELECT ${tableInfo.hash_attribute} FROM ${from.toString()}`)
+		.statements[0];
+	// the parsed WHERE, not its text: `IS NOT NULL` is written as `IS NOT(NULL)`, which reads back as `IS (NOT NULL)`
+	if (!hdbUtils.isEmpty(where)) searchStatement.where = new (alasql as any).yy.Expression({ expression: where });
+	// a subquery sits in `queries` or `exists` as well as the WHERE, so the search refuses it as it does in a SELECT
+	if (queries) searchStatement.queries = queries;
+	if (exists) searchStatement.exists = exists;
 	//let result = await transaction.writeTransaction(tableInfo.schema, tableInfo.name, async () => {
 	let records: any = await pSqlSelect({ statement: searchStatement, hdb_user });
 	let newRecords = buildUpdateRecords(update_record, records);

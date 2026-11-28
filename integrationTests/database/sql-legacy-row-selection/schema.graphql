@@ -1,0 +1,6 @@
+type Thing @table @export {
+	id: Int @primaryKey
+	grp: String @indexed
+	v: Any
+	flag: String
+}
