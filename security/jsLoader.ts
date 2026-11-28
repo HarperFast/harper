@@ -2,6 +2,7 @@ import { Resource } from '../resources/Resource.ts';
 import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
 import { tables, databases, scopedTableFactory } from '../resources/databases.ts';
+import { _assignPackageExport } from '../globals.js';
 import { models as harperModelsSingleton } from '../resources/models/Models.ts';
 import { defineTable, defineTableUsing, types } from '../resources/defineTable.ts';
 import { defineResource, t, schemaOf, projectTableFragment } from '../resources/defineResource.ts';
@@ -1059,10 +1060,11 @@ function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 /**
  * An isolated application's own worker loads nothing else, so its global object belongs to that application, and the
  * bare `databases` and `tables` globals can take its branch view — the only way to reach them under
- * `vm-current-context`, whose modules share the thread's global. Harper's own modules import `databases` rather than
- * read the global, and a name the application did not branch, `system` included, still resolves to the base.
- * Replication places nothing on a dedicated worker (harper-pro#974), so no peer's writes land in the branch. Returns
- * whether it bound them.
+ * `vm-current-context`, whose modules share the thread's global. So do the `harper` package's exports, which code
+ * outside Harper's component loader, such as a Next.js server bundle, imports natively through `node_modules/harper`.
+ * Harper's own modules import `databases` rather than read the global or the package, and a name the application did
+ * not branch, `system` included, still resolves to the base. Replication places nothing on a dedicated worker
+ * (harper-pro#974), so no peer's writes land in the branch. Returns whether it bound them.
  */
 export function bindIsolatedApplicationGlobals(
 	scope: ApplicationScope,
@@ -1070,8 +1072,8 @@ export function bindIsolatedApplicationGlobals(
 ): boolean {
 	if (!scope.branches?.size || !thisThreadOwnsApplication(scope.name, owner)) return false;
 	const bindings = scopedDatabaseBindings(scope);
-	(globalThis as any).databases = bindings.databases;
-	(globalThis as any).tables = bindings.tables;
+	_assignPackageExport('databases', bindings.databases);
+	_assignPackageExport('tables', bindings.tables);
 	return true;
 }
 

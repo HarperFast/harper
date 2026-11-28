@@ -170,12 +170,16 @@ import type { transaction as TransactionImport } from './resources/transaction.t
 //   1. as ambient globals (the `declare global` block below), and
 //   2. as named exports of the `harper` package (the `export const` block below).
 // At runtime each is populated in place by `_assignPackageExport(name, value)` (see globals.js),
-// which assigns BOTH `global[name]` and `exports[name]` to the one shared instance. So
+// which assigns `global[name]`, `exports[name]` and this entry's copy to the one shared instance. So
 // `tables`/`databases`/etc. are not per-module or per-compartment copies: the bare global `tables`
 // and `import { tables } from 'harper'` are the same object, available in any module Harper loads —
 // resources, plugins, and e.g. a Vite SSR entry (whose `node_modules/harper` is symlinked to this
 // running install, see components/componentLoader.ts). Application VM compartments are *seeded* from
 // this process global, not given an alternate set (see security/jsLoader.ts `getGlobalObject`).
+// An isolated application's worker with branched databases rebinds `databases` and `tables` to its branch
+// view. Node builds this entry's ES module view once per worker and never updates its named exports, so
+// if anything imports it as an ES module before then, every named import in that worker keeps the base;
+// `require('harper')` and Node's own default import (this `exports` object) follow the rebinding (harper#4593).
 declare global {
 	const contentTypes: typeof ContentTypesImport;
 	const createBlob: typeof CreateBlobImport;
@@ -208,4 +212,7 @@ export const tables = runtimeGlobals.tables as typeof TablesImport;
 export const threads = runtimeGlobals.threads as ThreadsImport;
 export const transaction = runtimeGlobals.transaction as typeof TransactionImport;
 
-if (typeof exports !== 'undefined') Object.assign(exports, runtimeGlobals);
+if (typeof exports !== 'undefined') {
+	Object.assign(exports, runtimeGlobals);
+	runtimeGlobals._linkPackageEntry(exports);
+}
