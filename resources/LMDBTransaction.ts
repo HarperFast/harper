@@ -284,6 +284,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		this.open = options?.doneWriting ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.OPEN;
 		let resolution;
+		let conditionResolutions: Promise<boolean>[] | undefined;
 		const completions = [];
 		let commitCompletions: Promise<void>[];
 		let committedLogPosition: number | undefined;
@@ -322,7 +323,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 						write.entry?.version ?? null,
 						nextCondition
 					);
-					resolution = resolution || conditionResolution;
+					if (resolution) (conditionResolutions ??= [resolution]).push(conditionResolution);
+					else resolution = conditionResolution;
 				} else {
 					nextCondition();
 				}
@@ -345,6 +347,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 			if (!requiresAbortableCommit && this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
 				this.markNativeCommitSubmitted();
 				nextCondition();
+				// the batch lands only if every condition held, and each promise reports only its own: an inner
+				// new-key guard resolves true beside a failed outer one
+				if (conditionResolutions) resolution = Promise.all(conditionResolutions).then((held) => held.every(Boolean));
 				if (commitCompletions) {
 					if (resolution) {
 						resolution = Promise.resolve(resolution).then((committed) =>
