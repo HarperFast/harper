@@ -20,6 +20,7 @@ authentication:
   authorizeLocal: false
   cacheTTL: 30000
   enableSessions: true
+  maxLoginTokenTimeout: 5m
   operationTokenTimeout: 1d
   refreshTokenTimeout: 30d
 analytics:

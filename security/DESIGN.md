@@ -102,6 +102,13 @@ Live-subscription rechecks re-read a principal by name and require a role (#1414
 - `latchRoleRequirement` holds an admission behind which a recheck or MCP refresh found a record (an inactive refusal counts), plus the contexts it used, for the process's life; an admission that arrived with a role or a record is instead re-derived at each registration. Either way every later subscription of it, by any view, needs a role even after `drop_user`. A record created and dropped unseen latches nothing (#4382).
 - #4071's fixed principals (`_scopedToken`, `isRecordlessPrincipal`) and `isLocalPrincipal` are checked first and are never re-read. Enforced by `unitTests/server/liveSubscriptionAuth.test.js`, `unitTests/security/userRecordLookups.test.js` and `integrationTests/security/certificate-principal-subscriptions.test.ts`.
 
+### A login token is bound to the record it was minted from (`security/tokenAuthentication.ts`)
+
+A `purpose: 'login'` token carries `user_binding`: an HMAC (the claim is readable) over the active `hdb_user` record's password hash and `__createdtime__`, under `loginBindingKey`, which is derived from the JWT private key's material rather than its PEM text so peers holding one key in different encodings agree. Every password write re-salts and recreating a name resets the created time, so either ends the token; refresh-token rewrites and role changes do not (an entry-version binding would end it on every ordinary mint for that user). No active record, no token.
+
+- Mint (`findAndBindUser`) and redemption (`findLoginTokenUser`, which `validateToken` returns for a login token) each take the binding and the principal from one `readUserEntries` read, never a separate lookup: RocksDB reads share no snapshot.
+- `maxLoginTokenSeconds` caps the lifetime with one RSA signature. `lifetimeOf` reads a string `expires_in` through jsonwebtoken itself, since it and `convertToMS` parse durations differently; the cap follows the config validator's `CONFIG_DURATION_PATTERN` (`unitTests/security/loginToken.test.js`, `integrationTests/security/login-token-binding.test.ts`).
+
 ### A component grant answers to its names ahead of every operations listing (`security/componentGrant.ts`)
 
 `component_deploy` (harper#3046; avoiding `RESERVED_DATABASE_NAMES` collisions with `components`) scopes `deploy_component`, `drop_component`, `get_deployment`, `list_deployments`, and `get_components` by `names` patterns (`componentNameMatches` in `utility/componentNames.ts`, shared with deploy credentials, harper#3090).

@@ -171,6 +171,7 @@ authentication:
   authorizeLocal: true
   cacheTTL: 30000
   enableSessions: true
+  maxLoginTokenTimeout: 5m
   operationTokenTimeout: 1d
   refreshTokenTimeout: 30d
 ```
@@ -178,6 +179,7 @@ authentication:
 - `authorizeLocal` — Auto-authorize loopback requests as superuser; _Default_: `false` (`harper install` writes `true` in dev mode and `false` in prod mode; `harper dev` turns it on when the setting is absent). From v5.4.0, these requests run as the built-in [`local` user](../security/configuration.md#local-request-identity).
 - `cacheTTL` — Session cache duration (ms); _Default_: `30000`
 - `enableSessions` — Cookie-based sessions; _Default_: `true`
+- `maxLoginTokenTimeout` — Longest lifetime of a [login token](../operations-api/operations.md#login-tokens) (Added in: v5.4.3); _Default_: `5m`
 - `operationTokenTimeout` — Access token lifetime; _Default_: `1d`
 - `refreshTokenTimeout` — Refresh token lifetime; _Default_: `30d`
 - `logging` — Authentication event logging (Added in: v4.6.0); sub-options: `path`, `level`, `tag`, `stdStreams`. See [Logging Configuration](../logging/configuration.md)

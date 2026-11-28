@@ -635,6 +635,12 @@
 				},
 				"cacheTTL": { "type": "number", "description": "Milliseconds an authentication can be cached. Default: 30000" },
 				"enableSessions": { "type": "boolean", "description": "Enable cookie-based sessions. Default: true" },
+				"maxLoginTokenTimeout": {
+					"type": ["string", "number"],
+					"minimum": 1,
+					"pattern": "^[1-9][0-9]*(\\.[0-9]+)?[smhHdD]?$",
+					"description": "Longest lifetime of a login token (create_authentication_tokens with purpose: 'login'): a number of seconds, or a duration such as '90s' or '5m'. A longer expires_in is shortened to it. Default: 5m"
+				},
 				"operationTokenTimeout": {
 					"type": "string",
 					"description": "Operation token expiry duration (e.g. '1d'). Default: 1d"

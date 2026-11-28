@@ -491,6 +491,11 @@ export function configValidator(configJson, skipFsValidation = false) {
 				}),
 				enableSessions: boolean,
 				hashFunction: string.valid('md5', 'sha256', 'argon2id').optional().empty(null),
+				// not written back, so convert: false keeps it to the values the runtime reads
+				maxLoginTokenTimeout: Joi.alternatives(number.min(1), string.pattern(hdbUtils.CONFIG_DURATION_PATTERN))
+					.optional()
+					.empty(null)
+					.prefs({ convert: false }),
 			}),
 			boolean
 		).optional(),

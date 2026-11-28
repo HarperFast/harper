@@ -166,6 +166,28 @@ describe('config-root.schema.json matches the configuration Harper reads', () =>
 			assert.ok(!duration.test(rejected), rejected);
 	});
 
+	it('bounds authentication.maxLoginTokenTimeout to durations of at least a second, as the root validator does', () => {
+		const { maxLoginTokenTimeout } = schema.properties.authentication.properties;
+		const duration = new RegExp(maxLoginTokenTimeout.pattern);
+		const config = (value) => ({
+			...structuredClone(defaults),
+			rootPath: '/tmp/harper-schema-test',
+			authentication: { ...defaults.authentication, maxLoginTokenTimeout: value },
+		});
+		for (const accepted of ['5m', '90', '90s', '1.5h', '1d'])
+			assert.ok(duration.test(accepted) && convertToMS(accepted) >= 1000, accepted);
+		for (const accepted of ['5m', '90s', 300])
+			assert.strictEqual(configValidator(config(accepted), true).error, undefined, String(accepted));
+		for (const rejected of ['-1m', '0', '0.5', '1w', '10ms', 'soon', '030', ' 30 ', '1e1', '5M', 0, -5]) {
+			if (typeof rejected === 'string') assert.ok(!duration.test(rejected), rejected);
+			assert.match(
+				configValidator(config(rejected), true).error?.message ?? '',
+				/maxLoginTokenTimeout/,
+				String(rejected)
+			);
+		}
+	});
+
 	it('states the default for every setting defaultConfig.yaml sets, wherever a description names one', () => {
 		const mismatched = [];
 		let compared = 0;

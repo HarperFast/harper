@@ -21,6 +21,8 @@ export {
 	listUsers,
 	listUsersExternal,
 	findAndValidateUser,
+	findAndBindUser,
+	findLoginTokenUser,
 	getUserImpl,
 	getUserWithRole,
 	isCurrentUser,
@@ -120,6 +122,7 @@ import _validate from 'validate.js';
 const validate: any = (_validate as any).default ?? _validate;
 import * as logger from '../utility/logging/harper_logger.ts';
 import { promisify } from 'node:util';
+import { createHmac } from 'node:crypto';
 import { systemSchema } from '../utility/systemSchema.js';
 import { hdbErrors, ClientError } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
@@ -1005,8 +1008,12 @@ async function assertActiveSuperUserRemains(simulate: (user: User) => User | und
  * @param {string} pw
  * @param {boolean} validatePassword
  */
-async function findAndValidateUser(username: string, pw?: string | null, validatePassword = true): Promise<User> {
-	const entries = readUserEntries(username);
+async function findAndValidateUser(
+	username: string,
+	pw?: string | null,
+	validatePassword = true,
+	entries: UserEntries = readUserEntries(username)
+): Promise<User> {
 	const record = entries.user?.value;
 	if (!record) {
 		if (!validatePassword) return userView(username, entries);
@@ -1035,6 +1042,40 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 		}
 	}
 	return user;
+}
+
+/**
+ * `findAndValidateUser` for a login token, refusing a name no active record has, with `bind(key)`: a keyed digest of
+ * the record it validated, for the token to carry.
+ */
+async function findAndBindUser(
+	username: string,
+	pw: string | null | undefined,
+	validatePassword: boolean
+): Promise<{ user: User; bind: (key: Buffer) => string | undefined }> {
+	const entries = readUserEntries(username);
+	const user = await findAndValidateUser(username, pw, validatePassword, entries);
+	if (!entries.user?.value.active)
+		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+	return { user, bind: (key) => bindingOf(entries.user.value, key) };
+}
+
+/**
+ * The user a login token names, built from the same read whose record has the token's `binding`, or undefined. One
+ * read, so a record dropped or replaced between a binding check and a separate lookup cannot become the principal.
+ */
+function findLoginTokenUser(username: string, binding: unknown, key: Buffer): User | undefined {
+	if (typeof binding !== 'string') return undefined;
+	const entries = readUserEntries(username);
+	if (bindingOf(entries.user?.value, key) !== binding) return undefined;
+	return userView(username, entries);
+}
+
+function bindingOf(record: any, key: Buffer): string | undefined {
+	if (!record?.active || !key?.length) return undefined;
+	return createHmac('sha256', key)
+		.update(JSON.stringify([record.username, record.password ?? null, record.__createdtime__ ?? null]))
+		.digest('base64url');
 }
 
 async function getSuperUser(): Promise<User | undefined> {

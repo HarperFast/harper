@@ -671,6 +671,35 @@ With `role` as an inline role object, instead mints a single **scoped token** wh
 }
 ```
 
+#### Login tokens
+
+<VersionBadge type="changed" version="v5.4.3" />
+
+With `purpose: "login"`, the operation returns a single short-lived login token in `operation_token` and no refresh token. A login token is not an API credential: only the `login` operation accepts it, and trades it for a session cookie.
+
+```json
+{
+	"operation": "create_authentication_tokens",
+	"username": "my-user",
+	"password": "my-password",
+	"purpose": "login"
+}
+```
+
+```json
+{
+	"operation": "login",
+	"token": "LOGIN_TOKEN"
+}
+```
+
+A caller already authenticated by an operation token or a session can omit `username` and `password` to get a login token for itself.
+
+- **Lifetime.** One minute by default. `expires_in` can shorten it, or lengthen it up to [`authentication.maxLoginTokenTimeout`](../security/configuration.md#maxlogintokentimeout) (default `5m`); a longer request gets that maximum.
+- **Tied to the stored user.** A login token works only while its user keeps the stored record and password it had when the token was issued. After a password change (even to the same password), `drop_user`, or dropping and re-adding the username, `login` with an earlier token fails with HTTP 401, as it does while the user is inactive. Requesting a login token for a user with no active stored record fails with HTTP 401 `invalid credentials`.
+- On a cluster, each node checks a login token against its own copy of the user, so a change ends a token on a node once the change has replicated there.
+- These checks and the lifetime cap run on v5.4.3 and later. An upgraded node refuses login tokens issued before v5.4.3, including ones from a node not yet upgraded; a node not yet upgraded applies its earlier checks, which do not include them.
+
 ### `refresh_operation_token`
 
 Creates a new operation token from an existing refresh token.
