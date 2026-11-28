@@ -33,6 +33,7 @@ import {
 	restoreLocalWriteFence,
 	opensFenced,
 	seedLocalIssuance,
+	seedUnresumableThrough,
 	timestampAbove,
 } from './originClosedFloor.ts';
 import { isReadOnlyMode, openRocksDatabase } from './databases.ts';
@@ -239,6 +240,11 @@ export function openAuditStore(rootStore) {
 			(key) => coverLocalIssuance(auditStore, key),
 			readOriginClosedFloor(auditStore)
 		);
+		let holdsEntries = true;
+		try {
+			holdsEntries = !isEmptyLog(auditStore.log);
+		} catch {}
+		seedUnresumableThrough(rootStore, holdsEntries);
 		restoreLocalWriteFence(rootStore, () => readLocalWriteFence(auditStore) !== undefined || opensFenced(rootStore));
 	} else {
 		auditStore = rootStore.openDB(AUDIT_STORE_NAME, {

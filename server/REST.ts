@@ -30,6 +30,7 @@ import {
 } from '../security/deferredAuthentication.ts';
 import { toCloseReason } from './serverHelpers/webSocketCloseReason.ts';
 import { completeMultipartBody, cancelMultipartBody } from './serverHelpers/multipartForm.ts';
+import { resumeTableEventStream } from './serverHelpers/eventStreamResume.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
@@ -349,6 +350,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			status: undefined,
 			headers,
 		};
+		const lastEventId = headersObject['last-event-id'];
+		// a repeated header reads as Node joins one, on every server
+		if (lastEventId !== undefined)
+			request.lastEventId = Array.isArray(lastEventId) ? lastEventId.join(', ') : lastEventId;
 		const url = request.url.slice(1);
 
 		if (url !== OPENAPI_DOMAIN) {
@@ -559,6 +564,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 					return completeMultipartBody(request.data, undefined);
 				case 'CONNECT':
 					// websockets? and event-stream
+					if (isSse) resumeTableEventStream(resource, target, request);
 					return completeMultipartBody(
 						request.data,
 						resource.connect ? resource.connect(target, null, request) : missingMethod(resource, 'connect')

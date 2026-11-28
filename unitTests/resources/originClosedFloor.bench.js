@@ -150,15 +150,19 @@ describe('Benchmark: origin-closed floor write overhead', function () {
 		const settled = time();
 		const words = new BigInt64Array(rootStore.getUserSharedBuffer('origin-closed-floor', new ArrayBuffer(0)));
 		let slot = 1023;
-		while (Atomics.load(words, 8 + slot) !== 0n || Atomics.load(words, 8 + 1024 + slot * 8) !== 0n) slot--;
+		while (
+			Atomics.load(words, floor.HEADER_WORDS + slot) !== 0n ||
+			Atomics.load(words, floor.HEADER_WORDS + 1024 + slot * 8) !== 0n
+		)
+			slot--;
 		const limitBefore = Atomics.load(words, 5);
-		Atomics.store(words, 8 + slot, 1n << 30n);
+		Atomics.store(words, floor.HEADER_WORDS + slot, 1n << 30n);
 		Atomics.store(words, 5, BigInt(slot + 1));
 		let pending;
 		try {
 			pending = time();
 		} finally {
-			Atomics.store(words, 8 + slot, 0n);
+			Atomics.store(words, floor.HEADER_WORDS + slot, 0n);
 			Atomics.store(words, 5, limitBefore);
 		}
 		console.log('');

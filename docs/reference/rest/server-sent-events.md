@@ -29,6 +29,84 @@ eventSource.onmessage = (event) => {
 
 The URL path maps to the resource in the same way as REST and WebSocket connections. Connecting to `/my-resource/341` subscribes to updates for the record with id `341` in the `my-resource` table (or custom resource).
 
+## Resuming a Dropped Stream
+
+<VersionBadge version="v5.5.0" />
+
+An `EventSource` reconnects by itself when its connection drops, and sends the last `id` it read in the `Last-Event-ID` header. A table's own event stream issues ids and resumes from them, so the events committed while the client was away are delivered after the reconnect. Nothing is needed in the client beyond the `EventSource` itself; a client that reads the stream another way sends the last `id` it read in that header.
+
+```
+GET /my-resource/ HTTP/1.1
+Accept: text/event-stream
+Last-Event-ID: eyJ2IjoxLCJzY29wZSI6...
+```
+
+Treat the id as opaque: store it and send it back unchanged. There are two kinds.
+
+- **A checkpoint token** arrives as the `id` of an event named `harper-checkpoint`, whose `data` is an empty object. An `EventSource` records the id; the event fires no `message` event and needs no listener. A client that parses the stream itself must skip this event, since its `data` is not a change. The token marks a position in each node's transaction log, so another node of the cluster can resume it too when that node can certify and serve the history of every node the token names (it refuses the token with `409` or `410` otherwise), and it accounts for transactions that were still open when it was issued. Tokens are issued on RocksDB, by a database whose log positions are certified; the first usually arrives within ten seconds of connecting, and later ones as those positions advance. A stream that resumed from an id sends none until it has replayed what the client missed.
+- **A log position** arrives on each change event until the stream has issued a token (the current records a collection's stream sends first carry none), and for the whole stream when it cannot issue one: on LMDB, and while a cluster node's history is not certified. It names a position in this node's log only. A transaction that commits after the event the id came from, but took its place in the log before it, is not delivered on resume. On RocksDB the id also names the database and the table, so another node, a restored database or a table that was dropped and created again refuses it. LMDB checks only that the history after the position is still retained, so it does not notice a restored database. On both engines that check depends on the stream: a collection's stream is refused with `410` once the database has pruned history after the position, while a single record's stream is refused only when one of that record's own versions after the position is missing. A single record's stream that resumes from a log position does not notice another node's data having been copied into the database while it was away, which a collection's stream refuses with `410`.
+
+Once a stream has issued a token, its events carry no id of their own, so the client keeps the token.
+
+A resume replays the log from the position, so it does not send the current records again, and it can repeat events the client already has. Ignore an event whose `version` is older than the one held for that record `id`, and apply the rest: two events can carry the same `version` and differ, when a change that committed late was merged into the record. The rule also covers a write that commits while a collection's current records are being sent: its event can arrive after the record's newer state. For a record that changed more than once while the client was away, the replay delivers its current state rather than each change.
+
+### When a Position Cannot Be Resumed
+
+Harper never answers a reconnect it cannot resume by silently starting from now. What happens depends on when it finds out:
+
+| When                     | Response                                                                                                                                                   | What an `EventSource` does                                      |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Before the stream starts | `400` (not an id this resource issued), `409` (issued for another table, database or engine), `410` (the history after the position is no longer retained) | Stops reconnecting and fires `error` with `readyState` `CLOSED` |
+| After the stream started | An `event: harper-error` event whose `data.status` is `409` or `410` and whose `id` is empty, then the stream ends                                         | Forgets its id and reconnects, which starts a new subscription  |
+
+In both cases the events in between are lost to this client, so it must load the current state again rather than keep what it has: a new subscription to a collection sends each current record, but not the records deleted in the meantime.
+
+```javascript
+let failures = 0;
+function subscribe() {
+	const eventSource = new EventSource('https://server/my-resource/');
+	eventSource.onopen = () => (failures = 0);
+	// apply() ignores an event whose version is older than the record it holds
+	eventSource.onmessage = (event) => apply(JSON.parse(event.data));
+	// an empty id means the position is gone and the stream restarts from the current state
+	eventSource.addEventListener('harper-error', (event) => {
+		if (event.lastEventId === '') clearLocalState();
+	});
+	eventSource.onerror = () => {
+		if (eventSource.readyState !== EventSource.CLOSED) return; // reconnecting by itself
+		clearLocalState();
+		// a refusal that repeats, such as 403 or 404, must not reconnect forever
+		if (++failures <= 5) setTimeout(subscribe, 5000);
+	};
+}
+```
+
+On RocksDB a stream also ends with `harper-error` and an empty `id` when another node's data is copied into the database underneath it, since the copied records have no events to resume from.
+
+No id is issued for a position before such a copy, or before the server last started, because a resume from it would be refused. A stream opened soon after either one gets log positions first. Its first token follows once every node's certified position has passed that point: within about ten seconds on a single node, and up to a minute in a cluster. A change that was already being written when the copy finished can arrive with no id; the client keeps the id it has.
+
+On LMDB retention is recorded for the whole database, so pruning another table's history can also refuse a collection stream's position with `410`.
+
+### In a Custom Resource
+
+These ids belong to a table's own stream. A resource that defines its own `connect()` or `subscribe()`, including a class that extends a table, issues its own ids (the `id` of each event it yields) and reads the header itself, as `lastEventId` on the request:
+
+```javascript
+export class ConversationFeed extends Resource {
+	static async *connect(target, incomingMessages, request) {
+		for await (const turn of turnsAfter(target.id, request.lastEventId)) {
+			yield { event: 'turn', data: turn, id: turn.id };
+		}
+	}
+}
+```
+
+`request.lastEventId` is `undefined` when the client sent no `Last-Event-ID`.
+
+### Upgrading a Cluster
+
+A node running a version before v5.5.0 ignores `Last-Event-ID` and starts a new subscription. While a cluster runs both versions, a reconnect that reaches such a node is not resumed and is not refused.
+
 ## `connect()` Handler
 
 SSE connections use the same `connect()` method as WebSockets on resource classes, with one key difference: since SSE is one-directional, `connect()` is called without an `incomingMessages` argument.

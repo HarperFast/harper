@@ -108,6 +108,18 @@ describe('a restart behind the persisted origin floor (harper#2629)', function (
 			assert.match(message ?? 'opened', /persisted transaction-log bounds cannot be restored/);
 	});
 
+	it('voids every position at or below a reload marker another thread or an earlier process wrote', async () => {
+		const seeded = await run({ mode: 'reloadSeed', database: 'reloadFloor' }).reply;
+		assert.strictEqual(seeded.atOpen, Number.MIN_VALUE, 'a log this process started holds no earlier marker');
+		assert.strictEqual(seeded.beforeMarker, seeded.atOpen);
+		assert.ok(seeded.markerKey > 0);
+		assert.strictEqual(seeded.afterMarker, seeded.markerKey, 'a worker thread wrote the marker');
+		const restarted = await run({ mode: 'reloadRestart', database: 'reloadFloor' }).reply;
+		assert.strictEqual(restarted.markerKey, seeded.markerKey, 'the marker is still in the log');
+		assert.ok(restarted.atOpen > seeded.markerKey, 'the open took a sample above every key minted before it');
+		assert.strictEqual(restarted.sampled, restarted.atOpen);
+	});
+
 	it("covers another database's key minted ahead of the wall clock, so it alone restarts above it", async () => {
 		const crossing = run({ mode: 'crossDatabase', lead: LEAD_MS, hold: true });
 		const before = await crossing.reply;

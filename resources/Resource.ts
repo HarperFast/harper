@@ -61,6 +61,13 @@ const EXTENSION_TYPES = {
 };
 
 /**
+ * A transport sets this on the request context to shape the subscription the default `connect()` makes. It is
+ * called with the resolved resource and the subscription request, so it can tell which `connect` and
+ * `subscribe` are about to run.
+ */
+export const PREPARE_DEFAULT_SUBSCRIPTION = Symbol('prepareDefaultSubscription');
+
+/**
  * This is the main class that can be extended for any resource in Harper and provides the essential reusable
  * uniform interface for interacting with data, defining the API for providing data (data sources) and for consuming
  * data. This interface is used pervasively in Harper and is implemented by database tables and can be used to define
@@ -567,6 +574,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		const query = (this.constructor as any).loadAsInstance === false ? target : incomingMessages;
 		if ((query as any)?.subscribe !== false) {
 			// subscribing is the default action, but can be turned off
+			(this.getContext() as any)?.[PREPARE_DEFAULT_SUBSCRIPTION]?.(this, query);
 			return this.subscribe?.(query as any) as any;
 		}
 		return new IterableEventQueue();

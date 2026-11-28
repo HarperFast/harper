@@ -83,6 +83,8 @@ export interface Session {
 export interface Context {
 	/**	 The user making the request */
 	user?: User;
+	/** The `Last-Event-ID` header an event-stream client sends when it reconnects (HTTP requests only). */
+	lastEventId?: string;
 	/** Check the username and password against the core user table to verify user identity */
 	login?: (username: string, password: string) => Promise<string>;
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */
@@ -313,6 +315,15 @@ export interface SubscriptionRequest extends RequestTarget {
 	 */
 	databaseGeneration?: string;
 	/**
+	 * Resume from `startTime` and refuse with a 410 when the history after that position is no longer retained:
+	 * a collection once the audit floor has passed the position, at admission and while the replay runs; a single
+	 * record only when its history walk finds one of its versions missing. Exposes `resumeVerified`. The retention
+	 * half of `databaseGeneration`, for LMDB, which has no generation: a restored or replaced database is not
+	 * detected. Requires a finite `startTime` and no `previousCount`; refused with a 400 on RocksDB without
+	 * `databaseGeneration`.
+	 */
+	checkRetention?: boolean;
+	/**
 	 * Certify delivery progress (RocksDB): the subscription carries `progress()` and `sentCount`, a reload
 	 * marker or a failure to build a live event ends it, and its snapshot keeps every event buffered during the scan.
 	 */
@@ -394,7 +405,7 @@ export interface Subscription<Event extends object = any> extends IterableEventQ
 	/** The generation of the database this subscription reads; undefined on LMDB. */
 	databaseGeneration?: string;
 	/**
-	 * Present only when subscribed with `databaseGeneration`. Resolves `true` once the replay after the
+	 * Present only when subscribed with `databaseGeneration` or `checkRetention`. Resolves `true` once the replay after the
 	 * position is complete and checked, or `false` if it was refused, cut short or closed first; never rejects.
 	 * Events delivered before it resolves `true` are not safe to checkpoint. It does not detect a transaction
 	 * that commits after the position was recorded with a key below it.

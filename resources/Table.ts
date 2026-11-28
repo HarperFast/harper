@@ -98,10 +98,12 @@ import {
 import { readOnlyModeError } from './readOnlyMode.ts';
 import {
 	freshLocalKey,
+	raiseUnresumableThrough,
 	releaseLocalKey,
 	reserveLocalKey,
 	reservedAroundCallerValue,
 	reservedLocalKey,
+	unresumableThrough,
 } from './originClosedFloor.ts';
 import {
 	acquireRecordKey,
@@ -133,8 +135,10 @@ import {
 	encodeCheckpoint,
 	positionBefore,
 	readOriginStateEpoch,
+	resumeBoundary,
 	validateCheckpoint,
 	withReplacedGeneration,
+	type CertifiedFloors,
 	type MemberBoundary,
 	type ResumePlan,
 	type SubscriptionCheckpoint,
@@ -2209,6 +2213,11 @@ type ProgressState = {
 	planFloor: number | undefined;
 	checkpointScopeId: string;
 	filtersWithoutKey: boolean;
+	/**
+	 * Sampled once the subscription was registered: a reload marker appended before that raised it first, and
+	 * one appended later reaches the listener. No position at or below it is issued.
+	 */
+	unresumableThrough: number;
 	live: boolean;
 	floor: number | undefined;
 	/** A resumed replay left committed entries to live delivery, so its floor stays at the requested start. */
@@ -2223,6 +2232,8 @@ type ProgressState = {
 	highestSent: number;
 	/** The queue's own send(), which the tracking send() hands each event to. */
 	queueSend: (event: any) => boolean;
+	/** With `checkpointInterval`: sends a `checkpoint` event through the queue if a boundary advanced. */
+	emitCheckpoint?: () => void;
 };
 
 function isSubscriptionActive(subscription: any): boolean {
@@ -2288,7 +2299,11 @@ function unreadableLogRefusal(range: any): Error | undefined {
 	}
 }
 
-function resumeRefusal(auditStore: any, generationId: string, cursor: number): Error | undefined {
+function resumeRefusal(auditStore: any, generationId: string | undefined, cursor: number): Error | undefined {
+	// no generation to compare (checkRetention): every prune raises the audit floor before it removes anything, and
+	// the cursor is exclusive, so a floor on the next key has removed nothing after it
+	if (generationId === undefined)
+		return cursor >= positionBefore(getAuditFloor(auditStore)) ? undefined : new ResumeHistoryUnavailableError();
 	if (isResumablePosition(auditStore, generationId, cursor)) return;
 	return getDatabaseGeneration(auditStore)?.id === generationId
 		? new ResumeHistoryUnavailableError()
@@ -10560,10 +10575,16 @@ export function makeTable(options): TableResourceClass {
 				if (!request.reportProgress) throw new ClientError('checkpointInterval requires reportProgress');
 			}
 			const resumeGeneration = request.databaseGeneration;
-			const resuming = resumeGeneration !== undefined;
+			const resuming = resumeGeneration !== undefined || request.checkRetention === true;
 			if (resuming) {
+				// the floor alone cannot tell a replaced database, which a generation does
+				if (resumeGeneration === undefined && isRocksDB) {
+					throw new ClientError(
+						'checkRetention without databaseGeneration is for LMDB; name the generation on RocksDB'
+					);
+				}
 				if (typeof request.startTime !== 'number' || !Number.isFinite(request.startTime)) {
-					throw new ClientError('Resuming in a database generation requires a finite startTime');
+					throw new ClientError('A checked resume requires a finite startTime');
 				}
 				if (request.previousCount != null) {
 					throw new ClientError('previousCount can not be combined with a resume position');
@@ -10572,7 +10593,7 @@ export function makeTable(options): TableResourceClass {
 				const refusal =
 					(request.isCollection ?? thisId == null)
 						? resumeRefusal(auditStore, resumeGeneration, request.startTime)
-						: getDatabaseGeneration(auditStore)?.id === resumeGeneration
+						: resumeGeneration === undefined || getDatabaseGeneration(auditStore)?.id === resumeGeneration
 							? undefined
 							: new DatabaseGenerationChangedError();
 				if (refusal) throw refusal;
@@ -11554,6 +11575,8 @@ export function makeTable(options): TableResourceClass {
 					requiresExclusiveCommit: Boolean(residencyPolicy) || isResidencyMapTable,
 					skipReplicationConfirmation: true,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
+						// before the marker is staged, so a subscription that registers after the append samples its key
+						if (isRocksDB) raiseUnresumableThrough(auditStore.rootStore, reservedLocalKey(transaction));
 						return updateRecord(
 							null, // recordId: null — a whole-table signal, not a per-row change
 							undefined, // no record to store: this writes the audit entry only
@@ -13095,6 +13118,7 @@ export function makeTable(options): TableResourceClass {
 		if (replicaEvictionArmed) armReplicaEviction();
 	}
 	registerStoreTable(primaryStore, () => isNodeLocalTable(TableResource));
+	tableSubscribeMethods.add(TableResource.prototype.subscribe);
 	return TableResource;
 	/**
 	 * Every subscription's live listener, one function for the table: the commit broadcast calls it with
@@ -13162,6 +13186,7 @@ export function makeTable(options): TableResourceClass {
 			planFloor,
 			checkpointScopeId,
 			filtersWithoutKey,
+			unresumableThrough: isRocksDB ? unresumableThrough(auditStore.rootStore) : 0,
 			live: false,
 			floor: undefined,
 			replayLeftEntriesToLive: false,
@@ -13171,6 +13196,7 @@ export function makeTable(options): TableResourceClass {
 			queueSend: subscription.send,
 		};
 		subscription.progressState = progress;
+		subscription.unresumableThrough = progress.unresumableThrough;
 		subscription.sentCount = 0;
 		subscription.send = sendTrackingLate;
 		subscription.lowestLateUnconsumed = (consumed: number) => lowestLateUnconsumed(subscription, consumed);
@@ -13180,18 +13206,39 @@ export function makeTable(options): TableResourceClass {
 		subscription.checkpointFloor = (holds?: Map<number, number>) => subscriptionCheckpointFloor(subscription, holds);
 		if (request.checkpointInterval !== undefined) {
 			let lastEmitted: string | undefined;
-			const timer = setInterval(() => {
-				if (!isSubscriptionActive(subscription)) return clearInterval(timer);
+			// What the last checkpoint was computed from. A capture of equal floors keeps their object, and a queue
+			// that nothing entered or left holds what it held, so the same three mean the same checkpoint.
+			let emittedFloors: CertifiedFloors | undefined;
+			let emittedQueued = 0;
+			let emittedSent = 0;
+			progress.emitCheckpoint = () => {
+				// a replay's boundaries can name origins the client's token did not, so they wait for the replay to be verified
+				if (!progress.live) return;
 				try {
+					const floors = certifiedFloors(subscription);
+					const queued = subscription.queue?.length ?? 0;
+					if (
+						floors !== undefined &&
+						floors === emittedFloors &&
+						queued === emittedQueued &&
+						(queued === 0 || subscription.sentCount === emittedSent)
+					)
+						return;
 					const checkpoint = subscription.checkpoint!();
 					if (!checkpoint) return;
 					const encoded = JSON.stringify(checkpoint);
-					if (encoded === lastEmitted) return;
+					if (encoded !== lastEmitted && !subscription.send({ type: 'checkpoint', checkpoint })) return;
 					lastEmitted = encoded;
-					subscription.send({ type: 'checkpoint', checkpoint });
+					emittedFloors = floors;
+					emittedQueued = subscription.queue?.length ?? 0;
+					emittedSent = subscription.sentCount;
 				} catch (error) {
 					failSubscription(subscription, error);
 				}
+			};
+			const timer = setInterval(() => {
+				if (!isSubscriptionActive(subscription)) return clearInterval(timer);
+				progress.emitCheckpoint!();
 			}, request.checkpointInterval);
 			timer.unref?.();
 			subscription.on('close', () => clearInterval(timer));
@@ -13266,6 +13313,8 @@ export function makeTable(options): TableResourceClass {
 		// a certified subscription takes every live entry from here: the key gate would drop a late
 		// lower-key commit that a floor then certifies as delivered
 		subscription.ungated = true;
+		// a consumer that drops before the first interval would otherwise hold no checkpoint
+		progress.emitCheckpoint?.();
 	}
 	function replayBoundaries(progress: ProgressState): Map<string, MemberBoundary> | undefined {
 		if (!progress.plan) return;
@@ -13300,6 +13349,9 @@ export function makeTable(options): TableResourceClass {
 			if (held < boundary) boundary = held;
 			boundaries.set(state.name, { boundary, generation: state.generation! });
 		}
+		// the local log is where a reload marker lies, and a resume reads it from the folded start
+		const localStart = resumeBoundary(boundaries, certified.origins.get(0)?.name);
+		if (!(localStart > subscription.progressState.unresumableThrough)) return;
 		return boundaries;
 	}
 	function currentBoundaries(subscription: any, holds?: Map<number, number>) {
@@ -17035,6 +17087,11 @@ function returnTrue() {
 
 // Compiled from a schema @computed(from:) expression, so every thread, pool workers included, has it.
 const schemaExpressionResolvers = new WeakSet<Function>();
+const tableSubscribeMethods = new WeakSet<Function>();
+/** Whether this is a table's own `subscribe`, rather than an application's override of it. */
+export function isTableSubscribe(method: unknown): boolean {
+	return typeof method === 'function' && tableSubscribeMethods.has(method);
+}
 /**
  * Recreate a computed "from" function from a stored expression string. This is used when a table
  * is loaded from metadata on a thread that hasn't loaded the GraphQL schema, so the computed

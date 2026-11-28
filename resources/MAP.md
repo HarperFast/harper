@@ -66,6 +66,7 @@ Where things are in `resources/`. The rules live in [DESIGN.md](DESIGN.md): read
 - audit floor and retention → auditStore.ts; see [audit-retention.md](audit-retention.md)
 - opting a query out of a read snapshot → `useReadTxn` in Table.ts; `getReadTxn` in DatabaseTransaction.ts
 - application row filtering → `eventFilter` in ResourceInterface.ts; `search`, `subscribe` in Table.ts
+- a transport shaping the default subscription → `PREPARE_DEFAULT_SUBSCRIPTION` in Resource.ts
 - matching expired rows in SQL UPDATE/DELETE → `transformEntryForSelect` in Table.ts
 - filters during a vector search → `composeRecordFilter`, `planCandidateKeys` in search.ts; see [indexes/DESIGN.md](indexes/DESIGN.md)
 - a vector sort by text → `embedSortTexts`, `#searchAfterEmbedding` in Table.ts; `embedQueryTexts` in models/embedHook.ts

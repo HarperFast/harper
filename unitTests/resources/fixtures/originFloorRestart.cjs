@@ -9,7 +9,12 @@ const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { claimLocalKey, localWritesFenced, setLocalWriteFence } = require('#src/resources/originClosedFloor');
+const {
+	claimLocalKey,
+	localWritesFenced,
+	setLocalWriteFence,
+	unresumableThrough,
+} = require('#src/resources/originClosedFloor');
 const {
 	coverLocalIssuance,
 	persistLocalWriteFence,
@@ -152,10 +157,61 @@ async function openedCopy({ dir, database }) {
 	return { fenced };
 }
 
-const modes = { seed, restart, refusedOpen, crossDatabase, reopenB, fenceSeed, fenceRestart, fenceCopied, openedCopy };
+function reloadMarkerKey(Tbl) {
+	let key;
+	for (const entry of Tbl.auditStore.getRange({ start: 1 })) {
+		if (entry.type === 'reload' && entry.tableId === Tbl.tableId) key = entry.txnLogKey;
+	}
+	return key;
+}
+
+async function sampledByNewSubscription(Tbl) {
+	const subscription = await Tbl.subscribe({ omitCurrent: true, reportProgress: true });
+	subscription.end();
+	return subscription.unresumableThrough;
+}
+
+async function reloadSeed({ dir, database }) {
+	const Tbl = open(dir, database);
+	const atOpen = unresumableThrough(Tbl.primaryStore.rootStore);
+	await Tbl.put({ id: 'copied', n: 0 });
+	const beforeMarker = await sampledByNewSubscription(Tbl);
+	const { markerKey } = await new Promise((resolve, reject) => {
+		const thread = new Worker(__filename, { workerData: { mode: 'reloadWorker', dir, database } });
+		thread.once('message', resolve);
+		thread.once('error', reject);
+	});
+	return { atOpen, beforeMarker, markerKey, afterMarker: await sampledByNewSubscription(Tbl) };
+}
+
+async function reloadWorker({ dir, database }) {
+	const Tbl = open(dir, database);
+	await Tbl.writeReloadMarker();
+	return { markerKey: reloadMarkerKey(Tbl) };
+}
+
+async function reloadRestart({ dir, database }) {
+	const Tbl = open(dir, database);
+	const atOpen = unresumableThrough(Tbl.primaryStore.rootStore);
+	return { atOpen, markerKey: reloadMarkerKey(Tbl), sampled: await sampledByNewSubscription(Tbl) };
+}
+
+const modes = {
+	seed,
+	restart,
+	refusedOpen,
+	crossDatabase,
+	reopenB,
+	fenceSeed,
+	fenceRestart,
+	fenceCopied,
+	openedCopy,
+	reloadSeed,
+	reloadRestart,
+};
 
 if (!isMainThread) {
-	workerRun(workerData).then((result) => {
+	(workerData.mode === 'reloadWorker' ? reloadWorker : workerRun)(workerData).then((result) => {
 		parentPort.postMessage(result);
 		process.exit(0);
 	});

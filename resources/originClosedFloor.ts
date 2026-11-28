@@ -40,7 +40,10 @@ export const WORD_DURABLE_CEILING = 6;
 // so a restore from a record read before a change cannot undo it (`restoreLocalWriteFence`).
 export const WORD_WRITE_FENCE = 7;
 const FENCE_INDEX = WORD_WRITE_FENCE * 2;
-export const HEADER_WORDS = 8;
+// At or below this key no resume position is issued: the highest reload marker's, or the sample the process's
+// first open took of a log that already held entries. 0 until that open decides.
+export const WORD_UNRESUMABLE = 8;
+export const HEADER_WORDS = 9;
 const THREAD_WORDS_OFFSET = HEADER_WORDS;
 const BOUND_WORDS_OFFSET = HEADER_WORDS + SLOTS;
 const BUFFER_BYTES = (HEADER_WORDS + SLOTS + SLOTS * BOUND_STRIDE) * 8;
@@ -591,6 +594,31 @@ export function seedLocalIssuance(
 		storeMax(words, WORD_ISSUANCE_FLOOR, recovered);
 	}
 	publishOriginFloor(rootStore, floor);
+}
+
+/**
+ * A reload marker an earlier process appended is known to this one only through the log, so the process's first
+ * open of a log that holds entries voids every position at or below a sample taken now: the open has raised the
+ * clock above the persisted bounds, so the sample is above every key minted before it. Call after
+ * `seedLocalIssuance`.
+ */
+export function seedUnresumableThrough(rootStore: RocksDatabase, holdsEntries: boolean): void {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return;
+	const words = registryFor(rootStore).words;
+	const sample = holdsEntries
+		? Math.max(rootStore.getMonotonicTimestamp(), fromBits(Atomics.load(words, WORD_ISSUANCE_FLOOR)))
+		: Number.MIN_VALUE;
+	Atomics.compareExchange(words, WORD_UNRESUMABLE, 0n, toBits(sample));
+}
+
+export function raiseUnresumableThrough(rootStore: RocksDatabase, key: number | undefined): void {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function' || !isValidFloor(key)) return;
+	storeMax(registryFor(rootStore).words, WORD_UNRESUMABLE, key);
+}
+
+export function unresumableThrough(rootStore: RocksDatabase): number {
+	if (typeof rootStore?.getUserSharedBuffer !== 'function') return 0;
+	return fromBits(Atomics.load(registryFor(rootStore).words, WORD_UNRESUMABLE));
 }
 
 /** Whether this engine can make a floor record power-loss durable before it is advertised (`syncWal`). */

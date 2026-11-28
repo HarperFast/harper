@@ -7,7 +7,7 @@ const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { getThisNodeName } = require('#src/server/nodeName');
 const { transaction } = require('#src/resources/transaction');
-const { setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
+const { certifiedFloors, setOriginCaptureIntervalForTests } = require('#src/resources/transactionBroadcast');
 const {
 	COPY_BOUND_KEY,
 	MAX_OVERLAP_MS,
@@ -17,6 +17,7 @@ const {
 	readCopyBounds,
 	readOriginStateEpoch,
 	resolveMembership,
+	sameCertifiedFloors,
 	validateCheckpoint,
 	writeCopyBounds,
 } = require('#src/resources/subscriptionCheckpoint');
@@ -422,6 +423,202 @@ describe('Per-origin subscription checkpoints (harper-pro#922 items 3–4)', fun
 			await waitFor(() => listener.events.some((event) => event.type === 'checkpoint'), 15_000);
 			const event = listener.events.find((event) => event.type === 'checkpoint');
 			assert.strictEqual(event.checkpoint.v, 1);
+			subscription.end();
+		});
+
+		it('delivers a checkpoint event as it goes live, without waiting out the interval', async () => {
+			const T = tableInOwnDatabase();
+			// floors are already published for a database another consumer tracks
+			const tracked = collector();
+			const tracking = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: tracked });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => tracked.values().includes('a'));
+			await certifiedCheckpoint(T, tracking);
+			const listener = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				checkpointInterval: 3_600_000,
+				listener,
+			});
+			await waitFor(() => listener.events.some((event) => event.type === 'checkpoint'), 10_000);
+			subscription.end();
+			tracking.end();
+		});
+
+		it('issues no checkpoint that a resume would start at or below a reload marker appended before it registered', async () => {
+			const T = tableInOwnDatabase();
+			const Sibling = table({
+				table: `Sibling${++sequence}`,
+				database: T.databaseName,
+				audit: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			// registered before the marker, on another table: it keeps the floors published and its own checkpoints
+			const siblingListener = collector();
+			const sibling = await Sibling.subscribe({ omitCurrent: true, reportProgress: true, listener: siblingListener });
+			await Sibling.put('s', { value: 's' });
+			await waitFor(() => siblingListener.values().includes('s'));
+			await certifiedCheckpoint(Sibling, sibling);
+			await T.put('copied', { value: 'copied' });
+			await T.writeReloadMarker();
+			let markerKey;
+			for (const entry of T.auditStore.getRange({ start: 1 })) {
+				if (entry.type === 'reload' && entry.tableId === T.tableId) markerKey = entry.txnLogKey;
+			}
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true });
+			assert.strictEqual(subscription.unresumableThrough, markerKey);
+			assert.ok(sibling.unresumableThrough < markerKey);
+			assert.ok(certifiedFloors(subscription).origins.get(0).floor < markerKey, 'the floors predate the marker');
+			assert.strictEqual(subscription.checkpoint(), undefined);
+			assert.strictEqual(subscription.checkpointFloor(), undefined);
+			assert.ok(sibling.checkpoint().time < markerKey, 'a replay of the sibling table does not stop at this marker');
+
+			// another origin whose floor is still below the marker: the local log is replayed from the common boundary
+			const lagging = positionBefore(markerKey);
+			const peer = { originGeneration: 'peer-generation', fullCoverage: true, certifiedFrom: 0 };
+			writeSeqRow(T, 'lagging-peer', { closedFloor: lagging, ...peer });
+			await sleep(2);
+			const floor = certify(T);
+			assert.ok(floor > markerKey);
+			await waitFor(() => certifiedFloors(subscription)?.origins.get(0).floor >= floor && sibling.checkpoint());
+			assert.strictEqual(sibling.checkpoint().time - sibling.checkpoint().overlap, lagging);
+			assert.strictEqual(subscription.checkpoint(), undefined, 'the fold puts the local start below the marker');
+			assert.strictEqual(subscription.checkpointFloor(), undefined);
+
+			writeSeqRow(T, 'lagging-peer', { closedFloor: floor, ...peer });
+			let checkpoint;
+			await waitFor(() => (checkpoint = subscription.checkpoint()) !== undefined);
+			assert.ok(checkpoint.time - checkpoint.overlap > markerKey);
+			assert.ok(subscription.checkpointFloor() > markerKey);
+			await T.put('after', { value: 'after' });
+			const resumed = collector();
+			const resume = await T.subscribe({ resume: checkpoint, omitCurrent: true, listener: resumed });
+			await waitFor(() => resumed.values().includes('after'));
+			assert.strictEqual(await resume.resumeVerified, true);
+			resume.end();
+			subscription.end();
+			sibling.end();
+		});
+
+		it('sends no checkpoint event while a resumed replay is still running', async () => {
+			const T = tableInOwnDatabase();
+			const tracked = collector();
+			const tracking = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: tracked });
+			await T.put('a', { value: 'a' });
+			await waitFor(() => tracked.values().includes('a'));
+			const checkpoint = await certifiedCheckpoint(T, tracking);
+			await T.put('b', { value: 'b' });
+			const events = [];
+			let duringReplay;
+			const resumed = await T.subscribe({
+				resume: checkpoint,
+				omitCurrent: true,
+				checkpointInterval: 3_600_000,
+				listener(event) {
+					events.push(event);
+					if (event.value?.value !== 'b' || duringReplay !== undefined) return;
+					// a tick of the interval that lands inside the replay
+					this.progressState.emitCheckpoint();
+					duringReplay = events.filter((sent) => sent.type === 'checkpoint').length;
+				},
+			});
+			assert.strictEqual(await resumed.resumeVerified, true);
+			await waitFor(() => events.some((event) => event.type === 'checkpoint'), 10_000);
+			assert.strictEqual(duringReplay, 0, 'the replay plan was not offered as a token');
+			resumed.end();
+			tracking.end();
+		});
+
+		it('builds no token on a tick whose floors are the ones it last sent', async () => {
+			const T = tableInOwnDatabase();
+			const listener = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				checkpointInterval: 3_600_000,
+				listener,
+			});
+			await T.put('a', { value: 'a' });
+			await waitFor(() => listener.values().includes('a'));
+			await certifiedCheckpoint(T, subscription);
+			const tick = subscription.progressState.emitCheckpoint;
+			const sent = () => listener.events.filter((event) => event.type === 'checkpoint').length;
+			tick();
+			const afterFirst = sent();
+			assert.ok(afterFirst > 0);
+			let built = 0;
+			const checkpoint = subscription.checkpoint;
+			subscription.checkpoint = (...args) => (built++, checkpoint(...args));
+			// no capture can run between synchronous ticks
+			tick();
+			tick();
+			assert.strictEqual(built, 0);
+			assert.strictEqual(sent(), afterFirst);
+			subscription.checkpoint = checkpoint;
+			await T.put('b', { value: 'b' });
+			await waitFor(() => listener.values().includes('b'));
+			await certifiedCheckpoint(T, subscription);
+			tick();
+			assert.strictEqual(sent(), afterFirst + 1, 'an advanced floor is a new token');
+			subscription.end();
+		});
+
+		it('builds no token on a tick whose reader took nothing from an unchanged queue', async () => {
+			const T = tableInOwnDatabase();
+			// no listener and no reader: every event stays queued
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				checkpointInterval: 3_600_000,
+			});
+			await T.put('a', { value: 'a' });
+			await waitFor(() => subscription.queue?.length > 0);
+			// the queued event holds its boundary below the floor certified now
+			certify(T);
+			await waitFor(() => subscription.checkpoint() !== undefined, 10_000);
+			const tick = subscription.progressState.emitCheckpoint;
+			tick();
+			let built = 0;
+			const checkpoint = subscription.checkpoint;
+			subscription.checkpoint = (...args) => (built++, checkpoint(...args));
+			tick();
+			tick();
+			assert.strictEqual(built, 0);
+			await T.put('b', { value: 'b' });
+			await waitFor(() => subscription.queue.some((event) => event.value?.value === 'b'));
+			tick();
+			assert.strictEqual(built, 1, 'an event that entered the queue can lower a boundary');
+			const length = subscription.queue.length;
+			subscription.queue.shift();
+			await T.put('c', { value: 'c' });
+			await waitFor(() => subscription.queue.some((event) => event.value?.value === 'c'));
+			assert.strictEqual(subscription.queue.length, length, 'precondition: one event left and one entered');
+			tick();
+			assert.strictEqual(built, 2, 'a queue of the same length is not the same queue');
+			subscription.end();
+		});
+
+		it('keeps the certified floors object across captures that find the same floors', async () => {
+			const T = tableInOwnDatabase();
+			const subscription = await T.subscribe({ omitCurrent: true, reportProgress: true, listener: collector() });
+			await T.put('a', { value: 'a' });
+			await certifiedCheckpoint(T, subscription);
+			// the store's own certification moves the floor every few seconds, so look for a quiet stretch of captures
+			await waitFor(async () => {
+				const floors = certifiedFloors(subscription);
+				await sleep(350);
+				return floors !== undefined && certifiedFloors(subscription) === floors;
+			}, 20_000);
+			const floors = certifiedFloors(subscription);
+			const [nodeId, state] = floors.origins.entries().next().value;
+			const copy = (change) => ({ epoch: floors.epoch, origins: new Map([[nodeId, { ...state, ...change }]]) });
+			assert.strictEqual(sameCertifiedFloors(floors, copy({})), true);
+			assert.strictEqual(sameCertifiedFloors(floors, copy({ floor: state.floor + 1 })), false);
+			assert.strictEqual(sameCertifiedFloors(floors, copy({ generation: 'other' })), false);
+			assert.strictEqual(sameCertifiedFloors(floors, { ...copy({}), epoch: floors.epoch + 1 }), false);
+			assert.strictEqual(sameCertifiedFloors(floors, { epoch: floors.epoch, origins: new Map() }), false);
+			assert.strictEqual(sameCertifiedFloors(floors, null), false);
 			subscription.end();
 		});
 
