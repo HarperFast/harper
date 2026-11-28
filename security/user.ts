@@ -1008,15 +1008,11 @@ async function assertActiveSuperUserRemains(simulate: (user: User) => User | und
  * @param {string} pw
  * @param {boolean} validatePassword
  */
-async function findAndValidateUser(username: string, pw?: string | null, validatePassword = true): Promise<User> {
-	return validateUserEntries(username, readUserEntries(username), pw, validatePassword);
-}
-
-async function validateUserEntries(
+async function findAndValidateUser(
 	username: string,
-	entries: UserEntries,
-	pw: string | null | undefined,
-	validatePassword: boolean
+	pw?: string | null,
+	validatePassword = true,
+	entries: UserEntries = readUserEntries(username)
 ): Promise<User> {
 	const record = entries.user?.value;
 	if (!record) {
@@ -1049,35 +1045,33 @@ async function validateUserEntries(
 }
 
 /**
- * `findAndValidateUser`, with a keyed digest of the record it validated, for a login token to carry: undefined when no
- * active record has the name.
+ * `findAndValidateUser`, with `bind(key)`: a keyed digest of the record it validated, for a login token to carry, or
+ * undefined when no active record has the name.
  */
 async function findAndBindUser(
 	username: string,
 	pw: string | null | undefined,
-	validatePassword: boolean,
-	key: string
-): Promise<{ user: User; binding: string | undefined }> {
+	validatePassword: boolean
+): Promise<{ user: User; bind: (key: Buffer) => string | undefined }> {
 	const entries = readUserEntries(username);
-	const user = await validateUserEntries(username, entries, pw, validatePassword);
-	return { user, binding: bindingOf(entries.user?.value, key) };
+	const user = await findAndValidateUser(username, pw, validatePassword, entries);
+	return { user, bind: (key) => bindingOf(entries.user?.value, key) };
 }
 
 /**
  * The user a login token names, built from the same read whose record has the token's `binding`, or undefined. One
  * read, so a record dropped or replaced between a binding check and a separate lookup cannot become the principal.
  */
-function findLoginTokenUser(username: string, binding: unknown, key: string): User | undefined {
+function findLoginTokenUser(username: string, binding: unknown, key: Buffer): User | undefined {
 	if (typeof binding !== 'string') return undefined;
 	const entries = readUserEntries(username);
 	if (bindingOf(entries.user?.value, key) !== binding) return undefined;
 	return userView(username, entries);
 }
 
-// Covers the password hash, which every password write re-salts, and the creation time, which recreating the name
-// resets; not the refresh token or role, which ordinary token mints and role changes rewrite.
-function bindingOf(record: any, key: string): string | undefined {
-	if (!record?.active || !key) return undefined;
+// what a password write (always re-salted) or a recreated name replaces, and an ordinary token mint does not
+function bindingOf(record: any, key: Buffer): string | undefined {
+	if (!record?.active || !key?.length) return undefined;
 	return createHmac('sha256', key)
 		.update(JSON.stringify([record.username, record.password ?? null, record.__createdtime__ ?? null]))
 		.digest('base64url');

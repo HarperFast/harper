@@ -104,10 +104,10 @@ Live-subscription rechecks re-read a principal by name and require a role (#1414
 
 ### A login token is bound to the record it was minted from (`security/tokenAuthentication.ts`)
 
-A `purpose: 'login'` token carries `user_binding`: an HMAC over the active `hdb_user` record's password hash and `__createdtime__`, keyed by the JWT private key because the claim is readable. Every password write re-salts and recreating a name resets the created time, so either ends the token; refresh-token rewrites and role changes do not (an entry-version binding would end it on every ordinary mint for that user). No active record, no token.
+A `purpose: 'login'` token carries `user_binding`: an HMAC (the claim is readable) over the active `hdb_user` record's password hash and `__createdtime__`, under `loginBindingKey`, which is derived from the JWT private key's material rather than its PEM text so peers holding one key in different encodings agree. Every password write re-salts and recreating a name resets the created time, so either ends the token; refresh-token rewrites and role changes do not (an entry-version binding would end it on every ordinary mint for that user). No active record, no token.
 
 - Mint (`findAndBindUser`) and redemption (`findLoginTokenUser`, which `validateToken` returns for a login token) each take the binding and the principal from one `readUserEntries` read, never a separate lookup: RocksDB reads share no snapshot.
-- `maxLoginTokenSeconds` caps the lifetime. A string `expires_in` is measured on the signed token, since jsonwebtoken and `convertToMS` parse durations differently; the cap follows the config validator's `CONFIG_DURATION_PATTERN` (`unitTests/security/loginToken.test.js`, `integrationTests/security/login-token-binding.test.ts`).
+- `maxLoginTokenSeconds` caps the lifetime with one RSA signature. `lifetimeOf` reads a string `expires_in` through jsonwebtoken itself, since it and `convertToMS` parse durations differently; the cap follows the config validator's `CONFIG_DURATION_PATTERN` (`unitTests/security/loginToken.test.js`, `integrationTests/security/login-token-binding.test.ts`).
 
 ### A component grant answers to its names ahead of every operations listing (`security/componentGrant.ts`)
 

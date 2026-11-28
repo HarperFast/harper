@@ -1,4 +1,5 @@
 import jwt, { type Algorithm, type JwtPayload, type Secret, type SignOptions } from 'jsonwebtoken';
+import { createHash, createPrivateKey } from 'node:crypto';
 import fs from 'fs-extra';
 import path from 'node:path';
 import Joi from 'joi';
@@ -216,10 +217,8 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 			throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_USER_TO_MINT_FOR, HTTP_STATUS_CODES.CONFLICT);
 	}
 
-	// ahead of the user lookup only for a login mint, which binds the token to the record it validates
-	const loginKeys: JWTRSAKeys | undefined = authObj?.purpose === 'login' ? await getJWTRSAKeys() : undefined;
 	let user: any;
-	let loginBinding: string | undefined;
+	let bindLogin: ((key: Buffer) => string | undefined) | undefined;
 	try {
 		// Trusted bypass is dispatch/async-context state (set by a component calling
 		// server.operation(..., false)), never a body field — authObj.bypass_auth is
@@ -238,13 +237,8 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 			// the password would have been checked by authHandler before getting here
 			validatePassword = false;
 		}
-		if (loginKeys) {
-			({ user, binding: loginBinding } = await findAndBindUser(
-				authObj.username,
-				authObj.password,
-				validatePassword,
-				loginKeys.privateKey
-			));
+		if (authObj.purpose === 'login') {
+			({ user, bind: bindLogin } = await findAndBindUser(authObj.username, authObj.password, validatePassword));
 		} else user = await findAndValidateUser(authObj.username, authObj.password, validatePassword);
 	} catch (err) {
 		logger.error(err);
@@ -264,13 +258,12 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	} = { username: authObj.username, super_user: superUser };
 	if (authObj.role) payload.role = authObj.role;
 
-	const keys: JWTRSAKeys = loginKeys ?? (await getJWTRSAKeys());
+	const keys: JWTRSAKeys = await getJWTRSAKeys();
 
-	if (authObj.purpose === 'login') {
-		// a ticket for the `login` operation, not a standing credential: no refresh token, no user record write
-		if (!loginBinding)
-			throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
-		return { operation_token: signLoginToken(authObj.username, loginBinding, authObj.expires_in, keys) };
+	if (bindLogin) {
+		const binding = bindLogin(loginBindingKey(keys));
+		if (!binding) throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+		return { operation_token: signLoginToken(authObj.username, binding, authObj.expires_in, keys) };
 	}
 
 	const operationToken = jwt.sign(
@@ -322,12 +315,30 @@ function signLoginToken(
 			{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 			{ expiresIn: lifetime, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE.LOGIN } satisfies SignOptions
 		);
-	const maxSeconds = maxLoginTokenSeconds();
-	if (typeof expiresIn !== 'string') return sign(Math.min(expiresIn ?? LOGIN_TOKEN_SECONDS, maxSeconds));
-	// a string is measured on the signed token, so it is read exactly as jsonwebtoken reads it
-	const token = sign(expiresIn as StringValue);
-	const { iat, exp } = jwt.decode(token, { json: true });
-	return exp - iat > maxSeconds ? sign(maxSeconds) : token;
+	const requested = typeof expiresIn === 'string' ? lifetimeOf(expiresIn) : (expiresIn ?? LOGIN_TOKEN_SECONDS);
+	return sign(Math.min(requested, maxLoginTokenSeconds()));
+}
+
+// jsonwebtoken's own reading of a lifetime string (a unitless one is milliseconds), from a throwaway HMAC-signed token
+function lifetimeOf(expiresIn: string): number {
+	const measured = jwt.sign({}, 'lifetime', { expiresIn: expiresIn as StringValue, algorithm: 'HS256' });
+	const { iat, exp } = jwt.decode(measured, { json: true });
+	return exp - iat;
+}
+
+// From the key itself rather than its PEM text, so peers holding one key in different encodings agree
+const loginBindingKeys = new WeakMap<JWTRSAKeys, Buffer>();
+function loginBindingKey(keys: JWTRSAKeys): Buffer {
+	let key = loginBindingKeys.get(keys);
+	if (!key) {
+		const privateKey = createPrivateKey({ key: keys.privateKey, passphrase: keys.passphrase });
+		key = createHash('sha256')
+			.update('harper login token binding\0')
+			.update(privateKey.export({ type: 'pkcs8', format: 'der' }))
+			.digest();
+		loginBindingKeys.set(keys, key);
+	}
+	return key;
 }
 
 /**
@@ -510,7 +521,11 @@ async function validateToken(token: string, tokenType: string, deferInvalidToken
 			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 		if (tokenType === TOKEN_TYPE.LOGIN) {
-			const loginUser = findLoginTokenUser(tokenVerified.username, tokenVerified[LOGIN_BINDING_CLAIM], keys.privateKey);
+			const loginUser = findLoginTokenUser(
+				tokenVerified.username,
+				tokenVerified[LOGIN_BINDING_CLAIM],
+				loginBindingKey(keys)
+			);
 			if (loginUser) return loginUser;
 			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
