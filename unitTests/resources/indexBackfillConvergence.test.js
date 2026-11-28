@@ -1008,14 +1008,26 @@ describe('index backfill convergence (#2536)', () => {
 			});
 			assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
 			const checkpoints = [];
-			const originalPut = Tbl.dbisDB.put;
-			const restorePut = stubMethod(Tbl.dbisDB, 'put', function (key, value, options) {
-				if (value?.name === 'tag' && value.lastIndexedKey !== undefined) checkpoints.push(value.lastIndexedKey);
-				return originalPut.call(this, key, value, options);
-			});
+			// a build writes its checkpoint with putSync, which LMDB routes through put: count the outer call only
+			let writing = 0;
+			const recordCheckpoint = (method) => {
+				const original = Tbl.dbisDB[method];
+				return stubMethod(Tbl.dbisDB, method, function (key, value, options) {
+					if (writing++ === 0 && value?.name === 'tag' && value.lastIndexedKey !== undefined)
+						checkpoints.push(value.lastIndexedKey);
+					try {
+						return original.call(this, key, value, options);
+					} finally {
+						writing--;
+					}
+				});
+			};
+			const restorePut = recordCheckpoint('put');
+			const restorePutSync = recordCheckpoint('putSync');
 			try {
 				await Tbl.indexingOperation;
 			} finally {
+				restorePutSync();
 				restorePut();
 			}
 			assert.ok(checkpoints.length > 0, 'a 25k-row backfill should checkpoint');

@@ -802,6 +802,44 @@ const PEER_REDEFINABLE_FIELDS = [
 // `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
 // discard warn would blame the peer for a field it did not write.
 const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !== 'indexNulls');
+// Declared fields that change no index structure, so a difference rewrites the row without a rebuild.
+const DECLARED_METADATA_FIELDS = [
+	'assignCreatedTime',
+	'assignUpdatedTime',
+	'expiresAt',
+	'hidden',
+	'description',
+	'enum',
+	'authorizedRoles',
+];
+// A declared primary key keeps its own fields on the table's settings row.
+const PRIMARY_KEY_DECLARED_FIELDS = ['nullable', ...DECLARED_METADATA_FIELDS];
+// What an index build owns on a catalog row; the rest of the row is the declaration's.
+const INDEX_BUILD_FIELDS = [
+	'indexingPID',
+	'restartNumber',
+	'indexingIncarnation',
+	'indexingBuildId',
+	'indexingFailed',
+	'lastIndexedKey',
+	'checkpointCertified',
+	'checkpointAlgorithm',
+];
+
+function fieldsDiffer(descriptor: any, attribute: any, fields: readonly string[]): boolean {
+	return fields.some(
+		(field) =>
+			descriptor?.[field] !== attribute[field] &&
+			JSON.stringify(descriptor?.[field]) !== JSON.stringify(attribute[field])
+	);
+}
+
+function copyFields(target: any, source: any, fields: readonly string[]) {
+	for (const field of fields) {
+		if (source[field] === undefined) delete target[field];
+		else target[field] = source[field];
+	}
+}
 
 // A cluster-origin caller's list can predate a declaration another thread has already committed, so on
 // that path the descriptor — not the caller — decides what the attribute is, in both directions.
@@ -810,6 +848,7 @@ function applyDurableDeclaration(attribute: any, descriptor: any) {
 		if (field in descriptor) attribute[field] = descriptor[field];
 		else delete attribute[field];
 	}
+	copyFields(attribute, descriptor, DECLARED_METADATA_FIELDS);
 }
 
 function persistedFullTextIndexGenerations(
@@ -2380,6 +2419,19 @@ function initStores(
 						existingAttributes.push(attribute);
 						attributesUpdated = true;
 					}
+				} else {
+					// the class keeps its primary key object across reloads
+					const primaryKey = existingAttributes.find(
+						(existing) => existing.isPrimaryKey && existing.name === attribute.name
+					);
+					if (primaryKey && fieldsDiffer(primaryKey, attribute, PRIMARY_KEY_DECLARED_FIELDS)) {
+						copyFields(primaryKey, attribute, PRIMARY_KEY_DECLARED_FIELDS);
+						attributesUpdated = true;
+					}
+					if (primaryKey && attribute.type !== undefined && primaryKey.type !== attribute.type) {
+						primaryKey.type = attribute.type;
+						attributesUpdated = true;
+					}
 				}
 			} catch (error) {
 				logger
@@ -2427,6 +2479,12 @@ function initStores(
 		}
 		for (const existingAttribute of toRemove) {
 			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
+			attributesUpdated = true;
+		}
+		// writes maintain every registered index, so one that no catalog row opens is unregistered; its store stays
+		for (const name in indices) {
+			if (attributes.some((attribute) => attribute.name === name && opensIndexStore(attribute))) continue;
+			delete indices[name];
 			attributesUpdated = true;
 		}
 		if (table && !recreateTable) {
@@ -4765,7 +4823,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let restoreFullTextLiveState: (() => void) | undefined;
 	let armFullTextLiveStateRestore: (() => void) | undefined;
 	const attributesToIndex = [];
-	const indicesToRemove = [];
+	const indicesToUnregister: string[] = [];
 	let releaseResidencyFence: (() => void) | undefined;
 	try {
 		if (
@@ -5504,18 +5562,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// table attribute for a table with no primary key, we don't want to remove this, so continue on
 				continue;
 			}
-			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
-			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
+			// a relationship is never stored, so a row under its name is stale
+			const storedAttribute = attributes.find(
+				(attribute) => attribute.name === attribute_name && !attribute.relationship
+			);
+			const removeIndex = !storedAttribute?.indexed && value.indexed && !value.isPrimaryKey;
 			// rows already present under a create are aborted state
-			const staleRow = (!attribute && !value.isPrimaryKey) || Boolean(deferredPrimaryRow);
+			const staleRow = (!storedAttribute && !value.isPrimaryKey) || Boolean(deferredPrimaryRow);
 			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
 				if (staleRow) attributesDbi.remove(key);
-				if (removeIndex) {
-					const indexDbi = Table.indices[attributeTableName];
-					if (indexDbi) indicesToRemove.push(indexDbi);
-				}
+				if (removeIndex) indicesToUnregister.push(attribute_name);
 			}
 		}
 		const hasHnswDeclaration = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
@@ -5684,7 +5742,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const changed =
 				commonChanged ||
 				JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed) ||
-				JSON.stringify(attributeDescriptor?.decide) !== JSON.stringify(attribute.decide);
+				JSON.stringify(attributeDescriptor?.decide) !== JSON.stringify(attribute.decide) ||
+				fieldsDiffer(attributeDescriptor, attribute, DECLARED_METADATA_FIELDS);
 			// structure-affecting difference (drives reindex) — ignores search-only option changes and
 			// representation-only differences (key order, string-vs-number) via canonicalIndexKey
 			const indexOptionsStructurallyChanged =
@@ -5731,6 +5790,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							hasExistingData = true;
 							break;
 						}
+						// an index left unregistered while records changed still holds their old entries, and only a
+						// build clears them
+						if (!hasExistingData) for (const _key of dbi.getKeys({ limit: 1 })) hasExistingData = true;
 						if (hasExistingData) {
 							// When the index definition itself has structurally changed (different distance
 							// metric, M, quantization, etc.), any
@@ -5810,23 +5872,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						// backfill is in progress: we did NOT re-trigger indexing, so carry over the in-progress
 						// indexing state instead of persisting a descriptor that looks complete — otherwise other
 						// workers / a reload would treat the still-partial index as ready and return incomplete results.
-						attribute.indexingPID = attributeDescriptor.indexingPID;
-						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
-						if (attributeDescriptor.checkpointCertified !== undefined) {
-							attribute.checkpointCertified = attributeDescriptor.checkpointCertified;
-							attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
-						}
-						// Carry the in-progress restart generation too, so persisting this metadata-only
-						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
-						attribute.restartNumber = attributeDescriptor.restartNumber;
-						attribute.indexingIncarnation = attributeDescriptor.indexingIncarnation;
-						attribute.indexingBuildId = attributeDescriptor.indexingBuildId;
-						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
+						copyFields(attribute, attributeDescriptor, INDEX_BUILD_FIELDS);
 					}
-					// The declared attribute never carries the stamp, so any rewrite of a descriptor that has
-					// one would drop it and make a completed index look like a pre-stamp build.
+					// The declared attribute never carries the stamp or the null handling its build chose, so a
+					// rewrite that drops them makes a completed index look like a pre-stamp build, and reopens it
+					// without the null entries it holds.
 					if (attribute.checkpointAlgorithm === undefined && attributeDescriptor?.checkpointAlgorithm !== undefined)
 						attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
+					if (attribute.indexNulls === undefined && attributeDescriptor?.indexNulls !== undefined)
+						attribute.indexNulls = attributeDescriptor.indexNulls;
 					attributesDbi.put(dbiKey, attribute);
 				}
 				if (attribute.checkpointAlgorithm === undefined && attributeDescriptor?.checkpointAlgorithm !== undefined)
@@ -5970,13 +6024,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		Table.fullTextIndexGenerations = fullTextIndexGenerationMap;
 		Table.fullTextIndexRetirements = fullTextIndexRetirementNames ?? [];
 	}
+	// Only once the declaration has succeeded, since a declaration that fails leaves the row indexed. Unregistered,
+	// never dropped: other threads write to the store until their reload unregisters it.
+	for (const name of indicesToUnregister) {
+		if (!attributes.some((attribute) => attribute.name === name && attribute.indexed && !attribute.relationship))
+			delete Table.indices[name];
+	}
 	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
 	const operationBeforeRefresh = Table.indexingOperation;
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);
 	const branchPath = target.branch?.path;
-	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
-		const build = launchIndexing(Table, attributesToIndex, indicesToRemove, branchPath);
+	if (attributesToIndex.length > 0) {
+		const build = launchIndexing(Table, attributesToIndex, branchPath);
 		// a function `from` registered by updatedAttributes can have started a repair
 		const repair = Table.indexingOperation !== operationBeforeRefresh ? Table.indexingOperation : undefined;
 		Table.indexingOperation = repair ? Promise.all([repair, build]).then(() => undefined) : build;
@@ -6043,10 +6103,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// gated off for cluster-origin callers: their values come from this worker's (possibly
 		// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
 		const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
+		const primaryKeyChanged =
+			attribute.isPrimaryKey && fieldsDiffer(attributeDescriptor, attribute, PRIMARY_KEY_DECLARED_FIELDS);
 		// primary key can't change indexing, but settings can change
 		if (
 			origin !== 'cluster' &&
 			(schemaDefinedMismatch ||
+				primaryKeyChanged ||
 				(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
 				(sealed !== undefined && sealed !== attributeDescriptor.sealed) ||
 				(replicate !== undefined && replicate !== attributeDescriptor.replicate) ||
@@ -6087,6 +6150,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 			if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 			if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+			if (attribute.isPrimaryKey) copyFields(updatedPrimaryAttribute, attribute, PRIMARY_KEY_DECLARED_FIELDS);
 			if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
 			hasChanges = true; // send out notification of the change
 			attributesDbi.put(dbiKey, updatedPrimaryAttribute);
@@ -6261,11 +6325,37 @@ function generationSuperseded(Table: any): boolean {
 		Table.primaryStore.rootStore.status === 'closed'
 	);
 }
-function launchIndexing(Table: any, attributes: any[], indicesToRemove: any[], branchPath?: string) {
+// A build owns its row only while the row carries its id: a declaration that starts no rebuild keeps the id, and
+// one that rebuilds, de-indexes or removes the attribute does not. An owner writes only its own fields, under the
+// lock declarations take, so the declaration the row holds stays.
+function putIndexBuildRow(Table: any, attribute: any, buildId: string | undefined, state = attribute): boolean {
+	let written = false;
+	const writeIfOwned = () => {
+		const current = Table.dbisDB.getSync(attribute.key);
+		if (buildId === undefined || current?.indexingBuildId !== buildId) return;
+		const row = { ...current };
+		copyFields(row, state, INDEX_BUILD_FIELDS);
+		Table.dbisDB.putSync(attribute.key, row);
+		written = true;
+	};
+	const rootStore = Table.primaryStore.rootStore;
+	if (rootStore instanceof RocksDatabase) {
+		acquireUpdateAttributesLock(rootStore, `index build '${Table.tableName}.${attribute.name}'`);
+		try {
+			writeIfOwned();
+		} finally {
+			releaseUpdateAttributesLock(rootStore);
+		}
+	} else {
+		rootStore.transactionSync(writeIfOwned);
+	}
+	return written;
+}
+function launchIndexing(Table: any, attributes: any[], branchPath?: string) {
 	// captured before the backfill can rewrite the attributes
 	const buildIds = new Map(attributes.map((attribute) => [attribute, attribute.indexingBuildId]));
 	const markSettled = () => markAbandonedIndexBuild(Table, Table.primaryStore.rootStore, buildIds);
-	return runIndexing(Table, attributes, indicesToRemove, branchPath).then(markSettled, markSettled);
+	return runIndexing(Table, attributes, buildIds, branchPath).then(markSettled, markSettled);
 }
 const DECLARATION_FIELDS = new Set([
 	'type',
@@ -6358,7 +6448,7 @@ export function requestComputedIndexRepair(Table: any): void {
 			logger.info(`reindex ${Table.databaseName}.${Table.tableName}.${attribute.name}: reason=resolver-registered`);
 			building.push(attribute);
 		}
-		return building.length > 0 ? launchIndexing(Table, building, []) : undefined;
+		return building.length > 0 ? launchIndexing(Table, building) : undefined;
 	};
 	const publish = (operation: Promise<unknown> | undefined) => {
 		if (!operation) return;
@@ -6487,7 +6577,9 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 		}
 	}
 }
-async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
+async function runIndexing(Table, attributes, buildIds: Map<any, string>, branchPath?: string) {
+	const writeBuildRow = (attribute, state = attribute) =>
+		putIndexBuildRow(Table, attribute, buildIds.get(attribute), state);
 	let checkpointing;
 	let hadIndexingErrors = false;
 	const attributeErrorReported = {};
@@ -6503,7 +6595,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
-		let lastResolution;
 		// The checkpoint and completion barriers have to cover every mutation still in flight: any of them
 		// may reject after those barriers read hadIndexingErrors.
 		const pendingMutations = new Set();
@@ -6539,10 +6630,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					resolve(undefined);
 				};
 			});
-		for (const index of indicesToRemove) {
-			index.customIndex?.resetDerivedStorage?.();
-			track(index.drop(), (error) => onIndexPutRejected(index.name, error));
-		}
 		let interrupted;
 		let indexed = 0;
 		const attributesLength = attributes.length;
@@ -6571,6 +6658,13 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
 			// durably indexed: persisted once the writes it covers have settled and flushed, frozen after any
 			// record fails so the retry re-covers it, and stamped with its own key (see the trigger in table()).
+			// Rows later declarations took. The build stops once it owns none: an attribute it still owns must
+			// still complete, since the settle handler marks one left unfinished as failed.
+			const lostRows = new Set();
+			const ownsNoRow = () =>
+				attributes.every(
+					(attribute) => Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildIds.get(attribute)
+				);
 			const persistCheckpoint = async (key) => {
 				if (hadIndexingErrors) return;
 				try {
@@ -6579,15 +6673,13 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					const failed = await drainMutations();
 					if (failed) return;
 					await flushIndexStores(Table.primaryStore.rootStore);
-					const puts = [];
 					for (let i = 0; i < attributesLength; i++) {
 						const attribute = attributes[i];
 						attribute.lastIndexedKey = key;
 						attribute.checkpointCertified = key;
 						attribute.checkpointAlgorithm = checkpointAlgorithmOf(i);
-						puts.push(Table.dbisDB.put(attribute.key, attribute));
+						if (!writeBuildRow(attribute)) lostRows.add(attribute);
 					}
-					await Promise.all(puts);
 				} catch (error) {
 					logger.warn(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
 				}
@@ -6598,7 +6690,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			// before it are recomputed rather than sealed into the index.
 			for (;;) {
 				for (const attribute of attributesToClear) {
-					if (restarted && buildSuperseded(Table, attributes)) return;
+					if (restarted ? buildSuperseded(Table, attributes) : ownsNoRow()) return;
 					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
 					attribute.dbi.customIndex?.resetDerivedStorage?.();
 					if (attribute.dbi.clearAsync) {
@@ -6691,6 +6783,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 						nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 						nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
 						await checkpointing;
+						if (lostRows.size === attributesLength) return;
 						resolverStateCurrent = false;
 						checkpointing = persistCheckpoint(key);
 					}
@@ -6721,32 +6814,18 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				if (!restart && !resolverArrived()) break;
 				if (buildSuperseded(Table, attributes)) return;
 				// The checkpoint goes before the clear, so a crash in between cannot resume past cleared entries.
-				const puts = [];
 				for (let i = 0; i < attributesLength; i++) {
 					const attribute = attributes[i];
 					delete attribute.lastIndexedKey;
 					delete attribute.checkpointCertified;
 					resolvedThroughout[i] = !applicationComputed[i] || isRealResolver(Table.userResolvers?.[attribute.name]);
-					puts.push(Table.dbisDB.put(attribute.key, attribute));
+					writeBuildRow(attribute);
 				}
-				await Promise.all(puts);
 				if (buildSuperseded(Table, attributes)) return;
 				// every index restarts, since a custom index is not known to accept a key indexed twice
 				attributesToClear = attributes;
 				start = undefined;
 				restarted = true;
-			}
-		}
-		if (attributesLength === 0) {
-			await checkpointing;
-			await drainMutations();
-		}
-		if (attributesLength === 0 && !hadIndexingErrors) {
-			try {
-				await flushIndexStores(Table.primaryStore.rootStore);
-			} catch (error) {
-				hadIndexingErrors = true;
-				logger.error(`Could not flush the indexes of ${Table.tableName} before marking them complete`, error);
 			}
 		}
 		if (hadIndexingErrors) {
@@ -6758,16 +6837,15 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			// serent-canopy issue #135 fingerprint: a completed migration with transient errors
 			// (e.g. ERR_BUSY from RocksDB under load) leaving gaps while appearing successful.
 			for (const attribute of attributes) {
-				attribute.indexingFailed = true;
 				// Preserve lastIndexedKey so the retry resumes from the last checkpoint.
-				lastResolution = Table.dbisDB.put(attribute.key, attribute);
+				if (!writeBuildRow(attribute, { ...attribute, indexingFailed: true })) continue;
+				attribute.indexingFailed = true;
 				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
 				// in Table.indices (which may differ if resetDatabases() ran during this pass).
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;
 			}
-			await lastResolution;
 			logger.warn(
 				`Indexing of ${Table.tableName} encountered errors on some records - index will remain incomplete. ` +
 					`On next restart the migration will be retried from the last checkpoint (indexingFailed=true). ` +
@@ -6775,27 +6853,24 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			);
 		} else {
 			// update the attributes to indicate that we are finished
+			let completedAny = false;
 			for (let i = 0; i < attributesLength; i++) {
 				const attribute = attributes[i];
-				delete attribute.lastIndexedKey;
-				delete attribute.checkpointCertified;
-				// Survives completion, unlike the checkpoint fields: without it an index built here is
+				// `checkpointAlgorithm` survives completion, unlike the other build fields: without it an index built here is
 				// indistinguishable from one a release that could skip a failed record declared complete.
-				attribute.checkpointAlgorithm = checkpointAlgorithmOf(i);
-				delete attribute.indexingPID;
-				delete attribute.indexingFailed;
-				delete attribute.restartNumber;
-				delete attribute.indexingIncarnation;
-				delete attribute.indexingBuildId;
+				// The attribute keeps its claim until the row is written, so a failed write still marks it failed.
+				const completed = { checkpointAlgorithm: checkpointAlgorithmOf(i) };
+				if (!writeBuildRow(attribute, completed)) continue;
+				completedAny = true;
+				copyFields(attribute, completed, INDEX_BUILD_FIELDS);
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration
 				// opened a new dbi and registered it there.
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = false;
-				lastResolution = Table.dbisDB.put(attribute.key, attribute);
 			}
-			await lastResolution;
+			if (!completedAny) return;
 			// now notify all the threads that we are done and the index is ready to use
 			await signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName, undefined, branchPath)
@@ -6826,15 +6901,13 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		// but indexingFailed is never set, leaving isIndexing stuck with no recovery
 		// signal. Mirrors the hadIndexingErrors path. harper#843
 		try {
-			const puts: Promise<unknown>[] = [];
 			for (const attribute of attributes) {
+				if (!writeBuildRow(attribute, { ...attribute, indexingFailed: true })) continue;
 				attribute.indexingFailed = true;
-				puts.push(Table.dbisDB.put(attribute.key, attribute));
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;
 			}
-			await Promise.all(puts);
 		} catch (persistError) {
 			logger.warn('Failed to persist indexing failure state', persistError);
 		}
