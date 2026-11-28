@@ -31,6 +31,8 @@ import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 const FIXTURE_PATH = resolve(import.meta.dirname, 'durable-resume');
 // takeover closes an older connection on the same thread, so every connection lands on one
 const CONFIG = { threads: { count: 1 } };
+// the fixture's stand-in for a peer reaches core's node-id mapping
+const ENV = { DURABLE_RESUME_CORE: resolve(import.meta.dirname, '../../dist') };
 // mqtt.js's WebSocket transport doesn't complete CONNACK on Bun, the same skip the sibling suites carry
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
@@ -178,7 +180,7 @@ suite(
 		}
 
 		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: CONFIG, env: {} });
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: CONFIG, env: ENV });
 			await useHarper();
 			await put('Readings', 'seed', 0);
 		});
@@ -793,6 +795,181 @@ suite(
 			});
 		});
 
+		// Replication is not part of core, so the fixture's `Peer` applies another node's publish the way its
+		// replication stream would: in that node's own transaction log, under the key the node gave it.
+		describe('messages another node commits below a saved position (harper#3790)', () => {
+			async function peer(body: Record<string, unknown>) {
+				const response = await fetch(`${ctx.harper.httpURL}/Peer/`, {
+					method: 'POST',
+					headers: { ...client.headers, 'Content-Type': 'application/json' },
+					body: JSON.stringify(body),
+				});
+				ok(response.ok, `POST /Peer/: ${response.status} ${await response.text()}`);
+			}
+			const publishFrom = (node: string, value: number, key: number) =>
+				peer({ node, id: `${node}-${value}`, value, key });
+			const count = (received: number[], value: number) => received.filter((other) => other === value).length;
+
+			async function subscribed(clientId: string, qos: 1 | 2, overrides: Partial<IClientOptions> = {}) {
+				const received: number[] = [];
+				const { mqttClient: fresh } = await connect({ clientId, clean: true });
+				await end(fresh);
+				const { mqttClient } = await connect({ clientId, ...overrides }, (_topic, payload) =>
+					received.push(JSON.parse(payload.toString()).value)
+				);
+				await subscribe(mqttClient, 'Readings/#', qos);
+				return { mqttClient, received };
+			}
+
+			async function reconnected(clientId: string) {
+				const received: number[] = [];
+				const { mqttClient, sessionPresent } = await connect({ clientId }, (_topic, payload) =>
+					received.push(JSON.parse(payload.toString()).value)
+				);
+				strictEqual(sessionPresent, true);
+				return { mqttClient, received };
+			}
+
+			// first: a checkpoint is issued only while every node the database knows of has a certified route
+			test('a session resumed as another node saved it resumes from its checkpoint and receives a late message', async () => {
+				const node = `peer-${randomUUID().slice(0, 6)}`;
+				const clientId = `moved-${randomUUID().slice(0, 6)}`;
+				let { mqttClient } = await subscribed(clientId, 1);
+				// the first checkpoint is adopted only with every floor above the topic's start, a key of this millisecond
+				await sleep(5);
+				await peer({ node, certifiedThrough: Date.now() });
+				// its first checkpoint is saved at a disconnect once this node has certified its own history too
+				let record: any;
+				ok(
+					await waitFor(async () => {
+						await end(mqttClient);
+						record = await storedSession(clientId);
+						if (record.subscriptions[0].checkpoint) return true;
+						await sleep(1_000);
+						({ mqttClient } = await reconnected(clientId));
+						return false;
+					}, 40_000),
+					`a checkpoint is saved: ${JSON.stringify(record)}`
+				);
+				const first = await reconnected(clientId);
+				const key = Date.now();
+				await publishFrom(node, 1, key);
+				await put('Readings', `local-${randomUUID().slice(0, 6)}`, 2);
+				ok(await waitFor(() => first.received.includes(1) && first.received.includes(2)), `${first.received}`);
+				ok(
+					await waitFor(async () => {
+						record = await storedSession(clientId);
+						return record.subscriptions[0].startTime > key + 1 && record.cursors?.data?.logs.length === 2;
+					}, 20_000),
+					`the position passes the key the peer uses next: ${JSON.stringify(record)}`
+				);
+				await end(first.mqttClient);
+				const response = await fetch(`${ctx.harper.httpURL}/MovedSession/`, {
+					method: 'POST',
+					headers: { ...client.headers, 'Content-Type': 'application/json' },
+					body: JSON.stringify({ clientId }),
+				});
+				ok(response.ok, `POST /MovedSession/: ${response.status}`);
+				await publishFrom(node, 3, key + 1);
+				await put('Readings', `after-${randomUUID().slice(0, 6)}`, 4);
+				const second = await reconnected(clientId);
+				try {
+					ok(await waitFor(() => second.received.includes(3) && second.received.includes(4)), `${second.received}`);
+					await sleep(300);
+					deepStrictEqual([...second.received].sort(), [3, 4], 'each once, and nothing acknowledged again');
+				} finally {
+					await end(second.mqttClient);
+				}
+			});
+
+			for (const qos of [1, 2] as const) {
+				test(`a late message from a node with no checkpoint yet is delivered exactly once (QoS ${qos})`, async () => {
+					const node = `peer-${randomUUID().slice(0, 6)}`;
+					const clientId = `late-${qos}-${randomUUID().slice(0, 6)}`;
+					const first = await subscribed(clientId, qos);
+					const key = Date.now();
+					await publishFrom(node, 1, key);
+					await put('Readings', `local-${randomUUID().slice(0, 6)}`, 2);
+					ok(await waitFor(() => first.received.includes(1) && first.received.includes(2)), `${first.received}`);
+					let record: any;
+					ok(
+						await waitFor(async () => {
+							record = await storedSession(clientId);
+							return record.subscriptions[0].startTime > key + 1;
+						}),
+						`the saved position passes the key the peer uses next: ${JSON.stringify(record)}`
+					);
+					strictEqual(record.subscriptions[0].checkpoint, undefined, 'nothing certifies the new node');
+					await end(first.mqttClient);
+					await publishFrom(node, 3, key + 1);
+					await put('Readings', `after-${randomUUID().slice(0, 6)}`, 4);
+					const second = await reconnected(clientId);
+					ok(await waitFor(() => second.received.includes(3) && second.received.includes(4)), `${second.received}`);
+					await sleep(300);
+					deepStrictEqual([...second.received].sort(), [3, 4], 'each once, and nothing acknowledged again');
+					ok(
+						record.cursors.data.logs.some(([origin]: [string]) => origin === node),
+						"the session's position in the node's history was saved"
+					);
+					await end(second.mqttClient);
+					await put('Readings', `later-${randomUUID().slice(0, 6)}`, 5);
+					const third = await reconnected(clientId);
+					try {
+						ok(await waitFor(() => third.received.includes(5)), `${third.received}`);
+						deepStrictEqual(third.received, [5], 'the late message is not sent a second time');
+					} finally {
+						await end(third.mqttClient);
+					}
+				});
+			}
+
+			test('a late message on either side of a position an unacknowledged delivery holds is delivered once', async () => {
+				const node = `peer-${randomUUID().slice(0, 6)}`;
+				const clientId = `held-${randomUUID().slice(0, 6)}`;
+				await cleanStart(clientId);
+				const first = await rawConnect(clientId);
+				await first.subscribe('Readings/#', 1);
+				const delivered = () => first.packets.filter((packet) => packet.cmd === 'publish');
+				const key = Date.now();
+				await publishFrom(node, 10, key);
+				await publishFrom(node, 20, key + 20);
+				// arrives after 20 with a lower key
+				await publishFrom(node, 21, key + 10);
+				ok(await waitFor(() => delivered().length === 3), `${delivered().map(valueOf)}`);
+				// 20 is never acknowledged, so the session's position in the node's history stays before it
+				for (const packet of delivered()) {
+					if (valueOf(packet) !== 20) first.send({ cmd: 'puback', messageId: packet.messageId });
+				}
+				let entry: any;
+				ok(
+					await waitFor(async () => {
+						entry = (await storedSession(clientId)).subscriptions[0];
+						return entry.cursors?.some(([origin, cursor]: [string, number]) => origin === node && cursor === key);
+					}),
+					`the node's position is held before the unacknowledged delivery: ${JSON.stringify(entry)}`
+				);
+				await first.drop();
+				// after the save, and behind everything the session had read of the node
+				await publishFrom(node, 30, key + 5);
+				await put('Readings', `after-${randomUUID().slice(0, 6)}`, 40);
+				const second = await reconnected(clientId);
+				try {
+					ok(await waitFor(() => [20, 30, 40].every((value) => second.received.includes(value))), `${second.received}`);
+					await sleep(300);
+					deepStrictEqual(
+						[20, 30, 40].map((value) => count(second.received, value)),
+						[1, 1, 1]
+					);
+					ok(
+						!second.received.includes(10) && !second.received.includes(21),
+						`nothing acknowledged: ${second.received}`
+					);
+				} finally {
+					await end(second.mqttClient);
+				}
+			});
+		});
+
 		test(
 			'a session resumes across a hard kill and replays the delivery it never acknowledged',
 			{ timeout: 180_000 },
@@ -817,7 +994,7 @@ suite(
 				// SIGKILL: no disconnect save, so the session resumes from what its checkpoints wrote
 				await killHarper(ctx, { graceMs: 0 });
 				subscriber.end(true);
-				await startHarper(ctx, { config: CONFIG, env: {} });
+				await startHarper(ctx, { config: CONFIG, env: ENV });
 				await useHarper();
 				await put('Readings', `away-${randomUUID().slice(0, 6)}`, 4);
 				const received: number[] = [];
