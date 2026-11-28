@@ -542,7 +542,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		options?: any
 	): Resource | Promise<Resource> {
 		let resource;
-		const id = target.id;
+		const id = target?.id;
 		let context = (request as any).getContext?.();
 		let isCollection;
 		if (typeof (request as any).isCollection === 'boolean' && request.hasOwnProperty('isCollection'))
