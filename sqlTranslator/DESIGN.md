@@ -1,14 +1,16 @@
 # SQL translation
 
-## Parser
+## Engine
+
+### Parser
 
 `parser/` turns SQL text into the statement AST every consumer walks: the permission check (`sql_statement_bucket.ts`), legacy SQL, and the new engine's normalizer. It reproduces the dialect, tree and `toString()` text of AlaSQL 4's parser, quirks included (precedence, BETWEEN folding, non-reserved keywords as names, `queries`/`exists` bookkeeping), because those consumers were written against them; parser.ts's header lists the rules. A statement AlaSQL accepted only by silently discarding tokens in its error recovery is a syntax error. `unitTests/sqlTranslator/parser.test.js` checks the parser against `fixtures/parserGolden.json`, generated and checked against AlaSQL's parser while it was a dependency.
 
-## In-memory engine
+### In-memory engine
 
 `memoryEngine/` runs legacy SQL's statements over the rows `SQLSearch` fetched (`FROM ? AS t`), and the compiled SET and INSERT expressions. It reproduces AlaSQL 4.22's results step for step, because legacy SQL returned them for years: every operand evaluated, NULL and NaN making most operators undefined, strict `=` but loose `<>`, an equality join matching key text, AlaSQL's group accumulators, the `(value || '')` ORDER BY, and LIMIT 0 as no limit. The headers of `select.ts` and `expression.ts` list the rest. It compiles to closures and never runs SQL text as JavaScript, so JavaScript expressions, `__ala__()` and `OBJECT_ID()` are gone. `unitTests/sqlTranslator/memoryEngine.test.js` and `memoryEngineFunctions.test.js` check it against results recorded from AlaSQL while it was a dependency. Those fixtures are frozen: a new workload set needs AlaSQL 4.22.0 and Harper's function registrations, from the commit before `alasqlFunctionImporter.ts` was deleted, to record and cross-check its expected results.
 
-## CommonJS date functions
+### CommonJS date functions
 
 `memoryEngine/functions.ts` imports the CommonJS date-helper object by default; native namespace imports did not expose its object-literal properties in [#562](https://github.com/HarperFast/harper/pull/562). `unitTests/sqlTranslator/sqlDateFunctions.test.js` verifies the date functions in both test runtimes.
 
