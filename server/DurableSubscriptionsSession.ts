@@ -1130,7 +1130,7 @@ type DurableEntry = {
  * and this node's own log has another name on every other node.
  */
 type SavedCursors = { generation: string; logs: SavedCursor[] };
-type SavedCursor = [origin: string, cursor: number, readThrough: number];
+type SavedCursor = [origin: string, cursor: number, readThrough: number, held?: 1];
 /** A record's `cursors`, by database name: the read-through its live topics share. */
 type SharedCursors = {
 	[database: string]: {
@@ -1165,7 +1165,10 @@ function loadCursors(
 	if (typeof from?.generation !== 'string' || !Array.isArray(held) || held.length > MAX_CURSOR_LOGS) return;
 	for (const log of held) {
 		if (!Array.isArray(log) || typeof log[0] !== 'string' || !isLogKey(log[1]) || !isLogKey(log[2])) return;
-		logs.set(log[0], { cursor: log[1], readThrough: log[2] });
+		logs.set(
+			log[0],
+			log[3] === 1 ? { cursor: log[1], readThrough: log[2], held: true } : { cursor: log[1], readThrough: log[2] }
+		);
 	}
 	if (logs.size === 0 || logs.size > MAX_CURSOR_LOGS) return;
 	return { generation: from.generation, logs };
@@ -1174,7 +1177,8 @@ function sameCursors(a: Map<string, LogCursor> | undefined, b: Map<string, LogCu
 	if (a?.size !== b.size) return false;
 	for (const [origin, position] of b) {
 		const other = a.get(origin);
-		if (other?.cursor !== position.cursor || other.readThrough !== position.readThrough) return false;
+		if (other?.cursor !== position.cursor || other.readThrough !== position.readThrough || other.held !== position.held)
+			return false;
 	}
 	return true;
 }
@@ -2269,6 +2273,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			if (!held.has(origin!)) {
 				held.add(origin!);
 				position.cursor = before;
+				position.held = true;
 			}
 			if (!sent && !queued.has(origin!)) {
 				queued.add(origin!);
@@ -2429,14 +2434,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					const held: SavedCursor[] = [];
 					for (const [origin, position] of state.cursors) {
 						const through = shared.logs.get(origin);
-						if (position.cursor !== through?.readThrough || position.readThrough !== through.readThrough)
+						if (position.held) held.push([origin, position.cursor, position.readThrough, 1]);
+						else if (position.cursor !== through?.readThrough || position.readThrough !== through.readThrough)
 							held.push([origin, position.cursor, position.readThrough]);
 					}
 					for (const origin of shared.logs.keys()) if (!state.cursors.has(origin)) held.push([origin, 0, 0]);
 					saved.cursors = held;
 				} else {
 					const logs: SavedCursor[] = [];
-					for (const [origin, { cursor, readThrough }] of state.cursors) logs.push([origin, cursor, readThrough]);
+					for (const [origin, { cursor, readThrough, held }] of state.cursors)
+						logs.push(held ? [origin, cursor, readThrough, 1] : [origin, cursor, readThrough]);
 					saved.cursors = { generation: state.cursorGeneration, logs };
 				}
 			}

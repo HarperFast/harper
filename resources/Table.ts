@@ -2325,7 +2325,7 @@ function resumableCursors(request: any, auditStore: any): ResumeCursors | undefi
 	if (!(saved?.logs instanceof Map) || typeof saved.takenThrough !== 'number') return;
 	auditStore.loadLogs?.();
 	if (!saved.logs.has('local') || typeof auditStore.holdsTransaction !== 'function') return;
-	const logs = new Map<string, { cursor: number; readThrough: number }>();
+	const logs = new Map<string, LogCursor>();
 	for (const [logName, position] of saved.logs) {
 		if (!auditStore.logByName.has(logName)) continue;
 		if (!(position?.cursor >= 0 && position.readThrough >= 0)) return;
@@ -2338,27 +2338,15 @@ function resumableCursors(request: any, auditStore: any): ResumeCursors | undefi
  * For a saved log position whose entry is gone: 0 when the log can be read from its first retained entry with
  * nothing lost, a refusal when what was purged may include an entry the resume needs, undefined when the entry was
  * not purged. Purges remove whole files, oldest first, so everything retained is after the position. A delivery
- * of this log that was held at the save may have gone with it: one still queued leaves the pair equal, and its key
- * is above `heldAbove`, the lower of the saved `takenThrough` and `start`. A file written after the save is removed
- * only once retention has passed the save, and `start`, the subscription's own position, is at or below the save.
+ * of this log that was held at the save may have gone with it. A file written after the save is removed only once
+ * retention has passed the save, and `start`, the subscription's own position, is at or below the save.
  */
-function purgedCursorStart(
-	auditStore: any,
-	logName: string,
-	saved: LogCursor,
-	start: number,
-	heldAbove: number
-): 0 | Error | undefined {
+function purgedCursorStart(auditStore: any, logName: string, saved: LogCursor, start: number): 0 | Error | undefined {
 	const log = auditStore.logByName.get(logName);
 	const watermark = log?.getPurgeWatermark?.();
 	if (!watermark?.known || !(saved.cursor <= watermark.purgedThrough)) return;
 	const horizon = nativePurgeHorizon(auditStore, Date.now());
-	if (
-		saved.cursor !== saved.readThrough ||
-		horizon === undefined ||
-		start < horizon ||
-		watermark.purgedThrough > heldAbove
-	) {
+	if (saved.held || horizon === undefined || start < horizon || watermark.purgedThrough > start) {
 		return new ResumeHistoryUnavailableError(
 			'The history after a transaction log position is no longer retained; resubscribe to resynchronize'
 		);
@@ -10912,13 +10900,7 @@ export function makeTable(options): TableResourceClass {
 								until: liveRange,
 								exactStartFallback: (logName: string, failure: string) => {
 									if (failure === 'missing') {
-										const purged = purgedCursorStart(
-											auditStore,
-											logName,
-											savedCursors.logs.get(logName)!,
-											startTime,
-											keyStart!
-										);
+										const purged = purgedCursorStart(auditStore, logName, savedCursors.logs.get(logName)!, startTime);
 										if (purged === 0) return 0;
 										if (purged) {
 											cursorRefusal = purged;

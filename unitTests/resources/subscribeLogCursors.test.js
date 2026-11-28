@@ -262,9 +262,9 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 			return { T, peer, peerName, base, first, position, logs, resume };
 		}
 
-		async function replayed(T, resume, cursors, options) {
+		async function replayed(T, resume, cursors) {
 			const listener = collector();
-			const subscription = await resume(cursors, { listener, ...options });
+			const subscription = await resume(cursors, { listener });
 			const verified = await subscription.resumeVerified;
 			if (verified) {
 				await T.put('live', { value: 'live' });
@@ -396,7 +396,7 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 
 		it('refuses the resume when the purged log held a delivery not yet taken', async () => {
 			const { T, peerName, base, logs, resume } = await subscribedThrough([10, 40]);
-			logs.set(peerName, { cursor: base + 5, readThrough: base + 10 });
+			logs.set(peerName, { cursor: base + 5, readThrough: base + 10, held: true });
 			const restore = purged(T, peerName, base + 5);
 			try {
 				const subscription = await resume({ takenThrough: base + 30, logs }, { listener: collector() });
@@ -407,24 +407,18 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 			}
 		});
 
-		it('refuses the resume when a purge reached a delivery that was still queued at the save', async () => {
-			// queued and never sent, k10 leaves the pair equal; it arrived late, below the subscription's position
-			const queuedOnly = async (purgedThrough) => {
-				const { T, peerName, base, logs, resume } = await subscribedThrough([10, 40]);
-				logs.set(peerName, { cursor: base + 5, readThrough: base + 5 });
-				const restore = purged(T, peerName, base + purgedThrough);
-				try {
-					return await replayed(T, resume, { takenThrough: base + 9, logs }, { startTime: base + 30 });
-				} finally {
-					restore();
-				}
-			};
-			const reached = await queuedOnly(20);
-			assert.strictEqual(reached.verified, false);
-			assert.strictEqual(reached.subscription.closedWith?.statusCode, 410);
-			const below = await queuedOnly(5);
-			assert.strictEqual(below.verified, true);
-			assert.deepStrictEqual(below.values, ['k10', 'k40', 'live'], 'the queued delivery is still retained');
+		it('refuses the resume when the purged log held a delivery that was still queued at the save', async () => {
+			const { T, peerName, base, logs, resume } = await subscribedThrough([10, 40]);
+			// queued and never sent, it leaves the log's two keys equal
+			logs.set(peerName, { cursor: base + 5, readThrough: base + 5, held: true });
+			const restore = purged(T, peerName, base + 5);
+			try {
+				const subscription = await resume({ takenThrough: base + 30, logs }, { listener: collector() });
+				assert.strictEqual(await subscription.resumeVerified, false);
+				assert.strictEqual(subscription.closedWith?.statusCode, 410);
+			} finally {
+				restore();
+			}
 		});
 
 		it('replays from the saved positions when the broadcast cannot track positions from here on', async () => {

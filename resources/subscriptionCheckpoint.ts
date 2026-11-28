@@ -49,6 +49,8 @@ export interface LogCursor {
 	 * subscription had read. What the log holds after it was never sent.
 	 */
 	readThrough: number;
+	/** A delivery of this log was not yet taken at the save. One still queued leaves the two keys equal. */
+	held?: true;
 }
 
 export interface ResumeCursors {

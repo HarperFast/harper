@@ -293,6 +293,11 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 			[peerName, readThrough],
 			'the log is saved as sent up to the entry before it'
 		);
+		assert.deepStrictEqual(
+			record.subscriptions[0].cursors,
+			[[peerName, readThrough, readThrough, 1]],
+			'and as holding a delivery, which its equal keys do not show'
+		);
 		const second = await resumed(T, clientId);
 		assert.deepStrictEqual(values(second.received), ['late', 'after']);
 		await end(second);
@@ -406,7 +411,7 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 		assert.strictEqual(new Map(record.cursors[database].logs).get(`peer-${name}`), peerKey + 1);
 		assert.deepStrictEqual(
 			entries.get(`${name}/#`).cursors,
-			[[`peer-${name}`, 0, peerKey + 1]],
+			[[`peer-${name}`, 0, peerKey + 1, 1]],
 			'held before its delivery'
 		);
 		assert.deepStrictEqual(entries.get(`${otherName}/#`).cursors, []);
