@@ -835,6 +835,8 @@ suite(
 				const node = `peer-${randomUUID().slice(0, 6)}`;
 				const clientId = `moved-${randomUUID().slice(0, 6)}`;
 				let { mqttClient } = await subscribed(clientId, 1);
+				// the first checkpoint is adopted only with every floor above the topic's start, a key of this millisecond
+				await sleep(5);
 				await peer({ node, certifiedThrough: Date.now() });
 				// its first checkpoint is saved at a disconnect once this node has certified its own history too
 				let record: any;
