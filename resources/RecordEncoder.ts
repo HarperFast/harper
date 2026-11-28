@@ -184,6 +184,11 @@ const PAYLOAD_FLAGS = HAS_EXPIRATION | HAS_RESIDENCY_ID | HAS_RESIDENCY_SLOT | H
 if (VERSION_REUSED === HAS_REPLICA_DEADLINE) throw new Error('VERSION_REUSED collides with HAS_REPLICA_DEADLINE');
 if (VERSION_REUSED === FULL_WRITE_HEAD)
 	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with FULL_WRITE_HEAD`);
+// storage-format.md, "Primary-record null marker"
+export const NULL_RECORD = 0x80000;
+const MSGPACK_NIL = 0xc0;
+if (VERSION_REUSED === NULL_RECORD)
+	throw new Error(`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) collides with NULL_RECORD`);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
@@ -522,6 +527,10 @@ export class RecordEncoder extends StructonEncoder {
 				if (blobsWereEncoded) metadata |= HAS_BLOBS;
 				if (auditRefsToEncode > 0) metadata |= HAS_ADDITIONAL_AUDIT_REFS;
 				if (metadata >= 0) {
+					metadata =
+						lastValueEncoding.length === 1 && lastValueEncoding[0] === MSGPACK_NIL
+							? metadata | NULL_RECORD
+							: metadata & ~NULL_RECORD;
 					dataView.setUint32(position, metadata | (ACTION_32_BIT << 24)); // use the extended action byte
 					position += 4;
 					if (position === bodyStart) return encoded;
@@ -732,7 +741,7 @@ export class RecordEncoder extends StructonEncoder {
 					if (nextByte === ACTION_32_BIT) {
 						const dataView =
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-						metadataFlags = dataView.getUint32(position);
+						metadataFlags = dataView.getUint32(position) & ~NULL_RECORD;
 						position += 4;
 					} else {
 						metadataFlags = nextByte | (buffer[position + 1] << 5);
