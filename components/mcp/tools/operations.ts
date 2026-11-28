@@ -167,6 +167,29 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The built-in `system` database holds `hdb_user` (password hashes), the role,
+ * node and certificate tables. `list_users` strips `password` from what it
+ * returns, but a `search_*` operation on `system.hdb_user` returns the stored
+ * records as they are, so a super_user session would pull every hash into the
+ * model's context from a plain prompt (#4017). While the default allow list is
+ * in force, the search operations refuse a request that names the `system`
+ * database. An operator who sets `mcp.operations.allow` takes that decision
+ * over, the same as for `DEFAULT_EXCLUDED`.
+ */
+const SYSTEM_DATABASE = 'system';
+
+function isSearchOperation(operationName: string): boolean {
+	return operationName.startsWith('search_');
+}
+
+function namesSystemDatabase(body: Record<string, unknown>): boolean {
+	// `schema` is the legacy alias of `database`; either one can carry the name.
+	return [body.database, body.schema].some(
+		(value) => typeof value === 'string' && value.trim().toLowerCase() === SYSTEM_DATABASE
+	);
+}
+
+/**
  * Operations that carry `destructiveHint: true` when opted into the allow
  * list. The hint lets MCP clients surface a confirmation prompt before
  * calling. It is **not** an authorization check — Harper's `verifyPerms`
@@ -238,8 +261,12 @@ function isIdempotent(operationName: string): boolean {
 	return IDEMPOTENT_OPERATIONS.has(operationName);
 }
 
+function usesDefaultAllow(config: OperationsConfig): boolean {
+	return !(config.allow && config.allow.length > 0);
+}
+
 function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
-	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
+	const usingDefaultAllow = usesDefaultAllow(config);
 	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
 	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
 	if (!matchesAny(operation, allowList)) return false;
@@ -360,6 +387,21 @@ export function makeOperationToolHandler(operationName: string) {
 					{
 						type: 'text',
 						text: `operation '${operationName}' returns a byte stream and is only available over the operations HTTP API`,
+					},
+				],
+			};
+		}
+		if (isSearchOperation(operationName) && namesSystemDatabase(body) && usesDefaultAllow(getOperationsConfig())) {
+			return {
+				isError: true,
+				content: [
+					{
+						type: 'text',
+						text: JSON.stringify({
+							kind: 'harper_error',
+							operation: operationName,
+							message: `operation '${operationName}' does not read the '${SYSTEM_DATABASE}' database over MCP by default, because its tables hold credential hashes; use list_users for users, or set mcp.operations.allow to open it up`,
+						}),
 					},
 				],
 			};

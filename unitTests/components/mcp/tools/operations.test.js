@@ -499,6 +499,83 @@ describe('mcp/tools/operations — handler dispatch', () => {
 		assert.equal(captured.operation, 'describe_table');
 	});
 
+	describe('the system database (#4017)', () => {
+		function dispatchSpy() {
+			const calls = [];
+			const opFn = async (body) => {
+				calls.push(body);
+				return { rows: [{ username: 'admin', password: 'hash' }] };
+			};
+			_setChooseOperationForTest(() => opFn);
+			_setProcessLocalTransactionForTest(async ({ body }, fn) => fn(body));
+			_setOperationFunctionMapForTest(
+				makeOpMap([
+					['search_by_value', opFn],
+					['search_by_conditions', opFn],
+					['search_by_hash', opFn],
+					['describe_table', opFn],
+					['list_users', opFn],
+				])
+			);
+			registerOperationsTools();
+			return calls;
+		}
+
+		const ctx = { user: SUPER, profile: 'operations', sessionId: 's' };
+
+		it('refuses a default-allowed search_* on the system database before dispatching it', async () => {
+			const calls = dispatchSpy();
+			for (const op of ['search_by_value', 'search_by_conditions', 'search_by_hash']) {
+				const res = await getTool(op).handler(
+					{ database: 'system', table: 'hdb_user', search_attribute: 'username', search_value: '*' },
+					ctx
+				);
+				assert.equal(res.isError, true, op);
+				const body = JSON.parse(res.content[0].text);
+				assert.equal(body.kind, 'harper_error');
+				assert.equal(body.operation, op);
+				assert.ok(body.message.includes("'system' database"), body.message);
+				assert.ok(!res.content[0].text.includes('"password"'));
+			}
+			assert.equal(calls.length, 0, 'the refusal happens before the operation runs');
+		});
+
+		it('refuses the legacy schema alias and any letter case or padding of the name', async () => {
+			const calls = dispatchSpy();
+			for (const args of [{ schema: 'system' }, { database: 'System' }, { database: ' SYSTEM ' }]) {
+				const res = await getTool('search_by_value').handler({ ...args, table: 'hdb_user' }, ctx);
+				assert.equal(res.isError, true, JSON.stringify(args));
+			}
+			assert.equal(calls.length, 0);
+		});
+
+		it('still serves search_* on other databases and on a request with no database', async () => {
+			const calls = dispatchSpy();
+			for (const args of [{ database: 'data', table: 'dog' }, { schema: 'prod', table: 'dog' }, { table: 'dog' }]) {
+				const res = await getTool('search_by_value').handler(args, ctx);
+				assert.equal(res.isError, undefined, JSON.stringify(args));
+			}
+			assert.equal(calls.length, 3);
+		});
+
+		it('leaves describe_* and list_users on the system database alone', async () => {
+			const calls = dispatchSpy();
+			const described = await getTool('describe_table').handler({ database: 'system', table: 'hdb_user' }, ctx);
+			assert.equal(described.isError, undefined);
+			const listed = await getTool('list_users').handler({}, ctx);
+			assert.equal(listed.isError, undefined);
+			assert.equal(calls.length, 2);
+		});
+
+		it('lets an operator open the system database with an explicit mcp.operations.allow', async () => {
+			envOverrides.mcp_operations_allow = ['search_by_value'];
+			const calls = dispatchSpy();
+			const res = await getTool('search_by_value').handler({ database: 'system', table: 'hdb_user' }, ctx);
+			assert.equal(res.isError, undefined);
+			assert.equal(calls.length, 1);
+		});
+	});
+
 	it('strips caller-supplied bypass_auth/bypassAuth before dispatch (GHSA-7h8h-wq7f-qx65)', async () => {
 		let captured;
 		_setChooseOperationForTest((body) => {
