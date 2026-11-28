@@ -11,6 +11,9 @@
  * Uses only APIs that predate the scaling change (`_sweepNow`, `onUserChange`), so the same file runs
  * against an older build for a before/after comparison.
  *
+ * REAUTH_BENCH_ATTRIBUTES=<n> gives the table n more attributes and every role attribute permissions that read them
+ * all, so each recheck also compares attribute sets.
+ *
  * Run via: npm run bench, or `npx mocha unitTests/resources/liveSubscriptionReauth.bench.js`.
  */
 // a backstop tick landing mid-measurement would skew it; this keeps the timer out of the way
@@ -25,13 +28,17 @@ const { _sweepNow, _liveSubscriptionCount } = require('#src/server/liveSubscript
 const USERS = Number(process.env.REAUTH_BENCH_USERS) || 5_000;
 const SUBSCRIPTIONS_PER_USER = Number(process.env.REAUTH_BENCH_SUBS_PER_USER) || 20;
 const ROLES = 50;
+const ATTRIBUTES = Array.from(
+	{ length: Number(process.env.REAUTH_BENCH_ATTRIBUTES) || 0 },
+	(_, index) => `value${index}`
+);
 const ROUNDS = 3;
 const TABLE_NAME = 'ReauthBench';
 
 const roleId = (index) => `reauth_bench_role_${index}`;
 const username = (index) => `reauth_bench_user_${index}`;
 
-function benchRole(index) {
+function benchRole(index, widened = false) {
 	return {
 		id: roleId(index),
 		role: roleId(index),
@@ -39,7 +46,18 @@ function benchRole(index) {
 			super_user: false,
 			test: {
 				tables: {
-					[TABLE_NAME]: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+					[TABLE_NAME]: {
+						read: true,
+						insert: false,
+						update: false,
+						delete: false,
+						attribute_permissions: (widened ? [...ATTRIBUTES, 'value'] : ATTRIBUTES).map((attribute_name) => ({
+							attribute_name,
+							read: true,
+							insert: false,
+							update: false,
+						})),
+					},
 				},
 			},
 		},
@@ -135,7 +153,7 @@ describe('Benchmark: live subscription re-authorization at scale', function () {
 		const Table = table({
 			table: TABLE_NAME,
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }, ...ATTRIBUTES.map((name) => ({ name }))],
 		});
 		Bench = class extends Table {
 			subscribe() {
@@ -158,7 +176,7 @@ describe('Benchmark: live subscription re-authorization at scale', function () {
 		const registered = _liveSubscriptionCount();
 		assert.strictEqual(registered, USERS * SUBSCRIPTIONS_PER_USER);
 		console.log(
-			`\n  ${registered} subscriptions across ${USERS} users and ${ROLES} roles registered in ${(performance.now() - registrationStart).toFixed(0)} ms`
+			`\n  ${registered} subscriptions across ${USERS} users and ${ROLES} roles (${ATTRIBUTES.length} readable attributes) registered in ${(performance.now() - registrationStart).toFixed(0)} ms`
 		);
 	});
 
@@ -189,6 +207,24 @@ describe('Benchmark: live subscription re-authorization at scale', function () {
 			USERS * SUBSCRIPTIONS_PER_USER,
 			'a user change revoked a subscription'
 		);
+	});
+
+	it('backstop sweep once every role reads one more attribute', async function () {
+		// widening a role with no attribute permissions would restrict it
+		if (ATTRIBUTES.length === 0) this.skip();
+		const putRoles = async (widened) => {
+			const before = userChanges;
+			for (let index = 0; index < ROLES; index++) await databases.system.hdb_role.put(benchRole(index, widened));
+			while (userChanges === before) await turn();
+			// drains the rechecks the role writes started, so none lands in a measured sample
+			await measure(() => _sweepNow(), { quietTurns: 1 });
+		};
+		await putRoles(true);
+		const samples = [];
+		for (let round = 0; round < ROUNDS; round++) samples.push(await measure(() => _sweepNow(), { quietTurns: 1 }));
+		report('sweep after widening', samples);
+		assert.strictEqual(_liveSubscriptionCount(), USERS * SUBSCRIPTIONS_PER_USER, 'widening revoked a subscription');
+		await putRoles(false);
 	});
 
 	it('one hdb_role write', async () => {

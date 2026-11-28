@@ -1,0 +1,5 @@
+type Doc @table @export {
+	id: ID @primaryKey
+	title: String
+	note: String
+}
