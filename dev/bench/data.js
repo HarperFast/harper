@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795850555710,
+  "lastUpdate": 1795856731585,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -31575,6 +31575,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1041,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "efe037033143e37abddbdd2789bb9f204eee7f62",
+          "message": "Resume a table's event stream from Last-Event-ID with a checkpoint token (#4513)\n\n* Resume a table's event stream from Last-Event-ID with a checkpoint token\n\nA table's Server-Sent Events stream carried no event id, and nothing read\nLast-Event-ID, so every reconnect restarted from the current time and lost\nwhat was committed in between (#515).\n\nThe built-in stream now runs its subscription with progress reporting:\n- a checkpoint token is issued as a frame with only an id, taken from the\n  subscription's in-band checkpoint event so it is queued behind what it covers\n- until the client holds a token, each logged event carries its log key (with\n  the database generation on RocksDB); a snapshot row carries none\n- Last-Event-ID is admitted as subscribe({ resume }) or a checked startTime;\n  an id that cannot be served is refused with 400/409/410, or ends a running\n  stream with harper-error and an empty id that clears the client's position\n- a checkpointInterval subscription emits its first checkpoint as it goes live\n- request.lastEventId exposes the header to custom resources\n\nA resource that overrides connect or subscribe is left alone.\n\nDispatch-Task: harper-515-sse-checkpoint-resume\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Address pre-push review round 1\n\nDispatch-Task: harper-515-sse-checkpoint-resume\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Address pre-push review round 2\n\nDispatch-Task: harper-515-sse-checkpoint-resume\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Bind log-key ids to their table; address the late review findings\n\nDispatch-Task: harper-515-sse-checkpoint-resume\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Bind the resume hook to the request's own target and resource\n\nDispatch-Task: harper-515-sse-checkpoint-resume\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Accept a Collection receiver only for a collection dispatch\n\nDispatch-Task: harper-515-sse-checkpoint-resume\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Qualify the single-record resume limit in the docs; tighten two tests\n\nDispatch-Task: harper-515-sse-checkpoint-resume\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Say in the 5.5 release note what a log-position resume can miss\n\nThe note said a reconnect receives the events committed while the client\nwas away. That holds for a checkpoint token only. A table stream sends\nlog-position ids until its first token, and for the whole stream where it\ncannot issue one; a resume from a log position starts just before that\nkey, so a transaction that commits later with an earlier key is not\ndelivered. The reference already says so.\n\nDispatch-Task: harper-4513-sse-release-note-scalar-ids\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Qualify first-token timing, cross-node resume and copy handling in the SSE docs\n\nReview of the release-note fix found four more places where the note, and\nin two cases the reference, said more than the code does:\n\n- the first token is sent at go-live only when a floor already qualifies;\n  otherwise a 5 s floor capture and a 5 s emission check can add up to\n  about ten seconds\n- another node can refuse a token it cannot serve (410)\n- only logged change events carry a log position, not snapshot rows\n- a copy ends the stream on RocksDB only, a single record's log-position\n  resume does not notice one, and the version rule also applies while a\n  collection's current records are being sent\n\nDispatch-Task: harper-4513-sse-release-note-scalar-ids\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Say that LMDB does not check a log position against retained history\n\nThe release note and the reference said a position that can no longer be\nresumed is always refused. On LMDB the stream's log position carries no\ndatabase generation, so Table.subscribe runs no retention check: a\nreconnect from a pruned position gets 200 and the events that remain.\nThe reference example now also says where the version rule applies.\n\nDispatch-Task: harper-4513-sse-release-note-scalar-ids\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Send the checkpoint token on a harper-checkpoint event; refuse a pruned LMDB position\n\nFour changes to a table's event stream, from the framing recheck and the\nowner's decision on it:\n\n- The token was the id of a frame with no data. Firefox drops the id of\n  such a block and WebKit commits it only with a later data event, so\n  their EventSource kept the weaker log position, or none. The token is\n  now the id of `event: harper-checkpoint` with `data: {}`, which every\n  engine records with or without a listener.\n- An LMDB log position resumed with only startTime, so a pruned position\n  replayed what remained with 200. A new subscribe option, checkRetention,\n  runs the existing checked resume with no generation to compare: 410 at\n  admission, at every replay yield and in the record walk when the cursor\n  is below the audit floor, which every prune raises first.\n- No checkpoint event is queued before the subscription is live. A\n  replay's boundaries can name origins the client's token did not, and a\n  node that lacks one would refuse the replacement.\n- A capture that finds the same floors keeps its object, so an interval\n  tick with nothing queued is one identity check instead of building,\n  encoding and stringifying a token that is then discarded.\n\nAlso bounds two test waits that had no deadline.\n\nDispatch-Task: harper-4513-sse-release-note-scalar-ids\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Tell clients that parse the event stream themselves to skip harper-checkpoint\n\nAn integration suite that reads a table's stream by hand now logs the\ncheckpoint event among its messages: unlike the id-only frame it carries\ndata, so a parser that ignores the event name would take `{}` for a change.\n\nDispatch-Task: harper-4513-sse-release-note-scalar-ids\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Skip the checkpoint tick for an unchanged queue; keep checkRetention to LMDB\n\nFrom the full review of the previous commit:\n\n- A reader that takes nothing left the interval rebuilding the same token\n  every tick, walking its whole queue. The tick now also returns when the\n  floors object, the queue length and the sent count are what the last\n  checkpoint was computed from: nothing entered or left the queue.\n- checkRetention without a generation compared only the audit floor on\n  RocksDB too, which cannot tell a replaced database. It is refused with\n  400 there; RocksDB resumes name their generation.\n- The serializer marks the cursor as holding a token after the frame is\n  built, the test helper's deadline covers the close event itself, the\n  reference example waits before reopening after a terminal error, and\n  the docs say which node can resume a token.\n\nDispatch-Task: harper-4513-sse-release-note-scalar-ids\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Say how retention is checked for a collection and for a single record\n\nThe owner's decision keeps the existing rule: a collection's stream is\nrefused once the database has pruned history after its position, a single\nrecord's stream only when one of its own versions is missing. The\nreference and the checkRetention comment now say so.\n\nAlso from the last review round: the cross-node sentence names the\ncondition (a node that can certify and serve the token's history), and\nthe reference example stops reopening after five failures in a row.\n\nCloses #4577\n\nDispatch-Task: harper-4513-sse-release-note-scalar-ids\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Keep the event-stream id note out of the root design index\n\nThe root DESIGN.md on main is now 24 bytes under its ceiling, so the\n83-byte index entry this branch added fails the design-docs check on the\nmerge result. The note becomes a subsection of the existing event-stream\nsection in server/serverHelpers/DESIGN.md, which needs no index entry, and\nthe root index is left as main has it.\n\nDispatch-Task: harper-4513-sse-release-note-scalar-ids\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Issue no resume position at or below a reload marker the subscription never saw\n\nA table event stream opened right after a bulk-reload marker took its first\ncheckpoint token from certified floors captured before the marker, so a\nreconnect with it replayed into the marker and was refused with 410.\n\nThe root store's floor buffer gains a word holding the key at or below which\nno position is issued. writeReloadMarker raises it to the marker's log key\nbefore staging it; the process's first open of a log that already holds\nentries seeds it with a clock sample, which is above every key an earlier\nprocess minted. A progress-reporting subscription samples the word once when\nit registers (a later marker reaches its listener), and issues no checkpoint\nwhose local replay start, as a resume decodes it after the fold, is at or\nbelow the sample. The SSE serializer issues no log-position id at or below it\neither, for a write that took its key before the marker and committed after.\n\nDispatch-Task: harper-4513-reload-checkpoint-gate\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n* Let Last-Event-ID replace a route's own replay parameters; admit an LMDB position on the floor\n\nA route template that captures startTime or previousCount put those on the\nsubscription request, so a reconnect to the same URL was refused with 400 for\ncombining them with the resume position. The id is where the client is now,\nso it replaces them.\n\nOn LMDB a log position resumes from just before its key, and that was compared\nwith the audit floor as if entries between the two could have been pruned. A\nfloor on the client's own key has removed nothing after the position.\n\nTests: the token-resume assertions no longer race the go-live checkpoint frame\nor pass on a snapshot.\n\nDispatch-Task: harper-4513-reload-checkpoint-gate\nCo-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5.2 <noreply@anthropic.com>",
+          "timestamp": "2026-11-28T04:15:28Z",
+          "url": "https://github.com/HarperFast/harper/commit/efe037033143e37abddbdd2789bb9f204eee7f62"
+        },
+        "date": 1795856728146,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 22352,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 11994,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 12372,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 15526720,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9610,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 2272,
             "unit": "ops"
           }
         ]
