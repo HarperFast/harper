@@ -73,7 +73,7 @@ interface OutcomeRow {
 /**
  * The catalog stub (`systemSchema.json` and the upgrade directive) declares only the primary key;
  * these declarations add the attributes and the indexed `expiresAt` TTL. Writes go through the
- * Resource API, which maintains the index, so `indexed` holds here, unlike in `hdb_model_calls`.
+ * Resource API, and indexed TTL expiration removes rows through the table cleanup path.
  */
 export const DECISION_ATTRIBUTES = [
 	{ name: 'id', isPrimaryKey: true },

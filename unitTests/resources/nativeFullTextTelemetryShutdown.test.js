@@ -33,28 +33,29 @@ function persistedClosedMetric(workerId, label) {
 	}
 }
 
-it('commits main-thread final analytics before exit and reopens the real store', async function () {
-	this.timeout(60_000);
-	const { execFile } = require('node:child_process');
-	const { promisify } = require('node:util');
-	const root = mkdtempSync(join(setupTestDBPath(), 'analytics-main-exit-'));
-	for (const directory of ['database', 'log', 'components', 'keys']) mkdirSync(join(root, directory));
-	const config = YAML.parse(readFileSync(getConfigFilePath(), 'utf8'));
-	config.rootPath = root;
-	config.storage.path = join(root, 'database');
-	writeFileSync(join(root, 'harper-config.yaml'), YAML.stringify(config));
-	const childEnv = { ...process.env, ROOTPATH: root };
-	for (const key of ['HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG', 'HARPER_SET_CONFIG']) delete childEnv[key];
-	try {
-		for (const mode of ['write', 'read'])
-			await promisify(execFile)(process.execPath, [require.resolve('./fixtures/analyticsMainExit.cjs'), mode], {
-				env: childEnv,
-				timeout: 25_000,
-			});
-	} finally {
-		rmSync(root, { recursive: true, force: true, maxRetries: 5 });
-	}
-});
+for (const source of ['main-thread', 'worker'])
+	it(`commits ${source} final analytics before exit and reopens the real store`, async function () {
+		this.timeout(60_000);
+		const { execFile } = require('node:child_process');
+		const { promisify } = require('node:util');
+		const root = mkdtempSync(join(setupTestDBPath(), 'analytics-main-exit-'));
+		for (const directory of ['database', 'log', 'components', 'keys']) mkdirSync(join(root, directory));
+		const config = YAML.parse(readFileSync(getConfigFilePath(), 'utf8'));
+		config.rootPath = root;
+		config.storage.path = join(root, 'database');
+		writeFileSync(join(root, 'harper-config.yaml'), YAML.stringify(config));
+		const childEnv = { ...process.env, ROOTPATH: root };
+		for (const key of ['HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG', 'HARPER_SET_CONFIG']) delete childEnv[key];
+		try {
+			for (const mode of source === 'worker' ? ['worker-write', 'worker-read'] : ['write', 'read'])
+				await promisify(execFile)(process.execPath, [require.resolve('./fixtures/analyticsMainExit.cjs'), mode], {
+					env: childEnv,
+					timeout: 25_000,
+				});
+		} finally {
+			rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+		}
+	});
 
 it('logs a failing periodic analytics window without preventing the final flush', async function () {
 	this.timeout(60_000);
