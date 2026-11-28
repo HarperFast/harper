@@ -4,12 +4,16 @@
 // cookie: bound to the stored user record they were minted from, and capped in lifetime (harper#4618).
 
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { createPrivateKey } = require('node:crypto');
 const jwt = require('jsonwebtoken');
 const testUtils = require('../testUtils.js');
 const user = require('#src/security/user');
 const tokenAuthentication = require('#src/security/tokenAuthentication');
 const env = require('#src/utility/environment/environmentManager');
-const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+const terms = require('#src/utility/hdbTerms');
+const { CONFIG_PARAMS } = terms;
 const { databases } = require('#src/resources/databases');
 
 const PASSWORD = 'login-token-password';
@@ -226,37 +230,48 @@ describe('login tokens', function () {
 			await assert.rejects(mintFor({ username: 'never_stored_login_user', active: true }), isInvalidCredentials);
 		});
 
-		it('keys the binding, so the claim is not computable from the stored record alone', async () => {
+		it('keeps its binding when the signing key is stored in another PEM encoding', async () => {
+			const token = await mint('login_unit_a');
 			const keys = await tokenAuthentication.getJWTRSAKeys();
-			const claim = claimsOf(await mint('login_unit_a')).user_binding;
-			const bind = async (key) => (await user.findAndBindUser('login_unit_a', PASSWORD, true, key)).binding;
-			assert.strictEqual(await bind(keys.privateKey), claim);
-			assert.notStrictEqual(await bind('another key'), claim);
-			assert.strictEqual(await bind(''), undefined);
+			const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
+			const reencoded = createPrivateKey({ key: keys.privateKey, passphrase: keys.passphrase }).export({
+				type: 'pkcs8',
+				format: 'pem',
+				cipher: 'aes-256-cbc',
+				passphrase: 'another-passphrase',
+			});
+			assert.notStrictEqual(reencoded, keys.privateKey);
+			fs.writeFileSync(path.join(keysDir, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), reencoded);
+			fs.writeFileSync(path.join(keysDir, terms.JWT_ENUM.JWT_PASSPHRASE_NAME), 'another-passphrase');
+			tokenAuthentication.clearJWTRSAKeysCache();
+			assert.strictEqual((await tokenAuthentication.validateLoginToken(token)).username, 'login_unit_a');
 		});
 	});
 
 	describe('findAndBindUser and findLoginTokenUser', () => {
+		const keyA = Buffer.from('a binding key');
+		const keyB = Buffer.from('another binding key');
+
 		it('findAndBindUser validates as findAndValidateUser does, and binds only an active record', async () => {
-			const keys = await tokenAuthentication.getJWTRSAKeys();
-			const { user: found, binding } = await user.findAndBindUser('login_unit_a', PASSWORD, true, keys.privateKey);
+			const { user: found, bind } = await user.findAndBindUser('login_unit_a', PASSWORD, true);
 			assert.strictEqual(found.username, 'login_unit_a');
-			assert.strictEqual(typeof binding, 'string');
-			await assert.rejects(user.findAndBindUser('login_unit_a', 'wrong password', true, keys.privateKey));
-			const recordless = await user.findAndBindUser('never_stored_login_user', undefined, false, keys.privateKey);
+			assert.strictEqual(typeof bind(keyA), 'string');
+			assert.notStrictEqual(bind(keyA), bind(keyB));
+			assert.strictEqual(bind(Buffer.alloc(0)), undefined);
+			await assert.rejects(user.findAndBindUser('login_unit_a', 'wrong password', true));
+			const recordless = await user.findAndBindUser('never_stored_login_user', undefined, false);
 			assert.strictEqual(recordless.user.username, 'never_stored_login_user');
-			assert.strictEqual(recordless.binding, undefined);
+			assert.strictEqual(recordless.bind(keyA), undefined);
 		});
 
 		it('findLoginTokenUser returns the user and its role from the record matching the binding, and nothing otherwise', async () => {
-			const keys = await tokenAuthentication.getJWTRSAKeys();
-			const { binding } = await user.findAndBindUser('login_unit_a', PASSWORD, true, keys.privateKey);
-			const found = user.findLoginTokenUser('login_unit_a', binding, keys.privateKey);
+			const binding = (await user.findAndBindUser('login_unit_a', PASSWORD, true)).bind(keyA);
+			const found = user.findLoginTokenUser('login_unit_a', binding, keyA);
 			assert.strictEqual(found.username, 'login_unit_a');
 			assert.strictEqual(found.role.permission.super_user, true);
-			assert.strictEqual(user.findLoginTokenUser('login_unit_b', binding, keys.privateKey), undefined);
-			assert.strictEqual(user.findLoginTokenUser('login_unit_a', undefined, keys.privateKey), undefined);
-			assert.strictEqual(user.findLoginTokenUser('login_unit_a', binding, 'another key'), undefined);
+			assert.strictEqual(user.findLoginTokenUser('login_unit_b', binding, keyA), undefined);
+			assert.strictEqual(user.findLoginTokenUser('login_unit_a', undefined, keyA), undefined);
+			assert.strictEqual(user.findLoginTokenUser('login_unit_a', binding, keyB), undefined);
 		});
 	});
 

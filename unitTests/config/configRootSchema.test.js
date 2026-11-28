@@ -178,7 +178,7 @@ describe('config-root.schema.json matches the configuration Harper reads', () =>
 			assert.ok(duration.test(accepted) && convertToMS(accepted) >= 1000, accepted);
 		for (const accepted of ['5m', '90s', 300])
 			assert.strictEqual(configValidator(config(accepted), true).error, undefined, String(accepted));
-		for (const rejected of ['-1m', '0', '0.5', '1w', '10ms', 'soon', 0, -5]) {
+		for (const rejected of ['-1m', '0', '0.5', '1w', '10ms', 'soon', '030', ' 30 ', '1e1', '5M', 0, -5]) {
 			if (typeof rejected === 'string') assert.ok(!duration.test(rejected), rejected);
 			assert.match(
 				configValidator(config(rejected), true).error?.message ?? '',

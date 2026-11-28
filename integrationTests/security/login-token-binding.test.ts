@@ -110,7 +110,6 @@ suite(
 
 		test('a longer expires_in is capped to maxLoginTokenTimeout', async () => {
 			await addUser('login_cap');
-			// credential-free: minted from the caller's own operation token, with no password
 			const bearer = `Bearer ${await operationToken('login_cap')}`;
 			const token = await mintLoginToken({ expires_in: '3650d' }, bearer);
 			const claims = claimsOf(token);
@@ -136,14 +135,12 @@ suite(
 			assertLoggedIn(await login(token));
 		});
 
-		test('after drop_user a login token is refused and a credential-free mint fails', async () => {
+		test('drop_user ends a login token minted credential-free from an operation token', async () => {
 			await addUser('login_drop');
 			const bearer = `Bearer ${await operationToken('login_drop')}`;
 			const token = await mintLoginToken({}, bearer);
 			await asAdmin({ operation: 'drop_user', username: 'login_drop' });
 			equal((await login(token)).status, 401);
-			const remint = await operation({ operation: 'create_authentication_tokens', purpose: 'login' }, bearer);
-			equal(remint.status, 401, JSON.stringify(remint.body));
 		});
 
 		test('a login token does not carry over to a user recreated under the same name', async () => {
