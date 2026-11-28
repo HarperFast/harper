@@ -18,7 +18,7 @@ function encodedDelete(recordId) {
 	);
 }
 
-function makeLog(name, entries, onQuery) {
+function makeLog(name, entries, onQuery, onClose) {
 	return {
 		name,
 		query(options) {
@@ -28,6 +28,7 @@ function makeLog(name, entries, onQuery) {
 				next() {
 					return index < entries.length ? { value: entries[index++], done: false } : { value: undefined, done: true };
 				},
+				close: onClose,
 				[Symbol.iterator]() {
 					return this;
 				},
@@ -142,6 +143,19 @@ describe('RocksTransactionLogStore range metadata', () => {
 
 		assert.deepStrictEqual([...iterable], []);
 		assert.deepStrictEqual([...iterable.exactStartFailures], [['local', 'missing']]);
+	});
+
+	it('closes every source when a merged exact-key read is exhausted', () => {
+		const closed = [];
+		const hit = makeLog('local', [entry(50, 'record')], undefined, () => closed.push('local'));
+		const miss = makeLog('peer-a', [], undefined, () => closed.push('peer-a'));
+		const iterable = makeStore([hit, miss]).getRange({ start: 50, exactStart: true, onlyStartKey: true });
+
+		assert.deepStrictEqual(
+			[...iterable].map(({ recordId }) => recordId),
+			['record']
+		);
+		assert.deepStrictEqual(closed, ['local', 'peer-a']);
 	});
 
 	it('validates and consumes one complete anchor before returning later physical transactions', () => {

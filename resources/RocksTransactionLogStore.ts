@@ -257,6 +257,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			for (const entry of this.getRange({
 				start: key,
 				exactStart: true,
+				onlyStartKey: true,
 				log: nodeId,
 				readUncommitted: followingCommittedRef,
 			})) {
@@ -322,6 +323,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 	getRange(options: {
 		start?: number;
 		exactStart?: boolean;
+		/** In a merged exact-start range, keep each physical log's initial contiguous run at start. */
+		onlyStartKey?: boolean;
 		exclusiveStart?: boolean;
 		end?: number;
 		log?: string | number;
@@ -545,7 +548,24 @@ export class RocksTransactionLogStore extends EventEmitter {
 					}
 				}
 			};
-			const read = peekAhead ? safePeek : safeNext;
+			const startKey = options.onlyStartKey && options.exactStart ? options.start : undefined;
+			const closeSources =
+				startKey === undefined
+					? undefined
+					: () => {
+							for (const iterator of iterators) iterator.close();
+							return { done: true as const, value: undefined };
+						};
+			const readSource = peekAhead ? safePeek : safeNext;
+			const read =
+				startKey === undefined
+					? readSource
+					: (iterator: TrackedIterator, log: TransactionLog): LogResult => {
+							const result = readSource(iterator, log);
+							if (result.done || result.value.timestamp === startKey) return result;
+							iterator.close();
+							return { done: true, value: undefined };
+						};
 			const trackLastEntry = attributeCorruption || bounded;
 			const pull = (i: number) => {
 				const iterator = iterators[i];
@@ -620,14 +640,15 @@ export class RocksTransactionLogStore extends EventEmitter {
 							if (peekAhead) {
 								// consumed only once returned, so the log's iterator stands at the first entry not returned
 								iterators[earliestIndex].next();
-								nextEntries[earliestIndex] = safePeek(iterators[earliestIndex], logs[earliestIndex]);
-							} else nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
+							}
+							nextEntries[earliestIndex] = read(iterators[earliestIndex], logs[earliestIndex]);
 							midTransaction = !earliest.endTxn;
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
 								done: false,
 							};
 						}
+						if (closeSources) return closeSources();
 						// All current entries are done; force the retry pass to re-poll
 						nextEntries.length = 0;
 					}
@@ -670,6 +691,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					return iterators.some((iterator, i) => !safePeek(iterator, logs[i]).done);
 				},
 			};
+			if (closeSources) aggregateIterator.return = closeSources;
 			iterable.iterate = () => aggregateIterator;
 		}
 		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn, logName }: NamedTransactionEntry) => {
