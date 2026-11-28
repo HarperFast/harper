@@ -134,8 +134,9 @@ describe('login tokens', function () {
 			}
 		});
 
-		it('keeps the five-minute cap when the configured maximum is unusable', async () => {
-			for (const configured of ['soon', '0', -5, '0.5s']) {
+		it('keeps the five-minute cap when the configured maximum is one the config validator refuses', async () => {
+			// what the config validator refuses, including units convertToMS reads but the validator does not (5M is five months)
+			for (const configured of ['soon', '0', -5, '0.5s', '5M', '1y', Infinity]) {
 				const restore = setMaxLoginTokenTimeout(configured);
 				try {
 					assert.strictEqual(lifetimeOf(await mint('login_unit_a', { expires_in: '3650d' })), 300, String(configured));
@@ -181,6 +182,15 @@ describe('login tokens', function () {
 			);
 		});
 
+		it('a record put back under the name with the same password hash does not inherit it', async () => {
+			const token = await mint('login_unit_a');
+			const stored = { ...(await databases.system.hdb_user.get('login_unit_a')) };
+			await user.dropUser({ username: 'login_unit_a' });
+			await databases.system.hdb_user.put(stored);
+			assert.strictEqual((await databases.system.hdb_user.get('login_unit_a')).password, stored.password);
+			await assert.rejects(tokenAuthentication.validateLoginToken(token), isInvalidToken);
+		});
+
 		it('deactivating the user ends it and stops new mints', async () => {
 			const token = await mint('login_unit_a');
 			await user.alterUser({ username: 'login_unit_a', active: false });
@@ -219,16 +229,28 @@ describe('login tokens', function () {
 		it('keys the binding, so the claim is not computable from the stored record alone', async () => {
 			const keys = await tokenAuthentication.getJWTRSAKeys();
 			const claim = claimsOf(await mint('login_unit_a')).user_binding;
-			assert.strictEqual(user.credentialBinding('login_unit_a', keys.privateKey), claim);
-			assert.notStrictEqual(user.credentialBinding('login_unit_a', 'another key'), claim);
-			assert.strictEqual(user.credentialBinding('login_unit_a', ''), undefined);
+			const bind = async (key) => (await user.findAndBindUser('login_unit_a', PASSWORD, true, key)).binding;
+			assert.strictEqual(await bind(keys.privateKey), claim);
+			assert.notStrictEqual(await bind('another key'), claim);
+			assert.strictEqual(await bind(''), undefined);
 		});
 	});
 
-	describe('findLoginTokenUser', () => {
-		it('returns the user and its role from the record matching the binding, and nothing otherwise', async () => {
+	describe('findAndBindUser and findLoginTokenUser', () => {
+		it('findAndBindUser validates as findAndValidateUser does, and binds only an active record', async () => {
 			const keys = await tokenAuthentication.getJWTRSAKeys();
-			const binding = user.credentialBinding('login_unit_a', keys.privateKey);
+			const { user: found, binding } = await user.findAndBindUser('login_unit_a', PASSWORD, true, keys.privateKey);
+			assert.strictEqual(found.username, 'login_unit_a');
+			assert.strictEqual(typeof binding, 'string');
+			await assert.rejects(user.findAndBindUser('login_unit_a', 'wrong password', true, keys.privateKey));
+			const recordless = await user.findAndBindUser('never_stored_login_user', undefined, false, keys.privateKey);
+			assert.strictEqual(recordless.user.username, 'never_stored_login_user');
+			assert.strictEqual(recordless.binding, undefined);
+		});
+
+		it('findLoginTokenUser returns the user and its role from the record matching the binding, and nothing otherwise', async () => {
+			const keys = await tokenAuthentication.getJWTRSAKeys();
+			const { binding } = await user.findAndBindUser('login_unit_a', PASSWORD, true, keys.privateKey);
 			const found = user.findLoginTokenUser('login_unit_a', binding, keys.privateKey);
 			assert.strictEqual(found.username, 'login_unit_a');
 			assert.strictEqual(found.role.permission.super_user, true);
