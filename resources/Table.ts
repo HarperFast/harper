@@ -240,6 +240,7 @@ import {
 import {
 	HAS_BLOBS,
 	LOCAL_ONLY,
+	ACTION_32_BIT,
 	auditRetention,
 	removeAuditEntry,
 	getAuditFloor,
@@ -301,6 +302,10 @@ import {
 	type StructureCounts,
 	entryMap,
 	storedFieldsOnly,
+	decodeStrictly,
+	setNextEncoding,
+	clearNextEncoding,
+	METADATA,
 } from './RecordEncoder.ts';
 import { actionRecorder, recordAction, recordActionBinary } from './analytics/write.ts';
 import {
@@ -942,8 +947,20 @@ const STRIP_BATCH_SIZE = 100;
 const STRIP_MAX_ATTEMPTS = 20;
 const STRIP_RETRY_BUDGET_MS = 30_000;
 const ID_ALLOCATION_TRANSACTION_OPTIONS = { retryOnBusy: true };
+const LEGACY_HEADER_COLLISION = 0x42;
+const MAX_ID_REISSUES = 8;
 function isSameIdAllocation(a: any, b: any): boolean {
 	return a?.start === b?.start && a?.end === b?.end && a?.nodeName === b?.nodeName && a?.pid === b?.pid;
+}
+function isIdAllocation(value: any): boolean {
+	return (
+		Number.isSafeInteger(value?.start) &&
+		Number.isSafeInteger(value.end) &&
+		0 <= value.start &&
+		value.start <= value.end &&
+		typeof value.nodeName === 'string' &&
+		Number.isSafeInteger(value.pid)
+	);
 }
 class ConditionLockWait {
 	fullUpdate: boolean;
@@ -2906,13 +2923,50 @@ export function makeTable(options): TableResourceClass {
 		);
 	}
 	// Table-scoped, not nested in getNewId(): a nested declaration is instantiated on every call.
+	function readIdAllocation(transaction?: RocksTransaction) {
+		const stored = isRocksDB
+			? (primaryStore as RocksDatabase).getBinarySync(ID_ALLOCATION_KEY, transaction && { transaction })
+			: primaryStore.getBinary(ID_ALLOCATION_KEY);
+		if (stored == null) return undefined;
+		// a range written before #1762 that starts with structure id 0x42 has no header behind that byte, and its
+		// byte 8 is range data, so either reading can be the right one
+		const ambiguous = isRocksDB && stored[0] === LEGACY_HEADER_COLLISION;
+		const legacyFirst = ambiguous && stored[8] !== ACTION_32_BIT;
+		return (
+			decodeIdAllocation(stored, legacyFirst) ?? (ambiguous ? decodeIdAllocation(stored, !legacyFirst) : undefined)
+		);
+	}
+	function isStoredKey(id: number) {
+		return (isRocksDB ? (primaryStore as RocksDatabase).getBinarySync(id) : primaryStore.getBinary(id)) != null;
+	}
+	function decodeIdAllocation(stored: Uint8Array, noMetadata: boolean) {
+		let allocation;
+		try {
+			// strict, so a reading that fails is not reported as a corrupt record when the other reading is right
+			allocation = decodeStrictly(() => primaryStore.encoder.decode(stored, noMetadata ? { noMetadata } : undefined));
+		} catch {
+			return undefined;
+		}
+		if (allocation?.[METADATA] !== undefined) allocation = allocation.value;
+		return isIdAllocation(allocation) ? allocation : undefined;
+	}
+	function writeIdAllocation(allocation, transaction?: RocksTransaction) {
+		if (isRocksDB) {
+			setNextEncoding(transaction.getTimestamp(), LOCAL_ONLY);
+			try {
+				primaryStore.putSync(ID_ALLOCATION_KEY, allocation, { transaction });
+			} finally {
+				// a put that throws before its encode would leave the header for the next write on any store (harper#1307)
+				clearNextEncoding();
+			}
+		} else primaryStore.put(ID_ALLOCATION_KEY, allocation, Date.now());
+	}
 	function replaceIdAllocation(expectedAllocation, nextAllocation) {
 		const storedAllocation = primaryStore.transactionSync(
 			(transaction) => {
-				const options = transaction && { transaction };
-				const storedAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY, options)?.value;
+				const storedAllocation = readIdAllocation(transaction);
 				if (storedAllocation && !isSameIdAllocation(storedAllocation, expectedAllocation)) return storedAllocation;
-				primaryStore.put(ID_ALLOCATION_KEY, nextAllocation, options ?? Date.now());
+				writeIdAllocation(nextAllocation, transaction);
 				return nextAllocation;
 			},
 			isRocksDB ? ID_ALLOCATION_TRANSACTION_OPTIONS : undefined
@@ -4259,78 +4313,102 @@ export function makeTable(options): TableResourceClass {
 			if (type === 'String' || type === 'ID') return super.getNewId();
 			if (isReadOnlyMode()) throw readOnlyModeError();
 			if (!idIncrementer) {
-				// if there is no id incrementer yet, we get or create one
-				let idAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY)?.value;
-				let lastKey;
-				if (
-					idAllocation &&
-					idAllocation.nodeName === server.hostname &&
-					(!hasOtherProcesses(primaryStore) || idAllocation.pid === process.pid)
-				) {
-					// the database has an existing id allocation that we can continue from
-					const startingId = idAllocation.start;
-					const endingId = idAllocation.end;
-					lastKey = startingId;
-					// once it is loaded, we need to find the last key in the allocated range and start from there
-					for (const key of primaryStore.getKeys({ start: endingId, end: startingId, limit: 1, reverse: true })) {
-						lastKey = key;
-					}
-				} else {
-					// we need to create a new id allocation
-					idAllocation = createNewAllocation(idAllocation);
-					lastKey = idAllocation.start;
-				}
-				// all threads will use a shared buffer to atomically increment the id
-				// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
-				// and initialize it with the starting id
-				idIncrementer = new BigInt64Array([BigInt(lastKey) + 1n]) as BigInt64ArrayAndMaxSafeId;
-				// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
-				idIncrementer = new BigInt64Array(
-					primaryStore.getUserSharedBuffer('id', idIncrementer.buffer)
+				// all threads will use a shared buffer to atomically increment the id; it holds zero until one seeds it
+				const counter = new BigInt64Array(
+					primaryStore.getUserSharedBuffer('id', new ArrayBuffer(8))
 				) as BigInt64ArrayAndMaxSafeId;
-				// and we set the maximum safe id to the end of the allocated range before we check for conflicting ids again
-				idIncrementer.maxSafeId = idAllocation.end;
+				let idAllocation = readIdAllocation();
+				let liveId = Atomics.load(counter, 0);
+				if (liveId === 0n) {
+					let lastKey;
+					if (
+						idAllocation &&
+						idAllocation.nodeName === server.hostname &&
+						(!hasOtherProcesses(primaryStore) || idAllocation.pid === process.pid)
+					) {
+						// the database has an existing id allocation that we can continue from
+						const startingId = idAllocation.start;
+						const endingId = idAllocation.end;
+						lastKey = startingId;
+						// once it is loaded, we need to find the last key in the allocated range and start from there
+						for (const key of primaryStore.getKeys({ start: endingId, end: startingId, limit: 1, reverse: true })) {
+							lastKey = key;
+						}
+					} else {
+						// we need to create a new id allocation
+						idAllocation = createNewAllocation(idAllocation);
+						lastKey = idAllocation.start;
+					}
+					liveId = Atomics.compareExchange(counter, 0, 0n, BigInt(lastKey) + 1n);
+					if (liveId === 0n) liveId = BigInt(lastKey) + 1n;
+					else idAllocation = readIdAllocation();
+				}
+				idIncrementer = counter;
+				// joining a live counter (another thread, or a clear() since) takes a stored end only if it covers the
+				// counter; otherwise the first id extends from it
+				const live = Number(liveId);
+				idIncrementer.maxSafeId =
+					idAllocation && idAllocation.start < live && live <= idAllocation.end ? idAllocation.end : 0;
 			}
 			// this is where we actually do the atomic incrementation. All the threads should be pointing to the same
 			// memory location of this incrementer, so we can be sure that the id is unique and sequential.
-			const nextId = Number(Atomics.add(idIncrementer, 0, 1n));
+			let nextId = Number(Atomics.add(idIncrementer, 0, 1n));
 			const asyncIdExpansionThreshold = type === 'Int' ? 0x200 : 0x100000;
 			if (nextId + asyncIdExpansionThreshold >= idIncrementer.maxSafeId) {
-				const updateEnd = (inTxn) => {
-					// we update the end of the allocation range after verifying we don't have any conflicting ids in front of us
-					idIncrementer.maxSafeId = nextId + (type === 'Int' ? 0x3ff : 0x3fffff);
+				const updateEnd = (inTxn?: boolean) => {
 					let idAfter = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
 					const readTxn = inTxn ? undefined : primaryStore.useReadTransaction?.();
 					// get the latest id after the read transaction to make sure we aren't reading any new ids that we assigned from this node
 					const newestId = Number(idIncrementer[0]);
-					for (const key of primaryStore.getKeys({
-						start: newestId + 1,
-						end: idAfter,
-						limit: 1,
-						transaction: readTxn,
-					})) {
-						idAfter = key;
+					// from the live counter, not this call's id: a queued extension runs after other ids were issued
+					const proposedEnd = newestId + (type === 'Int' ? 0x3ff : 0x3fffff);
+					try {
+						for (const key of primaryStore.getKeys({
+							start: newestId,
+							end: idAfter,
+							limit: 1,
+							transaction: readTxn,
+						})) {
+							idAfter = key;
+						}
+					} finally {
+						readTxn?.done();
 					}
-					readTxn?.done();
-					const updatedIdAllocation = primaryStore.getEntry(ID_ALLOCATION_KEY).value;
-					if (idIncrementer.maxSafeId < idAfter) {
+					const updatedIdAllocation = readIdAllocation();
+					const liveId = Number(idIncrementer[0]);
+					if (
+						updatedIdAllocation &&
+						!(updatedIdAllocation.start <= newestId && newestId <= updatedIdAllocation.end) &&
+						updatedIdAllocation.start < liveId &&
+						liveId <= updatedIdAllocation.end
+					) {
+						// a sibling relocated the counter into the stored range after this extension read it
+						idIncrementer.maxSafeId = updatedIdAllocation.end;
+						return;
+					}
+					// a range that does not hold the counter (missing, or another range) cannot bound the ids it issues
+					const storedHoldsCounter = updatedIdAllocation?.start <= newestId;
+					if (proposedEnd < idAfter) {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
-						if (updatedIdAllocation.end > idIncrementer.maxSafeId - 100) {
-							// the allocation was already updated by another thread
+						if (storedHoldsCounter && updatedIdAllocation.end > proposedEnd - 100) {
+							// the allocation was already updated by another thread; its end can lie past the key this scan found
+							idIncrementer.maxSafeId = Math.min(updatedIdAllocation.end, idAfter - 1);
 							return;
 						}
-						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId);
+						if (!storedHoldsCounter)
+							logger.warn?.(`Id range allocation for table ${tableName} does not hold its counter, storing it again`);
+						logger.info?.('New id allocation', newestId, proposedEnd);
 						idIncrementer.maxSafeId = replaceIdAllocation(updatedIdAllocation, {
-							start: updatedIdAllocation.start,
-							end: idIncrementer.maxSafeId,
+							start: storedHoldsCounter ? updatedIdAllocation.start : newestId,
+							end: proposedEnd,
 							nodeName: server.hostname,
 							pid: process.pid,
 						}).end;
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
 						logger.warn?.(
-							`Id conflict detected, starting new id allocation range, attempting to allocate to ${idIncrementer.maxSafeId}, but id of ${idAfter} detected`
+							`Id conflict detected, starting new id allocation range, attempting to allocate to ${proposedEnd}, but id of ${idAfter} detected`
 						);
 						const idAllocation = createNewAllocation(updatedIdAllocation);
 						// reassign the incrementer to the new range/starting point
@@ -4340,7 +4418,16 @@ export function makeTable(options): TableResourceClass {
 					}
 				};
 				if (nextId + asyncIdExpansionThreshold === idIncrementer.maxSafeId) {
-					setImmediate(updateEnd); // if we are getting kind of close to the end, we try to update it asynchronously
+					// if we are getting kind of close to the end, we try to update it asynchronously
+					setImmediate(() => {
+						if (disposed) return;
+						try {
+							updateEnd();
+						} catch (error) {
+							// the bound is unchanged, so the synchronous extension retries near the end
+							logger.warn?.(`Id range extension for table ${tableName} failed`, error);
+						}
+					});
 				} else if (nextId + 100 >= idIncrementer.maxSafeId) {
 					logger.warn?.(
 						`Synchronous id allocation required on table ${tableName}${
@@ -4350,7 +4437,16 @@ export function makeTable(options): TableResourceClass {
 						}`
 					);
 					// if we are very close to the end, synchronously update
-					primaryStore.transactionSync(() => updateEnd(true));
+					for (let reissues = 0; ; reissues++) {
+						primaryStore.transactionSync(() => updateEnd(true));
+						// the extension scans from the live counter, which is past this id, and a hard kill can lose the range
+						// end that covered stored rows (harper#4609)
+						if (!isStoredKey(nextId)) break;
+						if (reissues === MAX_ID_REISSUES)
+							throw new ServerError(`Unable to allocate a new id in table ${tableName}`, 503);
+						logger.warn?.(`Id ${nextId} in table ${tableName} is already stored, issuing another`);
+						nextId = Number(Atomics.add(idIncrementer, 0, 1n));
+					}
 				}
 				//TODO: Add a check to recordUpdate to check if a new id infringes on the allocated id range
 			}

@@ -61,9 +61,13 @@ describe('Create records', () => {
 			id: id_before + 1000,
 			str: 'hello',
 		});
-		for (let i = 0; i < 500; i++) CreateTest.getNewId();
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		let id_after = CreateTest.getNewId();
+		let id_after = id_before;
+		// an extension, queued or synchronous, finds the stored key ahead and takes a new range before reaching it
+		for (let i = 0; i < 2000 && Math.abs(id_before - id_after) <= 1000000; i++) {
+			id_after = CreateTest.getNewId();
+			assert.notStrictEqual(id_after, id_before + 1000, 'issued the id of a stored record');
+			if (i % 100 === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+		}
 		assert(Math.abs(id_before - id_after) > 1000000);
 	});
 	after(async () => {
