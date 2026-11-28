@@ -20,7 +20,7 @@ The default `mcp.operations.allow` list is intentionally narrow and read-only:
 
 - `describe_*` — schema / database / table descriptions.
 - `list_*` — enumerations (users, roles, databases).
-- `search_*` — search operations.
+- `search_*` — search operations. While the default list is in force, they refuse a request for the `system` database (`database` or the legacy `schema` argument), whose tables hold credential hashes; use `list_users` for users. An explicit `mcp.operations.allow` is not filtered.
 - `get_job`, `get_status`, `get_analytics`, `get_metrics` — explicit safe getters.
 - `system_information` — server-level information.
 - `read_log`, `read_audit_log` — log readers.
