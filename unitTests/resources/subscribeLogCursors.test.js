@@ -5,6 +5,7 @@ const { getDatabaseGeneration } = require('#src/resources/auditStore');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { ARRIVED_AFTER_SAVE, LOG_BEFORE, LOG_CURSORS, LOG_NAME } = require('#src/resources/subscriptionCheckpoint');
 const { transaction } = require('#src/resources/transaction');
+const { addSubscription } = require('#src/resources/transactionBroadcast');
 const { waitFor } = require('../waitFor');
 
 const isRocksDB = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
@@ -261,9 +262,9 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 			return { T, peer, peerName, base, first, position, logs, resume };
 		}
 
-		async function replayed(T, resume, cursors) {
+		async function replayed(T, resume, cursors, options) {
 			const listener = collector();
-			const subscription = await resume(cursors, { listener });
+			const subscription = await resume(cursors, { listener, ...options });
 			const verified = await subscription.resumeVerified;
 			if (verified) {
 				await T.put('live', { value: 'live' });
@@ -286,6 +287,31 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 			);
 			const local = tags.find(([, log]) => log === 'local');
 			assert.ok(local[2] > 0, "after the seed in this node's own log");
+		});
+
+		it('tags an event for a listener that follows one starting a pass on another database', async () => {
+			const T = tableInOwnDatabase();
+			const Other = tableInOwnDatabase();
+			const other = await Other.subscribe({ omitCurrent: true, listener: collector() });
+			let nested;
+			const starter = await T.subscribe({
+				omitCurrent: true,
+				listener: () => (nested ??= addSubscription(Other, null, () => {})),
+			});
+			const tagged = collector();
+			const subscription = await T.subscribe({
+				omitCurrent: true,
+				reportProgress: true,
+				listener: tagged,
+				[LOG_CURSORS]: true,
+			});
+			await T.put('a', { value: 'a' });
+			await waitFor(() => tagged.values().includes('a'));
+			assert.ok(nested, 'the first listener registered on the other database during the pass');
+			const event = tagged.events.find((event) => event.value?.value === 'a');
+			assert.strictEqual(event[LOG_NAME], 'local');
+			assert.strictEqual(typeof event[LOG_BEFORE], 'number');
+			for (const ended of [nested, starter, subscription, other]) ended.end();
 		});
 
 		it('delivers what arrived after the saved positions, whatever its key, and nothing read before them', async () => {
@@ -379,6 +405,26 @@ describe('Subscription positions per transaction log (harper#3790)', function ()
 			} finally {
 				restore();
 			}
+		});
+
+		it('refuses the resume when a purge reached a delivery that was still queued at the save', async () => {
+			// queued and never sent, k10 leaves the pair equal; it arrived late, below the subscription's position
+			const queuedOnly = async (purgedThrough) => {
+				const { T, peerName, base, logs, resume } = await subscribedThrough([10, 40]);
+				logs.set(peerName, { cursor: base + 5, readThrough: base + 5 });
+				const restore = purged(T, peerName, base + purgedThrough);
+				try {
+					return await replayed(T, resume, { takenThrough: base + 9, logs }, { startTime: base + 30 });
+				} finally {
+					restore();
+				}
+			};
+			const reached = await queuedOnly(20);
+			assert.strictEqual(reached.verified, false);
+			assert.strictEqual(reached.subscription.closedWith?.statusCode, 410);
+			const below = await queuedOnly(5);
+			assert.strictEqual(below.verified, true);
+			assert.deepStrictEqual(below.values, ['k10', 'k40', 'live'], 'the queued delivery is still retained');
 		});
 
 		it('replays from the saved positions when the broadcast cannot track positions from here on', async () => {

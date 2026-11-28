@@ -485,6 +485,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterator.lastEndTxn = undefined;
 			iterator.completedKey = undefined;
 			iterator.needsPredecessor = false;
+			iterator.exactPhase = undefined;
 			return iterator;
 		};
 		let log: TransactionLog | undefined;

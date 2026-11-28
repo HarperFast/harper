@@ -638,6 +638,10 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	// the floors a fresh pass starts with are certified once it drains; a continuation keeps its pass's capture
 	const freshPass = !subscriptions.passYielded;
 	if (freshPass) subscriptions.passCapture = subscriptions.capturedFloors;
+	// a listener can subscribe to another database, whose pass then runs inside this one's fan-out
+	const outerLog = dispatchedLog;
+	const outerKeyBefore = dispatchedKeyBefore;
+	dispatchedLog = dispatchedKeyBefore = undefined;
 	subscriptions.dispatching = true;
 	subscriptions.passYielded = false;
 	try {
@@ -831,7 +835,8 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 	} finally {
 		subscriptions.dispatching = false;
 		subscriptions.logPositions = undefined;
-		dispatchedLog = dispatchedKeyBefore = undefined;
+		dispatchedLog = outerLog;
+		dispatchedKeyBefore = outerKeyBefore;
 		// If we yielded, the continuation owns notifyScheduled; otherwise (drain or any throw) we
 		// must clear it here so a stuck flag doesn't permanently silence future commits.
 		if (allowYield && !yielded) subscriptions.notifyScheduled = false;
