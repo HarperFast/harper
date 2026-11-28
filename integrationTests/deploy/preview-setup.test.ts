@@ -193,6 +193,7 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 			stdout,
 			/If preview_setup_fixture\/shop is public: .*pull_request_target[\s\S]*targets only \.github\/workflows\/preview\.yaml and/
 		);
+		doesNotMatch(stdout, /actions\/policies/);
 		match(stderr, /the HARPER_PREVIEW_TARGET repository variable was not set/);
 
 		const workflow = await readFile(join(checkout, '.github', 'workflows', 'preview.yaml'), 'utf8');
@@ -296,6 +297,7 @@ suite('harper preview setup and teardown (harper#3042)', { skip: UNSUPPORTED_HER
 			stdout,
 			/Removed trust policy github-actions-shop-preview, trust policy github-actions-shop-preview-cleanup, user shop-ci-preview, role shop-ci-preview/
 		);
+		match(stdout, /including an Actions event policy setup created in a public repository, "Allow Harper previews/);
 
 		const entries = (await sendOperation({ operation: 'get_components' })).entries;
 		ok(!entries.some((component: any) => component.name === 'shop-pr-12'));

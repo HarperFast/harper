@@ -5,6 +5,10 @@
 // These cases cover the derivations and the create-missing-only reconcile. The end-to-end run against
 // a real Harper is integrationTests/security/deploy-setup-github-actions.test.ts.
 const assert = require('node:assert');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const cliOperationsModule = require('#js/bin/cliOperations');
 const {
 	buildWorkflowRef,
 	canonicalWorkflowPath,
@@ -20,6 +24,7 @@ const {
 	variableAction,
 	withoutCredentials,
 	GITHUB_ACTIONS_ISSUER,
+	setupGithubActions,
 } = require('#src/bin/deploySetupGithubActions');
 const { buildRequest } = require('#src/bin/cliOperations');
 const { starterPreviewWorkflow } = require('#src/bin/previewSetup');
@@ -803,6 +808,80 @@ jobs:
 			assert.strictEqual(withoutCredentials('https://other.example.com:9925/'), 'https://other.example.com:9925/');
 			assert.strictEqual(withoutCredentials('not a url'), 'not a url');
 			assert.strictEqual(withoutCredentials('https://other.example.com/a@b'), 'https://other.example.com/a@b');
+		});
+	});
+
+	describe('the HARPER_CLI_TARGET variable, read before anything is created (harper#3806)', () => {
+		const saved = {};
+		let directory;
+		let operations;
+
+		beforeEach(async () => {
+			directory = await fs.mkdtemp(path.join(os.tmpdir(), 'deploy-setup-variable-'));
+			await fs.mkdir(path.join(directory, 'bin'));
+			Object.assign(saved, {
+				cliOperations: cliOperationsModule.cliOperations,
+				PATH: process.env.PATH,
+				log: console.log,
+				fetch: globalThis.fetch,
+				cwd: process.cwd(),
+			});
+			globalThis.fetch = async () => {
+				throw new Error('offline');
+			};
+			process.env.PATH = `${path.join(directory, 'bin')}${path.delimiter}${process.env.PATH}`;
+			process.chdir(directory);
+			console.log = () => {};
+			operations = [];
+			cliOperationsModule.cliOperations = async (request) => {
+				operations.push(request.operation);
+				if (request.operation === 'list_oidc_trust')
+					return { resolvedTarget: 'https://cluster.example.com:9925/', policies: [] };
+				return [];
+			};
+		});
+
+		afterEach(async () => {
+			cliOperationsModule.cliOperations = saved.cliOperations;
+			process.env.PATH = saved.PATH;
+			console.log = saved.log;
+			globalThis.fetch = saved.fetch;
+			process.chdir(saved.cwd);
+			await fs.rm(directory, { recursive: true, force: true });
+		});
+
+		const writeGh = (variable) =>
+			fs.writeFile(
+				path.join(directory, 'bin', 'gh'),
+				'#!/bin/sh\ncase "$*" in\n  auth*) exit 1 ;;\n' +
+					`  *actions/variables*) ${variable} ;;\n` +
+					`  *) echo '${JSON.stringify({ id: 1, full_name: 'acme/app', default_branch: 'main', private: true, permissions: { push: true } })}' ;;\n` +
+					'esac\n',
+				{ mode: 0o755 }
+			);
+
+		it('stops before it creates the role, user or trust policy when the variable names another cluster', async () => {
+			await writeGh('echo https://other.example.com:9925/');
+			await assert.rejects(
+				setupGithubActions({ repo: 'acme/app', repository_id: '1' }, {}, 'app'),
+				/The HARPER_CLI_TARGET variable on acme\/app is https:\/\/other\.example\.com:9925\/, so its workflows deploy there\.[\s\S]*Nothing was changed\./
+			);
+			assert.deepStrictEqual(
+				operations.filter((operation) => operation.startsWith('add_')),
+				[]
+			);
+		});
+
+		it('goes on, as before, when it cannot read the variable', async () => {
+			await writeGh('echo "gh: To get started, please run: gh auth login" >&2; exit 4');
+			await assert.rejects(
+				setupGithubActions({ repo: 'acme/app', repository_id: '1' }, {}, 'app'),
+				/Trust policy "github-actions-app" did not verify|repository variable was not set/
+			);
+			assert.deepStrictEqual(
+				operations.filter((operation) => operation.startsWith('add_')),
+				['add_role', 'add_user', 'add_oidc_trust']
+			);
 		});
 	});
 });

@@ -231,7 +231,7 @@ export async function runPreviewCommand(argv: readonly string[] = process.argv):
 			throw usageError(
 				'usage: harper preview setup app=<component> [repo=<owner/name>] [branch=<default branch>] [domain=<domain>] ' +
 					'[dataMode=branched|shared] [maxPreviews=<n>] [maxTtlDays=<days>] [credential=true] [write_workflow=true] ' +
-					'[allow_unverified=true] | ' +
+					'[actions_policy=true|false] [allow_unverified=true] | ' +
 					'harper preview teardown app=<component> | ' +
 					'harper preview deploy app=<component> pr=<n> branch=<name> [label=<dns-label>] [domain=<domain>] ' +
 					'[ttl=<days>] [check=false] | harper preview drop app=<component> pr=<n> [restart=true] [keepBranches=true] | ' +

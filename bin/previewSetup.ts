@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { accessSync, constants, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { prompts } from '../utility/interactivePrompts.ts';
 import { cliOperations, transportContext } from './cliOperations.ts';
@@ -12,6 +12,7 @@ import {
 	resolveSetupTarget,
 	setupGithubVariable,
 } from './deploySetupGithubActions.ts';
+import { ACTIONS_POLICY_DOCS, createActionsPolicy, prepareActionsPolicy } from './actionsEventPolicy.ts';
 import { fetchSecretsPublicKey, resolveDeployToken, sealDeployCredential } from './deploySetup.ts';
 import {
 	CI_PREVIEW_OPERATIONS,
@@ -24,7 +25,7 @@ import {
 	derivePreviewNames,
 } from '../utility/previewIdentity.ts';
 
-export const ACTIONS_POLICY_DOCS = 'https://docs.github.com/actions/how-tos/administer/control-workflow-execution';
+export { ACTIONS_POLICY_DOCS };
 
 function usageError(message: string): Error {
 	return Object.assign(new Error(message), { statusCode: 400 });
@@ -134,20 +135,6 @@ export function starterPreviewWorkflow({
 	].join('\n');
 }
 
-function pullRequestTargetPolicyWarning(repository: string, isPrivate: boolean | undefined, workflow: string) {
-	if (isPrivate === true) return undefined;
-	return (
-		`${isPrivate === false ? `${repository} is public:` : `If ${repository} is public:`} from December 2, 2026, ` +
-		`GitHub Actions blocks pull_request_target in public repositories unless an Actions event policy allows it, ` +
-		`and previews stop.\n` +
-		`  In the repository's Settings > Actions > Policies, make sure an Active policy targets only ${workflow} ` +
-		`and its Restrict events allows pull_request_target, plus any other event that workflow runs on. ` +
-		`An organization policy for it must target ${repository} too, and an organization or enterprise policy ` +
-		`can still block it: Policy insights shows what was blocked.\n` +
-		`  ${ACTIONS_POLICY_DOCS}`
-	);
-}
-
 function previewApp(args: Record<string, any>): string {
 	const app = rawStringArg(args, 'app');
 	if (!app) throw usageError('`app=<component>` names the application to set up previews for, e.g. app=shop');
@@ -188,6 +175,9 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 	const dataMode = rawStringArg(args, 'dataMode');
 	if (dataMode !== undefined && dataMode !== 'branched' && dataMode !== 'shared') {
 		throw usageError('`dataMode=` is `branched` (the default: each preview gets its own database branch) or `shared`');
+	}
+	if (args.actions_policy !== undefined && typeof args.actions_policy !== 'boolean') {
+		throw usageError('`actions_policy=` is `true` or `false`');
 	}
 	const maxPreviews = positiveNumber(args, 'maxPreviews', true);
 	const maxTtlDays = positiveNumber(args, 'maxTtlDays', false);
@@ -240,8 +230,28 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 			);
 		}
 	}
-	const policyWarning = pullRequestTargetPolicyWarning(repository.fullName, repository.private, workflow);
-	if (policyWarning) console.log(chalk.yellow(`! ${policyWarning}`));
+	const starter =
+		writeWorkflow && checkout
+			? starterPreviewWorkflow({
+					app,
+					branch,
+					environment,
+					domain: domain === defaultDomain ? undefined : domain,
+					credential,
+					shared: dataMode === 'shared',
+				})
+			: undefined;
+	const actionsPolicy = await prepareActionsPolicy({
+		repository,
+		workflow,
+		checkoutWorkflow: starter ?? checkout?.content,
+		workflowProblems: (content) => {
+			const check = checkPreviewWorkflowFile(content, branch, environment, PREVIEW_CLEANUP_ENVIRONMENT);
+			return [...check.problems, ...(check.unsafe ?? [])];
+		},
+		consent: args.actions_policy,
+		interactive,
+	});
 	assertGithubVariableSettable(repository, PREVIEW_TARGET_VARIABLE, audience, args.allow_unverified === true);
 	// Before anything is written: a cluster without secret custody cannot hold the credential.
 	const secretsKey = credential ? await fetchSecretsPublicKey(transport) : undefined;
@@ -287,36 +297,71 @@ export async function previewSetup(args: Record<string, any>): Promise<void> {
 		)
 	);
 
+	const unfinished: string[] = [];
 	if (secretsKey) {
-		const { secretName } = await sealDeployCredential(
-			{ ...args, token },
-			transport,
-			'github',
-			names.components,
-			secretsKey
-		);
-		console.log(
-			chalk.green(`✓ Sealed a GitHub credential for every preview of ${app} as secret "${secretName}".`) +
-				chalk.gray('\n  `harper preview deploy credential=true` uses it.')
-		);
+		try {
+			const { secretName } = await sealDeployCredential(
+				{ ...args, token },
+				transport,
+				'github',
+				names.components,
+				secretsKey,
+				false
+			);
+			console.log(
+				chalk.green(`✓ Sealed a GitHub credential for every preview of ${app} as secret "${secretName}".`) +
+					chalk.gray('\n  `harper preview deploy credential=true` uses it.')
+			);
+		} catch (error) {
+			unfinished.push(
+				`The cluster is set up, but the GitHub credential was not sealed (${(error as Error).message}). ` +
+					'Run setup again with credential=true to seal it.'
+			);
+		}
 	}
-	if (writeWorkflow && checkout) {
-		writeFileSync(
-			checkout.path,
-			starterPreviewWorkflow({
-				app,
-				branch,
-				environment,
-				domain: domain === defaultDomain ? undefined : domain,
-				credential,
-				shared: dataMode === 'shared',
-			}),
-			{ flag: 'wx' }
-		);
-		console.log(chalk.green(`✓ Wrote ${workflow}. Commit it to ${branch}: pull_request_target runs it from there.`));
+	let workflowWritten = true;
+	if (starter && checkout) {
+		try {
+			writeFileSync(checkout.path, starter, { flag: 'wx' });
+			console.log(
+				chalk.green(
+					`✓ Wrote ${workflow}. Once setup finishes, commit it to ${branch}: pull_request_target runs it from there.`
+				)
+			);
+		} catch (error) {
+			workflowWritten = false;
+			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+				try {
+					rmSync(checkout.path, { force: true });
+				} catch {}
+			}
+			unfinished.push(
+				(error as NodeJS.ErrnoException).code === 'EEXIST'
+					? `The cluster is set up, but ${workflow} appeared while setup ran, so setup did not write it. Run setup again to check it.`
+					: `The cluster is set up, but ${workflow} was not written (${(error as Error).message}). Run setup again with write_workflow=true to write it.`
+			);
+		}
 	}
 	for (const note of notes) console.log(chalk.yellow(`  ${note}`));
-	setupGithubVariable(repository.fullName, PREVIEW_TARGET_VARIABLE, audience);
+	try {
+		setupGithubVariable(repository.fullName, PREVIEW_TARGET_VARIABLE, audience);
+	} catch (error) {
+		unfinished.push((error as Error).message);
+	}
+	if (actionsPolicy && workflowWritten) createActionsPolicy(repository, workflow, actionsPolicy);
+	else if (actionsPolicy) {
+		unfinished.push(
+			`The Actions event policy was not created, since it allows the events of the ${workflow} setup did not write.`
+		);
+	}
+	if (unfinished.length > 0) {
+		if (starter && workflowWritten) {
+			unfinished.push(
+				`Setup wrote ${workflow}: commit it only once the steps above are done, since its runs fail until then.`
+			);
+		}
+		throw usageError(unfinished.join('\n'));
+	}
 }
 
 export function formatTeardown(response: any): string {
@@ -332,6 +377,10 @@ export function formatTeardown(response: any): string {
 				'when it expires, or by `harper preview drop`.'
 		);
 	}
+	lines.push(
+		'  The GitHub side stays as it is, including an Actions event policy setup created in a public repository, ' +
+			'"Allow Harper previews (<workflow file>)": delete it in the repository\'s Settings > Actions > Policies.'
+	);
 	return lines.join('\n');
 }
 

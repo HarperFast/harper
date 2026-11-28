@@ -1900,6 +1900,82 @@ describe('cliOperations', () => {
 		});
 	});
 
+	describe('a caller that asks it not to exit (harper#3806)', () => {
+		const target = 'https://example.com:9925/';
+		let originalExit;
+		let originalConsoleError;
+		let exits;
+		let errorLines;
+
+		beforeEach(() => {
+			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => false;
+			exits = [];
+			errorLines = [];
+			originalExit = process.exit;
+			process.exit = (code) => {
+				exits.push(code);
+				throw new ProcessExitSignal(code);
+			};
+			originalConsoleError = console.error;
+			console.error = (...args) => errorLines.push(args.join(' '));
+		});
+
+		afterEach(() => {
+			process.exit = originalExit;
+			console.error = originalConsoleError;
+			commonUtilsModule.httpRequest = originalHttpRequest;
+			tokenAuthModule.isJWTExpired = originalIsJWTExpired;
+		});
+
+		const setSecret = (options) =>
+			cliOperationsModule.cliOperations({ target, operation: 'set_secret', name: 'x', envelope: 'e' }, true, options);
+
+		it('throws the failure it would have printed, and neither prints it nor exits', async () => {
+			commonUtilsModule.httpRequest = async () => ({
+				statusCode: 500,
+				body: JSON.stringify({ error: 'the secrets store is read-only' }),
+			});
+			await assert.rejects(setSecret({ exit: false }), (error) => {
+				assert.ok(error instanceof cliOperationsModule.CliOperationFailure);
+				assert.match(error.message, /the secrets store is read-only/);
+				assert.doesNotMatch(error.message, /^error: /);
+				return true;
+			});
+			assert.deepStrictEqual(exits, []);
+			assert.ok(!errorLines.some((line) => /read-only/.test(line)), errorLines.join('\n'));
+
+			await assert.rejects(setSecret(), ProcessExitSignal);
+			assert.deepStrictEqual(exits.slice(0, 1), [1]);
+			assert.ok(
+				errorLines.some((line) => /^error: .*the secrets store is read-only/.test(line)),
+				errorLines.join('\n')
+			);
+		});
+
+		it('throws, rather than exits, when the refresh token has expired', async () => {
+			saveCredentials(target, { operation_token: 'expired-token', refresh_token: 'refresh-token' });
+			tokenAuthModule.isJWTExpired = () => true;
+			commonUtilsModule.httpRequest = async () => ({ statusCode: 401, body: '{}' });
+			await assert.rejects(
+				setSecret({ exit: false }),
+				/Refresh token expired or invalid\. Please run harper login again\./
+			);
+			assert.deepStrictEqual(exits, []);
+		});
+
+		it('throws a connection failure in the words it would have printed', async () => {
+			commonUtilsModule.httpRequest = async () => {
+				throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+			};
+			await assert.rejects(
+				setSecret({ exit: false }),
+				/Failed to connect to Harper \(ECONNREFUSED\): connect ECONNREFUSED/
+			);
+			assert.deepStrictEqual(exits, []);
+		});
+	});
+
 	describe('redactCredentials', () => {
 		it('masks secret values while leaving the rest of the parsed request intact', () => {
 			const redacted = cliOperationsModule.redactCredentials({

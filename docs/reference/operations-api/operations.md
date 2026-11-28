@@ -1653,7 +1653,7 @@ With `"replicated": true` the response is `{ "nodes": [...] }`, one entry per no
 
 <VersionBadge version="v5.4.0" />
 
-Three operations manage the identity CI deploys an application's pull-request previews as. [`harper preview setup`](../cli/commands.md#harper-preview-setup) and `harper preview teardown` call them, and [Per-PR previews](/learn/developers/deploying-from-ci#per-pr-previews) covers the whole flow. A public repository also needs an Actions event policy that allows `pull_request_target` for the preview workflow: see [Public repositories: allow `pull_request_target`](../cli/commands.md#public-repositories-allow-pull_request_target).
+Three operations manage the identity CI deploys an application's pull-request previews as. [`harper preview setup`](../cli/commands.md#harper-preview-setup) and `harper preview teardown` call them, and [Per-PR previews](/learn/developers/deploying-from-ci#per-pr-previews) covers the whole flow. A public repository also needs an Actions event policy that allows `pull_request_target` for the preview workflow. `harper preview setup` creates it when you let it; these operations do not: see [Public repositories: allow `pull_request_target`](../cli/commands.md#public-repositories-allow-pull_request_target).
 
 | Operation            | Description                                                                      | Role Required |
 | -------------------- | -------------------------------------------------------------------------------- | ------------- |
