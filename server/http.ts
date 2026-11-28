@@ -42,7 +42,12 @@ import {
 	withProxyProtocol,
 } from './serverHelpers/proxyProtocol.ts';
 import { Blob } from '../resources/blob.ts';
-import { checkAnalyticsEnabled, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
+import {
+	actionRecorder,
+	checkAnalyticsEnabled,
+	recordAction,
+	recordActionBinary,
+} from '../resources/analytics/write.ts';
 import { METRIC } from '../resources/analytics/metadata.ts';
 import { Readable, Writable, finished, pipeline } from 'node:stream';
 import { mkdirSync, unlinkSync, readdirSync, statSync, chmodSync } from 'node:fs';
@@ -637,7 +642,8 @@ export function pipeBodyToResponse(
 	nodeResponse: any,
 	handlerPath: string,
 	method: string,
-	endTime: number
+	endTime: number,
+	recorders?: RequestRecorders
 ) {
 	if (nodeResponse.destroyed || nodeResponse.writableEnded) {
 		body.destroy();
@@ -653,8 +659,9 @@ export function pipeBodyToResponse(
 			// that's a routine disconnect, not a failure worth a warning
 			if ((error as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') harperLogger.warn(errorForLog(error));
 		} else {
-			recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
-			recordAction(bytesSent, 'bytes-sent', handlerPath, method);
+			const record = recorders && recorders !== NOT_RECORDING ? recorders : requestRecorders(handlerPath, method);
+			record.transfer(performance.now() - endTime);
+			record.bytesSent(bytesSent);
 			endConnectionIfClientExpectsClose(nodeResponse);
 		}
 	};
@@ -1041,9 +1048,9 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 				const method = request.method;
 				const cacheType =
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
-				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
-				if (receivedAt !== undefined)
-					recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, handlerPath, method, cacheType);
+				const recorders = requestRecorders(handlerPath, method);
+				recorders.duration(executionTime, cacheType);
+				if (receivedAt !== undefined) recorders.requestTime(endTime - receivedAt, cacheType);
 				if (!sentBody) {
 					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
 					// Only wrap non-stream iterables. Re-wrapping an existing Node stream in
@@ -1057,19 +1064,25 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					// the head may still turn into an error status, so record what the response carries on close
 					if (body?.pipe && !nodeResponse.headersSent && !nodeResponse.destroyed)
 						nodeResponse.once('close', () =>
-							recordOutcome(nodeResponse.statusCode, nodeRequest, requestId, executionTime, handlerPath, method)
+							recordOutcome(
+								nodeResponse.statusCode,
+								nodeRequest,
+								requestId,
+								executionTime,
+								recorders === NOT_RECORDING ? requestRecorders(handlerPath, method) : recorders
+							)
 						);
-					else recordOutcome(status, nodeRequest, requestId, executionTime, handlerPath, method);
+					else recordOutcome(status, nodeRequest, requestId, executionTime, recorders);
 
 					// if it is a stream, pipe it
-					if (body?.pipe) pipeBodyToResponse(body, nodeResponse, handlerPath, method, endTime);
+					if (body?.pipe) pipeBodyToResponse(body, nodeResponse, handlerPath, method, endTime, recorders);
 					// else just send the buffer/string
 					else if (body?.then)
 						body.then((body) => {
 							nodeResponse.end(body);
 						}, onError);
 					else nodeResponse.end(body);
-				} else recordOutcome(status, nodeRequest, requestId, executionTime, handlerPath, method);
+				} else recordOutcome(status, nodeRequest, requestId, executionTime, recorders);
 			} catch (error) {
 				onError(error);
 			}
@@ -1343,11 +1356,11 @@ export function makeUwsHandler(
 		}
 		const cacheType =
 			response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
-		recordAction(executionTime, 'duration', request.handlerPath, request.method, cacheType);
-		if (receivedAt !== undefined)
-			recordAction(endTime - receivedAt, METRIC.REQUEST_TIME, request.handlerPath, request.method, cacheType);
-		recordActionBinary(status < 400, 'success', request.handlerPath, request.method);
-		if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, request.handlerPath, request.method);
+		const recorders = requestRecorders(request.handlerPath, request.method);
+		recorders.duration(executionTime, cacheType);
+		if (receivedAt !== undefined) recorders.requestTime(endTime - receivedAt, cacheType);
+		recorders.success(status < 400);
+		recorders.response(status);
 		logHttpRequest(request, status, requestId, executionTime);
 		// Static handlers (the only handlesHeaders producers) return a `send` SendStream that writes
 		// its own headers/body to a Node ServerResponse via .pipe(). uWS has no such object, and a
@@ -1566,9 +1579,10 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 				const method = request.method;
 				const cacheType =
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit';
-				recordAction(executionTime, 'duration', handlerPath, method, cacheType);
-				recordActionBinary(status < 400, 'success', handlerPath, method);
-				if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, handlerPath, method);
+				const recorders = requestRecorders(handlerPath, method);
+				recorders.duration(executionTime, cacheType);
+				recorders.success(status < 400);
+				recorders.response(status);
 				logHttpRequest(request, status, requestId, executionTime);
 				// Convert body to something Bun's Response can accept
 				if (body instanceof ReadableStream) {
@@ -2325,12 +2339,121 @@ function recordOutcome(
 	nodeRequest: IncomingMessage,
 	requestId: number,
 	executionTime: number,
-	handlerPath: string,
-	method: string
+	recorders: RequestRecorders
 ) {
-	recordActionBinary(status < 400, 'success', handlerPath, method);
-	if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, handlerPath, method);
+	recorders.success(status < 400);
+	recorders.response(status);
 	logRequest(nodeRequest, status, requestId, executionTime);
+}
+
+interface RequestRecorders {
+	duration(executionTime: number, cacheType: string | undefined): void;
+	requestTime(requestTime: number, cacheType: string | undefined): void;
+	success(succeeded: boolean): void;
+	response(status: number): void;
+	transfer(milliseconds: number): void;
+	bytesSent(bytes: number): void;
+}
+type Recorder = (value: number | boolean) => void;
+const MAX_ROUTE_RECORDERS = 1000;
+const MAX_STATUS_RECORDERS = 32;
+const cacheTypeIndex = (cacheType: string | undefined) =>
+	cacheType === undefined ? 0 : cacheType === 'cache-miss' ? 1 : 2;
+
+class RouteRecorders implements RequestRecorders {
+	readonly handlerPath: string | undefined;
+	readonly method: string;
+	readonly success: Recorder;
+	readonly transfer: Recorder;
+	readonly bytesSent: Recorder;
+	#durations: (Recorder | undefined)[] = [undefined, undefined, undefined];
+	#requestTimes: (Recorder | undefined)[] = [undefined, undefined, undefined];
+	#responses = new Map<number, Recorder>();
+	constructor(handlerPath: string | undefined, method: string) {
+		this.handlerPath = handlerPath;
+		this.method = method;
+		this.success = actionRecorder('success', handlerPath, method);
+		this.transfer = actionRecorder('transfer', handlerPath, method);
+		this.bytesSent = actionRecorder('bytes-sent', handlerPath, method);
+	}
+	duration(executionTime: number, cacheType: string | undefined) {
+		(this.#durations[cacheTypeIndex(cacheType)] ??= actionRecorder(
+			'duration',
+			this.handlerPath,
+			this.method,
+			cacheType
+		))(executionTime);
+	}
+	requestTime(requestTime: number, cacheType: string | undefined) {
+		(this.#requestTimes[cacheTypeIndex(cacheType)] ??= actionRecorder(
+			METRIC.REQUEST_TIME,
+			this.handlerPath,
+			this.method,
+			cacheType
+		))(requestTime);
+	}
+	response(status: number) {
+		let record = this.#responses.get(status);
+		if (record === undefined) {
+			if (this.#responses.size >= MAX_STATUS_RECORDERS)
+				return recordActionBinary(1, 'response_' + status, this.handlerPath, this.method);
+			this.#responses.set(status, (record = actionRecorder('response_' + status, this.handlerPath, this.method)));
+		}
+		record(true);
+	}
+}
+
+class UncachedRequestRecorders implements RequestRecorders {
+	readonly handlerPath: string | undefined;
+	readonly method: string;
+	constructor(handlerPath: string | undefined, method: string) {
+		this.handlerPath = handlerPath;
+		this.method = method;
+	}
+	duration(executionTime: number, cacheType: string | undefined) {
+		recordAction(executionTime, 'duration', this.handlerPath, this.method, cacheType);
+	}
+	requestTime(requestTime: number, cacheType: string | undefined) {
+		recordAction(requestTime, METRIC.REQUEST_TIME, this.handlerPath, this.method, cacheType);
+	}
+	success(succeeded: boolean) {
+		recordActionBinary(succeeded, 'success', this.handlerPath, this.method);
+	}
+	response(status: number) {
+		if (checkAnalyticsEnabled()) recordActionBinary(1, 'response_' + status, this.handlerPath, this.method);
+	}
+	transfer(milliseconds: number) {
+		recordAction(milliseconds, 'transfer', this.handlerPath, this.method);
+	}
+	bytesSent(bytes: number) {
+		recordAction(bytes, 'bytes-sent', this.handlerPath, this.method);
+	}
+}
+
+const noop = () => {};
+const NOT_RECORDING: RequestRecorders = {
+	duration: noop,
+	requestTime: noop,
+	success: noop,
+	response: noop,
+	transfer: noop,
+	bytesSent: noop,
+};
+// The method is the client's (uWS and Bun accept any token), so only so many (route, method) pairs keep recorders.
+const routeRecorderSets = new Map<string | undefined, Map<string, RouteRecorders>>();
+let routeRecorderCount = 0;
+const CACHED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'CONNECT', 'TRACE']);
+function requestRecorders(handlerPath: string | undefined, method: string): RequestRecorders {
+	if (!checkAnalyticsEnabled()) return NOT_RECORDING;
+	let byMethod = routeRecorderSets.get(handlerPath);
+	let recorders = byMethod?.get(method);
+	if (recorders !== undefined) return recorders;
+	if (!CACHED_METHODS.has(method) || routeRecorderCount >= MAX_ROUTE_RECORDERS)
+		return new UncachedRequestRecorders(handlerPath, method);
+	if (byMethod === undefined) routeRecorderSets.set(handlerPath, (byMethod = new Map()));
+	byMethod.set(method, (recorders = new RouteRecorders(handlerPath, method)));
+	routeRecorderCount++;
+	return recorders;
 }
 
 export function logRequest(nodeRequest: IncomingMessage, status: number, requestId: number, executionTime?: number) {

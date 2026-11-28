@@ -35,6 +35,9 @@ export type Value = number | boolean | ActionCallback;
 interface Action {
 	total?: number;
 	values?: Float32Array;
+	runs?: Uint16Array;
+	runCount?: number;
+	samples?: number;
 	count?: number;
 	callback?: ActionCallback;
 	description?: {
@@ -46,13 +49,55 @@ interface Action {
 }
 
 let activeActions = new Map<string, Action>();
+
+/**
+ * One level of actionIndex. Each level takes the shape its own cardinality calls for: an array scanned with
+ * Map's key equality while it holds a few keys (a verb, a type, a table: most levels), which costs less than
+ * Map.get, and a Map once it outgrows that (paths).
+ */
+class IndexLevel<T> {
+	keys: unknown[] | null = [];
+	entries: T[] | null = [];
+	map: Map<unknown, T> | null = null;
+	get(key: unknown): T | undefined {
+		if (this.map !== null) return this.map.get(key);
+		const keys = this.keys!;
+		for (let i = 0; i < keys.length; i++) {
+			const candidate = keys[i];
+			if (candidate === key || (candidate !== candidate && key !== key)) return this.entries![i];
+		}
+		return undefined;
+	}
+	set(key: unknown, entry: T) {
+		if (this.map !== null) return void this.map.set(key, entry);
+		const keys = this.keys!;
+		keys.push(key);
+		this.entries!.push(entry);
+		if (keys.length > INDEX_ARRAY_KEYS) {
+			const map = new Map<unknown, T>();
+			for (let i = 0; i < keys.length; i++) map.set(keys[i], this.entries![i]);
+			this.map = map;
+			this.keys = this.entries = null;
+		}
+	}
+}
+const INDEX_ARRAY_KEYS = 8;
+
+class MetricIndex {
+	byMethod = new IndexLevel<IndexLevel<IndexLevel<Action>>>();
+	lastAction: Action | undefined = undefined;
+	lastPath: unknown;
+	lastMethod: unknown;
+	lastType: unknown;
+}
 // activeActions by recordAction's arguments as given. A tuple enters only once activeActions already holds
 // its action, so an action recorded once in a window is never indexed.
-let actionIndex = new Map<string, Map<string | undefined, Map<string | undefined, Map<string | undefined, Action>>>>();
+let actionIndex = new Map<string, MetricIndex>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 let analyticsReadOnlyChecked = false;
 let sendAnalyticsTimeout: NodeJS.Timeout;
 let analyticsGeneration = 0;
+let analyticsWindow = 0;
 let analyticsExiting = false;
 let runningAnalyticsFlush: Promise<void> | undefined;
 let exitAnalyticsFlush: Promise<void> | undefined;
@@ -86,23 +131,26 @@ export function setAnalyticsEnabled(enabled: boolean) {
 	// The cancelled window must not stretch the next one's period, skip its histogram reset, or leak its samples.
 	analyticsStart = 0;
 	lastFlushAt = 0;
+	// a recorder keeps its action until it is next called, so the dropped window's samples are released here
+	for (const action of activeActions.values()) action.values = action.runs = undefined;
 	activeActions = new Map();
 	actionIndex = new Map();
+	analyticsWindow++;
 	getTransactionQueueDepths(); // restarts the queue high-water marks with the window
 	analyticsGeneration++;
 }
 
 function recordExistingAction(value: Value, action: Action) {
 	if (typeof value === 'number') {
-		let values: any = action.values;
-		const index = values.index++;
-		if (index >= values.length) {
-			const oldValues = values;
-			action.values = values = new Float32Array(index * 2);
-			values.set(oldValues);
-			values.index = index + 1;
-		}
-		values[index] = value;
+		const last = action.runCount - 1;
+		const lastValue = action.values[last];
+		// Runs hold float32 values, so a value float32 rounds (0.1) still matches its run. 0 and -0 compare equal but
+		// sort apart, so they never share a run.
+		const stored = Math.fround(value);
+		if (stored === lastValue && action.runs[last] < MAX_RUN && (stored !== 0 || Object.is(stored, lastValue)))
+			action.runs[last]++;
+		else appendRun(action, value);
+		action.samples++;
 		action.total += value;
 	} else if (typeof value === 'boolean') {
 		if (value) action.total++;
@@ -113,13 +161,33 @@ function recordExistingAction(value: Value, action: Action) {
 	} else throw new TypeError('Invalid metric value type ' + typeof value);
 }
 
+const MAX_RUN = 0xffff;
+type RunCounts = Uint16Array | Uint32Array;
+
+function appendRun(action: Action, value: number) {
+	const index = action.runCount;
+	if (index === action.values.length) {
+		const values = new Float32Array(index * 2);
+		const runs = new Uint16Array(index * 2);
+		values.set(action.values);
+		runs.set(action.runs);
+		action.values = values;
+		action.runs = runs;
+	}
+	action.values[index] = value;
+	action.runs[index] = 1;
+	action.runCount = index + 1;
+}
+
 function recordNewAction(key: string, value: Value, metric?: string, path?: string, method?: string, type?: string) {
 	const action: Action = {};
 	if (typeof value === 'number') {
-		action.total = value;
 		action.values = new Float32Array(4);
-		(action.values as any).index = 1;
+		action.runs = new Uint16Array(4);
 		action.values[0] = value;
+		action.runs[0] = 1;
+		action.runCount = 1;
+		action.samples = 1;
 		action.total = value;
 	} else if (typeof value === 'boolean') {
 		action.total = value ? 1 : 0;
@@ -149,16 +217,30 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
 	if (!checkAnalyticsEnabled() || analyticsExiting) return;
-	const actionsByPath = actionIndex.get(metric)?.get(method)?.get(type);
-	const action = actionsByPath?.get(path);
-	if (action !== undefined) {
-		recordExistingAction(value, action);
-		armFlush();
-	} else {
-		const existing = recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
-		if (existing !== undefined && isPrimitive(path) && isPrimitive(method) && isPrimitive(type))
-			(actionsByPath ?? indexedActionsByPath(metric, method, type)).set(path, existing);
+	const indexed = actionIndex.get(metric);
+	if (indexed !== undefined) {
+		let action =
+			path === indexed.lastPath && method === indexed.lastMethod && type === indexed.lastType
+				? indexed.lastAction
+				: undefined;
+		if (action === undefined) {
+			action = indexed.byMethod.get(method)?.get(type)?.get(path);
+			if (action !== undefined) {
+				indexed.lastAction = action;
+				indexed.lastPath = path;
+				indexed.lastMethod = method;
+				indexed.lastType = type;
+			}
+		}
+		if (action !== undefined) {
+			recordExistingAction(value, action);
+			armFlush();
+			return;
+		}
 	}
+	const existing = recordKeyedAction(actionKey(metric, path, method, type), value, metric, path, method, type);
+	if (existing !== undefined && isPrimitive(path) && isPrimitive(method) && isPrimitive(type))
+		indexedActionsByPath(metric, method, type).set(path, existing);
 }
 
 // Keyed by identity, a fresh object per call (a request body's operation) would add an entry per call
@@ -167,24 +249,33 @@ function isPrimitive(value: unknown): boolean {
 }
 
 export function isActionIndexedForTests(metric: string, path?: string, method?: string, type?: string): boolean {
-	return actionIndex.get(metric)?.get(method)?.get(type)?.has(path) ?? false;
+	return actionIndex.get(metric)?.byMethod.get(method)?.get(type)?.get(path) !== undefined;
 }
 
-function indexedActionsByPath(metric: string, method?: string, type?: string): Map<string | undefined, Action> {
-	let byMethod = actionIndex.get(metric);
-	if (byMethod === undefined) actionIndex.set(metric, (byMethod = new Map()));
-	let byType = byMethod.get(method);
-	if (byType === undefined) byMethod.set(method, (byType = new Map()));
+function indexedActionsByPath(metric: string, method?: string, type?: string): IndexLevel<Action> {
+	let indexed = actionIndex.get(metric);
+	if (indexed === undefined) actionIndex.set(metric, (indexed = new MetricIndex()));
+	let byType = indexed.byMethod.get(method);
+	if (byType === undefined) indexed.byMethod.set(method, (byType = new IndexLevel()));
 	let byPath = byType.get(type);
-	if (byPath === undefined) byType.set(type, (byPath = new Map()));
+	if (byPath === undefined) byType.set(type, (byPath = new IndexLevel()));
 	return byPath;
 }
 
-/** recordAction with the key built once, for a hot path that would otherwise concatenate and hash it per call */
+/**
+ * recordAction for one fixed set of arguments, for a hot path: it looks its action up once per analytics window.
+ * Within a window the flush timer is already armed, since only a rotation or an exit disarms it.
+ */
 export function actionRecorder(metric: string, path?: string, method?: string, type?: string): (value: Value) => void {
 	const key = actionKey(metric, path, method, type);
+	let action: Action | undefined;
+	let window = -1;
 	return (value) => {
-		if (checkAnalyticsEnabled() && !analyticsExiting) recordKeyedAction(key, value, metric, path, method, type);
+		if (!checkAnalyticsEnabled() || analyticsExiting) return;
+		if (window === analyticsWindow) return recordExistingAction(value, action);
+		recordKeyedAction(key, value, metric, path, method, type);
+		action = activeActions.get(key);
+		window = analyticsWindow;
 	};
 }
 
@@ -219,7 +310,7 @@ function armFlush() {
 }
 
 // Let the storage layer emit write-commit latency without statically depending on this module.
-setCommitLatencyRecorder((durationMs) => recordAction(durationMs, METRIC.TRANSACTION_COMMIT_TIME));
+setCommitLatencyRecorder(actionRecorder(METRIC.TRANSACTION_COMMIT_TIME));
 
 export function recordActionBinary(value, metric, path?, method?, type?) {
 	recordAction(Boolean(value), metric, path, method, type);
@@ -252,13 +343,175 @@ export function flushAnalyticsForExit(): Promise<void> {
 	sendAnalyticsTimeout = null;
 	return (exitAnalyticsFlush = contextStorage.exit(async () => {
 		await runningAnalyticsFlush?.catch(() => {});
-		if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
-		else for (const listener of [...analyticsListeners]) listener([], true);
-		if (!parentPort) await RawAnalyticsTable?.primaryStore.committed;
+		try {
+			if (checkAnalyticsEnabled(false)) await flushAnalytics(true);
+			else for (const listener of [...analyticsListeners]) listener([], true);
+		} finally {
+			// a callback or listener that throws must not cost the reports already admitted
+			if (!parentPort) {
+				// a report arriving while these settle starts more of either
+				while (summarizing || reportWrites.size > 0) {
+					await summarizing;
+					await Promise.all(reportWrites);
+				}
+				await RawAnalyticsTable?.primaryStore.committed;
+			}
+		}
 	}));
 }
 
 const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
+interface SampleRuns {
+	values: Float32Array;
+	runs: RunCounts;
+	length: number;
+}
+
+type Distribution = Array<number | { value: number; count: number }>;
+
+/**
+ * The percentile distribution of a numeric action's samples, given as runs: what sorting every sample would give,
+ * from sorting only the runs and counting through them to each percentile's position. Sorts the runs in place.
+ */
+export function distributionOfRuns(values: Float32Array, runs: RunCounts, length: number, count: number): Distribution {
+	const steps = distributionSteps(values, runs, length, count);
+	let step = steps.next();
+	while (!step.done) step = steps.next();
+	return step.value;
+}
+
+function* distributionSteps(
+	values: Float32Array,
+	runs: RunCounts,
+	length: number,
+	count: number
+): Generator<void, Distribution> {
+	yield* sortRunsSteps(values, runs, length);
+	return percentileDistribution(values, runs, count);
+}
+
+function percentileDistribution(values: Float32Array, runs: RunCounts, count: number): Distribution {
+	const distribution: Distribution = [];
+	let lastUpperBound = 0;
+	let lastValue: number;
+	let run = 0;
+	let through = runs[0];
+	for (const percentile of IDEAL_PERCENTILES) {
+		const upperBound = Math.floor(count * percentile);
+		if (upperBound > lastUpperBound) {
+			while (through < upperBound) through += runs[++run];
+			const value = values[run];
+			const bucket = upperBound - lastUpperBound;
+			if (value === lastValue) {
+				const entry = distribution[distribution.length - 1];
+				if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + bucket };
+				else entry.count += bucket;
+			} else {
+				distribution.push(bucket > 1 ? { value, count: bucket } : value);
+				lastValue = value;
+			}
+			lastUpperBound = upperBound;
+		}
+	}
+	return distribution;
+}
+
+const RADIX_BITS = 11;
+const RADIX_MASK = (1 << RADIX_BITS) - 1;
+const INSERTION_SORT_MAX = 32;
+const STEP_RUNS = 1 << 16;
+let radixCounts: Uint32Array | undefined;
+
+interface RadixState {
+	keys: Uint32Array;
+	spareKeys: Uint32Array;
+	runs: RunCounts;
+	spareRuns: RunCounts;
+}
+
+/**
+ * Sorts the first `length` runs by value, in place, into the order Float32Array#sort gives: numeric, -0 before 0,
+ * NaN last. Each value's float32 bits are mapped so that unsigned order is that order, then radix sorted in at most
+ * three linear passes (a pass whose digit every key shares is skipped), carrying the run counts along. The typed
+ * array's own sort compares, which costs several times as much on values that do not repeat.
+ */
+function* sortRunsSteps(values: Float32Array, runs: RunCounts, length: number): Generator<void, void> {
+	const bits = new Uint32Array(values.buffer, values.byteOffset, length);
+	const keys = sortKeys(bits, length);
+	const stepped = length >= STEP_RUNS;
+	if (length <= INSERTION_SORT_MAX) {
+		insertionSort(keys, runs, length);
+		restoreBits(bits, keys, length);
+		return;
+	}
+	if (stepped) yield;
+	const state: RadixState = {
+		keys,
+		spareKeys: new Uint32Array(length),
+		runs: runs.subarray(0, length),
+		spareRuns: runs instanceof Uint16Array ? new Uint16Array(length) : new Uint32Array(length),
+	};
+	for (let shift = 0; shift < 32; shift += RADIX_BITS) {
+		if (radixPass(state, shift, length) && stepped) yield;
+	}
+	if (state.runs.buffer !== runs.buffer) runs.set(state.runs);
+	restoreBits(bits, state.keys, length);
+}
+
+function sortKeys(bits: Uint32Array, length: number): Uint32Array {
+	const keys = new Uint32Array(length);
+	for (let i = 0; i < length; i++) {
+		const b = bits[i];
+		keys[i] = (b & 0x7fffffff) > 0x7f800000 ? 0xffffffff : b & 0x80000000 ? ~b >>> 0 : (b | 0x80000000) >>> 0;
+	}
+	return keys;
+}
+
+function restoreBits(bits: Uint32Array, keys: Uint32Array, length: number) {
+	for (let i = 0; i < length; i++) {
+		const key = keys[i];
+		bits[i] = key & 0x80000000 ? key & 0x7fffffff : ~key >>> 0;
+	}
+}
+
+function insertionSort(keys: Uint32Array, runs: RunCounts, length: number) {
+	for (let i = 1; i < length; i++) {
+		const key = keys[i];
+		const run = runs[i];
+		let j = i - 1;
+		for (; j >= 0 && keys[j] > key; j--) {
+			keys[j + 1] = keys[j];
+			runs[j + 1] = runs[j];
+		}
+		keys[j + 1] = key;
+		runs[j + 1] = run;
+	}
+}
+
+function radixPass(state: RadixState, shift: number, length: number): boolean {
+	const counts = (radixCounts ??= new Uint32Array(1 << RADIX_BITS));
+	const { keys, spareKeys, runs, spareRuns } = state;
+	counts.fill(0);
+	for (let i = 0; i < length; i++) counts[(keys[i] >>> shift) & RADIX_MASK]++;
+	if (counts[(keys[0] >>> shift) & RADIX_MASK] === length) return false;
+	let offset = 0;
+	for (let digit = 0; digit <= RADIX_MASK; digit++) {
+		const digitCount = counts[digit];
+		counts[digit] = offset;
+		offset += digitCount;
+	}
+	for (let i = 0; i < length; i++) {
+		const key = keys[i];
+		const position = counts[(key >>> shift) & RADIX_MASK]++;
+		spareKeys[position] = key;
+		spareRuns[position] = runs[i];
+	}
+	state.keys = spareKeys;
+	state.spareKeys = keys;
+	state.runs = spareRuns;
+	state.spareRuns = runs;
+	return true;
+}
 
 /**
  * Periodically send analytics data back to the main thread for storage. Callers arm it through
@@ -304,6 +557,7 @@ async function collectAnalytics(final: boolean) {
 	const reportingActions = activeActions;
 	activeActions = new Map();
 	actionIndex = new Map();
+	analyticsWindow++;
 	const period = analyticsStart ? performance.now() - analyticsStart : 0;
 	analyticsStart = 0;
 	// Read before the first yield too, so the event loop's samples from the rest of the flush belong
@@ -317,50 +571,47 @@ async function collectAnalytics(final: boolean) {
 		threadId,
 		metrics,
 	};
-	for (const [_name, action] of reportingActions) {
-		if (action.values) {
-			const values = action.values.subarray(0, (action.values as any).index);
-			values.sort();
-			const count = values.length;
-			// compute the stats
-			let lastUpperBound = 0;
-			const distribution = [];
-			let lastValue;
-			for (const percentile of IDEAL_PERCENTILES) {
-				const upperBound = Math.floor(count * percentile);
-				const value = values[upperBound - 1];
-				if (upperBound > lastUpperBound) {
-					const count = upperBound - lastUpperBound;
-					if (value === lastValue) {
-						const entry = distribution[distribution.length - 1];
-						if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
-						else entry.count += count;
-					} else {
-						distribution.push(count > 1 ? { value, count } : value);
-						lastValue = value;
-					}
-					lastUpperBound = upperBound;
+	const sampled = parentPort ? new Map<object, SampleRuns>() : undefined;
+	try {
+		for (const [_name, action] of reportingActions) {
+			if (action.values) {
+				const count = action.samples;
+				if (sampled) {
+					const entry = Object.assign(action.description, { mean: action.total / count, count });
+					metrics.push(entry);
+					sampled.set(entry, { values: action.values, runs: action.runs, length: action.runCount });
+				} else {
+					metrics.push(
+						Object.assign(action.description, {
+							mean: action.total / count,
+							distribution: distributionOfRuns(action.values, action.runs, action.runCount, count),
+							count,
+						})
+					);
+				}
+				action.values = action.runs = undefined;
+			} else if (action.callback) {
+				metrics.push(Object.assign(action.description, action.callback(action)));
+			} else {
+				metrics.push(
+					Object.assign(action.description, {
+						total: action.total,
+						count: action.count,
+					})
+				);
+			}
+			if (!parentPort || action.callback) {
+				await rest();
+				if (generation !== analyticsGeneration) {
+					for (const dropped of reportingActions.values()) dropped.values = dropped.runs = undefined;
+					return;
 				}
 			}
-			metrics.push(
-				Object.assign(action.description, {
-					mean: action.total / count,
-					distribution,
-					count,
-				})
-			);
-		} else if (action.callback) {
-			metrics.push(Object.assign(action.description, action.callback(action)));
-		} else {
-			metrics.push(
-				Object.assign(action.description, {
-					total: action.total,
-					count: action.count,
-				})
-			);
 		}
-		await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
-		if (generation !== analyticsGeneration) return;
+	} catch (error) {
+		// a callback threw: an idle recorder would otherwise keep the rest of the window's samples for good
+		for (const action of reportingActions.values()) action.values = action.runs = undefined;
+		throw error;
 	}
 	const memoryUsage = process.memoryUsage();
 	metrics.push({
@@ -401,12 +652,19 @@ async function collectAnalytics(final: boolean) {
 		listener(metrics, final);
 	}
 	if (generation !== analyticsGeneration) return;
-	if (parentPort)
-		parentPort.postMessage({
-			type: ANALYTICS_REPORT_TYPE,
-			report,
-		});
-	else await recordAnalytics({ report });
+	if (sampled) {
+		// by position once the listeners are done with the array: one may have added or removed entries
+		const runs = [];
+		const transfer: ArrayBuffer[] = [];
+		for (let index = 0; index < metrics.length; index++) {
+			const held = sampled.get(metrics[index]);
+			if (held === undefined) continue;
+			sampled.delete(metrics[index]); // a buffer listed twice fails the whole postMessage
+			runs.push({ index, values: held.values, runs: held.runs, length: held.length });
+			transfer.push(held.values.buffer as ArrayBuffer, held.runs.buffer as ArrayBuffer);
+		}
+		parentPort.postMessage({ type: ANALYTICS_REPORT_TYPE, report, runs }, transfer);
+	} else void recordAnalytics({ report });
 }
 
 export async function recordHostname() {
@@ -1227,8 +1485,14 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 					threadsToAverage.push(action);
 				}
 			}
-			if (distribution) {
-				distribution = distribution.map((entry) => (typeof entry === 'number' ? { value: entry, count: 1 } : entry));
+			if (Array.isArray(distribution)) {
+				distribution = distribution.flatMap((entry) =>
+					typeof entry === 'number'
+						? [{ value: entry, count: 1 }]
+						: typeof entry?.value === 'number' && Number.isInteger(entry.count) && entry.count > 0
+							? [entry]
+							: []
+				);
 				const existingDistribution = distributions.get(key);
 				if (!existingDistribution) distributions.set(key, distribution);
 				else {
@@ -1268,27 +1532,11 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	}
 	for (const [key, distribution] of distributions) {
 		// now iterate through the distributions finding the close bin to each percentile and interpolating the position in that bin
-		const action = aggregateActions.get(key);
-		distribution.sort((a, b) => (a.value > b.value ? 1 : -1));
-		const count = action.count - 1;
-		const percentiles = [];
-		let countPosition = 0;
-		let index = 0;
-		let bin;
-		for (const percentile of IDEAL_PERCENTILES) {
-			const nextTargetCount = count * percentile;
-			while (countPosition < nextTargetCount) {
-				bin = distribution[index++];
-				countPosition += bin.count;
-				// we decrement these counts so we are skipping the minimum value in our interpolation
-				if (index === 1) countPosition--;
-			}
-			const previousBin = distribution[index > 1 ? index - 2 : 0];
-			if (!bin) bin = distribution[0];
-			percentiles.push(bin.value - ((bin.value - previousBin.value) * (countPosition - nextTargetCount)) / bin.count);
+		try {
+			takePercentiles(aggregateActions.get(key), distribution);
+		} catch (error) {
+			log.warn?.('Unable to aggregate the percentiles of', key, error);
 		}
-		const [p1, p10, p25, median, p75, p90, p95, p99, p999] = percentiles;
-		Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99, p999 });
 	}
 	let hasUpdates;
 	for (const [, value] of aggregateActions) {
@@ -1364,6 +1612,32 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	// node storage metric (total HDB directory size)
 	await storeNodeStorageMetric(analyticsTable);
 }
+function takePercentiles(action: any, distribution: Array<{ value: number; count: number }>) {
+	distribution.sort((a, b) => (a.value > b.value ? 1 : -1));
+	let binTotal = 0;
+	for (const bin of distribution) binTotal += bin.count;
+	if (binTotal === 0) return;
+	const count = binTotal - 1;
+	const percentiles = [];
+	let countPosition = 0;
+	let index = 0;
+	let bin;
+	for (const percentile of IDEAL_PERCENTILES) {
+		const nextTargetCount = count * percentile;
+		while (countPosition < nextTargetCount) {
+			bin = distribution[index++];
+			countPosition += bin.count;
+			// we decrement these counts so we are skipping the minimum value in our interpolation
+			if (index === 1) countPosition--;
+		}
+		const previousBin = distribution[index > 1 ? index - 2 : 0];
+		if (!bin) bin = distribution[0];
+		percentiles.push(bin.value - ((bin.value - previousBin.value) * (countPosition - nextTargetCount)) / bin.count);
+	}
+	const [p1, p10, p25, median, p75, p90, p95, p99, p999] = percentiles;
+	Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99, p999 });
+}
+
 let lastIdle = 0;
 let lastActive = 0;
 let lastResourceUsage: ResourceUsage = {
@@ -1441,6 +1715,7 @@ function getAnalyticsTable() {
 }
 
 if (!parentPort) onMessageByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
+export const recordAnalyticsReportForTests = (message: any, worker?: any) => recordAnalytics(message, worker);
 let scheduledTasksRunning;
 function startScheduledTasks() {
 	scheduledTasksRunning = true;
@@ -1470,6 +1745,29 @@ function startScheduledTasks() {
 	}
 }
 
+function isSampleRuns(held: any, entry: any): held is SampleRuns {
+	return (
+		Number.isInteger(entry?.count) &&
+		held.values instanceof Float32Array &&
+		(held.runs instanceof Uint16Array || held.runs instanceof Uint32Array) &&
+		Number.isInteger(held.length) &&
+		held.length > 0 &&
+		held.length <= held.values.length &&
+		held.length <= held.runs.length
+	);
+}
+
+function withDistribution(entry: any, distribution: Distribution) {
+	const settled: any = {};
+	for (const key in entry) {
+		if (key === 'distribution') continue; // a worker listener's own, which the runs replace
+		settled[key] = entry[key];
+		if (key === 'mean') settled.distribution = distribution;
+	}
+	settled.distribution ??= distribution;
+	return settled;
+}
+
 let totalBytesProcessed = 0;
 const lastUtilizations = new Map();
 const LOG_ANALYTICS = false; // TODO: Make this a config option if we really want this
@@ -1478,21 +1776,32 @@ function recordAnalytics(message, worker?) {
 	if (isReadOnlyMode()) return;
 	const report = message.report;
 	report.threadId = worker?.threadId || threadId;
+	let runsByEntry: Map<any, SampleRuns> | undefined;
+	let runs = 0;
+	if (Array.isArray(message.runs)) {
+		for (const held of message.runs) {
+			const entry = report.metrics[held?.index];
+			if (!isSampleRuns(held, entry)) {
+				if (entry !== null && typeof entry === 'object') delete entry.distribution;
+				continue;
+			}
+			(runsByEntry ??= new Map()).set(entry, held);
+			runs += Math.max(held.values.length, held.runs.length);
+		}
+	}
 	// Add system information stats as well
 	let retained;
+	let listedPositions = 0;
 	for (let i = 0; i < report.metrics.length; i++) {
 		const metric = report.metrics[i];
 		if (metric.metric === METRIC.FULL_TEXT && !acceptsFullTextTelemetryRow(metric)) {
 			retained ??= report.metrics.slice(0, i);
 			continue;
 		}
+		if (runsByEntry?.has(metric)) listedPositions++;
 		retained?.push(metric);
-		if (metric.metric === 'bytes-sent') {
-			totalBytesProcessed += metric.mean * metric.count;
-		}
 	}
 	if (retained) report.metrics = retained;
-	report.totalBytesProcessed = totalBytesProcessed;
 	if (worker && !isBun) {
 		report.metrics.push({
 			metric: METRIC.UTILIZATION,
@@ -1500,12 +1809,223 @@ function recordAnalytics(message, worker?) {
 		});
 		lastUtilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
-	report.id = getNextMonotonicTime();
-	const written = getRawAnalyticsTable().primaryStore.put(report.id, report);
+	const now = performance.now();
+	if (
+		runsByEntry !== undefined &&
+		((pendingSummaries.length > 0 && now - pendingSummaries[0].receivedAt > summaryBehindMs) ||
+			pendingRuns + runs > maxPendingRuns)
+	) {
+		for (const entry of runsByEntry.keys()) delete entry.distribution; // a worker listener's, from no samples
+		runsByEntry = undefined;
+		runs = 0;
+		if (now - droppedWarningAt >= DROPPED_WARNING_INTERVAL_MS) {
+			droppedWarningAt = now;
+			log.warn?.('Analytics summaries are behind; storing reports without distributions until they catch up');
+		}
+	}
+	if (runsByEntry === undefined && pendingSummaries.length === 0)
+		return storeReport(report, worker ? undefined : analyticsGeneration);
+	const bytes =
+		estimateReportBytes(report) +
+		(runsByEntry === undefined ? 0 : listedPositions * IDEAL_PERCENTILES.length * OBJECT_BYTES);
+	if (!admitsWaiting(pendingSummaries.length + reportWrites.size, pendingSummaryBytes + reportWriteBytes + bytes))
+		return warnDropped('Analytics reports are backing up behind summaries; dropping reports until they catch up');
+	pendingRuns += runs;
+	pendingSummaryBytes += bytes;
+	return new Promise((done) => {
+		pendingSummaries.push({
+			report,
+			runsByEntry,
+			next: 0,
+			runs,
+			bytes,
+			receivedAt: now,
+			generation: worker ? undefined : analyticsGeneration,
+			done,
+		});
+		// from a microtask, so the drain's own clearing of `summarizing` cannot precede this assignment
+		summarizing ??= Promise.resolve().then(summarizePending);
+	});
+}
+
+const pendingSummaries: Array<{
+	report: any;
+	runsByEntry: Map<any, SampleRuns> | undefined;
+	summarized?: Map<any, any>;
+	next: number;
+	runs: number;
+	bytes: number;
+	receivedAt: number;
+	generation: number | undefined;
+	done: (written?: any) => void;
+}> = [];
+const SUMMARY_BEHIND_MS = 2000;
+const MAX_PENDING_RUNS = 1 << 24;
+let summaryBehindMs = SUMMARY_BEHIND_MS;
+let maxPendingRuns = MAX_PENDING_RUNS;
+export function setSummaryLimitsForTests(
+	runs = MAX_PENDING_RUNS,
+	behindMs = SUMMARY_BEHIND_MS,
+	writes = MAX_REPORT_WRITES,
+	writeBytes = MAX_REPORT_WRITE_BYTES
+) {
+	maxPendingRuns = runs;
+	summaryBehindMs = behindMs;
+	maxReportWrites = writes;
+	maxReportWriteBytes = writeBytes;
+	droppedWarningAt = unwrittenWarningAt = -Infinity;
+}
+let pendingRuns = 0;
+let pendingSummaryBytes = 0;
+const DROPPED_WARNING_INTERVAL_MS = 60_000;
+let droppedWarningAt = -Infinity;
+const SUMMARY_TURN_MS = 2;
+let summarizing: Promise<void> | undefined;
+async function summarizePending() {
+	let turnStart = performance.now();
+	try {
+		while (pendingSummaries.length > 0) {
+			if (performance.now() - turnStart >= SUMMARY_TURN_MS) {
+				await rest();
+				turnStart = performance.now();
+			}
+			const pending = pendingSummaries[0];
+			const metrics = pending.report.metrics;
+			try {
+				while (pending.runsByEntry !== undefined && pending.next < metrics.length) {
+					const index = pending.next++;
+					const entry = metrics[index];
+					const summarized = pending.summarized?.get(entry);
+					if (summarized !== undefined) {
+						metrics[index] = summarized; // a listener put this entry in the array twice
+						continue;
+					}
+					const held = pending.runsByEntry.get(entry);
+					if (held === undefined) continue;
+					try {
+						const { values, runs, length } = held;
+						let total = 0;
+						for (let run = 0; run < length; run++) total += runs[run];
+						if (total !== entry.count) throw new Error(`${length} runs hold ${total} samples, not ${entry.count}`);
+						const steps = distributionSteps(values, runs, length, entry.count);
+						let step = steps.next();
+						while (!step.done) {
+							if (performance.now() - turnStart >= SUMMARY_TURN_MS) {
+								await rest();
+								turnStart = performance.now();
+							}
+							step = steps.next();
+						}
+						metrics[index] = withDistribution(entry, step.value);
+						(pending.summarized ??= new Map()).set(entry, metrics[index]);
+					} catch (error) {
+						delete entry.distribution;
+						log.error?.('Unable to summarize a worker analytics metric', error);
+					}
+					if (performance.now() - turnStart >= SUMMARY_TURN_MS) {
+						await rest();
+						turnStart = performance.now();
+					}
+				}
+				pendingSummaries.shift();
+				pendingRuns -= pending.runs;
+				pendingSummaryBytes -= pending.bytes;
+				if (pending.generation !== undefined && pending.generation !== analyticsGeneration) {
+					pending.done();
+					continue;
+				}
+				pending.done(storeReport(pending.report, pending.generation));
+			} catch (error) {
+				if (pendingSummaries[0] === pending) {
+					pendingSummaries.shift();
+					pendingRuns -= pending.runs;
+					pendingSummaryBytes -= pending.bytes;
+				}
+				log.error?.('Unable to record a worker analytics report', error);
+				pending.done();
+			}
+		}
+	} finally {
+		summarizing = undefined;
+	}
+}
+
+/** Logs a refusal instead of rejecting, as storeMetric does: a worker's report has no caller to handle it */
+function storeReport(report: any, generation?: number) {
+	// a wedged commit would otherwise hold every later report behind it, whole, for as long as it lasts
+	const bytes = estimateReportBytes(report);
+	if (!admitsWaiting(reportWrites.size, reportWriteBytes + bytes))
+		return warnDropped('Analytics reports are not reaching storage; dropping reports until earlier writes complete');
+	let written;
+	try {
+		const store = getRawAnalyticsTable().primaryStore;
+		if (store.putOffThread) {
+			const write = () =>
+				generation === undefined || generation === analyticsGeneration
+					? store.putOffThread(stampReport(report), report)
+					: undefined;
+			written = reportWriteInFlight ? reportWriteInFlight.then(write) : write();
+		} else written = store.put(stampReport(report), report);
+	} catch (error) {
+		logMetricWriteError(error);
+	}
 	if (!scheduledTasksRunning) startScheduledTasks();
 	if (LOG_ANALYTICS) lastAppend = logAnalytics(report);
-	return written;
+	if (!written?.then) return written;
+	const settled = written.then(undefined, logMetricWriteError);
+	reportWriteInFlight = settled;
+	reportWrites.add(settled);
+	reportWriteBytes += bytes;
+	void settled.then(() => {
+		reportWrites.delete(settled);
+		reportWriteBytes -= bytes;
+		if (reportWriteInFlight === settled) reportWriteInFlight = undefined;
+	});
+	return settled;
 }
+/** One report always fits, or a report larger than the bound could never be written */
+function admitsWaiting(reports: number, bytes: number) {
+	return reports === 0 || (reports < maxReportWrites && bytes <= maxReportWriteBytes);
+}
+function warnDropped(message: string) {
+	const now = performance.now();
+	if (now - unwrittenWarningAt >= DROPPED_WARNING_INTERVAL_MS) {
+		unwrittenWarningAt = now;
+		log.warn?.(message);
+	}
+}
+function stampReport(report: any) {
+	for (const metric of report.metrics)
+		if (metric.metric === 'bytes-sent') totalBytesProcessed += metric.mean * metric.count;
+	report.totalBytesProcessed = totalBytesProcessed;
+	return (report.id = getNextMonotonicTime());
+}
+/** Overestimates the heap a waiting report holds (measured, an entry is about 220 bytes beside its fields); a nested object counts 64 bytes whatever it holds */
+function estimateReportBytes(report: any) {
+	let bytes = 0;
+	for (const metric of report.metrics) {
+		bytes += REPORT_ENTRY_BYTES;
+		for (const key in metric) {
+			const value = metric[key];
+			if (typeof value === 'string') bytes += value.length * 2;
+			else if (typeof value === 'object' && value !== null)
+				bytes += ArrayBuffer.isView(value)
+					? value.buffer.byteLength
+					: (Array.isArray(value) ? value.length : 1) * OBJECT_BYTES;
+		}
+	}
+	return bytes;
+}
+const REPORT_ENTRY_BYTES = 256;
+const OBJECT_BYTES = 64;
+const reportWrites = new Set<Promise<unknown>>();
+const MAX_REPORT_WRITES = 1000;
+const MAX_REPORT_WRITE_BYTES = 1 << 26;
+let maxReportWrites = MAX_REPORT_WRITES;
+let maxReportWriteBytes = MAX_REPORT_WRITE_BYTES;
+let reportWriteBytes = 0;
+let unwrittenWarningAt = -Infinity;
+let reportWriteInFlight: Promise<unknown> | undefined;
 let lastAppend;
 let analyticsLog;
 const MAX_ANALYTICS_SIZE = 1000000;

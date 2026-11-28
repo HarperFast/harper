@@ -255,10 +255,15 @@ export function getSuspendedDatabaseRootCount(): number {
 	return suspendedDatabaseRootCount;
 }
 
+/**
+ * `trackOutstanding: false` leaves the commit out of this thread's outstanding writes, so it counts toward neither
+ * the overload check nor the write-queue gauge, and a database drain does not wait for it: the caller waits itself.
+ */
 export function commitTrackedRocksTransaction(
 	transaction: RocksTransaction,
 	store: any,
-	rootStore = store?.rootStore
+	rootStore = store?.rootStore,
+	trackOutstanding = true
 ): Promise<number | void> {
 	if (databaseCommitsSuspended(rootStore)) {
 		releaseLocalKey(transaction);
@@ -283,7 +288,7 @@ export function commitTrackedRocksTransaction(
 	// outcome ends its reservation.
 	const release = () => releaseLocalKey(transaction);
 	commitResolution.then(release, release);
-	trackOutstandingCommit(commitResolution, store, undefined, transaction, rootStore);
+	if (trackOutstanding) trackOutstandingCommit(commitResolution, store, undefined, transaction, rootStore);
 	return commitResolution;
 }
 
