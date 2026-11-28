@@ -1499,6 +1499,9 @@ function fromScalar(request: any, state: TopicState): any {
 	// one of another generation resumes unchecked, by key
 	if (!bound && (entry.databaseGeneration ?? entry.foreignGeneration) !== undefined) return request;
 	if (!state.cursors || state.cursorGeneration !== currentGeneration(entry.topic)) return request;
+	// nothing certified this start, so it is never refused: below the resume floor it resumes by key alone, as before
+	const auditStore = resources.getMatch(entry.topic.split('?')[0], 'mqtt')?.Resource?.auditStore;
+	if (!bound && !isResumablePosition(auditStore, state.cursorGeneration, entry.startTime)) return request;
 	request.databaseGeneration = state.cursorGeneration;
 	const thisNode = getThisNodeName();
 	const logs = new Map<string, LogCursor>();

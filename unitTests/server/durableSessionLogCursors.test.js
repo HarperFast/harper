@@ -3,7 +3,7 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases } = require('#src/resources/databases');
 const Resources = require('#src/resources/Resources');
-const { getDatabaseGeneration, persistOriginClosedFloor } = require('#src/resources/auditStore');
+const { getAuditResumeFloor, getDatabaseGeneration, persistOriginClosedFloor } = require('#src/resources/auditStore');
 const { certifyOriginFloor, publishOriginFloor, getOriginClosedFloor } = require('#src/resources/originClosedFloor');
 const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
 const { LOG_CURSORS } = require('#src/resources/subscriptionCheckpoint');
@@ -447,6 +447,21 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 			await end(second);
 			assert.deepStrictEqual((await stored(clientId)).subscriptions[0].cursors, [], 'and saves them from then on');
 		}
+	});
+
+	it('resumes by key, as before, from a start that no pass certified and that is below the resume floor', async () => {
+		const { T, clientId, record } = await savedSession(1);
+		// the floor is a whole millisecond of this node's clock, and a start can be a key minted just below it
+		const startTime = getAuditResumeFloor(T.auditStore) - 0.5;
+		const subscriptions = record.subscriptions.map(({ databaseGeneration: _certified, ...entry }) => ({
+			...entry,
+			startTime,
+		}));
+		await databases.system.hdb_durable_session.put({ id: clientId, subscriptions, cursors: record.cursors });
+		const second = await resumed(T, clientId);
+		assert.strictEqual(second.requests[0].databaseGeneration, undefined, 'an unchecked resume');
+		assert.deepStrictEqual(second.closed, []);
+		await end(second);
 	});
 
 	it('an older copy of the record sends again what was taken since, and skips nothing', async () => {
