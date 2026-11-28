@@ -5,6 +5,7 @@
 // These cases cover the derivations and the create-missing-only reconcile. The end-to-end run against
 // a real Harper is integrationTests/security/deploy-setup-github-actions.test.ts.
 const assert = require('node:assert');
+const YAML = require('yaml');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -277,12 +278,15 @@ jobs:
 		const starter = starterPreviewWorkflow({ app: 'shop', branch: 'main' });
 		const check = (content, branch = 'main') => checkPreviewWorkflowFile(content, branch, 'preview', 'preview-cleanup');
 		const sameRepository = ' && github.event.pull_request.head.repo.full_name == github.repository';
-		const deployIf = `    if: github.event.action != 'closed'${sameRepository}\n`;
-		const withDeployStep = (step) =>
-			starter.replace(
-				'      - run: npm install --global harper@^5.4\n',
-				`${step}      - run: npm install --global harper@^5.4\n`
+		const deployIf = `    if: vars.HARPER_PREVIEW_TARGET != '' && github.event.action != 'closed'${sameRepository}\n`;
+		const withHeadEnv = starter
+			.replace('permissions: {}\n', 'permissions: {}\nenv:\n  PR: ${{ github.event.pull_request.number }}\n')
+			.replace(
+				'    concurrency:\n',
+				'    env:\n      BRANCH: ${{ github.event.pull_request.head.ref }}\n      SHA: ${{ github.event.pull_request.head.sha }}\n    concurrency:\n'
 			);
+		const withDeployStep = (step) =>
+			withHeadEnv.replace('      - name: Deploy the preview\n', `${step}      - name: Deploy the preview\n`);
 		const problemsOf = (content, branch) => check(content, branch).problems.join('\n');
 
 		it('accepts the starter workflow setup writes', () => {
@@ -357,7 +361,7 @@ jobs:
 		it('checks every job that holds the identity token, whatever its environment', () => {
 			const expression = starter.replace('    environment: preview-cleanup\n', '    environment: ${{ inputs.env }}\n');
 			const unguarded = expression.replace(
-				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				"    if: vars.HARPER_PREVIEW_TARGET != '' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
 				''
 			);
 			assert.match(problemsOf(unguarded), /job "cleanup" runs for pull requests from forks/);
@@ -365,13 +369,13 @@ jobs:
 
 		it('refuses a workflow in which no job in the environment may request an identity token', () => {
 			const noToken = starter.replace(
-				'      id-token: write\n      pull-requests: read\n',
-				'      pull-requests: read\n'
+				'      id-token: write\n      pull-requests: write\n      deployments: write\n    concurrency:',
+				'      pull-requests: write\n      deployments: write\n    concurrency:'
 			);
 			assert.match(problemsOf(noToken), /no job in the "preview" environment has `permissions: id-token: write`/);
 			const cleanupNoToken = starter.replace(
-				'      id-token: write\n      pull-requests: read\n    env:',
-				'      pull-requests: read\n    env:'
+				'      id-token: write\n      pull-requests: write\n      deployments: write\n    steps:\n      - name: Remove',
+				'      pull-requests: write\n      deployments: write\n    steps:\n      - name: Remove'
 			);
 			assert.match(problemsOf(cleanupNoToken), /job "cleanup" runs in "preview-cleanup" without/);
 		});
@@ -551,7 +555,7 @@ jobs:
 
 		it('notes a cleanup job that cannot run when a pull request closes, or whose condition it cannot read', () => {
 			const cleanupIf =
-				"    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n";
+				"    if: vars.HARPER_PREVIEW_TARGET != '' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n";
 			const excluded = starter.replace(cleanupIf, deployIf);
 			assert.deepStrictEqual(check(excluded), {
 				problems: [],
@@ -580,12 +584,11 @@ jobs:
 
 		it('reads a test that the variable setup sets is set as true, and no other variable', () => {
 			const clean = { problems: [], unverified: [], unsafe: [] };
-			// create-harper's workflow stays dormant on this gate until setup sets the variable.
-			const createHarper = starter.replace(/^ {4}if: /gm, "    if: vars.HARPER_PREVIEW_TARGET != '' && ");
-			assert.strictEqual(createHarper.match(/HARPER_PREVIEW_TARGET != '' && /g).length, 2);
-			assert.deepStrictEqual(check(createHarper), clean);
+			assert.strictEqual(starter.match(/^ {4}if: vars\.HARPER_PREVIEW_TARGET != '' && /gm).length, 2);
+			assert.deepStrictEqual(check(starter), clean);
+			const ungated = starter.replace(/^ {4}if: vars\.HARPER_PREVIEW_TARGET != '' && /gm, '    if: ');
 			// In `${{ }}`, so YAML reads a leading quote or `!` as part of the condition.
-			const gatedWith = (gate, content = starter) =>
+			const gatedWith = (gate, content = ungated) =>
 				content.replace(/^ {4}if: (.*)$/gm, (_, condition) => `    if: \${{ ${gate} && ${condition} }}`);
 			for (const gate of [
 				"vars.HARPER_PREVIEW_TARGET != ''",
@@ -607,7 +610,8 @@ jobs:
 				assert.deepStrictEqual(check(gatedWith(gate)), { ...clean, unverified: [unknown] }, gate);
 			}
 			const cleanupIf = `    if: github.event.action == 'closed'${sameRepository}\n`;
-			const excluded = gatedWith("vars.HARPER_PREVIEW_TARGET != ''", starter.replace(cleanupIf, deployIf));
+			const ungatedDeployIf = `    if: github.event.action != 'closed'${sameRepository}\n`;
+			const excluded = gatedWith("vars.HARPER_PREVIEW_TARGET != ''", ungated.replace(cleanupIf, ungatedDeployIf));
 			assert.deepStrictEqual(check(excluded), {
 				...clean,
 				unverified: [
@@ -630,6 +634,19 @@ jobs:
 			}
 		});
 
+		it('quotes the app and domain, so YAML reads back exactly the values setup was given', () => {
+			for (const [app, domain] of [
+				['0123', '*.example.com'],
+				['null', 'app.example.com'],
+				['-', 'true'],
+			]) {
+				const parsed = YAML.parse(starterPreviewWorkflow({ app, branch: 'main', domain }));
+				assert.deepStrictEqual(parsed.jobs.deploy.steps[0].with.app, app);
+				assert.deepStrictEqual(parsed.jobs.deploy.steps[0].with.domain, domain);
+				assert.deepStrictEqual(parsed.jobs.cleanup.steps[0].with.app, app);
+			}
+		});
+
 		it('writes the options it is given into the deploy, and still passes', () => {
 			const shaped = starterPreviewWorkflow({
 				app: 'shop',
@@ -638,12 +655,15 @@ jobs:
 				credential: true,
 				shared: true,
 			});
+			const [deploy, cleanup] = shaped.split('  cleanup:\n');
 			assert.match(
-				shaped,
-				/harper preview deploy app=shop pr="\$PR" branch="\$BRANCH" by_ref=true ref="\$SHA" domain=previews\.example\.com credential=true branchedDatabases=false/
+				deploy,
+				/uses: HarperFast\/deploy-action@a4a8af4e47add946657310b546f9e483d44b5cc5 # v1\.0\.1\n {8}with:\n {10}target: \$\{\{ vars\.HARPER_PREVIEW_TARGET \}\}\n {10}app: "shop"\n {10}preview: true\n {10}credential: true\n {10}domain: "previews\.example\.com"\n {10}branched_databases: false\n$/
 			);
+			assert.match(cleanup, /\n {10}app: "shop"\n {10}preview: true\n$/);
+			assert.match(cleanup, /environment: preview-cleanup\n/);
+			assert.doesNotMatch(cleanup, /concurrency|credential|domain|branched_databases/);
 			assert.deepStrictEqual(check(shaped, 'trunk'), { problems: [], unverified: [], unsafe: [] });
-			assert.match(shaped, /if \[ "\$\{after%% \*\}" = closed \]; then harper preview drop app=shop/);
 		});
 	});
 

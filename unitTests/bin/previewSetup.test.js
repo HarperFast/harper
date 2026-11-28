@@ -103,7 +103,7 @@ describe('harper preview setup (harper#3609)', () => {
 	it('keeps a starter it wrote when a later step fails, and says not to commit it until that step is done', async () => {
 		await assert.rejects(
 			setup(),
-			/repository variable was not set[\s\S]*\nSetup wrote \.github\/workflows\/preview\.yaml: commit it only once the steps above are done, since its runs fail until then\.$/
+			/repository variable was not set[\s\S]*\nSetup wrote \.github\/workflows\/preview\.yaml: commit it once the steps above are done\.$/
 		);
 		assert.ok(await workflowPresent());
 
@@ -157,6 +157,26 @@ describe('harper preview setup (harper#3609)', () => {
 		await assert.rejects(setup({ credential: true }), /appeared while setup ran.*Nothing was changed/);
 		assert.strictEqual(enabled(), false);
 		assert.strictEqual(await fs.readFile(path.join(directory, WORKFLOW), 'utf8'), 'someone else wrote this\n');
+	});
+
+	it('refuses, changing nothing, to write a starter for an http:// target deploy-action cannot reach', async () => {
+		const stub = cliOperationsModule.cliOperations;
+		const answer = (target) => {
+			cliOperationsModule.cliOperations = async (request, ...rest) =>
+				request.operation === 'get_preview_policy' ? { resolvedTarget: target } : stub(request, ...rest);
+		};
+		answer('http://cluster.example.com:9925/');
+		await assert.rejects(
+			setup(),
+			/refuses an http:\/\/ target other than a loopback address, so it could never reach http:\/\/cluster\.example\.com:9925\/\..*Nothing was changed/s
+		);
+		assert.strictEqual(enabled(), false);
+		assert.strictEqual(await workflowPresent(), false);
+
+		answer('http://127.0.0.1:9925/');
+		await assert.rejects(setup({ domain: 'app.example.com' }), /repository variable was not set/);
+		assert.strictEqual(enabled(), true);
+		assert.ok(await workflowPresent());
 	});
 
 	describe('the pull_request_target event policy GitHub requires of a public repository', () => {
@@ -450,7 +470,7 @@ describe('harper preview setup (harper#3609)', () => {
 
 		it('vouches for the default branch copy before it allows events for it', async () => {
 			const unsafe = starterPreviewWorkflow({ app: 'shop', branch: 'main' }).replace(
-				"    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
+				"    if: vars.HARPER_PREVIEW_TARGET != '' && github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository\n",
 				''
 			);
 			assert.notStrictEqual(unsafe, starterPreviewWorkflow({ app: 'shop', branch: 'main' }));
