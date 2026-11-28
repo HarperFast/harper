@@ -365,11 +365,13 @@ Harper automatically serializes concurrent requests for the same missing or stal
 
 <VersionBadge type="changed" version="v5.4.1" /> If the source throws an `Error` whose `statusCode` (or `status`) is 404 or 410 (as an HTTP client that throws on any non-2xx response does), the requests waiting on that fetch in the same worker thread receive that same error object instead of calling the source again, so anything one of them adds to it, such as a nested source's record context in its message, shows on all of them. This does not apply to a thrown `Response` or other non-`Error` value, when the source sets `noCacheStore` on its context, on a read-only node, or while the table is being dropped. After any other failure, the waiting requests fetch again in turn. A failure is never cached, so the next request after them calls the source again.
 
+<VersionBadge type="changed" version="v5.4.2" /> Waiters report `loadedFromSource: false` when receiving a shared error. After `drop_table` or a schema unload retires the table on this worker, already-waiting requests receive the table's 404 error instead; the admitted source request still completes, and failed fills stop issuing waiter warnings for the retired table.
+
 A record the source returns is cached and returned without the schema checks a `put` of the same record gets, such as for required attributes and attribute types. The source is the record's source of truth, so where it disagrees with the schema, the schema is what needs fixing. A source that returns a query-only `@fullText` field still fails with `502`.
 
 #### Observing cache disposition
 
-Each `get` on a caching table records whether the record came from the cache or from the source in the `loadedFromSource` property of the **`RequestTarget`** for that get. Cache disposition is a per-get result, so it lives on the per-get target — pass an explicit `RequestTarget` to observe it:
+Each `get` on a caching table records whether it attempted its own foreground fill in the `loadedFromSource` property of the **`RequestTarget`** for that get. Cache disposition is a per-get result, so it lives on the per-get target — pass an explicit `RequestTarget` to observe it:
 
 ```javascript
 import { RequestTarget } from 'harper';
@@ -377,13 +379,15 @@ import { RequestTarget } from 'harper';
 const target = new RequestTarget();
 target.id = recordId;
 const record = await MyCache.get(target);
-console.log(target.loadedFromSource); // true = went to the source, false = served from cache
+console.log(target.loadedFromSource); // true = own foreground fill attempt, false = cache or shared outcome
 ```
 
 The flag settles as follows:
 
-- `true` — the get went to the source: either it fetched the record, or the source errored and a stale cached record was served as a fallback (`staleIfError`). `true` means a source request was made, not necessarily that the returned data is fresh.
-- `false` — the record was served from the cache: fresh hits, `onlyIfCached` requests, stale-while-revalidate responses (the source fetch continues in the background), and requests that waited on another request's in-flight fetch of the same record. This last case means a cache hit can still take as long as an upstream fetch.
+- `true` — the get attempted its own foreground fill. This includes fetching a record, source unavailability or admission failure, and serving a stale cached record after a source error (`staleIfError`). It does not guarantee that a source request ran or that the returned data is fresh.
+- `false` — the get settled without its own foreground fill attempt: fresh cache hits, `onlyIfCached` cache hits, stale-while-revalidate responses (the source fetch continues in the background), and waiters that reuse another request's fill result or shared error. A waiter also reports `false` when it receives a table-retirement 404. A waiter that instead starts its own foreground fill reports `true`. Waiting for another request can still take as long as an upstream fetch.
+
+An error raised before cache disposition is determined, such as a cache-only miss that returns 504, can leave this property unset or retain a reused target's earlier value.
 
 Note that `get()` returns a plain `RecordObject`, not a resource instance — the record itself does not carry cache disposition; the explicitly passed `RequestTarget` is the supported way to observe it. There is deliberately no request-`Context` mirror of this flag: a context is shared across every `get` in the request (including a caching table's internal gets), so a context-level value would be silently overwritten before the caller could read it.
 

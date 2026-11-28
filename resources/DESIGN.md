@@ -115,7 +115,7 @@ The commit encodes the shared record after the fill resolves, so **copy a resolv
 
 ## getFromSource() waiters share a fill that stored nothing
 
-Same-thread waiters reuse only a committed, kept, plain-data fill (`isSharableRecord`); a source's `noCacheStore` never shares, a request's only with `noCacheStore` waiters; a thrown 404/410 is shared as the one error (`isNotFoundFailure`); other failures and other threads never share (`sourceFillCoalescing.test.js`).
+Same-thread waiters reuse only a committed, kept, plain-data fill (`isSharableRecord`); a source's `noCacheStore` never shares, a request's only with `noCacheStore` waiters; a thrown 404/410 is shared as the one error (`isNotFoundFailure`); other failures and other threads never share (`sourceFillCoalescing.test.js`). `cleanup` installs terminal `unavailableResource` on drop or unload: waking waiters use that 404 and failed-fill warnings stop, even across a later close. Only an unretired class gets `closedResource` from `cleanup({ closing: true })`.
 
 ## getFromSource() keeps source versions separate from fill ordering
 

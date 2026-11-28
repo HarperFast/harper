@@ -58,8 +58,11 @@ export class RequestTarget extends URLSearchParams {
 	declare previousResidency?: string[];
 
 	// Action tracking
-	/** Cache disposition of this get on a caching table: true if loaded from the source, false if
-	 * served from cache. Set per-get; read it on the RequestTarget you passed to the get. */
+	/** Cache disposition of a get on a caching table: true for this get's own foreground fill attempt,
+	 * even if source availability or admission prevents a source call, or stale-if-error serves a fallback.
+	 * False covers cache hits, stale-while-revalidate, and shared fill results or errors, including a
+	 * retired-table 404 after waiting. Early errors can leave this unset or unchanged. Read it on the
+	 * RequestTarget passed to the get. */
 	declare loadedFromSource?: boolean;
 	declare createdNewId?: string;
 

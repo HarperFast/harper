@@ -3,9 +3,11 @@ const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { Readable } = require('node:stream');
 const { setupTestDBPath } = require('../testUtils');
-const { table, __setReadOnlyModeForTest } = require('#src/resources/databases');
+const { table, closeDatabase, __setReadOnlyModeForTest } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor.js');
+const { RequestTarget } = require('#src/resources/RequestTarget');
+const { logger } = require('#src/utility/logging/logger');
 
 describe('Concurrent source misses on one key', function () {
 	this.timeout(10000);
@@ -200,6 +202,173 @@ describe('Concurrent source misses on one key', function () {
 			assert.equal(reasons[0].statusCode, statusCode);
 			assert.equal(reasons[0].code, 'ORIGIN_' + statusCode);
 			assert.match(reasons[0].message, new RegExp(`^origin answered ${statusCode} while resolving record`));
+		});
+	}
+
+	it('clears a reused waiter target disposition when sharing a thrown 404', async function () {
+		respond = () => {
+			throw sourceError(404);
+		};
+		const targets = Array.from({ length: 2 }, () =>
+			Object.assign(new RequestTarget(), { id: 'thrown-disposition', loadedFromSource: true })
+		);
+		holdFirstCall('thrown-disposition', 1);
+		const results = await Promise.allSettled(targets.map((target) => CoalescingTable.get(target)));
+		assert.equal(sourceCalls, 1);
+		assert.equal(results[0].reason, results[1].reason);
+		assert.equal(results[1].reason.statusCode, 404);
+		assert.equal(targets[0].loadedFromSource, true);
+		assert.equal(targets[1].loadedFromSource, false);
+	});
+
+	for (const [retirement, outcome] of [
+		['drop', 404],
+		['drop', 410],
+		['drop', 503],
+		['drop', 'record'],
+		['cleanup', 404],
+		['cleanup', 503],
+		['drop-after-failure', 404],
+		['drop-natural-wake', 404],
+		['drop-during-close', 404],
+		['drop-during-close', 503],
+	]) {
+		it(`settles retired-table waiters after ${retirement} with source outcome ${outcome}`, async function () {
+			const name = `RetiredSourceFill_${retirement.replaceAll('-', '_')}_${outcome}`;
+			const overlappingClose = retirement === 'drop-during-close';
+			const database = overlappingClose ? `retired_fill_close_${outcome}` : 'test';
+			const RetiredTable = table({
+				table: name,
+				database,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			});
+			let answer,
+				rejectSource,
+				parked = 0,
+				calls = 0;
+			const gate = new Promise((resolve, reject) => {
+				answer = resolve;
+				rejectSource = reject;
+			});
+			RetiredTable.sourcedFrom({
+				get() {
+					calls++;
+					return gate;
+				},
+			});
+			const store = RetiredTable.primaryStore;
+			const originalTryLock = store.tryLock;
+			const originalGetEntry = store.getEntry;
+			const originalCloseMaintenance = RetiredTable.closeMaintenance;
+			const originalGetResource = RetiredTable.getResource;
+			const originalWarn = logger.warn;
+			const warnings = [],
+				wakeups = [],
+				reads = [];
+			const nativeWaiters = new Set();
+			const nativeWakeups = new Set();
+			let wakeImmediately = retirement === 'drop-natural-wake';
+			store.tryLock = function (key, onUnlocked) {
+				const acquired = originalTryLock.call(this, key, () => {
+					if (wakeImmediately) {
+						onUnlocked();
+						nativeWakeups.add(onUnlocked);
+					} else wakeups.push(onUnlocked);
+				});
+				if (!acquired) {
+					parked++;
+					nativeWaiters.add(onUnlocked);
+				}
+				return acquired;
+			};
+			logger.warn = (...args) => warnings.push(args.join(' '));
+			const targets = Array.from({ length: 60 }, () =>
+				Object.assign(new RequestTarget(), { id: 'gone', loadedFromSource: true })
+			);
+			const failure = sourceError(outcome);
+			let dropping, closing, resumeClose;
+			let closePaused = false,
+				closedStoreReads = 0;
+			const closeGate = overlappingClose && new Promise((resolve) => (resumeClose = resolve));
+			try {
+				reads.push(RetiredTable.get(targets[0]).catch((error) => error));
+				await waitFor(() => calls === 1);
+				reads.push(...targets.slice(1).map((target) => RetiredTable.get(target).catch((error) => error)));
+				await waitFor(() => parked === 59);
+				logger.warn('unrelated source-fill warning');
+				if (overlappingClose) {
+					RetiredTable.closeMaintenance = async function (...args) {
+						if (!closePaused) {
+							closePaused = true;
+							await closeGate;
+						}
+						return originalCloseMaintenance.apply(this, args);
+					};
+					closing = closeDatabase(database);
+					closing.catch(() => {});
+					await waitFor(() => closePaused);
+				}
+				if (retirement === 'drop-after-failure') {
+					rejectSource(failure);
+					assert.equal(await reads[0], failure);
+				}
+				if (retirement === 'cleanup') RetiredTable.cleanup();
+				else {
+					dropping = RetiredTable.dropTable();
+					dropping.catch(() => {});
+					await waitFor(() => RetiredTable.getResource !== originalGetResource);
+				}
+				if (overlappingClose) {
+					await dropping;
+					const retiredResource = RetiredTable.getResource;
+					resumeClose();
+					await closing;
+					assert.equal(RetiredTable.getResource, retiredResource);
+					store.getEntry = function (...args) {
+						closedStoreReads++;
+						return originalGetEntry.apply(this, args);
+					};
+				}
+				if (outcome === 'record') answer({ id: 'gone', name: 'leader result' });
+				else rejectSource(failure);
+				const leader = await reads[0];
+				if (outcome === 'record') assert.equal(leader.name, 'leader result');
+				else assert.equal(leader, failure);
+				await dropping;
+				if (retirement === 'drop-natural-wake') {
+					assert.equal(nativeWaiters.size, targets.length - 1);
+					await waitFor(() => [...nativeWaiters].every((wake) => nativeWakeups.has(wake)), 2000);
+				}
+				assert.deepEqual(
+					warnings.filter((warning) => warning.includes(name)),
+					[]
+				);
+				wakeImmediately = true;
+				for (const wake of wakeups.splice(0)) wake();
+				const results = await Promise.all(reads);
+				for (const result of results.slice(1)) {
+					assert.equal(result.statusCode, 404);
+					assert.match(result.message, /has been dropped or unloaded on this thread/);
+					assert.notEqual(result, failure);
+				}
+				assert.ok(targets.slice(1).every((target) => target.loadedFromSource === false));
+				assert.equal(calls, 1);
+				if (overlappingClose) assert.equal(closedStoreReads, 0);
+				assert.ok(warnings.includes('unrelated source-fill warning'));
+			} finally {
+				logger.warn = originalWarn;
+				resumeClose?.();
+				RetiredTable.closeMaintenance = originalCloseMaintenance;
+				answer(undefined);
+				wakeImmediately = true;
+				store.tryLock = originalTryLock;
+				store.getEntry = originalGetEntry;
+				for (const wake of wakeups.splice(0)) wake();
+				await Promise.all(reads);
+				const ddlResults = await Promise.allSettled([closing, dropping]);
+				for (const result of ddlResults) if (result.status === 'rejected') throw result.reason;
+				if (!closing && !dropping) await RetiredTable.dropTable();
+			}
 		});
 	}
 
