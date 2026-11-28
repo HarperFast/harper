@@ -1,9 +1,9 @@
 /**
  * Internal SQL AST (IR).
  *
- * This is the boundary at which AlaSQL types die. The parser/normalizer.ts
- * walks an `alasql.yy.*` tree and produces these plain objects. Nothing
- * downstream imports from `alasql`.
+ * This is the boundary at which the parsed statement AST (sqlTranslator/parser)
+ * ends: parser/normalizer.ts walks that tree and produces these plain objects.
+ * Nothing downstream imports the statement AST.
  */
 
 import type { SqlType } from '../types.ts';

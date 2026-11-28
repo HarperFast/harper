@@ -14,8 +14,11 @@ const cacheByEscape = new Map<string, Map<string, LikeMatcher>>();
 let cachedPatterns = 0;
 let cachedLength = 0;
 
-// alasql passes no escape argument when the LIKE has no ESCAPE clause.
-function alasqlLike(pattern: unknown, value: unknown, escape?: unknown): boolean {
+/**
+ * Legacy SQL's LIKE: case-insensitive, with `[...]` character classes, matched by the v2 engine's non-backtracking
+ * segment matcher. `escape` is undefined when the LIKE has no ESCAPE clause.
+ */
+export function legacyLike(pattern: unknown, value: unknown, escape?: unknown): boolean {
 	const patternText = typeof pattern === 'string' ? pattern : '';
 	if (escape !== undefined && (typeof escape !== 'string' || escape.length !== 1)) {
 		throw new ClientError(`LIKE ESCAPE must be a single character, got ${JSON.stringify(escape)}`);
@@ -25,7 +28,7 @@ function alasqlLike(pattern: unknown, value: unknown, escape?: unknown): boolean
 	const escapeText = escape === undefined ? '' : (escape as string);
 	let matches = cacheByEscape.get(escapeText)?.get(patternText);
 	if (!matches) {
-		matches = compileLikeTokens(tokenizeAlasqlLike(patternText, escapeText), true);
+		matches = compileLikeTokens(tokenizeLegacyLike(patternText, escapeText), true);
 		while (
 			cachedPatterns > 0 &&
 			(cachedPatterns >= MAX_CACHED_PATTERNS || cachedLength + patternText.length > MAX_CACHED_LENGTH)
@@ -50,7 +53,7 @@ function evictOldestPattern(): void {
 	cachedLength -= pattern.length;
 }
 
-function tokenizeAlasqlLike(pattern: string, escape: string): LikeToken[] {
+function tokenizeLegacyLike(pattern: string, escape: string): LikeToken[] {
 	const tokens: LikeToken[] = [];
 	const ends = pattern.includes('[') ? classEnds(pattern, escape) : undefined;
 	let width = 0;
@@ -111,21 +114,4 @@ function classSource(body: string, escape: string): string {
 		throw new ClientError(`invalid character class [${body}] in LIKE pattern: ${(error as Error).message}`);
 	}
 	return classText;
-}
-
-const ESCAPE_SERIALIZED = Symbol('harperLikeEscapeSerialized');
-
-/** Legacy SQL re-parses `where.toString()`, and alasql's `Op#toString` drops `ESCAPE`. */
-export function installAlasqlLike(alasql: any): void {
-	alasql.utils.like = alasqlLike;
-	const opPrototype = alasql.yy.Op.prototype;
-	if (opPrototype[ESCAPE_SERIALIZED]) return;
-	const toString = opPrototype.toString;
-	opPrototype.toString = function (this: any) {
-		const text = toString.call(this);
-		return this.escape && (this.op === 'LIKE' || this.op === 'NOT LIKE')
-			? `${text} ESCAPE ${this.escape.toString()}`
-			: text;
-	};
-	opPrototype[ESCAPE_SERIALIZED] = true;
 }

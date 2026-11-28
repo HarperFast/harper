@@ -1,17 +1,10 @@
 'use strict';
 
-/**
- * SQLSearch.js
- * This class is used to receive the alasql generated AST from a SQL SELECT,
- * process and return results by passing the raw values into the alasql SQL parser
- */
-
 import difference from 'lodash/difference.js';
 import pullAt from 'lodash/pullAt.js';
 import uniqBy from 'lodash/uniqBy.js';
-import alasql from 'alasql';
-alasql.options.cache = false;
-import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
+import * as memoryEngine from '../sqlTranslator/memoryEngine/index.ts';
+import * as sqlAst from '../sqlTranslator/parser/ast.ts';
 import { generatedName } from '../sqlTranslator/legacySqlText.ts';
 import clone from 'clone';
 import RecursiveIterator from 'recursive-iterator';
@@ -40,9 +33,6 @@ function isRefusal(error: unknown): boolean {
 	);
 }
 
-//here we call to define and import custom functions to alasql
-alasqlFunctionImporter(alasql);
-
 interface SearchObject {
 	schema: string;
 	table: string;
@@ -53,7 +43,7 @@ interface SearchObject {
 	hash_values?: any[];
 }
 
-interface AlaSQLAST {
+interface SelectAST {
 	where?: any;
 	columns?: any[];
 	from?: any[];
@@ -65,21 +55,8 @@ interface AlaSQLAST {
 	toString(): string;
 }
 
-interface AlaSQLYY {
-	LogicValue: new (props: { value: any }) => any;
-	StringValue: new (props: { value: any }) => any;
-	NumValue: new (props: { value: any }) => any;
-	Op: new (props: any) => any;
-	UniOp: new (props: any) => any;
-	Columnid: new (props: any) => any;
-	Param: new (props: any) => any;
-	FuncValue: new (props?: any) => any;
-	Select: new (props: any) => any;
-	Column: new (props?: any) => any;
-}
-
 class SQLSearch {
-	statement: AlaSQLAST;
+	statement: SelectAST;
 	columns: Record<string, any[]>;
 	all_table_attributes: any[];
 	fetch_attributes: any[];
@@ -230,7 +207,7 @@ class SQLSearch {
 			this.data[schemaTable] = {};
 			const tableClass = getDatabases()[table.databaseid][table.tableid];
 			this.data[schemaTable].__hashName = tableClass.primaryKey;
-			// AlaSQL evaluates what it reads, so a non-super caller's related records reach it as data
+			// The in-memory engine evaluates what it reads, so a non-super caller's related records reach it as data
 			if (tableClass.hasRelationships && this.hdb_user && !this.hdb_user.role?.permission?.super_user)
 				this.data[schemaTable].__relationshipColumns = new Set(
 					Object.keys(tableClass.propertyResolvers).filter(
@@ -269,18 +246,16 @@ class SQLSearch {
 			if (!commonUtils.isEmpty(node) && node.right) {
 				if (commonUtils.isNotEmptyAndHasValue(node.right.value)) {
 					const whereVal = commonUtils.autoCast(node.right.value);
-					const yy = (alasql as any).yy as AlaSQLYY;
 					if ([true, false].indexOf(whereVal) >= 0) {
-						node.right = new yy.LogicValue({ value: whereVal });
+						node.right = new sqlAst.LogicValue({ value: whereVal });
 					}
 				} else if (Array.isArray(node.right)) {
-					const yy = (alasql as any).yy as AlaSQLYY;
 					node.right.forEach((col, i) => {
 						const whereVal = commonUtils.autoCast(col.value);
 						if ([true, false].indexOf(whereVal) >= 0) {
-							node.right[i] = new yy.LogicValue({ value: whereVal });
-						} else if (col instanceof yy.StringValue && commonUtils.autoCasterIsNumberCheck(whereVal.toString())) {
-							node.right[i] = new yy.NumValue({ value: whereVal });
+							node.right[i] = new sqlAst.LogicValue({ value: whereVal });
+						} else if (col instanceof sqlAst.StringValue && commonUtils.autoCasterIsNumberCheck(whereVal.toString())) {
+							node.right[i] = new sqlAst.NumValue({ value: whereVal });
 						}
 					});
 				}
@@ -306,16 +281,15 @@ class SQLSearch {
 		}
 
 		// only a top-level AND conjunct holds for every result row; a predicate under NOT or inside any other expression must see every row
-		const yy = (alasql as any).yy as AlaSQLYY;
 		const conjuncts = [this.statement.where.expression];
 		while (conjuncts.length > 0) {
 			const node = conjuncts.pop();
-			if (node instanceof yy.Op && node.op === 'AND') {
+			if (node instanceof sqlAst.Op && node.op === 'AND') {
 				conjuncts.push(node.right, node.left);
 				continue;
 			}
 			// AlaSQL parses parentheses as a UniOp with no op
-			if (node instanceof yy.UniOp && node.op === undefined) {
+			if (node instanceof sqlAst.UniOp && node.op === undefined) {
 				conjuncts.push(node.right);
 				continue;
 			}
@@ -537,10 +511,10 @@ class SQLSearch {
 			//this scenario is reached by doing a select with only calculations
 			try {
 				let sql = this._buildSQL(false);
-				results = await alasql.promise(sql);
+				results = memoryEngine.query(sql);
 			} catch (e) {
 				if (e instanceof ClientError) throw e;
-				log.error('Error thrown from AlaSQL in SQLSearch class method checkEmptySQL.');
+				log.error('Error thrown from the in-memory SQL engine in SQLSearch class method checkEmptySQL.');
 				log.error(e);
 				throw new Error('There was a problem with the SQL statement');
 			}
@@ -635,8 +609,6 @@ class SQLSearch {
 			this._addFetchColumns(this.columns.where);
 		}
 
-		//We need to check if statement only includes basic columns and a from value in the statement
-		// - if so, cannot treat as a simple select query and need to run through alasql
 		const simpleSelectQuery = this._isSimpleSelect();
 		if (simpleSelectQuery) {
 			this._addFetchColumns(this.columns.columns);
@@ -865,8 +837,7 @@ class SQLSearch {
 		}
 
 		this.statement.columns.forEach((col) => {
-			const yy = (alasql as any).yy as AlaSQLYY;
-			if (!(col instanceof yy.Column)) {
+			if (!(col instanceof sqlAst.Column)) {
 				isSimpleSelect = false;
 			}
 		});
@@ -923,8 +894,7 @@ class SQLSearch {
 			orderBy.is_aggregator = !!selectColumn.aggregatorid;
 
 			if (!selectColumn.as) {
-				const yy = (alasql as any).yy as AlaSQLYY;
-				orderBy.initial_select_column = Object.assign(new yy.Column(), orderBy.expression);
+				orderBy.initial_select_column = Object.assign(new sqlAst.Column(), orderBy.expression);
 				orderBy.initial_select_column.as = `[${orderBy.expression.columnid_orig}]`;
 				orderBy.expression.columnid = `\`${orderBy.expression.columnid_orig}\``;
 				return;
@@ -933,16 +903,14 @@ class SQLSearch {
 				orderBy.expression.columnid_orig = selectColumn.as_orig;
 				orderBy.expression.toString = () => selectColumn.as;
 			} else {
-				const yy = (alasql as any).yy as AlaSQLYY;
-				let aliasExpression = new yy.Column();
+				let aliasExpression = new sqlAst.Column();
 				aliasExpression.columnid = selectColumn.as_orig;
 				aliasExpression.columnid_orig = selectColumn.as_orig;
 				aliasExpression.toString = () => selectColumn.as;
 				orderBy.expression = aliasExpression;
 			}
 			if (!orderBy.is_aggregator) {
-				const yy = (alasql as any).yy as AlaSQLYY;
-				const targetObj = orderBy.is_func ? new yy.FuncValue() : new yy.Column();
+				const targetObj = orderBy.is_func ? new sqlAst.FuncValue() : new sqlAst.Column();
 				orderBy.initial_select_column = Object.assign(targetObj, selectColumn);
 			}
 		});
@@ -1075,11 +1043,11 @@ class SQLSearch {
 				' '
 			)} ${whereClause} ${orderClause} ${limit} ${offset}`;
 			const finalSqlOperation = this._convertColumnsToIndexes(initialSql, tables);
-			joined = await alasql.promise(finalSqlOperation, tableData);
+			joined = memoryEngine.query(finalSqlOperation, tableData);
 			tableData = null;
 		} catch (err) {
 			if (err instanceof ClientError) throw err;
-			log.error('Error thrown from AlaSQL in SQLSearch class method processJoins.');
+			log.error('Error thrown from the in-memory SQL engine in SQLSearch class method processJoins.');
 			log.error(err);
 			throw new Error('There was a problem processing the data.');
 		}
@@ -1301,14 +1269,14 @@ class SQLSearch {
 		try {
 			let sql = this._buildSQL();
 			log.trace(`Final SQL: ${sql}`);
-			finalResults = await alasql.promise(sql, tableData);
+			finalResults = memoryEngine.query(sql, tableData);
 			if (this.has_outer_join) {
 				finalResults = this._translateUndefinedValues(finalResults);
 			}
-			log.trace(`Final AlaSQL results data included ${finalResults.length} rows`);
+			log.trace(`Final in-memory SQL results data included ${finalResults.length} rows`);
 		} catch (err) {
 			if (err instanceof ClientError) throw err;
-			log.error('Error thrown from AlaSQL in SQLSearch class method finalSQL.');
+			log.error('Error thrown from the in-memory SQL engine in SQLSearch class method finalSQL.');
 			log.error(err);
 			throw new Error('There was a problem running the generated sql.');
 		}
@@ -1411,7 +1379,6 @@ class SQLSearch {
 	}
 
 	/**
-	 * Builds out the final result JSON for a simple SQL query to return to the main search method without using alasql
 	 * @returns {Promise<any[]>}
 	 * @private
 	 */

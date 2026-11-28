@@ -1,5 +1,5 @@
 /**
- * SQL engine A/B benchmark — new (Resource-API) engine vs legacy (AlaSQL) engine.
+ * SQL engine A/B benchmark — new (Resource-API) engine vs legacy engine.
  *
  * Addresses PLAN.md phase-5 item 6 ("Performance regression: a subset of the
  * legacy corpus run with timings; budget <= legacy time") and the risk called
@@ -493,7 +493,7 @@ async function main(): Promise<void> {
 	const queries = battery(opts.records).filter((q) => !opts.filter || q.name.includes(opts.filter));
 
 	console.log('='.repeat(78));
-	console.log('SQL engine A/B benchmark — new (Resource API) vs legacy (AlaSQL)');
+	console.log('SQL engine A/B benchmark — new (Resource API) vs legacy');
 	console.log('='.repeat(78));
 	console.log(`records=${opts.records.toLocaleString()}  iterations=${opts.iterations}  warmup=${opts.warmup}`);
 	console.log(`storage=${opts.engine}  threads=${opts.threads}  queries=${queries.length}`);

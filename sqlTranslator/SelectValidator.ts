@@ -1,7 +1,7 @@
 'use strict';
 
 import RecursiveIterator from 'recursive-iterator';
-import alasql from 'alasql';
+import * as sqlAst from './parser/ast.ts';
 import clone from 'clone';
 import * as commonUtils from '../utility/common_utils.ts';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
@@ -154,7 +154,7 @@ class SelectValidator {
 				!attribute.relation
 			) {
 				this.statement.columns.push(
-					new (alasql as any).yy.Column({
+					new sqlAst.Column({
 						columnid: attribute.attribute,
 						tableid: attribute.table.as ? attribute.table.as : attribute.table.tableid,
 					})

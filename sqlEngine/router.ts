@@ -1,7 +1,7 @@
 import * as harper_loggerCjsModule from '../utility/logging/harper_logger.ts';
 /**
  * Router that dispatches a SQL request to either the new engine or the legacy
- * AlaSQL-based path based on the sql.engine config flag.
+ * path based on the sql.engine config flag.
  *
  * 'legacy' — always run the legacy handler.
  * 'new'    — always run the new engine; if it throws EngineUnsupportedError,

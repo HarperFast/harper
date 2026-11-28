@@ -7,7 +7,7 @@ const assert = require('assert');
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
-const alasql = require('alasql');
+const sqlAst = require('#src/sqlTranslator/parser/ast');
 const sql_statement_bucket = require('#js/sqlTranslator/sql_statement_bucket').default;
 const sql_statement_rewire = rewire('#js/sqlTranslator/sql_statement_bucket');
 
@@ -39,7 +39,7 @@ let TEST_DELETE_JSON = {
 		},
 	},
 };
-let TEST_DELETE = new alasql.yy.Delete(TEST_DELETE_JSON);
+let TEST_DELETE = new sqlAst.Delete(TEST_DELETE_JSON);
 
 let TEST_INSERT_JSON = {
 	into: {
@@ -66,7 +66,7 @@ let TEST_INSERT_JSON = {
 	],
 };
 
-let TEST_INSERT = new alasql.yy.Insert(TEST_INSERT_JSON);
+let TEST_INSERT = new sqlAst.Insert(TEST_INSERT_JSON);
 
 let TEST_UPDATE_JSON = {
 	table: {
@@ -94,7 +94,7 @@ let TEST_UPDATE_JSON = {
 	},
 };
 
-let TEST_UPDATE = new alasql.yy.Update(TEST_UPDATE_JSON);
+let TEST_UPDATE = new sqlAst.Update(TEST_UPDATE_JSON);
 
 let TEST_SELECT_JSON = {
 	columns: [
@@ -266,12 +266,12 @@ let TEST_COMPLEX_AST = {
 	],
 };
 
-let TEST_SELECT = new alasql.yy.Select(TEST_SELECT_JSON);
+let TEST_SELECT = new sqlAst.Select(TEST_SELECT_JSON);
 
 let SCHEMA_NAME = 'dev';
 let TABLE_NAME = 'dog';
 
-let TEST_CROSS_SCHEMA_SELECT = new alasql.yy.Select(TEST_SELECT_CROSS_SCHEMA_JOIN_JSON);
+let TEST_CROSS_SCHEMA_SELECT = new sqlAst.Select(TEST_SELECT_CROSS_SCHEMA_JOIN_JSON);
 let SCHEMA_NAME_1 = 'animals';
 let TABLE_NAME_1 = 'dogs';
 let SCHEMA_NAME_2 = 'people';
@@ -304,7 +304,7 @@ describe('Test sql_statement_bucket Class', () => {
 			let getDeleteAttributes = sql_statement_rewire.__get__('getDeleteAttributes');
 			let copy = clone(TEST_DELETE_JSON);
 			copy.where = {};
-			let temp_delete = new alasql.yy.Delete(copy);
+			let temp_delete = new sqlAst.Delete(copy);
 			let statement = new Map();
 			let table_lookup = new Map();
 			getDeleteAttributes(temp_delete, statement, table_lookup);
@@ -316,7 +316,7 @@ describe('Test sql_statement_bucket Class', () => {
 			let getDeleteAttributes = sql_statement_rewire.__get__('getDeleteAttributes');
 			let copy = clone(TEST_DELETE_JSON);
 			copy.table = {};
-			let temp_delete = new alasql.yy.Delete(copy);
+			let temp_delete = new sqlAst.Delete(copy);
 			let statement = new Map();
 			let table_lookup = new Map();
 			getDeleteAttributes(temp_delete, statement, table_lookup);
@@ -340,7 +340,7 @@ describe('Test sql_statement_bucket Class', () => {
 			let getInsertAttributes = sql_statement_rewire.__get__('getInsertAttributes');
 			let copy = clone(TEST_DELETE_JSON);
 			copy.into = {};
-			let temp_delete = new alasql.yy.Insert(copy);
+			let temp_delete = new sqlAst.Insert(copy);
 			let statement = new Map();
 			let table_lookup = new Map();
 			getInsertAttributes(temp_delete, statement, table_lookup);
@@ -363,7 +363,7 @@ describe('Test sql_statement_bucket Class', () => {
 			let getUpdateAttributes = sql_statement_rewire.__get__('getUpdateAttributes');
 			let copy = clone(TEST_UPDATE_JSON);
 			copy.table = {};
-			let temp_update = new alasql.yy.Update(copy);
+			let temp_update = new sqlAst.Update(copy);
 			let statement = new Map();
 			let table_lookup = new Map();
 			getUpdateAttributes(temp_update, statement, table_lookup);
@@ -408,7 +408,7 @@ describe('Test sql_statement_bucket Class', () => {
 			let getSelectAttributes = sql_statement_rewire.__get__('getSelectAttributes');
 			let copy = clone(TEST_UPDATE_JSON);
 			copy.from = {};
-			let temp_update = new alasql.yy.Select(copy);
+			let temp_update = new sqlAst.Select(copy);
 			let statement = new Map();
 			let table_lookup = new Map();
 			let schema_lookup = new Map();
@@ -423,7 +423,7 @@ describe('Test sql_statement_bucket Class', () => {
 			copy.columns = [{ columnid: 'id' }];
 			copy.group = [{ columnid: 'ssn' }];
 			delete copy.where;
-			let temp_select = new alasql.yy.Select(copy);
+			let temp_select = new sqlAst.Select(copy);
 			let affected_attrs = new Map();
 			let table_lookup = new Map();
 			let schema_lookup = new Map();
@@ -436,7 +436,7 @@ describe('Test sql_statement_bucket Class', () => {
 			// Mirrors `SELECT Public.id FROM data.Public JOIN vault.Vault ON Public.id = Vault.id
 			// ORDER BY Vault.ssn` — neither table is aliased, so schemaLookup (aliases only) can't
 			// resolve `Vault`; only tableToSchemaLookup (alias AND base name) can.
-			let ast = new alasql.yy.Select({
+			let ast = new sqlAst.Select({
 				columns: [{ columnid: 'id', tableid: 'Public' }],
 				from: [{ databaseid: 'data', tableid: 'Public' }],
 				joins: [
@@ -467,7 +467,7 @@ describe('Test sql_statement_bucket Class', () => {
 			copy.columns = [{ columnid: 'id' }];
 			copy.having = { left: { columnid: 'ssn' }, op: '=', right: { value: '111-22-3333' } };
 			delete copy.where;
-			let temp_select = new alasql.yy.Select(copy);
+			let temp_select = new sqlAst.Select(copy);
 			let affected_attrs = new Map();
 			let table_lookup = new Map();
 			let schema_lookup = new Map();
@@ -484,7 +484,7 @@ describe('Test sql_statement_bucket Class', () => {
 		it('Nominal case, valid, reasonably complex AST with attributes. ', function () {
 			let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
 			let test_copy = clone(TEST_COMPLEX_AST);
-			let temp_select = new alasql.yy.Select(test_copy);
+			let temp_select = new sqlAst.Select(test_copy);
 			let affected_attributes = new Map();
 			let table_lookup = new Map();
 			let schema_lookup = new Map();
@@ -586,7 +586,7 @@ describe('Test sql_statement_bucket Class', () => {
 		it('Nominal case, valid AST with CROSS SCHEMA JOIN ', function () {
 			let getRecordAttributesAST = sql_statement_rewire.__get__('getRecordAttributesAST');
 			let test_copy = clone(TEST_CROSS_SCHEMA_SELECT);
-			let temp_select = new alasql.yy.Select(test_copy);
+			let temp_select = new sqlAst.Select(test_copy);
 			let affected_attributes = new Map();
 			let table_lookup = new Map();
 			let schema_lookup = new Map();
@@ -668,7 +668,7 @@ describe('Test sql_statement_bucket Class', () => {
 			let test_copy = clone(TEST_COMPLEX_AST);
 			const invalid_table = 'steffen';
 			test_copy.where.expression.left.left.tableid = invalid_table;
-			let temp_select = new alasql.yy.Select(test_copy);
+			let temp_select = new sqlAst.Select(test_copy);
 			let affected_attributes = new Map();
 			let table_lookup = new Map();
 			let schema_lookup = new Map();

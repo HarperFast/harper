@@ -14,7 +14,8 @@ const op_auth_rewire = rewire('#js/utility/operation_authorization');
 const Permission_rw = op_auth_rewire.__get__('permission');
 const write = require('#src/dataLayer/insert');
 const user = require('#src/security/user');
-const alasql = require('alasql');
+const sqlAst = require('#src/sqlTranslator/parser/ast');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 const search = require('#src/dataLayer/search');
 const restart = require('#src/bin/restart');
 const configUtils = require('#src/config/configUtils');
@@ -520,7 +521,7 @@ describe('Test operation_authorization', function () {
 	describe(`Test verifyPermsAST`, function () {
 		it('NOMINAL, test verify with proper syntax, expect true', function () {
 			let test_json = clone(TEST_INSERT_JSON);
-			let temp_insert = new alasql.yy.Insert(test_json);
+			let temp_insert = new sqlAst.Insert(test_json);
 			let req_json = getRequestJson(TEST_JSON);
 			req_json.hdb_user.role.permission.dev.tables.dog.insert = true;
 			let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
@@ -531,7 +532,7 @@ describe('Test operation_authorization', function () {
 
 		it('Test verify AST with table insert perm false, expect false', function () {
 			let test_json = clone(TEST_INSERT_JSON);
-			let temp_insert = new alasql.yy.Insert(test_json);
+			let temp_insert = new sqlAst.Insert(test_json);
 			let req_json = getRequestJson(TEST_JSON);
 			req_json.hdb_user.role.permission.dev.tables.dog.insert = false;
 			let result = op_auth_rewire.verifyPermsAST(temp_insert, req_json.hdb_user, write.insert.name);
@@ -542,7 +543,7 @@ describe('Test operation_authorization', function () {
 
 		it('Test verify AST with table perm true but all attr perms false, expect false', function () {
 			let test_json = clone(TEST_INSERT_JSON);
-			let temp_insert = new alasql.yy.Insert(test_json);
+			let temp_insert = new sqlAst.Insert(test_json);
 			let req_json = getRequestJson(TEST_JSON);
 			req_json.hdb_user.role.permission.dev.tables.dog.insert = true;
 			let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
@@ -556,7 +557,7 @@ describe('Test operation_authorization', function () {
 
 		it('Test with bad operations, expect false', function () {
 			let test_json = clone(TEST_INSERT_JSON);
-			let temp_insert = new alasql.yy.Insert(test_json);
+			let temp_insert = new sqlAst.Insert(test_json);
 			let req_json = getRequestJson(TEST_JSON);
 			req_json.hdb_user.role.permission.dev.tables.dog.insert = true;
 			let att_base = ATTRIBUTE_PERMISSION_BASE([]);
@@ -573,7 +574,7 @@ describe('Test operation_authorization', function () {
 
 		it(`Test select wildcard with proper perms, expect true`, function () {
 			let test_json = clone(TEST_SELECT_WILDCARD_JSON);
-			let temp_select = new alasql.yy.Select(test_json);
+			let temp_select = new sqlAst.Select(test_json);
 			let req_json = getRequestJson(TEST_JSON);
 			req_json.hdb_user.role.permission.dev.tables.dog.read = true;
 			let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
@@ -585,7 +586,7 @@ describe('Test operation_authorization', function () {
 
 		it(`Test select wildcard with read attribute restriction false, expect false`, function () {
 			let test_json = clone(TEST_SELECT_WILDCARD_JSON);
-			let temp_select = new alasql.yy.Select(test_json);
+			let temp_select = new sqlAst.Select(test_json);
 			let req_json = getRequestJson(TEST_JSON);
 			req_json.hdb_user.role.permission.dev.tables.dog.read = true;
 			let att_base = DEFAULT_ATTRIBUTE_PERMISSION_BASE();
@@ -599,7 +600,7 @@ describe('Test operation_authorization', function () {
 
 		it('Test select wildcard with one attribute permission true, expect true', function () {
 			let test_json = clone(TEST_SELECT_WILDCARD_JSON);
-			let temp_select = new alasql.yy.Select(test_json);
+			let temp_select = new sqlAst.Select(test_json);
 			let req_json = getRequestJson(TEST_JSON);
 			req_json.hdb_user.role.permission.dev.tables.dog.read = true;
 			let att_base = ATTRIBUTE_PERMISSION_BASE([ROLE_PERMISSION_KEY], crud_keys.READ, true);
@@ -617,7 +618,7 @@ describe('Test operation_authorization', function () {
 				const req_json = getRequestJson(TEST_JSON);
 				req_json.hdb_user.role.permission.dev.tables.dog.read = true;
 				const result = op_auth_rewire.verifyPermsAST(
-					alasql.parse(sql).statements[0],
+					parseSql(sql).statements[0],
 					req_json.hdb_user,
 					search.search.name
 				);
@@ -627,7 +628,7 @@ describe('Test operation_authorization', function () {
 				const super_json = getRequestJson(TEST_JSON);
 				super_json.hdb_user.role.permission.super_user = true;
 				assert.equal(
-					op_auth_rewire.verifyPermsAST(alasql.parse(sql).statements[0], super_json.hdb_user, search.search.name),
+					op_auth_rewire.verifyPermsAST(parseSql(sql).statements[0], super_json.hdb_user, search.search.name),
 					null,
 					sql
 				);
@@ -646,7 +647,7 @@ describe('Test operation_authorization', function () {
 			attributes.push({ attribute: '_' });
 			try {
 				const result = op_auth_rewire.verifyPermsAST(
-					alasql.parse('SELECT * FROM dev.dog').statements[0],
+					parseSql('SELECT * FROM dev.dog').statements[0],
 					req_json.hdb_user,
 					search.search.name
 				);
@@ -672,7 +673,7 @@ describe('Test operation_authorization', function () {
 					},
 				},
 			};
-			let temp_delete = new alasql.yy.Delete(ast_test);
+			let temp_delete = new sqlAst.Delete(ast_test);
 			let req_json = getRequestJson(TEST_JSON);
 			let expected_error = testUtils.generateHDBError(
 				"The 'system' database, tables and records are used internally by Harper and cannot be updated or removed.",

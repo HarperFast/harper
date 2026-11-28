@@ -11,7 +11,7 @@ This directory contains single-node storage and throughput benchmarks for Harper
 | **TTL-churn**       | `ttl-churn/`                                         | Storage size stability under continuous insert-with-TTL (**ST-1**)                                          |
 | **Concurrent R+W**  | `concurrent-rw/`                                     | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**)                                 |
 | Hot-key commit      | `hot-key-commit/`                                    | Commit throughput, latency and retries per commit when audited transactions contend on a few keys           |
-| **SQL engine A/B**  | `sql-engine/`                                        | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape                                   |
+| **SQL engine A/B**  | `sql-engine/`                                        | New (Resource-API) vs legacy SQL engine latency, per query shape                                            |
 | **Compression**     | `compression/`                                       | RocksDB codec comparison: on-disk size and throughput per codec                                             |
 | WebSocket scale     | [`ws-scale/`](ws-scale/README.md)                    | Memory and CPU per WebSocket connection, subscription and delivered message; write rates that drive fan-out |
 | Lockdown            | `lockdown/`                                          | Per-mode `applications.lockdown` cost in a worker: holey-array string building, msgpackr decode             |
@@ -268,7 +268,7 @@ HOT_KEY_COMMIT_RESULT label=… workload=hot1 mode=add threads=N concurrency=N c
 
 ## SQL engine A/B (`sql-engine/`)
 
-Compares the new Resource-API SQL engine against the legacy AlaSQL engine on the
+Compares the new Resource-API SQL engine against the legacy engine on the
 same query battery. Addresses PLAN.md phase-5 item 6 (perf budget `<=` legacy) and
 the "regression on tiny queries" risk.
 

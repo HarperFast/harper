@@ -22,10 +22,8 @@ if (engine === 'v2') {
 	});
 	matches = (value) => like.eval({ v: value });
 } else {
-	const alasql = require('alasql');
-	require('#src/sqlTranslator/alasqlLike').installAlasqlLike(alasql);
-	matches = (value) =>
-		escape === undefined ? alasql.utils.like(pattern, value) : alasql.utils.like(pattern, value, escape);
+	const { legacyLike } = require('#src/sqlTranslator/legacyLike');
+	matches = (value) => (escape === undefined ? legacyLike(pattern, value) : legacyLike(pattern, value, escape));
 }
 const start = performance.now();
 const results = values.map(matches);

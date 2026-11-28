@@ -1,11 +1,10 @@
 'use strict';
 const assert = require('node:assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 
 const SqlStatementBucket = require('#src/sqlTranslator/sql_statement_bucket').default;
 
-const attrs = (sql) =>
-	new SqlStatementBucket(alasql.parse(sql).statements[0]).getAttributesBySchemaTableName('data', 'T');
+const attrs = (sql) => new SqlStatementBucket(parseSql(sql).statements[0]).getAttributesBySchemaTableName('data', 'T');
 
 describe('SqlStatementBucket attribute collection for COUNT(*)', () => {
 	it('records no attribute for a plain COUNT(*) but keeps the table', () => {

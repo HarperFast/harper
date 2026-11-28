@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { route } = require('#src/sqlEngine/router');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 
 describe('string pattern operands on typed attributes', () => {
 	let Item, Identifiers;
@@ -74,9 +74,8 @@ describe('string pattern operands on typed attributes', () => {
 		process.env.HARPER_SQL_ENGINE = 'new';
 		try {
 			for (const pattern of ['tenant,05%', 'tenant,05']) {
-				const statement = alasql.parse(
-					`SELECT id FROM test.PatternIdentifiers WHERE bucket = 1 AND id LIKE '${pattern}'`
-				).statements[0];
+				const statement = parseSql(`SELECT id FROM test.PatternIdentifiers WHERE bucket = 1 AND id LIKE '${pattern}'`)
+					.statements[0];
 				const rows = await new Promise((resolve, reject) =>
 					route(
 						{

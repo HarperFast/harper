@@ -87,7 +87,7 @@ Static methods (`Resource.get`, `Resource.put`, `Resource.post`, `Resource.delet
 `Table.ts` is the database table implementation (over ten thousand lines, one giant `makeTable()` factory) — the most complex file in the codebase. **Find code through [resources/MAP.md](resources/MAP.md) instead of reading top-to-bottom, and read the [resources/DESIGN.md](resources/DESIGN.md) note before changing code it names.**
 
 **Data Layer** (`dataLayer/`)  
-Legacy translation modules plus SQL translation (`sqlTranslator/`) via AlaSQL; these should be avoided. The storage engine is selectable via `HARPER_STORAGE_ENGINE=lmdb`.
+Legacy translation modules plus legacy SQL (`sqlTranslator/`); these should be avoided. The storage engine is selectable via `HARPER_STORAGE_ENGINE=lmdb`.
 
 **Configuration** (`config/`)  
 YAML-based. `configUtils.js` parses config; `RootConfigWatcher.ts` enables hot reload. Environment variables override YAML values.
@@ -114,7 +114,7 @@ Use this to land in the right folder before grepping. Every top-level folder is 
 
 - **`bin/`** — CLI entry points. `harper.js` is the executable; `run.js` initializes and runs the server; `cliOperations.js` translates CLI args → API operations. Tests: `unitTests/bin/`. **Don't look here for** business logic.
 - **`security/`** — auth, authz, certificate handling, context. Entry: `jsLoader.ts` exposes `getContext()`, `getResponse()`, `getUser()`; `user.ts` for User/Role; `certificateVerification/` for TLS validation; `data_objects/` for permission/role models. **See [security/DESIGN.md](security/DESIGN.md).** Tests: `unitTests/security/`.
-- **`sqlTranslator/`** — SQL → internal operations via AlaSQL AST. Entry: `sqlTranslator/index.js` exports `evaluateSQL`, `processAST`, `convertSQLToAST`, `checkASTPermissions`. **Legacy — avoid for new code.** Tests: `unitTests/sqlTranslator/`.
+- **`sqlTranslator/`** — SQL parsing (`parser/`), permission checks on the parsed AST, and legacy SQL's in-memory engine (`memoryEngine/`). Entry: `sqlTranslator/index.js` exports `evaluateSQL`, `processAST`, `convertSQLToAST`, `checkASTPermissions`. **Legacy — avoid for new code.** Tests: `unitTests/sqlTranslator/`.
 - **`validation/`** — input shape validation (Joi + `validate.js`). Entry: `validationWrapper.js`. **Not authorization** — that's in `security/`. Tests: `unitTests/validation/`.
 - **`upgrade/`** — version-upgrade orchestration. Entry: `directivesManager.js` exports `processDirectives()`. Per-version logic in `directives/`. Tests: `integrationTests/upgrade/`.
 - **`launchServiceScripts/`** — thin launchers that delegate to `server/operationsServer.ts`. `checkNodeVersion.js` is the pre-flight Node version check.

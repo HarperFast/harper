@@ -258,8 +258,8 @@ a completion manifest's optional `producer` block.
 
 ## Legacy SQL pre-fetch narrows only by top-level AND conjuncts (`dataLayer/SQLSearch.ts`)
 
-The legacy executor loads each WHERE column into one row pool and lets AlaSQL evaluate the WHERE over
-it. `_conditionsToFetchAttributeValues` may narrow a column's fetch only by a leaf of the top-level AND
+The legacy executor loads each WHERE column into one row pool and lets its in-memory engine evaluate the
+WHERE over it. `_conditionsToFetchAttributeValues` may narrow a column's fetch only by a leaf of the top-level AND
 chain, which every result row must satisfy; a predicate under `NOT` or inside another expression must
 see every row (`NOT (c = 'alpha')` returned nothing, #1397 §D). Any `OR` or self-join disables
 narrowing, since the maps are keyed by physical table. Under the default `auto` engine only queries

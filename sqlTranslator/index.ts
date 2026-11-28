@@ -8,20 +8,18 @@ import { update } from '../dataLayer/update.ts';
 const cbUpdateUpdate = util.callbackify(update);
 import { convertDelete as deleteTranslator } from './deleteTranslator.ts';
 const cbDeleteTranslator = util.callbackify(deleteTranslator);
-import alasql from 'alasql';
+import * as memoryEngine from './memoryEngine/index.ts';
+import * as sqlAst from './parser/ast.ts';
+import { parse } from './parser/parser.ts';
 import * as opAuth from '../utility/operation_authorization.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import alasqlFunctionImporter from './alasqlFunctionImporter.ts';
 import { assertLegacySqlText } from './legacySqlText.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as terms from '../utility/hdbTerms.ts';
-import { handleHDBError } from '../utility/errors/hdbError.ts';
+import { ClientError, handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import * as sqlEngineRouter from '../sqlEngine/router.ts';
 import { getOperationAuthorizationState } from '../server/serverHelpers/operationAuthorizationState.ts';
-
-//here we call to define and import custom functions to alasql
-alasqlFunctionImporter(alasql);
 
 let UNAUTHORIZED_RESPONSE = 403;
 const SQL_INSERT_ERROR_MSG = 'There was a problem performing this insert. Please check the logs and try again.';
@@ -44,18 +42,18 @@ export function evaluateSQL(jsonMessage: any, callback: any) {
 		//TODO; This is a temporary check and should be removed once validation is integrated.
 		let schema = undefined;
 		let statement = parsedSql.ast.statements[0];
-		if (statement instanceof (alasql as any).yy.Insert) {
+		if (statement instanceof sqlAst.Insert) {
 			schema = statement.into.databaseid;
-		} else if (statement instanceof (alasql as any).yy.Select) {
+		} else if (statement instanceof sqlAst.Select) {
 			schema = statement.from ? statement.from[0].databaseid : null;
-		} else if (statement instanceof (alasql as any).yy.Update) {
+		} else if (statement instanceof sqlAst.Update) {
 			schema = statement.table.databaseid;
-		} else if (statement instanceof (alasql as any).yy.Delete) {
+		} else if (statement instanceof sqlAst.Delete) {
 			schema = statement.table.databaseid;
 		} else {
 			logger.error(`AST in evaluateSQL is not a valid SQL type.`);
 		}
-		if (!(statement instanceof (alasql as any).yy.Select) && hdbUtils.isEmptyOrZeroLength(schema)) {
+		if (!(statement instanceof sqlAst.Select) && hdbUtils.isEmptyOrZeroLength(schema)) {
 			return callback('No schema specified', null);
 		}
 	}
@@ -119,7 +117,7 @@ export function convertSQLToAST(sql: string) {
 	}
 	try {
 		let trimmedSql = sql.trim();
-		let ast = alasql.parse(trimmedSql);
+		let ast = parse(trimmedSql);
 		let variant = trimmedSql.split(' ')[0].toLowerCase();
 		astResponse.ast = ast;
 		astResponse.variant = variant;
@@ -271,13 +269,14 @@ function createDataObjects(columns, values) {
 				if ('value' in value) {
 					record[columns[x]] = value.value;
 				} else {
-					record[columns[x]] = (alasql as any).compile(`SELECT ${value.toString()} AS [${terms.FUNC_VAL}] FROM ?`);
+					record[columns[x]] = memoryEngine.compile(`SELECT ${value.toString()} AS [${terms.FUNC_VAL}] FROM ?`);
 				}
 			});
 
 			return record;
 		});
 	} catch (err) {
+		if (err instanceof ClientError) throw err;
 		logger.error(err);
 		throw new Error(SQL_INSERT_ERROR_MSG);
 	}

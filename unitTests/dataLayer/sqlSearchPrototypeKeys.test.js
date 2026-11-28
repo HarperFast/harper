@@ -52,7 +52,7 @@ describe('legacy SQL search with a `__proto__` row-map key', function () {
 		assert.deepStrictEqual(rows.map((row) => row.polluted_marker).sort(), [1, 2]);
 	});
 
-	it('resolves the key as an own row map on the alasql path', async function () {
+	it('resolves the key as an own row map on the in-memory engine path', async function () {
 		const rows = await search('SELECT proto__.name FROM _.t AS proto__ WHERE proto__.id = 1');
 		assert.deepStrictEqual(rows, [{ name: 'a' }]);
 		assert.strictEqual({}.polluted_marker, undefined);
@@ -70,7 +70,7 @@ describe('legacy SQL search with a `__proto__` row-map key', function () {
 		assert.deepStrictEqual(rows.map((row) => row.polluted_marker).sort(), ['x', 'y']);
 	});
 
-	it('returns a row whose id is `__proto__` on the alasql path', async function () {
+	it('returns a row whose id is `__proto__` on the in-memory engine path', async function () {
 		const rows = await search("SELECT name FROM _.r WHERE (name = 'x')");
 		assert.deepStrictEqual(rows, [{ name: 'x' }]);
 	});

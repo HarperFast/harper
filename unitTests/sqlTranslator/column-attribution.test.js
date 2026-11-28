@@ -6,7 +6,7 @@
  */
 
 const assert = require('assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 
 const SqlStatementBucket = require('#src/sqlTranslator/sql_statement_bucket').default;
 const { _setDatabasesLoader } = require('#src/sqlEngine/binder/defaultDatabase');
@@ -26,7 +26,7 @@ let registry = REGISTRY;
 let registryLoads = 0;
 
 function bucketFor(sql) {
-	return new SqlStatementBucket(alasql.parse(sql).statements[0]);
+	return new SqlStatementBucket(parseSql(sql).statements[0]);
 }
 
 function attributesOf(bucket, database, table) {

@@ -183,7 +183,7 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 			}
 
 			for (const pattern of REDOS_PATTERNS) {
-				// Without an index driver, `auto` evaluates the LIKE in alasql.
+				// Without an index driver, `auto` evaluates the LIKE on the legacy engine.
 				const wheres = [`ip LIKE 't%' AND note LIKE '${pattern}'`];
 				if (sqlEngine !== 'new') wheres.push(`note LIKE '${pattern}'`);
 				for (const where of wheres) {
@@ -213,7 +213,7 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 			});
 
 			if (sqlEngine !== 'new') {
-				// Without an index driver, `auto` evaluates the LIKE in alasql; v2 reads `[` literally.
+				// Without an index driver, `auto` evaluates the LIKE on the legacy engine; v2 reads `[` literally.
 				const reseedWide = async () => {
 					await client
 						.req()
@@ -310,7 +310,7 @@ for (const sqlEngine of ['auto', 'new', 'legacy']) {
 					check: (body) => deepStrictEqual(body.deleted_hashes, []),
 				},
 			];
-			// Without an index driver, `auto` evaluates the LIKE in alasql.
+			// Without an index driver, `auto` evaluates the LIKE on the legacy engine.
 			if (sqlEngine !== 'new') {
 				lineCases.push({
 					statement: `SELECT id FROM ${SCHEMA}.Lines WHERE note LIKE ${LINE_PAIR}`,

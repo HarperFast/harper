@@ -3,11 +3,12 @@
 import * as search from './search.ts';
 import * as globalSchema from '../utility/globalSchema.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import * as _write from './insert.ts';
 const write = _write;
 import clone from 'clone';
-import alasql from 'alasql';
-import alasqlFunctionImporter from '../sqlTranslator/alasqlFunctionImporter.ts';
+import * as memoryEngine from '../sqlTranslator/memoryEngine/index.ts';
+import { parse } from '../sqlTranslator/parser/parser.ts';
 import * as util from 'node:util';
 
 const pGetTableSchema = util.promisify(globalSchema.getTableSchema);
@@ -15,9 +16,6 @@ const pSqlSelect = util.promisify(search.sqlSelect);
 
 import * as terms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
-
-//here we call to define and import custom functions to alasql
-alasqlFunctionImporter(alasql);
 
 const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please check the logs and try again.';
 
@@ -40,7 +38,7 @@ async function updateData({ statement, hdb_user }: any) {
 	let whereString = hdbUtils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
 
 	let selectString = `SELECT ${tableInfo.hash_attribute} FROM ${from.toString()} ${whereString}`;
-	let searchStatement = (alasql as any).parse(selectString).statements[0];
+	let searchStatement = parse(selectString).statements[0];
 	//let result = await transaction.writeTransaction(tableInfo.schema, tableInfo.name, async () => {
 	let records: any = await pSqlSelect({ statement: searchStatement, hdb_user });
 	let newRecords = buildUpdateRecords(update_record, records);
@@ -62,7 +60,7 @@ function createUpdateRecord(columns: any[]) {
 			if ('value' in column.expression) {
 				record[column.column.columnid] = column.expression.value ?? null;
 			} else {
-				record[column.column.columnid] = (alasql as any).compile(
+				record[column.column.columnid] = memoryEngine.compile(
 					`SELECT ${column.expression.toString()} AS [${terms.FUNC_VAL}] FROM ?`
 				);
 			}
@@ -70,6 +68,7 @@ function createUpdateRecord(columns: any[]) {
 
 		return record;
 	} catch (err) {
+		if (err instanceof ClientError) throw err;
 		logger.error(err);
 		throw new Error(SQL_UPDATE_ERROR_MSG);
 	}

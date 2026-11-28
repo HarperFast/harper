@@ -12,7 +12,7 @@
  */
 
 const assert = require('assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 
 const bucketModule = require('#src/sqlTranslator/sql_statement_bucket');
 const SqlStatementBucket = bucketModule.default;
@@ -25,7 +25,7 @@ const REGISTRY = {
 };
 
 function parse(sql) {
-	return alasql.parse(sql).statements[0];
+	return parseSql(sql).statements[0];
 }
 
 describe('GHSA-5c29-q62v-jrwf — unqualified SQL table resolution', () => {

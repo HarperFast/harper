@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 const { setupTestDBPath } = require('../testUtils.js');
 const { table } = require('#src/resources/databases');
 const { verifyPermsAST } = require('#src/utility/operation_authorization');
@@ -42,7 +42,7 @@ function plain(value) {
 	return JSON.parse(JSON.stringify(value));
 }
 function parse(sql) {
-	return alasql.parse(sql).statements[0];
+	return parseSql(sql).statements[0];
 }
 async function rows(iterable) {
 	const out = [];

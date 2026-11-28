@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { estimateCondition, estimatedEntryCount, conditionDrivesIndex } = require('#src/resources/search');
@@ -210,7 +210,7 @@ describe('estimateCondition AND intersection ignores filter-only legs', function
 		function runSql(sql) {
 			const variant = sql.trim().split(/\s+/)[0].toLowerCase();
 			const hdb_user = { username: 'test' };
-			const statement = alasql.parse(sql).statements[0];
+			const statement = parseSql(sql).statements[0];
 			return runStatement({
 				variant,
 				jsonMessage: { hdb_user, bypass_auth: true },

@@ -13,7 +13,7 @@
  */
 
 const assert = require('assert');
-const alasql = require('alasql');
+const { parse: parseSql } = require('#src/sqlTranslator/parser/parser');
 
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
@@ -108,7 +108,7 @@ function makeWritableTable({ primaryKey = 'id', attributes = [], rows = [] } = {
 
 function runSql(sql) {
 	return new Promise((resolve, reject) => {
-		const parsed = alasql.parse(sql);
+		const parsed = parseSql(sql);
 		const variant = sql.trim().split(/\s+/)[0].toLowerCase();
 		const hdb_user = { username: 'test' };
 		// Faithful to sqlTranslator/index.ts processAST: SELECT is dispatched with

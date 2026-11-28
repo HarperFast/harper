@@ -24,14 +24,13 @@ Generally, dependencies are added by simply adding them to the dependencies list
 
 ## react-native-fs (removed from the published tree, not a dependency)
 
-This is the inverse of the entries below — a dependency we take deliberate steps to _not_ ship.
+This is the inverse of the entries below — a dependency we took deliberate steps to _not_ ship.
 
-- Where it comes from: `alasql` declares `optionalDependencies: { "react-native-fs": "^2.20.0" }`, and `react-native-fs` peer-depends on `react-native` **without** marking it optional. npm 7+ auto-installs peer dependencies, so resolving alasql pulls in `react-native`, `react`, `hermes`, `metro` and `react-devtools-core` — ~140MB and ~200 packages (#1937).
-- Why none of it is needed: every `require('react-native-fs')` in `alasql/dist/alasql.fs.js` sits behind a `utils.isReactNative` guard, so it is unreachable under Node. Harper only uses `alasql.parse` plus its function extensions.
+- Where it came from: `alasql` declared `optionalDependencies: { "react-native-fs": "^2.20.0" }`, and `react-native-fs` peer-depends on `react-native` **without** marking it optional, so npm 7+ installed `react-native`, `react`, `hermes`, `metro` and `react-devtools-core` with it — ~140MB and ~200 packages (#1937). AlaSQL is no longer a dependency (Harper parses and runs SQL itself, see `sqlTranslator/DESIGN.md`), so nothing in the lock declares `react-native-fs` now.
 - How it is removed: `build-tools/bundleDependencies.ts` omits unused optional `react-native-fs` declarations from copied package manifests before bundling the locked JavaScript closure. Its reachability walk preserves children shared with other production dependencies and never severs an explicit required producer. Development-installed manifests and the repository lock stay intact.
 - Why bundling: root `overrides` do not constrain a consumer's install, and npm 12 [no longer honors shrinkwraps](https://docs.npmjs.com/cli/v12/using-npm/changelog/). The published `bundleDependencies` ships the tested JavaScript bytes for registry, tarball and global installs. Native-containing roots remain regular, exact-pinned dependencies so npm selects the consumer's platform; their ranged transitives and externally supplied optional peers are outside the bundle's reproducibility guarantee.
-- Docker image: a standard global install uses the same portable bundle. The copied AlaSQL manifest no longer declares the unused optional edge, so the image no longer re-adds the React Native subtree. PR consumer tests run `npm ci` after installation, and archive/installed checks reject native binaries in the bundle and verify locked versions and shared storage-module resolution.
-- Eventual removal: retire the React Native rule once AlaSQL stops declaring that optional dependency. The helper also cuts optional-peer-only `utf-8-validate` references when they appear in the bundled closure; explicit producers are preserved.
+- Docker image: a standard global install uses the same portable bundle. PR consumer tests run `npm ci` after installation, and archive/installed checks reject native binaries in the bundle and verify locked versions and shared storage-module resolution.
+- Eventual removal: with AlaSQL gone the React Native rule can be retired. The helper also cuts optional-peer-only `utf-8-validate` references when they appear in the bundled closure; explicit producers are preserved.
 
 ## graphql
 

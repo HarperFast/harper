@@ -5,7 +5,7 @@
  * engine — either at plan time (a shape that can't map to the Resource API) or
  * at execution time (an in-memory operator exceeding its row cap, before any
  * result is emitted). The router catches this in 'auto' mode and falls back to
- * the legacy AlaSQL engine.
+ * the legacy engine.
  *
  * EngineRuntimeError is thrown for genuine runtime failures that are NOT
  * recoverable by falling back (e.g., a mutation target with no primary key).

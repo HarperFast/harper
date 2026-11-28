@@ -2,7 +2,7 @@
  * Reads the SQL engine feature flag and runtime caps.
  *
  * sql.engine selects which engine handles a SQL request:
- *   'legacy' — existing AlaSQL-based path.
+ *   'legacy' — the legacy path (dataLayer/SQLSearch.ts and sqlTranslator/memoryEngine).
  *   'new'    — new Resource-API-based path; throws EngineUnsupportedError for
  *              queries it can't plan.
  *   'auto'   — try the new path first; fall back to legacy on
