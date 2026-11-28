@@ -31,7 +31,7 @@ Each log entry follows this structure:
 Example:
 
 ```
-2023-03-09T14:25:05.269Z [main/0] [notify]: HarperDB successfully started.
+2023-03-09T14:25:05.269Z [main/0] [notify]: Harper successfully started.
 ```
 
 Fields:
