@@ -39,7 +39,7 @@ import * as signalling from '../../utility/signalling.ts';
 import { SchemaEventMsg } from '../../server/threads/itc.ts';
 import { asyncSetTimeout } from '../../utility/common_utils.ts';
 import { transaction } from '../../resources/transaction.ts';
-import { searchOpening } from '../../resources/Resource.ts';
+import { searchOpening, releaseSearchOpening } from '../../resources/Resource.ts';
 import type {
 	Condition,
 	Query,
@@ -78,7 +78,15 @@ export type SearchByConditionsRequest = Query &
 
 function afterOpening(results: any) {
 	const opening = searchOpening(results);
-	return opening ? opening.then(() => results) : results;
+	return opening
+		? opening.then(
+				() => results,
+				(error) => {
+					releaseSearchOpening(opening);
+					throw error;
+				}
+			)
+		: results;
 }
 
 /**

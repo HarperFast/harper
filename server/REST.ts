@@ -14,7 +14,14 @@ import { addAnalyticsListener, recordAction, recordActionBinary } from '../resou
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
 import { Resources } from '../resources/Resources.ts';
-import { Resource, WRITE_CONDITION, missingMethod, allowedMethods, searchOpening } from '../resources/Resource.ts';
+import {
+	Resource,
+	WRITE_CONDITION,
+	missingMethod,
+	allowedMethods,
+	searchOpening,
+	releaseSearchOpening,
+} from '../resources/Resource.ts';
 import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders, addVaryHeader } from '../server/serverHelpers/Headers.ts';
@@ -622,7 +629,14 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// a write has committed, and a failure status would deny it
 		if (method === 'GET' || method === 'HEAD' || method === 'QUERY') {
 			const opening = searchOpening(responseData);
-			if (opening) await opening;
+			if (opening) {
+				try {
+					await opening;
+				} catch (error) {
+					releaseSearchOpening(opening);
+					throw error;
+				}
+			}
 		}
 		let status = request.response.status;
 		let lastModification = request.lastModified;

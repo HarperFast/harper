@@ -8,11 +8,13 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
 const { __setEmbedFnForTest } = require('#src/resources/models/embedHook');
 const { searchByValue, searchByConditions } = require('#src/dataLayer/search');
-const { isReleasedTransaction } = require('#src/resources/DatabaseTransaction');
+const { isReleasedTransaction, DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { Resources } = require('#src/resources/Resources');
 const { handleApplication } = require('#src/server/REST');
 const { Headers } = require('#src/server/serverHelpers/Headers');
+const { searchOpening, releaseSearchOpening, SEARCH_AUTHORIZATION } = require('#src/resources/Resource');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
+const { ClientError } = require('#src/utility/errors/hdbError');
 require('#src/server/serverHelpers/serverUtilities');
 
 const admin = { role: { permission: { super_user: true } } };
@@ -409,6 +411,59 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			assert.deepEqual(await fromAsync(Doc.search(target)), [{ id: 1 }, { id: 3 }]);
 		});
 
+		it('on a sealed table, refuses an undefined later sort level before it calls the model', () => {
+			const Sealed = table({
+				table: 'SortTextSealedDoc',
+				database: 'test',
+				sealed: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'content', type: 'String' },
+					{
+						name: 'embedding',
+						type: 'Array',
+						embed: { source: 'content', model: 'doc-model' },
+						indexed: { type: 'HNSW' },
+					},
+				],
+			});
+			assert.throws(
+				() => Sealed.search({ sort: { attribute: 'embedding', text: 'red fruit', next: { attribute: 'nope' } } }),
+				(error) => error.statusCode === 404 && /nope is not a defined attribute/.test(error.message)
+			);
+			assert.equal(embed.calls.length, 0);
+		});
+
+		it('beside a filter that drives no index, refuses what the leading index refuses', async () => {
+			const sort = { attribute: 'embedding', text: 'red fruit', descending: true };
+			await assert.rejects(
+				async () =>
+					fromAsync(Doc.search({ conditions: [{ attribute: 'content', comparator: 'contains', value: 'a' }], sort })),
+				(error) => error.statusCode === 400 && /descending sort order with HNSW/.test(error.message)
+			);
+			const rows = await fromAsync(
+				Doc.search({ conditions: [{ attribute: 'tag', value: 'odd' }], sort, select: ['id'] })
+			);
+			assert.equal(rows.length, 2);
+		});
+
+		it('leaves a descending sort to the in-memory order when a filter on its attribute takes the lead', async () => {
+			const search = (next) =>
+				fromAsync(
+					Doc.search({
+						conditions: [{ attribute: 'embedding', comparator: 'ne', value: [9, 9, 9] }],
+						allowFullScan: true,
+						sort: { attribute: 'embedding', target: queryVector('red fruit'), descending: true, next },
+						select: ['id'],
+					})
+				);
+			const ids = (rows) => rows.map((row) => row.id);
+			assert.deepEqual(
+				ids(await search({ attribute: 'embedding', text: 'orchard fruit' })),
+				ids(await search({ attribute: 'embedding', target: queryVector('orchard fruit') }))
+			);
+		});
+
 		it('refuses a sort with more texts than one search embeds, before it calls the model', () => {
 			let sort;
 			for (let i = 0; i < 9; i++) sort = { attribute: 'embedding', text: 'red fruit', next: sort };
@@ -671,6 +726,318 @@ describe('Vector search by sort text on an @embed attribute', () => {
 			}
 		});
 
+		it('answers a REST QUERY with the failure of either search a table concatenates', async () => {
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			try {
+				class TwoSearches extends Doc {
+					search(target) {
+						const first = super.search({ ...target, sort: { attribute: 'embedding', text: 'red fruit' } });
+						return first.concat(super.search({ ...target, sort: { attribute: 'embedding', text: 'unlucky' } }));
+					}
+				}
+				const response = await rest([TwoSearches])(
+					'QUERY',
+					'/SortTextEmbedDoc/',
+					{ select: ['content'] },
+					{ accept: 'application/json' }
+				).catch((error) => error);
+				assert.equal(response.statusCode ?? response.status, 502);
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
+		for (const [side, join] of [
+			['first', (opened, failed) => opened.concat(failed)],
+			['second', (opened, failed) => failed.concat(opened)],
+		])
+			it(`a caller that answers a failed concatenation releases the search that opened ${side}`, async () => {
+				__setEmbedFnForTest((input, opts) =>
+					opts.inputType === 'query' && input.includes('unlucky')
+						? Promise.reject(new Error('backend down'))
+						: embed(input, opts)
+				);
+				try {
+					const context = recordingContext();
+					const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
+					await searchOpening(opened);
+					if (observesSnapshot) assert.ok(context.storeLinks().some((txn) => txn.readTxnsUsed > 0));
+					const failed = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {});
+					const opening = searchOpening(join(opened, failed).map((row) => row));
+					await assert.rejects(opening, (error) => error.statusCode === 502);
+					releaseSearchOpening(opening);
+					await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
+						message: 'the opened search kept its snapshot',
+					});
+				} finally {
+					__setEmbedFnForTest(failingEmbed);
+				}
+			});
+
+		it('releasing a failed concatenation reaches each search it joined, text or ordinary', async () => {
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			try {
+				const context = recordingContext();
+				const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
+				await searchOpening(opened);
+				const plain = Doc.search({ conditions: [{ attribute: 'tag', value: 'odd' }] }, context);
+				let plainClosed = false;
+				const close = plain.onDone;
+				plain.onDone = function () {
+					plainClosed = true;
+					return close.call(this);
+				};
+				const failed = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {});
+				const opening = searchOpening(opened.concat(failed).concat(plain));
+				await assert.rejects(opening, (error) => error.statusCode === 502);
+				releaseSearchOpening(opening);
+				assert.ok(plainClosed, 'the ordinary search kept its snapshot');
+				if (observesSnapshot)
+					await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
+						message: 'the opened text search kept its snapshot',
+					});
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
+		it('releasing a failed concatenation reaches its first search however long the chain', async () => {
+			if (!observesSnapshot) return;
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			try {
+				const ready = Doc.search({ sort: { attribute: 'embedding', text: 'orchard fruit' } }, {});
+				for (const grow of [(chain) => chain.concat([]), (chain) => ready.map((row) => row).concat(chain)]) {
+					const context = recordingContext();
+					const opened = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, context);
+					await searchOpening(opened);
+					assert.ok(context.storeLinks().some((txn) => txn.readTxnsUsed > 0));
+					let chain = opened.concat(Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {}));
+					for (let i = 0; i < 10_000; i++) chain = grow(chain);
+					const opening = searchOpening(chain);
+					await assert.rejects(opening, (error) => error.statusCode === 502);
+					releaseSearchOpening(opening);
+					await waitFor(() => context.storeLinks().every((txn) => !txn.readTxnsUsed), {
+						message: 'the opened text search kept its snapshot',
+					});
+				}
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
+		it('releasing a failed concatenation reused on both sides closes each search once', async () => {
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('unlucky')
+					? Promise.reject(new Error('backend down'))
+					: embed(input, opts)
+			);
+			try {
+				let closes = 0;
+				let releases = 0;
+				const shared = { onDone: () => closes++, [Symbol.asyncIterator]: () => [][Symbol.iterator]() };
+				const failing = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } }, {});
+				const base = searchOpening(failing);
+				const release = base.release;
+				base.release = () => {
+					releases++;
+					return release();
+				};
+				const other = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' } }, {});
+				let chain = failing
+					.concat(shared)
+					.map((row) => row)
+					.concat(other.map((row) => row).concat(shared));
+				for (let level = 0; level < 12; level++)
+					chain = chain.map((row) => row).concat(other.map((row) => row).concat(chain));
+				const opening = searchOpening(chain);
+				await assert.rejects(opening, (error) => error.statusCode === 502);
+				releaseSearchOpening(opening);
+				assert.equal(closes, 1);
+				assert.equal(releases, 1);
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
+		it('releasing a failed opening logs a release that rejects instead of letting it escape', async () => {
+			const failure = new Error('release failed');
+			const escaped = [];
+			const onUnhandled = (reason) => {
+				if (reason === failure) escaped.push(reason);
+			};
+			const opening = Promise.reject(new ClientError('backend down', 502));
+			opening.release = async () => {
+				throw failure;
+			};
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				await assert.rejects(opening, (error) => error.statusCode === 502);
+				releaseSearchOpening(opening);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.deepEqual(escaped, []);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+		});
+
+		for (const database of ['its own', 'another'])
+			it(`answers a failed text search with its status and releases a search on ${database} database concatenated beside it`, async () => {
+				if (!observesSnapshot) return;
+				const Other =
+					database === 'another' &&
+					table({
+						table: 'SortTextOtherPlain',
+						database: 'sort_text_other',
+						attributes: [
+							{ name: 'id', isPrimaryKey: true },
+							{ name: 'tag', indexed: true },
+						],
+					});
+				if (Other) await Other.put(1, { tag: 'odd' });
+				__setEmbedFnForTest((input, opts) =>
+					opts.inputType === 'query' && input.includes('unlucky')
+						? Promise.reject(new Error('backend down'))
+						: embed(input, opts)
+				);
+				let plainClosed = false;
+				let transaction;
+				try {
+					class TextThenPlain extends Doc {
+						search(target) {
+							const conditions = [{ attribute: 'tag', value: 'odd' }];
+							const plain = Other
+								? Other.search({ conditions }, this.getContext())
+								: super.search({ ...target, conditions });
+							const close = plain.onDone;
+							plain.onDone = function () {
+								plainClosed = true;
+								return close.call(this);
+							};
+							transaction = this.getContext().transaction;
+							return super.search({ ...target, sort: { attribute: 'embedding', text: 'unlucky' } }).concat(plain);
+						}
+					}
+					const response = await rest([TextThenPlain])(
+						'QUERY',
+						'/SortTextEmbedDoc/',
+						{ select: ['content'] },
+						{ accept: 'application/json' }
+					).catch((error) => error);
+					assert.equal(response.statusCode ?? response.status, 502);
+					assert.ok(plainClosed, 'the concatenated search kept its snapshot');
+					for (let link = transaction; link; link = link.next) assert.equal(link.readTxnsUsed, 0);
+				} finally {
+					__setEmbedFnForTest(failingEmbed);
+				}
+			});
+
+		it('a direct reader of a concatenation reads the search that opens though the other failed first', async () => {
+			const firstModel = Promise.withResolvers();
+			__setEmbedFnForTest((input, opts) => {
+				if (opts.inputType !== 'query') return embed(input, opts);
+				if (input.includes('unlucky')) return Promise.reject(new Error('backend down'));
+				return firstModel.promise.then(() => embed(input, opts));
+			});
+			try {
+				const failed = Doc.search({ sort: { attribute: 'embedding', text: 'unlucky' } });
+				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select: ['content'] }).concat(
+					failed
+				);
+				await assert.rejects(searchOpening(joined), (error) => error.statusCode === 502);
+				firstModel.resolve();
+				const rows = [];
+				await assert.rejects(
+					async () => {
+						for await (const row of joined) rows.push(row);
+					},
+					(error) => error.statusCode === 502
+				);
+				assert.ok(rows.length > 0, 'the first search was discarded');
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
+		it('a concatenation of text searches opens no snapshot while either model call is still running, however late its opening is awaited', async () => {
+			const secondModel = Promise.withResolvers();
+			let firstAnswered = false;
+			__setEmbedFnForTest((input, opts) => {
+				if (opts.inputType !== 'query') return embed(input, opts);
+				if (input.includes('yellow fruit')) return secondModel.promise.then(() => embed(input, opts));
+				return embed(input, opts).then((vectors) => {
+					firstAnswered = true;
+					return vectors;
+				});
+			});
+			// a non-event: give the first search the turns it would take to open its snapshot
+			const noSnapshot = async (message) => {
+				for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+				if (observesSnapshot)
+					assert.ok(
+						context.storeLinks().every((txn) => !txn.readTxnsUsed),
+						message
+					);
+			};
+			const context = recordingContext();
+			try {
+				const select = ['content'];
+				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select }, context)
+					.map((row) => row)
+					.concat(Doc.search({ sort: { attribute: 'embedding', text: 'yellow fruit' }, select }, context));
+				await waitFor(() => firstAnswered);
+				await noSnapshot('the first search opened before anyone awaited the concatenation');
+				// as REST does, after the first model answered
+				const opening = Promise.resolve(searchOpening(joined));
+				await noSnapshot('the first search opened while the second model was still running');
+				secondModel.resolve();
+				await opening;
+				const rows = await fromAsync(joined);
+				assert.equal(rows.length, 2 * Object.keys(DOCUMENT_VECTORS).length);
+			} finally {
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
+		it('a direct reader of a concatenation reads the first text search while the second model call is still running', async () => {
+			const secondModel = Promise.withResolvers();
+			__setEmbedFnForTest((input, opts) =>
+				opts.inputType === 'query' && input.includes('yellow fruit')
+					? secondModel.promise.then(() => embed(input, opts))
+					: embed(input, opts)
+			);
+			try {
+				const select = ['content'];
+				const joined = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, select }).concat(
+					Doc.search({ sort: { attribute: 'embedding', text: 'yellow fruit' }, select })
+				);
+				const rows = [];
+				const reading = (async () => {
+					for await (const row of joined) rows.push(row);
+				})();
+				await waitFor(() => rows.length === Object.keys(DOCUMENT_VECTORS).length, {
+					message: 'the first search waited on the second model',
+				});
+				secondModel.resolve();
+				await reading;
+				assert.equal(rows.length, 2 * Object.keys(DOCUMENT_VECTORS).length);
+			} finally {
+				secondModel.resolve();
+				__setEmbedFnForTest(failingEmbed);
+			}
+		});
+
 		it('answers a REST QUERY with the failure as its status when the table maps its search', async () => {
 			failure = new Error('backend down');
 			class MappedDoc extends Doc {
@@ -723,6 +1090,424 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				(error) => error.statusCode === 403 || error.statusCode === 401
 			);
 			assert.equal(embed.calls.length, 0);
+		});
+
+		it('a gate closed before its verdict never calls the model', async () => {
+			const verdict = Promise.withResolvers();
+			class Pending extends Doc {
+				allowRead() {
+					return verdict.promise;
+				}
+			}
+			const gated = new Pending(null, { user: { username: 'reader' } }).search({
+				sort: { attribute: 'embedding', text: 'red fruit' },
+				checkPermission: true,
+			});
+			// a reader whose construction throws is not counted as one still reading
+			const badOptions = {
+				async: true,
+				get continueOnRecoverableError() {
+					throw new Error('bad options');
+				},
+			};
+			assert.throws(() => gated.iterate(badOptions), /bad options/);
+			await gated[Symbol.asyncIterator]().return();
+			verdict.resolve(true);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.equal(embed.calls.length, 0);
+		});
+
+		for (const [shape, project] of [
+			['', (results) => results],
+			[' and mapped', (results) => results.map((row) => row)],
+			[' behind iterate()', (results) => ({ iterate: (options) => results.iterate(options) })],
+		]) {
+			it(`a gate closed while its granted search${shape} is handed over releases that search`, async () => {
+				if (!observesSnapshot) return;
+				let close;
+				class Racing extends Doc {
+					async allowRead() {
+						return true;
+					}
+					search(target) {
+						if (target.checkPermission === false && close) {
+							const closeNow = close;
+							close = undefined;
+							closeNow();
+						}
+						return target.checkPermission === false ? project(super.search(target)) : super.search(target);
+					}
+				}
+				const transaction = new DatabaseTransaction();
+				try {
+					const iterator = new Racing(null, { transaction, user: { username: 'reader' } })
+						.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+						[Symbol.asyncIterator]();
+					close = () => iterator.return();
+					await waitFor(() => transaction.readTxnsUsed === 1, {
+						message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+					});
+				} finally {
+					transaction.abort();
+				}
+			});
+
+			it(`a search the gate granted${shape}, closed before its first step, releases its snapshot`, async () => {
+				// this reads the root transaction's count; an LMDB search counts its snapshot on the linked one it reads through
+				if (!observesSnapshot) return;
+				class Granted extends Doc {
+					async allowRead() {
+						return true;
+					}
+					search(target) {
+						return target.checkPermission === false ? project(super.search(target)) : super.search(target);
+					}
+				}
+				const transaction = new DatabaseTransaction();
+				try {
+					const iterator = new Granted(null, { transaction, user: { username: 'reader' } })
+						.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+						[Symbol.asyncIterator]();
+					await waitFor(() => transaction.readTxnsUsed > 1);
+					const held = transaction.readTxnsUsed;
+					await iterator.return();
+					await waitFor(() => transaction.readTxnsUsed === held - 1, {
+						message: () => `read snapshot still held (${transaction.readTxnsUsed} of ${held})`,
+					});
+				} finally {
+					transaction.abort();
+				}
+			});
+			it(`a search the gate granted${shape}, read to its end, releases its snapshot and keeps it released`, async () => {
+				if (!observesSnapshot) return;
+				class Granted extends Doc {
+					async allowRead() {
+						return true;
+					}
+					search(target) {
+						return target.checkPermission === false ? project(super.search(target)) : super.search(target);
+					}
+				}
+				const transaction = new DatabaseTransaction();
+				try {
+					const rows = await fromAsync(
+						new Granted(null, { transaction, user: { username: 'reader' } }).search({
+							conditions: [{ attribute: 'tag', value: 'odd' }],
+							checkPermission: true,
+						})
+					);
+					assert.ok(rows.length > 0);
+					await waitFor(() => transaction.readTxnsUsed === 1, {
+						message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+					});
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					assert.equal(transaction.readTxnsUsed, 1);
+				} finally {
+					transaction.abort();
+				}
+			});
+		}
+
+		it('a gate closed before its first step releases both text searches its override concatenates', async () => {
+			if (!observesSnapshot) return;
+			const release = embed.hold();
+			class Joined extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					const first = super.search({ ...target, sort: { attribute: 'embedding', text: 'red fruit' } });
+					return first.concat(super.search({ ...target, sort: { attribute: 'embedding', text: 'yellow fruit' } }));
+				}
+			}
+			const transaction = new DatabaseTransaction();
+			try {
+				const iterator = new Joined(null, { transaction, user: { username: 'reader' } })
+					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+					[Symbol.asyncIterator]();
+				await waitFor(() => embed.calls.length === 2);
+				await iterator.return();
+				const held = transaction.readTxnsUsed;
+				release();
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				assert.equal(transaction.readTxnsUsed, held, 'a search opened after the gate closed');
+			} finally {
+				release();
+				transaction.abort();
+			}
+		});
+
+		it('a gate closed after its reader took a row closes that cursor and asks for no other', async () => {
+			if (!observesSnapshot) return;
+			let cursors = 0;
+			class OneCursor extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					const results = super.search(target);
+					return {
+						[Symbol.asyncIterator]() {
+							if (cursors++) throw new Error('one cursor only');
+							return results[Symbol.asyncIterator]();
+						},
+					};
+				}
+			}
+			const transaction = new DatabaseTransaction();
+			try {
+				const gated = new OneCursor(null, { transaction, user: { username: 'reader' } }).search({
+					conditions: [{ attribute: 'tag', value: 'odd' }],
+					checkPermission: true,
+				});
+				const iterator = gated[Symbol.asyncIterator]();
+				assert.ok((await iterator.next()).value);
+				gated.onDone();
+				await iterator.return();
+				await waitFor(() => transaction.readTxnsUsed === 1, {
+					message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+				});
+				assert.equal(cursors, 1);
+			} finally {
+				transaction.abort();
+			}
+		});
+
+		it('a reader that starts after the gate closed reads nothing, and a factory that closes it is not asked twice', async () => {
+			if (!observesSnapshot) return;
+			let cursors = 0;
+			let gated;
+			class Closing extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					const results = super.search(target);
+					return {
+						[Symbol.asyncIterator]() {
+							cursors++;
+							gated.onDone?.();
+							return results[Symbol.asyncIterator]();
+						},
+					};
+				}
+			}
+			const transaction = new DatabaseTransaction();
+			const target = () => ({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true });
+			try {
+				gated = new Closing(null, { transaction, user: { username: 'reader' } }).search(target());
+				const iterator = gated[Symbol.asyncIterator]();
+				assert.ok((await iterator.next()).value);
+				await iterator.return();
+				assert.equal(cursors, 1);
+				await waitFor(() => transaction.readTxnsUsed === 1, {
+					message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+				});
+				gated = new Closing(null, { transaction, user: { username: 'reader' } }).search(target());
+				await gated[SEARCH_AUTHORIZATION];
+				gated.onDone();
+				assert.equal(cursors, 2);
+				assert.deepEqual(await fromAsync(gated), []);
+				assert.equal(cursors, 2);
+				assert.equal(transaction.readTxnsUsed, 1);
+			} finally {
+				transaction.abort();
+			}
+		});
+
+		describe('a granted result whose cursor is being opened', () => {
+			let disposed, factories, factory, withDisposer, Wrapped;
+			before(() => {
+				Wrapped = class extends Doc {
+					async allowRead() {
+						return true;
+					}
+					search(target) {
+						if (target.checkPermission !== false) return super.search(target);
+						const results = super.search(target);
+						const wrapper = {
+							[Symbol.asyncIterator]() {
+								factories++;
+								return factory(results);
+							},
+						};
+						if (withDisposer)
+							wrapper.onDone = () => {
+								disposed++;
+								results.onDone?.();
+							};
+						return wrapper;
+					}
+				};
+			});
+			const open = async (transaction, { withoutDisposer = false } = {}) => {
+				withDisposer = !withoutDisposer;
+				disposed = 0;
+				factories = 0;
+				const gated = new Wrapped(null, { transaction, user: { username: 'reader' } }).search({
+					conditions: [{ attribute: 'tag', value: 'odd' }],
+					checkPermission: true,
+				});
+				await gated[SEARCH_AUTHORIZATION];
+				return gated;
+			};
+
+			it('is never both disposed and read when the gate closes in between', async () => {
+				factory = (results) => results[Symbol.asyncIterator]();
+				const gated = await open();
+				const iterator = gated[Symbol.asyncIterator]();
+				const step = iterator.next();
+				queueMicrotask(() => gated.onDone());
+				const result = await step;
+				await iterator.return();
+				assert.ok(!(disposed && factories), `disposed ${disposed}, factories ${factories}`);
+				assert.ok(!(disposed && !result.done), 'read a row from a disposed result');
+			});
+
+			it('fails, and is disposed, when its factory returns no iterator', async () => {
+				factory = () => undefined;
+				const gated = await open();
+				await assert.rejects(fromAsync(gated), /returned no iterator/);
+				assert.equal(disposed, 1);
+			});
+
+			it('is disposed when its factory throws', async () => {
+				factory = () => {
+					throw new Error('no cursor');
+				};
+				const gated = await open();
+				await assert.rejects(fromAsync(gated), /no cursor/);
+				assert.equal(disposed, 1);
+			});
+
+			it('without a disposer, is not asked for a cursor again after its factory throws', async () => {
+				if (!observesSnapshot) return;
+				factory = () => {
+					throw new Error('no cursor');
+				};
+				const transaction = new DatabaseTransaction();
+				try {
+					const gated = await open(transaction, { withoutDisposer: true });
+					await assert.rejects(fromAsync(gated), /no cursor/);
+					assert.equal(factories, 1);
+				} finally {
+					transaction.abort();
+				}
+			});
+
+			it('is disposed when its factory closes the gate and then throws', async () => {
+				let gated;
+				factory = () => {
+					gated.onDone();
+					throw new Error('no cursor');
+				};
+				gated = await open();
+				await assert.rejects(fromAsync(gated), /no cursor/);
+				assert.equal(disposed, 1);
+			});
+
+			it('is disposed when its factory returns the reader and hands over a cursor that can not close', async () => {
+				let reader;
+				factory = () => {
+					reader.return();
+					return { next: () => Promise.resolve({ value: undefined, done: true }) };
+				};
+				const gated = await open();
+				reader = gated[Symbol.asyncIterator]();
+				assert.equal((await reader.next()).done, true);
+				assert.equal(disposed, 1);
+			});
+
+			it('closes the cursor a factory hands over after returning the reader', async () => {
+				if (!observesSnapshot) return;
+				let reader;
+				factory = (results) => {
+					reader.return();
+					return results[Symbol.asyncIterator]();
+				};
+				const transaction = new DatabaseTransaction();
+				try {
+					const gated = await open(transaction);
+					reader = gated[Symbol.asyncIterator]();
+					assert.equal((await reader.next()).done, true);
+					await waitFor(() => transaction.readTxnsUsed === 1, {
+						message: () => `read snapshot still held (${transaction.readTxnsUsed})`,
+					});
+				} finally {
+					transaction.abort();
+				}
+			});
+		});
+
+		it('a gated result that can be read again stays readable when one reader ends, early or at its end', async () => {
+			class Replayable extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					return [{ id: 1 }, { id: 2 }];
+				}
+			}
+			const gate = () => new Replayable(null, { user: { username: 'reader' } }).search({ checkPermission: true });
+			const rows = [{ id: 1 }, { id: 2 }];
+			let gated = gate();
+			assert.deepEqual(await fromAsync(gated), rows);
+			assert.deepEqual(await fromAsync(gated), rows);
+			gated = gate();
+			assert.deepEqual(await fromAsync(gated.slice(0, 1).concat(gated.slice(1))), rows);
+			gated = gate();
+			const reader = gated[Symbol.asyncIterator]();
+			const first = reader.next();
+			assert.throws(() => {
+				for (const row of gated) assert.fail(row);
+			}, /synchronously/);
+			assert.deepEqual((await first).value, rows[0]);
+			assert.deepEqual((await reader.next()).value, rows[1]);
+		});
+
+		it('a gate closed before its first step logs a cleanup that rejects instead of letting it escape', async () => {
+			const failure = new Error('cursor close failed');
+			const escaped = [];
+			const onUnhandled = (reason) => {
+				if (reason === failure) escaped.push(reason);
+			};
+			let searched = false;
+			let closed = false;
+			class Rejecting extends Doc {
+				async allowRead() {
+					return true;
+				}
+				search(target) {
+					if (target.checkPermission !== false) return super.search(target);
+					searched = true;
+					const results = super.search(target);
+					return {
+						[Symbol.asyncIterator]: () => results[Symbol.asyncIterator](),
+						onDone: async () => {
+							closed = true;
+							results.onDone?.();
+							throw failure;
+						},
+					};
+				}
+			}
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				const iterator = new Rejecting(null, { user: { username: 'reader' } })
+					.search({ conditions: [{ attribute: 'tag', value: 'odd' }], checkPermission: true })
+					[Symbol.asyncIterator]();
+				await waitFor(() => searched);
+				await iterator.return();
+				await waitFor(() => closed);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.deepEqual(escaped, []);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
 		});
 
 		it('an asynchronously granted read embeds and searches', async () => {
@@ -923,6 +1708,37 @@ describe('Vector search by sort text on an @embed attribute', () => {
 				context.installed.slice(installedBeforeAbort).filter((txn) => !isReleasedTransaction(txn)),
 				[]
 			);
+		});
+
+		it('a request aborted after the model answered opens no search, in every return shape', async () => {
+			for (const shape of [{}, { explain: true }, { count: 'exact', limit: 2 }]) {
+				const context = recordingContext();
+				context.signal = new AbortController().signal;
+				let installedAtAnswer;
+				// a caller aborts once the answer is in, past the model call's own abort race
+				__setEmbedFnForTest((input, opts) => {
+					const answer = embed(input, opts);
+					if (opts.inputType !== 'query') return answer;
+					return answer.then((vectors) => {
+						installedAtAnswer = context.installed.length;
+						context.signal = AbortSignal.abort();
+						return vectors;
+					});
+				});
+				try {
+					const result = Doc.search({ sort: { attribute: 'embedding', text: 'red fruit' }, ...shape }, context);
+					await rejectsWith(shape.explain || shape.count ? result : fromAsync(result), (error) =>
+						assert.equal(error.statusCode, 499, JSON.stringify(shape))
+					);
+					assert.deepEqual(
+						context.installed.slice(installedAtAnswer).filter((txn) => !isReleasedTransaction(txn)),
+						[],
+						JSON.stringify(shape)
+					);
+				} finally {
+					__setEmbedFnForTest(embed);
+				}
+			}
 		});
 
 		it('reads from a snapshot taken after the text is embedded', async () => {

@@ -965,12 +965,103 @@ const ATTRIBUTE_PERMISSION_SELECT = Symbol('attributePermissionSelect');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
 const SEARCH_OPENING_TRANSFORMS = Symbol('searchOpeningTransforms');
+const JOINED_OPENING = Symbol('joinedOpening');
+const OPENING_EMBEDDED = Symbol('openingEmbedded');
+/** A text search starts its read when its opening is awaited, so a join starts none until every joined model call answers. */
+function startJoinedOpening(joined: any): Promise<undefined> {
+	const openings = [];
+	const pending = [joined];
+	const seen = new Set();
+	while (pending.length) {
+		const opening = pending.pop();
+		if (!opening || seen.has(opening)) continue;
+		seen.add(opening);
+		const part = opening[JOINED_OPENING];
+		if (part) pending.push(part.from, part.other);
+		else openings.push(opening);
+	}
+	return Promise.all(openings.map((opening) => opening[OPENING_EMBEDDED]))
+		.then(() => Promise.all(openings))
+		.then(() => undefined);
+}
+function joinOpenings(opening: any, other: any, operand: any) {
+	let started: Promise<undefined> | undefined;
+	const joined: any = {
+		[JOINED_OPENING]: { from: opening, other, operand },
+		then: (onFulfilled?: any, onRejected?: any) =>
+			(started ??= startJoinedOpening(joined)).then(onFulfilled, onRejected),
+		catch: (onRejected?: any) => joined.then(undefined, onRejected),
+		finally: (onFinally?: any) => (started ??= startJoinedOpening(joined)).finally(onFinally),
+	};
+	joined.release = () => {
+		// a recursive walk overflows the stack on a deep chain, and a reused result is reached more than once
+		const pending = [joined];
+		const seen = new Set();
+		while (pending.length) {
+			const opening = pending.pop();
+			if (seen.has(opening)) continue;
+			seen.add(opening);
+			const part = opening?.[JOINED_OPENING];
+			if (!part) {
+				cleanUp(() => opening?.release?.());
+				continue;
+			}
+			pending.push(part.from);
+			if (part.other) pending.push(part.other);
+			else if (!seen.has(part.operand)) {
+				seen.add(part.operand);
+				closeUnread(part.operand);
+			}
+		}
+	};
+	return joined;
+}
+/** A cleanup has no caller left to take its failure, thrown or rejected, so the failure is logged. */
+function cleanUp(close: () => unknown) {
+	try {
+		const closing: any = close();
+		if (closing?.then) closing.then(null, logCleanupFailure);
+	} catch (error) {
+		logCleanupFailure(error);
+	}
+}
+function logCleanupFailure(error: unknown) {
+	harperLogger.warn?.('Closing a search result failed:', error);
+}
+/**
+ * A transform of a search result has no `onDone`; its opening's `release` reaches every search a concatenation
+ * joined, where an iterator's return reaches only the first.
+ */
+function closeUnread(results: any, openIterators = true) {
+	if (!results || typeof results !== 'object') return;
+	cleanUp(() => {
+		if (results.onDone !== undefined) return results.onDone?.();
+		const release = results[SEARCH_OPENING]?.release;
+		if (release) return release();
+		if (openIterators && (results.iterate || results[Symbol.asyncIterator] || results[Symbol.iterator]))
+			return openIterator(results, { async: true }).return?.();
+	});
+}
+function openIterator(results: any, options: any) {
+	return results.iterate
+		? results.iterate(options)
+		: results[Symbol.asyncIterator]
+			? results[Symbol.asyncIterator](options)
+			: results[Symbol.iterator]();
+}
 
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>) {
 	return carryThroughTransforms(iterable, SEARCH_AUTHORIZATION, authorization, SEARCH_AUTHORIZATION_TRANSFORMS, true);
 }
 
-function carryThroughTransforms(iterable: any, key: symbol, value: any, wrapped: symbol, inheritSelect: boolean) {
+function carryThroughTransforms(
+	iterable: any,
+	key: symbol,
+	value: any,
+	wrapped: symbol,
+	inheritSelect: boolean,
+	combine?: (value: any, other: any, operand: any) => any
+) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
 	iterable[key] = value;
 	if (iterable[wrapped]) return iterable;
@@ -986,7 +1077,9 @@ function carryThroughTransforms(iterable: any, key: symbol, value: any, wrapped:
 					if (this.selectApplied) derived.selectApplied = true;
 					if (this.getColumns && !derived.getColumns) derived.getColumns = this.getColumns;
 				}
-				return carryThroughTransforms(derived, key, value, wrapped, inheritSelect);
+				const other = combine && methodName === 'concat' ? args[0]?.[key] : value;
+				const carried = other !== value ? combine(value, other, args[0]) : value;
+				return carryThroughTransforms(derived, key, carried, wrapped, inheritSelect, combine);
 			},
 		});
 	}
@@ -996,7 +1089,8 @@ function deferredIterator(
 	options: any,
 	openResults: () => Promise<any>,
 	onFinish: () => void,
-	synchronousIterationMessage: string
+	synchronousIterationMessage: string,
+	acquire: (results: any, options: any, cancelled: () => boolean) => AsyncIterator<any> | undefined = openIterator
 ) {
 	const asynchronous = options === true || options?.async;
 	const iterationOptions = options === true ? { async: true } : { ...options, async: true };
@@ -1015,14 +1109,16 @@ function deferredIterator(
 		throw error;
 	};
 	const getIterator = () =>
-		(iteratorPromise ||= openResults().then(
-			(results: any) =>
-				(opened = results.iterate
-					? results.iterate(iterationOptions)
-					: results[Symbol.asyncIterator]
-						? results[Symbol.asyncIterator](iterationOptions)
-						: results[Symbol.iterator]())
-		));
+		(iteratorPromise ||= openResults().then((results: any) => {
+			if (returned) return undefined;
+			const iterator = acquire(results, iterationOptions, () => returned);
+			// a factory can return this reader before it hands over the cursor
+			if (returned) {
+				if (iterator) cleanUp(() => iterator.return?.());
+				return undefined;
+			}
+			return (opened = iterator);
+		}));
 	return {
 		next(value?: any) {
 			if (!asynchronous) {
@@ -1033,6 +1129,10 @@ function deferredIterator(
 			return getIterator().then(
 				(iterator) => {
 					if (returned) return { value: undefined, done: true };
+					if (!iterator) {
+						finish();
+						return { value: undefined, done: true };
+					}
 					let step;
 					try {
 						step = iterator.next(value);
@@ -1058,10 +1158,7 @@ function deferredIterator(
 			finish();
 			const inner = opened;
 			if (inner) return Promise.resolve().then(() => inner.return?.(value) ?? { value, done: true });
-			// a model can ignore the abort, so a close closes what opens later rather than waiting for it
-			getIterator()
-				.then((iterator) => iterator.return?.(value))
-				.catch(() => {});
+			// a model can ignore the abort, so close never waits for the opening
 			return Promise.resolve({ value, done: true });
 		},
 		throw(error: any) {
@@ -1073,9 +1170,6 @@ function deferredIterator(
 					if (inner.throw) return inner.throw(error);
 					throw error;
 				});
-			getIterator()
-				.then((iterator) => iterator.return?.())
-				.catch(() => {});
 			return Promise.reject(error);
 		},
 	};
@@ -8881,15 +8975,42 @@ export function makeTable(options): TableResourceClass {
 					const gatedResults: any = new ExtendedIterable();
 					let resolvedResults: any;
 					let earlyColumns: ColumnsList | undefined;
+					let gateClosed = false;
+					let acquiring = false;
+					let handedOver = false;
+					let acquireFailed = false;
+					const acquire = (results: any, options: any, cancelled: () => boolean) => {
+						if (gateClosed) return undefined;
+						const held = handedOver;
+						acquiring = true;
+						try {
+							const iterator = openIterator(results, options);
+							if (!iterator) throw new TypeError('A search result returned no iterator');
+							handedOver = true;
+							if (cancelled() && !iterator?.return && !held) closeUnread(results, false);
+							return iterator;
+						} catch (error) {
+							acquireFailed = true;
+							if (gateClosed && !held) closeUnread(results, false);
+							throw error;
+						} finally {
+							acquiring = false;
+						}
+					};
 					gatedResults.pendingAuth = true;
 					const authorization = Promise.resolve(allowed).then(
 						async (resolved) => {
 							if (!resolved) return { allowed: false };
+							if (gateClosed) return { allowed: true, results: [], gate: gatedResults };
 							target.checkPermission = false;
 							try {
 								// Initialize the real search before the static transaction settles so it reserves
 								// the same stable read snapshot as a synchronously-authorized search.
 								resolvedResults = await self.search(target);
+								if (gateClosed) {
+									closeUnread(resolvedResults);
+									return { allowed: true, results: [], gate: gatedResults };
+								}
 								delete gatedResults.pendingAuth;
 								if (earlyColumns) {
 									const resolvedColumns = resolvedResults?.getColumns ? resolvedResults.getColumns() : getColumns();
@@ -8909,8 +9030,9 @@ export function makeTable(options): TableResourceClass {
 					gatedResults.selectApplied = true;
 					gatedResults.getColumns = () =>
 						resolvedResults?.getColumns ? resolvedResults.getColumns() : (earlyColumns ??= getColumns());
-					gatedResults.iterate = (options: any = {}) =>
-						deferredIterator(
+					let readers = 0;
+					gatedResults.iterate = (options: any = {}) => {
+						const reader = deferredIterator(
 							options,
 							() =>
 								authorization.then((state: any) => {
@@ -8918,9 +9040,21 @@ export function makeTable(options): TableResourceClass {
 									if (!state.allowed) throw new AccessViolation((context as any).user);
 									return state.results;
 								}),
-							() => gatedResults.onDone?.(),
-							'Can not synchronously iterate while allowRead is asynchronous'
+							// one reader ending leaves a result another reader or a replay can still use
+							() => {
+								if (--readers === 0 && !handedOver) gatedResults.onDone?.();
+							},
+							'Can not synchronously iterate while allowRead is asynchronous',
+							acquire
 						);
+						readers++;
+						return reader;
+					};
+					gatedResults.onDone = () => {
+						gatedResults.onDone = null;
+						gateClosed = true;
+						if (!handedOver && !acquiring) closeUnread(resolvedResults, !acquireFailed);
+					};
 					return propagateSearchAuthorization(gatedResults, authorization);
 				}
 				if (!allowed) {
@@ -8944,29 +9078,45 @@ export function makeTable(options): TableResourceClass {
 		/** The search starts only after the model call, through `transaction()`: a model call has no deadline, so no read snapshot is reserved across it. */
 		#searchAfterEmbedding(target: RequestTarget, embedding: SortEmbedding, context: any, rowFilter: any): any {
 			const scope = context ?? {};
-			const search = (sort: any) =>
-				transaction(scope, () =>
+			const search = (sort: any) => {
+				if (context?.signal?.aborted) throw Object.assign(requestAbortedError(), { cause: context.signal.reason });
+				return transaction(scope, () =>
 					this.#searchSorted(target, sort, context, txnForContext(scope), rowFilter, embedding.conditions)
 				);
+			};
 			if (target.explain || countPageApplies(target)) return embedding.sort.then(search);
 			const deferred: any = new ExtendedIterable();
 			let results: any;
 			let discarded = false;
-			const opening = embedding.sort
-				.then(
-					(sort) => (discarded ? [] : search(sort)),
-					(error) => {
-						if (discarded) return [];
-						throw error;
-					}
-				)
-				.then((searched) => {
-					results = searched;
-					if (discarded) searched.onDone?.();
-					return searched;
-				});
-			opening.catch(() => {});
-			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false);
+			let started: Promise<any> | undefined;
+			// a model call has no deadline, so the read starts only once a reader or a caller awaiting the opening asks for it
+			const start = () => {
+				if (started) return started;
+				started = embedding.sort
+					.then(
+						(sort) => (discarded ? [] : search(sort)),
+						(error) => {
+							if (discarded) return [];
+							throw error;
+						}
+					)
+					.then((searched) => {
+						results = searched;
+						if (discarded) searched.onDone?.();
+						return searched;
+					});
+				started.catch(() => {});
+				return started;
+			};
+			embedding.sort.catch(() => {});
+			const opening: any = {
+				[OPENING_EMBEDDED]: embedding.sort,
+				then: (onFulfilled?: any, onRejected?: any) => start().then(onFulfilled, onRejected),
+				catch: (onRejected?: any) => start().catch(onRejected),
+				finally: (onFinally?: any) => start().finally(onFinally),
+			};
+			opening.release = () => cleanUp(() => deferred.onDone?.());
+			carryThroughTransforms(deferred, SEARCH_OPENING, opening, SEARCH_OPENING_TRANSFORMS, false, joinOpenings);
 			deferred.iterate = (options: any = {}) =>
 				deferredIterator(
 					options,
@@ -9058,6 +9208,8 @@ export function makeTable(options): TableResourceClass {
 			}
 			for (let order = sort; order; order = order.next) {
 				if (fullTextFieldNames) assertRecordField(order.attribute);
+				// a condition on the head can stand in for its definition
+				if (order !== sort) assertSortAttribute(order.attribute);
 				if (typeof order.attribute !== 'string') continue;
 				const customIndex = indices[order.attribute]?.customIndex;
 				if (customIndex?.exactDistance) customIndex.exactDistance(order, null);
@@ -14222,6 +14374,15 @@ export function makeTable(options): TableResourceClass {
 		}
 		return false;
 	}
+	function assertSortAttribute(name: any): void {
+		if (name == null || name === '' || (Array.isArray(name) && (name.length === 0 || name.includes(''))))
+			throw new ClientError('Sort requires an attribute');
+		// an open table can store attributes it does not declare, and they order its records
+		if (!sealed) return;
+		const root = String(Array.isArray(name) ? name[0] : name);
+		if (!propertyResolvers?.[root] && !declaredAttributeNames.has(root))
+			throw new ClientError(`${Array.isArray(name) ? name.join('.') : name} is not a defined attribute`, 404);
+	}
 	function assertRecordField(name: unknown): void {
 		const field = Array.isArray(name) ? name[0] : name;
 		if (typeof field === 'string' && fullTextFieldNames?.has(field))
@@ -14552,6 +14713,7 @@ export function makeTable(options): TableResourceClass {
 		let texts = 0;
 		for (let order = sort; order; order = order.next) {
 			if (order.text === undefined) continue;
+			if (order !== sort) assertSortAttribute(order.attribute);
 			// every text is billed before the row limit applies
 			if (++texts > MAX_SORT_TEXTS) throw new ClientError(`A sort can embed at most ${MAX_SORT_TEXTS} texts`);
 			const name = Array.isArray(order.attribute) ? order.attribute.join('.') : order.attribute;
@@ -14586,6 +14748,7 @@ export function makeTable(options): TableResourceClass {
 		for (let order = sort; order; order = order.next) {
 			if (order.text !== undefined) continue;
 			if (fullTextFieldNames) assertRecordField(order.attribute);
+			if (order !== sort) assertSortAttribute(order.attribute);
 			const attribute =
 				Array.isArray(order.attribute) && order.attribute.length === 1 ? order.attribute[0] : order.attribute;
 			if (typeof attribute === 'string') indices[attribute]?.customIndex?.exactDistance?.(order, null);

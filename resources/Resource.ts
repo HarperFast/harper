@@ -53,6 +53,17 @@ export function searchOpening(result: any): Promise<unknown> | undefined {
 	return result?.[SEARCH_OPENING] ?? (result?.headers ? result.data?.[SEARCH_OPENING] : undefined);
 }
 
+export function releaseSearchOpening(opening: any): void {
+	try {
+		opening.release?.()?.then?.(null, logReleaseFailure);
+	} catch (error) {
+		logReleaseFailure(error);
+	}
+}
+function logReleaseFailure(error: unknown) {
+	logger.error?.('Releasing a search whose opening failed:', error);
+}
+
 const EXTENSION_TYPES = {
 	json: 'application/json',
 	cbor: 'application/cbor',
@@ -1127,7 +1138,14 @@ function authorizeSearchResult(result: any, user: any) {
 							const opening = searchOpening(state.results);
 							const derived = result.headers ? result.data : result;
 							if (opening && derived && typeof derived === 'object') {
-								if (!Object.isExtensible(derived)) return opening.then(() => result);
+								if (!Object.isExtensible(derived))
+									return opening.then(
+										() => result,
+										(error) => {
+											releaseSearchOpening(opening);
+											throw error;
+										}
+									);
 								derived[SEARCH_OPENING] ??= opening;
 							}
 						}
