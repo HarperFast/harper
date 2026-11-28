@@ -4,8 +4,10 @@ const assert = require('node:assert');
 const testUtils = require('../testUtils.js');
 const { waitFor } = require('../waitFor');
 const { databases } = require('#src/resources/databases');
+const { server } = require('#src/server/Server');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 const { authentication } = require('#src/security/auth');
+const { getDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { runStartup } = require('#src/utility/lifecycle');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -81,6 +83,47 @@ describe('authentication session helpers', function () {
 		await waitFor(async () => (await storedSession(cookie))?.cart?.[0] === 'gadget');
 		assert.strictEqual((await storedSession(cookie)).user, 'admin');
 		await databases.system.hdb_session.delete(sessionIdOf(cookie));
+	});
+
+	it('rejects the built-in missing-user view even when an override delegates the session lookup', async () => {
+		const username = 'missing_session_user';
+		const { response } = await authenticate(remoteRequest(), (request) => request.session.update({ user: username }));
+		const cookie = sessionCookie(response);
+		const getUser = server.getUser;
+		server.getUser = (...args) => getUser.apply(server, args);
+		try {
+			await waitFor(async () => (await storedSession(cookie))?.user === username);
+			const request = remoteRequest({ cookie });
+			const { user } = await authenticate(request);
+			assert.strictEqual(user, undefined, 'middleware must not see the rejected principal');
+			assert.strictEqual(getDeferredCredentialRejection(request)?.status, 401);
+		} finally {
+			server.getUser = getUser;
+			await databases.system.hdb_session.delete(sessionIdOf(cookie));
+		}
+	});
+
+	it('accepts a session principal supplied by the override without a stored user', async () => {
+		const principal = { username: 'custom_session_user' };
+		const { response } = await authenticate(remoteRequest(), (request) =>
+			request.session.update({ user: principal.username })
+		);
+		const cookie = sessionCookie(response);
+		const getUser = server.getUser;
+		server.getUser = function (username) {
+			assert.strictEqual(this, server);
+			assert.strictEqual(username, principal.username);
+			return principal;
+		};
+		try {
+			await waitFor(async () => (await storedSession(cookie))?.user === principal.username);
+			const authorization = `Basic ${Buffer.from(`${principal.username}:credential`).toString('base64')}`;
+			assert.strictEqual((await authenticate(remoteRequest({ authorization }))).user, principal);
+			assert.strictEqual((await authenticate(remoteRequest({ cookie }))).user, principal);
+		} finally {
+			server.getUser = getUser;
+			await databases.system.hdb_session.delete(sessionIdOf(cookie));
+		}
 	});
 
 	it('keeps update and login working when detached from the request or copied', async () => {

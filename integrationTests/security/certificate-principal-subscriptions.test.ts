@@ -12,6 +12,7 @@ import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
+import { waitFor as waitForCondition } from '../../unitTests/waitFor.js';
 import {
 	CLIENT_AUTH_OID,
 	certToPem,
@@ -201,7 +202,7 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 		return stream;
 	}
 
-	test('a principal no certificate named, with no hdb_user, does not keep a subscription', async () => {
+	test('dropping a user ends open token and cookie streams and refuses new subscriptions', async () => {
 		await client
 			.req()
 			.send({ operation: 'add_role', role: 'certsub_role', permission: { super_user: false, data: { tables: {} } } })
@@ -216,10 +217,11 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			.expect(200);
 		const token = tokens.body?.operation_token;
 		ok(token, 'expected an operation_token');
+		const origin = new URL(ctx.harper.httpURL).origin;
 		const login = await fetch(ctx.harper.operationsAPIURL, {
 			method: 'POST',
 			// the session cookie is named for the origin it serves; the stream below goes to the REST port
-			headers: { 'Content-Type': 'application/json', 'Origin': new URL(ctx.harper.httpURL).origin },
+			headers: { 'Content-Type': 'application/json', 'Origin': origin },
 			body: JSON.stringify({ operation: 'login', ...DROPPED }),
 		});
 		strictEqual(login.status, 200, await login.text());
@@ -228,19 +230,42 @@ suite('Subscriptions of principals with no hdb_user (#4062)', { skip: skipSuite 
 			.map((c) => c.split(';')[0])
 			.find((c) => c.includes('-hdb-session='));
 		ok(cookie, `expected an hdb-session cookie, got ${JSON.stringify([...login.headers])}`);
-		await client.req().send({ operation: 'drop_user', username: DROPPED.username }).expect(200);
-
-		const streams = { token: openSse({ Authorization: `Bearer ${token}` }), cookie: openSse({ Cookie: cookie }) };
+		await waitForCondition(
+			async () =>
+				(await client.reqAs({ Cookie: cookie, Origin: origin }).send({ operation: 'user_info' })).status === 200,
+			{ timeout: 5000, message: 'expected the session cookie to authenticate before drop_user' }
+		);
+		const credentials = { token: { Authorization: `Bearer ${token}` }, cookie: { Cookie: cookie } };
+		const streams = Object.entries(credentials).map(([credential, headers]) => ({
+			credential,
+			headers,
+			stream: openSse(headers),
+		}));
 		try {
-			await write();
-			for (const [credential, stream] of Object.entries(streams)) {
-				ok(await waitFor(() => stream.ended, RECHECK_MS * 10), `the ${credential} subscription survived rechecks`);
-				// a recheck ends an admitted stream; a dropped user may also be refused at admission (#4124)
-				const expected = stream.status === 200 ? stream.completed : [401, 403].includes(stream.status);
-				ok(expected, `the ${credential} stream ended with status ${stream.status}, completed: ${stream.completed}`);
+			await waitForCondition(
+				async () => {
+					if (streams.every(({ stream }) => stream.events > 0)) return true;
+					await write();
+					return false;
+				},
+				{ timeout: 6000, interval: 100, message: 'expected both streams to receive events before drop_user' }
+			);
+			for (const { credential, stream } of streams) {
+				ok(!stream.completed && !stream.ended, `expected the ${credential} stream to stay open until drop_user`);
+			}
+			await client.req().send({ operation: 'drop_user', username: DROPPED.username }).expect(200);
+			for (const { credential, headers, stream } of streams) {
+				ok(await waitFor(() => stream.completed), `expected the open ${credential} stream to end cleanly`);
+				const freshStream = openSse(headers);
+				try {
+					ok(await waitFor(() => freshStream.status !== 0), `expected a response for the ${credential}`);
+					strictEqual(freshStream.status, 401, `expected admission to refuse the ${credential}`);
+				} finally {
+					freshStream.destroy();
+				}
 			}
 		} finally {
-			for (const stream of Object.values(streams)) stream.destroy();
+			for (const { stream } of streams) stream.destroy();
 		}
 	});
 

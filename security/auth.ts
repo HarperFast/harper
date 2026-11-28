@@ -5,7 +5,9 @@ import {
 	getUserImpl,
 	hasReadRecordChanged,
 	isCurrentUser,
+	isInactiveUserRejection,
 	isLocalPrincipal,
+	isMissingUserView,
 	localPrincipal,
 	trackUserRecords,
 	userRecordVersions,
@@ -189,6 +191,7 @@ export async function authentication(request, nextHandler) {
 			}
 		}
 		let sessionId;
+		let rejectedStoredSession = false;
 		let session;
 		if (ENABLE_SESSIONS) {
 			// we prefix the cookie name with the origin so that we can partition/separate session/authentications
@@ -251,14 +254,14 @@ export async function authentication(request, nextHandler) {
 					const getUser = server.getUser;
 					mtlsUser = certificatePrincipal(await server.getUser(username, null, request), getUser);
 				} catch (error) {
-					if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
+					if (LOG_AUTH_FAILED) authAuditLog(request, username, AUTH_AUDIT_STATUS.FAILURE, 'mTLS');
 					const failureResponse = settleAuthFailure(request, error, 'mTLS');
 					if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
 					mtlsCredentialDeferred = true;
 				}
 				if (!mtlsCredentialDeferred) {
 					request.user = mtlsUser;
-					authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+					authAuditLog(request, username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
 				}
 			} else {
 				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
@@ -419,7 +422,7 @@ export async function authentication(request, nextHandler) {
 					if (LOG_AUTH_FAILED) {
 						if (!failedCredentials.has(authorization)) {
 							failedCredentials.add(authorization);
-							authAuditLog(request, sessionId, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
+							authAuditLog(request, username, AUTH_AUDIT_STATUS.FAILURE, strategy);
 						}
 					}
 
@@ -434,7 +437,7 @@ export async function authentication(request, nextHandler) {
 						if (validatorEntry) validatorClaims.set(newUser, validatorEntry);
 					}
 					if (LOG_AUTH_SUCCESSFUL && newUser != null)
-						authAuditLog(request, sessionId, newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
+						authAuditLog(request, newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 					// Clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 					// doesn't mutate the just-stored cache entry (defense-in-depth).
 					if (newUser?.role) newUser = cloneUserView(newUser);
@@ -443,13 +446,27 @@ export async function authentication(request, nextHandler) {
 
 			request.user = newUser;
 		} else if (session?.user) {
+			let missingSessionUser = false;
 			try {
-				// or should this be cached in the session?
-				request.user = await server.getUser(session.user, null, request);
+				const user = await server.getUser(session.user, null, request);
+				missingSessionUser = isMissingUserView(user);
+				if (missingSessionUser) {
+					throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+				}
+				request.user = user;
 			} catch (error) {
-				if (LOG_AUTH_FAILED) authAuditLog(request, sessionId, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
-				const failureResponse = settleAuthFailure(request, error, 'Session');
-				if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
+				rejectedStoredSession = missingSessionUser || isInactiveUserRejection(error);
+				if (rejectedStoredSession) {
+					request.session = {};
+				}
+				if (LOG_AUTH_FAILED) authAuditLog(request, session.user, AUTH_AUDIT_STATUS.FAILURE, 'Session');
+				if (rejectedStoredSession && request.isOperationsServer && request._nodeRequest) {
+					// Fastify settles the rejection at authorize(), leaving public Studio assets reachable.
+					deferCredentialRejection(request, error, 'Session');
+				} else {
+					const failureResponse = settleAuthFailure(request, error, 'Session');
+					if (failureResponse) return applyResponseHeaders(request, failureResponse, responseHeaders, wasUnauthorized);
+				}
 			}
 		} else if (
 			(AUTHORIZE_LOCAL && authorizeAllAsLocal) || // explicit bypass (test mode)
@@ -461,7 +478,15 @@ export async function authentication(request, nextHandler) {
 			request.user = localPrincipal();
 		}
 		if (ENABLE_SESSIONS) {
-			sessionState = { request, headers, sessionId, origin, responseHeaders, response: undefined };
+			sessionState = {
+				request,
+				headers,
+				sessionId,
+				rejectedStoredSession,
+				origin,
+				responseHeaders,
+				response: undefined,
+			};
 			// bound rather than closures assigned to a property: security/DESIGN.md
 			request.session.update = updateSession.bind(sessionState);
 			request.login = loginWithSession.bind(sessionState);
@@ -548,7 +573,7 @@ function sessionCookiePrefix(origin: string | undefined): string {
 	return (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 }
 
-function authAuditLog(request, sessionId: string | undefined, username, status, strategy) {
+function authAuditLog(request, username, status, strategy) {
 	const headers = request.headers.asObject;
 	const log = new AuthAuditLog(
 		username,
@@ -559,7 +584,6 @@ function authAuditLog(request, sessionId: string | undefined, username, status, 
 		request.pathname
 	);
 	(log as any).auth_strategy = strategy;
-	if (sessionId) (log as any).session_id = sessionId;
 	if (headers['referer']) (log as any).referer = headers['referer'];
 	if (headers['origin']) (log as any).origin = headers['origin'];
 
@@ -571,6 +595,7 @@ interface SessionState {
 	request: any;
 	headers: any;
 	sessionId: string | undefined;
+	rejectedStoredSession: boolean;
 	origin: string | undefined;
 	// the authentication middleware's pending response headers until it has applied them
 	responseHeaders: any[] | null;
@@ -579,6 +604,11 @@ interface SessionState {
 
 function updateSession(this: SessionState, updatedSession) {
 	const { request, headers, origin, responseHeaders, response } = this;
+	if (this.rejectedStoredSession && updatedSession.user !== null) {
+		// Sign-out clears the presented ID. Other updates start a new session.
+		this.sessionId = undefined;
+		this.rejectedStoredSession = false;
+	}
 	const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
 	const useSecure =
 		request.protocol === 'https' ||

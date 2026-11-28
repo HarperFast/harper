@@ -29,6 +29,7 @@ export {
 	hasRecordProvenance,
 	isRecordlessPrincipal,
 	isRecordBacked,
+	isMissingUserView,
 	isInactiveUserRejection,
 	certificatePrincipal,
 	isCertificatePrincipal,
@@ -869,6 +870,11 @@ function isRecordlessPrincipal(user: User, admitted?: UserProvenance): boolean {
 function isRecordBacked(user: User, admitted?: UserProvenance): boolean | undefined {
 	const provenance = recordedProvenance(user, admitted);
 	return provenance && provenance.userStamp !== null;
+}
+
+function isMissingUserView(user: User | null | undefined): boolean {
+	const provenance: UserProvenance | undefined = (user as any)?.[PROVENANCE];
+	return provenance?.userStamp === null && provenance.recordless === undefined && !user?.active && !user?.role;
 }
 
 /** Whether `error` is `findAndValidateUser` refusing an inactive user, which proves a record had the name. */

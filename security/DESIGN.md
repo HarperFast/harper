@@ -74,11 +74,13 @@ In `vm` and `vm-current-context`, all four entry points (ESM `linker`, both `imp
 
 ## Authentication converts every principal-resolution failure into a decision (`security/auth.ts`)
 
-`authentication()` resolves mTLS cert CN, `Authorization`, and `hdb_session` via overridable `server.getUser`. Every failure routes through `settleAuthFailure()` / `rejectAuthenticationInPlace()`, never throws (escaped throws unwind to `server/http.ts` as plain text, harper#2703): internal faults and operations-API routes answer 401 in place; tagged credential rejections defer to the route owner.
+`authentication()` resolves mTLS cert CN, `Authorization`, and `hdb_session` via overridable `server.getUser`. Internal faults answer 401 in place through `settleAuthFailure()` / `rejectAuthenticationInPlace()` (escaped throws unwind to `server/http.ts` as plain text, harper#2703). Tagged credential rejections can defer to the route owner.
 
 - `server/REST.ts` and `server/mqtt.ts` discard `await chainCompletion`, so `rejectAuthenticationInPlace` sets `markAuthenticationRejectedInPlace` for `assertNoDeferredCredentialRejection` to fail WebSocket/MQTT upgrades closed.
 - Route owners call `settleDeferredCredentialRejection` before reading `request.user`, so a rejected cert never falls through to Basic, session, or local bypass.
 - A route 401 keeps its own challenge only when marked with `ownAuthenticationChallenge`; an unmarked one still gets Harper's challenge or the login redirect, so routes that set `WWW-Authenticate` today keep working.
+
+`validateToken` requires an active stored user for user-bound JWTs (#4124). In the session branch, `isMissingUserView` recognizes the built-in username-only fallback by its provenance, including through overrides that return or spread the view. A resolver that builds its own principal owns that identity's revocation (`unitTests/security/authSessions.test.js`). Native Operations API `POST /` defers rejection of a missing or inactive session user to `authorize`, so operations with independent credentials can proceed. A new login gets a fresh session ID. Authentication audit events omit session IDs because the ID is the cookie credential.
 
 ## A request's session helpers are bound module functions, never function literals assigned to a property (`security/auth.ts`)
 
