@@ -6,7 +6,7 @@ A note lives in the `DESIGN.md` of the directory that owns the code it describes
 
 ## sqlTranslator/ — legacy SQL integration
 
-- [Parser](sqlTranslator/DESIGN.md#parser), [in-memory engine](sqlTranslator/DESIGN.md#in-memory-engine) — AlaSQL 4.22's behavior. · [CommonJS date functions](sqlTranslator/DESIGN.md#commonjs-date-functions) — One CommonJS helper object for both runtimes. · [SQL column attribution](sqlTranslator/DESIGN.md#sql-column-attribution) — Shared column resolver. · [Legacy SQL text round trip](sqlTranslator/DESIGN.md#legacy-sql-text-round-trip) — Re-parsed text reads nothing new. · [Legacy LIKE](sqlTranslator/DESIGN.md#legacy-like) — v2's matcher; keeps `ESCAPE`.
+- [Parser](sqlTranslator/DESIGN.md#parser), [engine](sqlTranslator/DESIGN.md#in-memory-engine) — AlaSQL 4.22's behavior. · [Date functions](sqlTranslator/DESIGN.md#commonjs-date-functions) — One helper for both runtimes. · [Column attribution](sqlTranslator/DESIGN.md#sql-column-attribution) — Shared resolver. · [Text round trip](sqlTranslator/DESIGN.md#legacy-sql-text-round-trip) — Reads nothing new. · [LIKE](sqlTranslator/DESIGN.md#legacy-like) — v2's matcher, with `ESCAPE`.
 
 ## sqlEngine/ — SQL engine v2
 
