@@ -747,6 +747,7 @@ function getSelectAttributes(
 	recordColumns(ast.group, scope);
 	recordColumns(ast.having, scope);
 	recordColumns(ast.order, scope);
+	if (ast.distinctOn) recordColumns(ast.distinctOn, scope);
 	(ast.joins ?? []).forEach((join, index) => {
 		const joinedIdx = ast.from.length + index;
 		recordColumns(join?.on, scope.slice(0, joinedIdx + 1));

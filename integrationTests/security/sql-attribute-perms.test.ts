@@ -137,6 +137,19 @@ for (const sqlEngine of ['legacy', 'auto', 'new']) {
 				assertRefused(await asReader(USING_DENIED_SELF), USING_DENIED_SELF);
 			});
 
+			test('DISTINCT ON a read-denied column is refused; a readable one runs where the engine supports it', async () => {
+				const denied = `SELECT DISTINCT ON (ssn) label FROM data.ColPermLeft WHERE id = 'l1'`;
+				assertRefused(await asReader(denied), denied);
+				const permitted = `SELECT DISTINCT ON (label) label FROM data.ColPermLeft WHERE id = 'l1'`;
+				const r = await asReader(permitted);
+				if (sqlEngine === 'new') {
+					strictEqual(r.status, 400, `${permitted} -> ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+				} else {
+					strictEqual(r.status, 200, `${permitted} -> ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+					deepStrictEqual(r.body, [{ label: 'shared' }]);
+				}
+			});
+
 			test('an unqualified read-denied column inside JOIN ON is refused', async () => {
 				const sql = `SELECT l.label FROM data.ColPermLeft l JOIN data.ColPermRight r ON l.label = r.label AND code = 'c1' WHERE l.id = 'l1'`;
 				assertRefused(await asReader(sql), sql);

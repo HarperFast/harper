@@ -9,6 +9,7 @@ const assert = require('assert');
 const alasql = require('alasql');
 
 const SqlStatementBucket = require('#src/sqlTranslator/sql_statement_bucket').default;
+const { verifyPermsAST } = require('#src/utility/operation_authorization');
 const { _setDatabasesLoader } = require('#src/sqlEngine/binder/defaultDatabase');
 
 const attributes = (...names) => ({ attributes: names.map((name) => ({ name })) });
@@ -73,6 +74,74 @@ describe('SQL column attribution for attribute permissions', () => {
 			const bucket = bucketFor('SELECT a.id FROM data.L a JOIN data.C c USING (code)');
 			assert.ok(attributesOf(bucket, 'data', 'L').includes('code'));
 			assert.ok(attributesOf(bucket, 'data', 'C').includes('code'));
+		});
+	});
+
+	describe('DISTINCT ON', () => {
+		it('records the DISTINCT ON column, which decides how many rows the statement returns', () => {
+			const bucket = bucketFor('SELECT DISTINCT ON (ssn) label FROM data.L');
+			assert.ok(attributesOf(bucket, 'data', 'L').includes('ssn'));
+			assert.ok(attributesOf(bucket, 'data', 'L').includes('label'));
+		});
+
+		it('refuses a role that may not read the DISTINCT ON column and admits one that may', () => {
+			// The permission cache is keyed by role id, so each role needs its own.
+			const roleReading = (...readable) => ({
+				username: `distinct-on-reader-${readable.join('-')}`,
+				role: {
+					id: `distinct-on-reader-${readable.join('-')}`,
+					role: `distinct-on-reader-${readable.join('-')}`,
+					__updatedtime__: 1,
+					permission: {
+						super_user: false,
+						data: {
+							tables: {
+								L: {
+									read: true,
+									insert: false,
+									update: false,
+									delete: false,
+									attribute_permissions: ['id', 'label', 'ssn'].map((attribute_name) => ({
+										attribute_name,
+										read: readable.includes(attribute_name),
+										insert: false,
+										update: false,
+									})),
+								},
+							},
+						},
+					},
+				},
+			});
+			const check = (sql, user) => verifyPermsAST(alasql.parse(sql).statements[0], user, 'select');
+			const distinctOnSsn = 'SELECT DISTINCT ON (ssn) label FROM data.L';
+			const priorSchema = global.hdb_schema;
+			global.hdb_schema = {
+				data: {
+					L: {
+						name: 'L',
+						schema: 'data',
+						hash_attribute: 'id',
+						attributes: ['id', 'label', 'ssn'].map((attribute) => ({ attribute })),
+					},
+				},
+			};
+			try {
+				assert.ok(check(distinctOnSsn, roleReading('id', 'label')), 'ssn is not readable');
+				assert.strictEqual(check(distinctOnSsn, roleReading('id', 'label', 'ssn')), null);
+				assert.strictEqual(check('SELECT DISTINCT ON (label) label FROM data.L', roleReading('id', 'label')), null);
+			} finally {
+				global.hdb_schema = priorSchema;
+			}
+		});
+
+		it('attributes a qualified DISTINCT ON column to its table and reports an unknown qualifier', () => {
+			const joined = bucketFor('SELECT DISTINCT ON (r.code) l.label FROM data.L l JOIN data.R r ON l.id = r.id');
+			assert.ok(attributesOf(joined, 'data', 'R').includes('code'));
+			assert.ok(!attributesOf(joined, 'data', 'L').includes('code'));
+			assert.deepStrictEqual(bucketFor('SELECT DISTINCT ON (x.ssn) label FROM data.L').getUnresolvedColumnRefs(), [
+				'x.ssn',
+			]);
 		});
 	});
 
