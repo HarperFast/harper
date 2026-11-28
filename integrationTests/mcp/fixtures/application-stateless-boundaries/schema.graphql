@@ -1,0 +1,10 @@
+type Note @table @export {
+	id: ID @primaryKey
+	body: String
+}
+
+type QaEvent @table {
+	id: ID @primaryKey
+	kind: String @indexed
+	payload: String
+}
