@@ -50,9 +50,7 @@ try {
 type StringValue = SignOptions['expiresIn'];
 const operationTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
 const refreshTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
-// A login-purpose token (see TOKEN_TYPE.LOGIN below) only exists to be exchanged for a session cookie, so it
-// lasts far shorter than an operation token: a minute unless expires_in says otherwise, and never longer than
-// authentication.maxLoginTokenTimeout.
+// a login token (TOKEN_TYPE.LOGIN) only exists to be traded for a session cookie, so it lives briefly
 const LOGIN_TOKEN_SECONDS = 60;
 const MAX_LOGIN_TOKEN_SECONDS = 300;
 const LOGIN_BINDING_CLAIM = 'user_binding';

@@ -1045,8 +1045,8 @@ async function findAndValidateUser(
 }
 
 /**
- * `findAndValidateUser`, with `bind(key)`: a keyed digest of the record it validated, for a login token to carry, or
- * undefined when no active record has the name.
+ * `findAndValidateUser` for a login token, refusing a name no active record has, with `bind(key)`: a keyed digest of
+ * the record it validated, for the token to carry.
  */
 async function findAndBindUser(
 	username: string,
@@ -1055,7 +1055,9 @@ async function findAndBindUser(
 ): Promise<{ user: User; bind: (key: Buffer) => string | undefined }> {
 	const entries = readUserEntries(username);
 	const user = await findAndValidateUser(username, pw, validatePassword, entries);
-	return { user, bind: (key) => bindingOf(entries.user?.value, key) };
+	if (!entries.user?.value.active)
+		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+	return { user, bind: (key) => bindingOf(entries.user.value, key) };
 }
 
 /**
@@ -1069,7 +1071,6 @@ function findLoginTokenUser(username: string, binding: unknown, key: Buffer): Us
 	return userView(username, entries);
 }
 
-// what a password write (always re-salted) or a recreated name replaces, and an ordinary token mint does not
 function bindingOf(record: any, key: Buffer): string | undefined {
 	if (!record?.active || !key?.length) return undefined;
 	return createHmac('sha256', key)

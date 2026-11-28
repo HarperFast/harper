@@ -42,7 +42,6 @@ async function mint(username, fields = {}) {
 	return operation_token;
 }
 
-// as the operations API hands createTokens a caller that sent no username or password
 async function mintFor(principal, fields = {}) {
 	return (await tokenAuthentication.createTokens({ hdb_user: principal, purpose: 'login', ...fields })).operation_token;
 }
@@ -252,16 +251,17 @@ describe('login tokens', function () {
 		const keyA = Buffer.from('a binding key');
 		const keyB = Buffer.from('another binding key');
 
-		it('findAndBindUser validates as findAndValidateUser does, and binds only an active record', async () => {
+		it('findAndBindUser validates as findAndValidateUser does, and refuses a name no active record has', async () => {
 			const { user: found, bind } = await user.findAndBindUser('login_unit_a', PASSWORD, true);
 			assert.strictEqual(found.username, 'login_unit_a');
 			assert.strictEqual(typeof bind(keyA), 'string');
 			assert.notStrictEqual(bind(keyA), bind(keyB));
 			assert.strictEqual(bind(Buffer.alloc(0)), undefined);
-			await assert.rejects(user.findAndBindUser('login_unit_a', 'wrong password', true));
-			const recordless = await user.findAndBindUser('never_stored_login_user', undefined, false);
-			assert.strictEqual(recordless.user.username, 'never_stored_login_user');
-			assert.strictEqual(recordless.bind(keyA), undefined);
+			const rejected = (error) => error.statusCode === 401;
+			await assert.rejects(user.findAndBindUser('login_unit_a', 'wrong password', true), rejected);
+			await assert.rejects(user.findAndBindUser('never_stored_login_user', undefined, false), rejected);
+			await user.alterUser({ username: 'login_unit_b', active: false });
+			await assert.rejects(user.findAndBindUser('login_unit_b', undefined, false), rejected);
 		});
 
 		it('findLoginTokenUser returns the user and its role from the record matching the binding, and nothing otherwise', async () => {
