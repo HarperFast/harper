@@ -85,7 +85,7 @@
 		"test:unit:resources:core:a-n": "mocha \"unitTests/resources/**/[a-nA-N]*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\"",
 		"test:unit:resources:core:o-z": "mocha \"unitTests/resources/**/*.js\" --exclude \"unitTests/resources/**/*.bench.js\" --exclude \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/[a-nA-N]*.js\"",
 		"test:unit:resources:indexes": "mocha \"unitTests/resources/**/*{[Ii]ndex,[Hh]nsw,[Vv]ector}*.js\" --exclude \"unitTests/resources/**/*.bench.js\"",
-		"bench": "mocha \"unitTests/resources/caching-rocks-database.bench.js\" \"unitTests/resources/indexRangeSelect.bench.js\" \"unitTests/resources/originClosedFloor.bench.js\" \"unitTests/resources/subscriptionCheckpoint.bench.js\" \"unitTests/resources/liveSubscriptionReauth.bench.js\" \"unitTests/resources/recordLockAdmission.bench.js\" \"unitTests/resources/primaryKeyFilterScan.bench.js\"",
+		"bench": "mocha \"unitTests/resources/auditLogRead.bench.js\" \"unitTests/resources/caching-rocks-database.bench.js\" \"unitTests/resources/indexRangeSelect.bench.js\" \"unitTests/resources/originClosedFloor.bench.js\" \"unitTests/resources/subscriptionCheckpoint.bench.js\" \"unitTests/resources/liveSubscriptionReauth.bench.js\" \"unitTests/resources/recordLockAdmission.bench.js\" \"unitTests/resources/primaryKeyFilterScan.bench.js\"",
 		"bench:record-lock-admission": "mocha unitTests/resources/recordLockAdmission.bench.js",
 		"bench:record-action": "mocha unitTests/resources/analytics/recordAction.bench.js",
 		"test:unit:bin": "mocha \"unitTests/bin/**/*.js\"",
