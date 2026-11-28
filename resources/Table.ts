@@ -10805,7 +10805,6 @@ export function makeTable(options): TableResourceClass {
 						exactStart: false,
 						includeLogName: true,
 						snapshot: false, // the live tail appended during the replay is read by it
-						trackPositions: state.keepsCursors,
 					});
 					try {
 						for (const auditRecord of replayRange) {
@@ -10843,11 +10842,9 @@ export function makeTable(options): TableResourceClass {
 								replayReader
 							);
 							if (!event) continue;
+							// no log position: this replay reads past the broadcast, so one of its deliveries can be later in a
+							// log than a broadcast delivery queued after it, and a consumer takes the first held as the earliest
 							event[ORIGIN_ID] = auditRecord.nodeId ?? 0;
-							if (state.keepsCursors) {
-								event[LOG_NAME] = replayRange.lastLogName();
-								event[LOG_BEFORE] = replayRange.lastKeyBefore();
-							}
 							if (!send(event)) return;
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								if (!recheck(replayRange)) return;

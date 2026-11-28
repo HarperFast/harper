@@ -511,6 +511,23 @@ describe('MQTT durable sessions with a position per transaction log (harper#3790
 			await end(second);
 		});
 
+		it('saves no positions while a delivery of the checkpoint replay is not yet taken', async () => {
+			const { name, second } = await movedSession();
+			const state = second.session.topics.get(`${name}/#`);
+			await waitFor(() => state.verified && state.subscription.logCursors() instanceof Map);
+			// the replay read past the broadcast, so where its deliveries lie in a log relative to a live one is not known
+			assert.strictEqual(second.session.readCursors(state), null);
+			const replayed = second.received.filter(({ message }) => message.value !== 'after');
+			assert.deepStrictEqual(values(replayed).sort(), ['local', 'taken']);
+			await take(second.session, replayed, 1);
+			const positions = second.session.readCursors(state);
+			assert.ok(positions?.logs instanceof Map, 'only the live delivery is held, and it names its position');
+			const own = positions.logs.get(getThisNodeName());
+			assert.strictEqual(own.readThrough, state.subscription.logCursors().get('local'), 'nothing is queued');
+			assert.ok(own.cursor < own.readThrough, 'the live delivery holds its log before it');
+			await end(second);
+		});
+
 		it('keeps no positions after a checkpoint replay until the broadcast has returned every entry', async () => {
 			const { T, name, second } = await movedSession();
 			const subscription = second.session.topics.get(`${name}/#`).subscription;
