@@ -5866,7 +5866,7 @@ export function makeTable(options): TableResourceClass {
 						residencyId: residencyPolicy ? undefined : options?.residencyId,
 						residencySlot,
 					};
-					write.blobsAuditReferenced = !isCopyApply && Boolean(audit);
+					if (audit && !isCopyApply) write.blobsAuditReferenced = true;
 					if (priorStagedOp) priorStagedOp.superseded = true;
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
@@ -8471,13 +8471,11 @@ export function makeTable(options): TableResourceClass {
 						}
 						if ((residencyId || write.residencyId) && audit && !isCopyApply && !transaction?.isRetry)
 							write.residencyId = residencyId;
+						if (audit && !isCopyApply) write.blobsAuditReferenced = true;
 						// publish what this write left for the key, for any later write to it in this
 						// transaction (an audit-only commit stored no record, so it stages nothing and the
 						// earlier staged record, if any, remains the basis)
 						if (storeRecord) {
-							// blobs this write saved are referenced by its audit entry (if it wrote one), which
-							// then owns their lifetime
-							write.blobsAuditReferenced = Boolean(isCopyApply ? false : audit);
 							// an id-based omission stores no row, so the stored or earlier staged one stays the basis
 							if (recordToStore !== undefined) {
 								const staged: Partial<Entry> = { value: recordToStore };
@@ -15693,6 +15691,7 @@ export function makeTable(options): TableResourceClass {
 								Boolean(invalidated),
 								auditRecord
 							);
+							if (writeAudit) sourceWrite.blobsAuditReferenced = true;
 							// arm the eviction scanner, mirroring the .put() path
 							if (sourceContext.expiresAt) scheduleCleanup();
 						} else if (existingEntry) {

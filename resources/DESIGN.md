@@ -128,7 +128,7 @@ Closing the owning handle releases the fill's lock (`releaseRecordLock` ignores 
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 - `write.skipped` is set only when a round staged neither record nor audit entry (#3182).
-- Skips clean up after commit, never inline: a retry can make the skipped write win. Abort spares files a durable log or audit entry owns (`blobsAuditReferenced`).
+- Skips clean up after commit, never inline: a retry can make the skipped write win. Abort spares files a durable log owns. Post-commit skip cleanup spares files an appended audit entry owns (`blobsAuditReferenced`), audit-only entries included, when the appending handle committed or has a durable log (#3376).
 - A deleted file tombstones its `Blob`, so `saveBlob` throws (#2062). `cleanupOrphans` scans every retained audit value: history owns its files.
 - `evict()` unlinks only from its own commit (`evictionBlobs.test.js`); an unavailable source blob never aborts a replicated apply (`blob.test.js`).
 

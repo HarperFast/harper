@@ -799,6 +799,50 @@ for (const markers of [true, false])
 			}
 		});
 
+		it('keeps the blob of an audit-only entry whose retry is skipped by a newer put (harper#3376)', async function () {
+			if (isLMDB) return this.skip();
+			const version = Date.now() + 86400000;
+			const { T, apply } = await fixture('AuditOnlyBlob', version);
+			await T.put('other', { count: 0 });
+			const blobs = [createBlob(Buffer.alloc(20000, 'a')), createBlob(Buffer.alloc(20000, 'b'))];
+			for (const blob of blobs) await decodeFromDatabase(() => saveBlob(blob).saving, T.primaryStore.rootStore);
+			await apply({ count: 2, blob: blobs[1] }, { version: version + 10 });
+			setDeletionDelay(0);
+			let native, write;
+			try {
+				await apply({ count: 1, blob: blobs[0] }, { version }, async (txn, context) => {
+					write = txn.writes.find((write) => write.key === 'counter');
+					await txn.save(write);
+					assert.equal(write.stagedEntry, undefined, 'the older patch must stage no record');
+					assert.equal(write.appendedAuditEntry, true, 'the older patch must stage its audit entry');
+					const other = await T.getResource('other', context);
+					await other._writeUpdate('other', { count: 1 }, false, {
+						isNotification: true,
+						nodeId: getIdOfRemoteNode('duplicate-origin', T.auditStore),
+						version,
+					});
+					await txn.save(txn.writes.find((write) => write.key === 'other'));
+					native = txn.transaction;
+					await transaction({}, () => T.put('other', { count: 2 }));
+					await apply({ id: 'counter', count: 3 }, { version: version + 20, fullUpdate: true });
+				});
+				assert.ok(native.retries > 0, 'the other key must cause a real native conflict');
+				assert.equal(write.skipped, true);
+				assert.equal(write.blobsAuditReferenced, true);
+				assert.equal((await T.get('counter')).count, 3);
+				const audited = [...T.auditStore.getRange({ start: 1 })].find(
+					(entry) => entry.tableId === T.tableId && entry.recordId === 'counter' && entry.version === version
+				);
+				assert.ok(audited, 'the committed audit-only entry must remain');
+				const auditedBlob = audited.getValue(T.primaryStore).blob;
+				assert.equal(getFileId(auditedBlob), getFileId(blobs[0]));
+				assert.doesNotThrow(() => saveBlob(blobs[0]), 'skip cleanup must not discard the audit-owned blob');
+				assert.deepEqual(Buffer.from(await auditedBlob.bytes()), Buffer.alloc(20000, 'a'));
+			} finally {
+				setDeletionDelay(undefined);
+			}
+		});
+
 		it('discards a skipped blob whose unsubmitted audit batch was abandoned for a retained read snapshot', async function () {
 			if (isLMDB) return this.skip();
 			const version = Date.now() + 86400000;

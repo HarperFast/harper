@@ -854,8 +854,10 @@ export type TransactionWrite = {
 	// stored, so blobs this write saved are only reachable through its audit entry. Reset per
 	// commit-handler round, like stagedEntry.
 	superseded?: boolean;
-	// Audit pruning owns blobs referenced by an appended audit entry once its handle commits or
-	// has a durable log; a staged entry in an unsubmitted handle owns none.
+	// Audit pruning owns blobs referenced by an appended audit entry, audit-only ones included, once
+	// its handle commits or has a durable log; a staged entry in an unsubmitted handle owns none.
+	// Set-only, so it stays sticky across retry rounds: a round that skips or omits its audit entry
+	// leaves an earlier round's entry in the batch.
 	blobsAuditReferenced?: boolean;
 	// The record lock covering this write's key, whichever instance staged it; DatabaseTransaction.save()
 	// applies the lock's stamps, floor and liveness checks through it.
