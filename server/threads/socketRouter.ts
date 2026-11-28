@@ -12,7 +12,7 @@ import {
 	canaryVerdictTimeoutMs,
 } from './manageThreads.ts';
 import { admittedIsolatedApplications, failedClosedApplications } from './isolatedApplications.ts';
-import { lifecycle as componentLifecycle } from '../../components/status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent } from '../../components/status/index.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
@@ -193,6 +193,23 @@ let poolSize = 0;
 let dedicatedPoolsStarted = false;
 let dedicatedWorkerCount = 0;
 const refusedIsolated = new Set<string>(); // reported once, not on every reconcile
+// What this thread reported of each dedicated worker, by revision (every status write replaces `lastChecked`): a later
+// ready, or the application no longer being isolated, replaces or clears only a report that is still this thread's.
+const dedicatedWorkerReports = new Map<string, Date>();
+
+function reportDedicatedWorker(application: string, report: () => void) {
+	report();
+	dedicatedWorkerReports.set(application, statusForComponent(application).get()!.lastChecked);
+}
+
+function reportIsolatedFailure(application: string, error: Error, message: string) {
+	reportDedicatedWorker(application, () => componentLifecycle.failed(application, error, message));
+}
+
+function dedicatedWorkerOwnsStatus(application: string): boolean {
+	const current = statusForComponent(application).get();
+	return !current || current.lastChecked === dedicatedWorkerReports.get(application);
+}
 // A first release's start is held as its canary, so it may take the canary's whole report window before it binds.
 const isolatedWorkerReadyTimeoutMs = () => canaryVerdictTimeoutMs() + 60_000;
 let nextIsolatedIndex = 0;
@@ -219,7 +236,7 @@ function admitIsolatedWorkers(
 	for (const [name, refusal] of refused) {
 		if (only === undefined || only === name) reportIsolatedRefusal(name, refusal);
 	}
-	for (const name of admitted) refusedIsolated.delete(name);
+	for (const name of refusedIsolated) if (!refused.has(name)) refusedIsolated.delete(name);
 	return admitted;
 }
 
@@ -240,7 +257,7 @@ function reportIsolatedRefusal(name: string, refusal: string) {
 		`Application '${name}' is isolated but gets no dedicated worker: ${refusal}; it is not loaded anywhere`
 	);
 	harperLogger.error(error.message);
-	componentLifecycle.failed(name, error, `Component '${name}' failed to load`);
+	reportDedicatedWorker(name, () => componentLifecycle.failed(name, error, `Component '${name}' failed to load`));
 }
 
 /**
@@ -259,11 +276,18 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 			).unref()
 		),
 	])
-		.then(() => true)
+		.then(() => {
+			if (isolatedSlots.get(application) === slot && dedicatedWorkerOwnsStatus(application)) {
+				reportDedicatedWorker(application, () =>
+					componentLifecycle.loaded(application, `Dedicated worker for '${application}' is running`)
+				);
+			}
+			return true;
+		})
 		.catch(async (error) => {
 			if (isolatedSlots.get(application) !== slot) return false;
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
-			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
+			reportIsolatedFailure(application, error, `Component '${application}' failed to load`);
 			// The slot IS the lease: holding it until the failed worker has actually exited is what stops a
 			// reconcile from starting a replacement over its still-bound UDS mirror and still-open stores,
 			// and what makes a concurrent drop's `await slot.shutdown()` cover this worker too.
@@ -301,6 +325,12 @@ async function reconcileIsolatedWorkersNow(only?: string, refused = false): Prom
 	const wanted = new Set(admitIsolatedWorkers([...isolatedSlots.keys()], await readFailedClosedApplications(), only));
 	// main already knows its release is refused, whatever this reading of the records says
 	if (refused && only !== undefined) wanted.delete(only);
+	for (const application of dedicatedWorkerReports.keys()) {
+		if (wanted.has(application) || refusedIsolated.has(application)) continue;
+		if (only !== undefined && application !== only) continue;
+		if (dedicatedWorkerOwnsStatus(application)) componentLifecycle.cleared(application);
+		dedicatedWorkerReports.delete(application);
+	}
 	const stopping = [];
 	for (const [application, slot] of isolatedSlots) {
 		if (wanted.has(application) || (only !== undefined && application !== only)) continue;
@@ -450,7 +480,7 @@ function startWorkerSlot(
 			if (waitingForInitialReady) failStartup(error);
 			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot) {
 				isolatedSlots.delete(application);
-				componentLifecycle.failed(application, error, `Component '${application}' worker failed`);
+				reportIsolatedFailure(application, error, `Component '${application}' worker failed`);
 				void import('../http.ts').then(
 					({ cleanupApplicationSockets }) => {
 						// A config reconciliation may already have installed a replacement after the

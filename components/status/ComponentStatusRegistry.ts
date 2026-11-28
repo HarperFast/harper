@@ -147,6 +147,24 @@ export class ComponentStatusRegistry {
 		this.markLoadEnded(componentName);
 	}
 
+	public remove(componentName: string): void {
+		this.statusMap.delete(componentName);
+	}
+
+	/**
+	 * Remove a component's status along with its sub-components' (`name.*`), except those under `keepUnder`: a
+	 * component whose name extends this one's (`shop.eu` under `shop`) can be another component altogether.
+	 */
+	public retire(componentName: string, keepUnder: string[] = []): void {
+		this.statusMap.delete(componentName);
+		const prefix = componentName + '.';
+		for (const key of this.statusMap.keys()) {
+			if (!key.startsWith(prefix)) continue;
+			if (keepUnder.some((kept) => key === kept || key.startsWith(kept + '.'))) continue;
+			this.statusMap.delete(key);
+		}
+	}
+
 	/**
 	 * Get all components with a specific status level
 	 */

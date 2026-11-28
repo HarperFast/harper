@@ -158,6 +158,14 @@ export const lifecycle = {
 	failed(componentName: string, error: Error | string, message?: string): void {
 		componentStatusRegistry.markFailed(componentName, error, message);
 	},
+
+	cleared(componentName: string): void {
+		componentStatusRegistry.remove(componentName);
+	},
+
+	retired(componentName: string, keepUnder?: string[]): void {
+		componentStatusRegistry.retire(componentName, keepUnder);
+	},
 };
 
 /**
