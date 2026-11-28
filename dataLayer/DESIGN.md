@@ -233,6 +233,26 @@ engine's backup misses them; every backup operation handles them alongside (`exc
   tar forever, holding the snapshot open; the rejection handler destroys the native stream itself.
   **A native producer rejection must terminate both streams** with the original error.
 
+**Every engine backup flushes first (`ENGINE_BACKUP_OPTIONS`).** The binding takes its default for
+`flushBeforeBackup` from the handle `backup()` is called on. The root store has a WAL and the table
+stores do not (`openRocksDatabase`), so the default skips the flush and the backup's table files lack
+every unflushed write. Replay restores the logged ones. It cannot rebuild an eviction, so the backup
+keeps the evicted record, the blob snapshot no longer has its blob, and restore refuses the backup.
+`integrationTests/database/backup-flushes-table-stores.test.ts` enforces the flush. Three gaps
+remain, none of them tested. A write that commits while the backup runs is subject to the skew
+below. The binding copies the replay position (`txn.state`) after the table files, from a flush
+listener that can still be running when the flush returns: a backup that copies it too early replays
+the evicted record's put on restore
+([harper#4507](https://github.com/HarperFast/harper/issues/4507)). And each transaction log has its
+own `txn.state`, which a flush moves only to a position one of that log's commits recorded since the
+database was opened. Replayed writes are not re-logged (`replayLogs`), and an eviction logs nothing
+unless the table has a derived index (`stageDerivedIndexEviction`). So a database recovered by boot
+or restore replay flushes without moving the position of any log that has had no commit since: its
+backup's table files are current, but restore replays that log from where the recovery started and
+brings back a record evicted since ([harper#4510](https://github.com/HarperFast/harper/pull/4510)).
+One logged write before the backup moves its own log's position past the replayed entries: a local
+write to an audited table covers locally written records, not ones in another origin's log.
+
 **Completion manifest (`dataLayer/backupManifest.ts`).** The engine backup is visible before the blob
 snapshot is copied, so `<backupDir>/manifests/<backupId>.json`, recording the blob policy, is written
 atomically only after both phases are durable; a failed snapshot rolls the engine backup back. A
