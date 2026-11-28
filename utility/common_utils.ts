@@ -868,6 +868,9 @@ export function transformReq(req: any) {
 	if (req.schema !== database) req.schema = database;
 }
 
+// A duration setting convertToMS reads as at least one second, minute, hour or day; a bare number is seconds
+export const CONFIG_DURATION_PATTERN = /^[1-9][0-9]*(\.[0-9]+)?[smhHdD]?$/;
+
 export function convertToMS(interval: any) {
 	let seconds = 0;
 	if (typeof interval === 'number') seconds = interval;

@@ -21,7 +21,7 @@ export {
 	listUsers,
 	listUsersExternal,
 	findAndValidateUser,
-	credentialBinding,
+	findAndBindUser,
 	findLoginTokenUser,
 	getUserImpl,
 	getUserWithRole,
@@ -1009,7 +1009,15 @@ async function assertActiveSuperUserRemains(simulate: (user: User) => User | und
  * @param {boolean} validatePassword
  */
 async function findAndValidateUser(username: string, pw?: string | null, validatePassword = true): Promise<User> {
-	const entries = readUserEntries(username);
+	return validateUserEntries(username, readUserEntries(username), pw, validatePassword);
+}
+
+async function validateUserEntries(
+	username: string,
+	entries: UserEntries,
+	pw: string | null | undefined,
+	validatePassword: boolean
+): Promise<User> {
 	const record = entries.user?.value;
 	if (!record) {
 		if (!validatePassword) return userView(username, entries);
@@ -1041,13 +1049,18 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 }
 
 /**
- * A keyed digest of the active hdb_user record `username` names, or undefined when none is active. It covers the
- * password hash, which every password write re-salts, and the creation time, which recreating the name resets, but
- * not the refresh token or role, which ordinary token mints and role changes rewrite.
+ * `findAndValidateUser`, with a keyed digest of the record it validated, for a login token to carry: undefined when no
+ * active record has the name.
  */
-function credentialBinding(username: string, key: string): string | undefined {
-	if (typeof username !== 'string' || username === '') return undefined;
-	return bindingOf(readEntry(systemStore(USER_TABLE_NAME), username)?.value, key);
+async function findAndBindUser(
+	username: string,
+	pw: string | null | undefined,
+	validatePassword: boolean,
+	key: string
+): Promise<{ user: User; binding: string | undefined }> {
+	const entries = readUserEntries(username);
+	const user = await validateUserEntries(username, entries, pw, validatePassword);
+	return { user, binding: bindingOf(entries.user?.value, key) };
 }
 
 /**
@@ -1061,6 +1074,8 @@ function findLoginTokenUser(username: string, binding: unknown, key: string): Us
 	return userView(username, entries);
 }
 
+// Covers the password hash, which every password write re-salts, and the creation time, which recreating the name
+// resets; not the refresh token or role, which ordinary token mints and role changes rewrite.
 function bindingOf(record: any, key: string): string | undefined {
 	if (!record?.active || !key) return undefined;
 	return createHmac('sha256', key)

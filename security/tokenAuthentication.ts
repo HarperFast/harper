@@ -16,7 +16,7 @@ import logger from '../utility/logging/harper_logger.ts';
 import { withoutSystemGrants } from './systemRolePermissions.ts';
 import * as password from '../utility/password.ts';
 import {
-	credentialBinding,
+	findAndBindUser,
 	findAndValidateUser,
 	findLoginTokenUser,
 	getSuperUser,
@@ -39,7 +39,7 @@ import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
-import { convertToMS } from '../utility/common_utils.ts';
+import { CONFIG_DURATION_PATTERN, convertToMS } from '../utility/common_utils.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 try {
 	env.initSync();
@@ -49,20 +49,24 @@ try {
 type StringValue = SignOptions['expiresIn'];
 const operationTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
 const refreshTokenTimeout = (): StringValue => env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
-// Default lifetime of a login-purpose token (see TOKEN_TYPE.LOGIN below). It only exists to be
-// exchanged for a session cookie, so it defaults far shorter than an operation token; expires_in can
-// change it, up to authentication.maxLoginTokenTimeout.
-const LOGIN_TOKEN_TIMEOUT: StringValue = '1m';
-const MAX_LOGIN_TOKEN_TIMEOUT = '5m';
-// The stored-record binding a login token carries (security/user.ts credentialBinding).
+// A login-purpose token (see TOKEN_TYPE.LOGIN below) only exists to be exchanged for a session cookie, so it
+// lasts far shorter than an operation token: a minute unless expires_in says otherwise, and never longer than
+// authentication.maxLoginTokenTimeout.
+const LOGIN_TOKEN_SECONDS = 60;
+const MAX_LOGIN_TOKEN_SECONDS = 300;
 const LOGIN_BINDING_CLAIM = 'user_binding';
 const RSA_ALGORITHM: Algorithm = 'RS256';
 
-// Parsed as the config's own durations are (convertToMS: a bare number is seconds), not as jsonwebtoken reads expires_in.
 function maxLoginTokenSeconds(): number {
-	const seconds = Math.floor(convertToMS(env.get(CONFIG_PARAMS.AUTHENTICATION_MAXLOGINTOKENTIMEOUT)) / 1000);
-	// an unusable value keeps the default cap rather than lifting it
-	return Number.isFinite(seconds) && seconds >= 1 ? seconds : convertToMS(MAX_LOGIN_TOKEN_TIMEOUT) / 1000;
+	const configured = env.get(CONFIG_PARAMS.AUTHENTICATION_MAXLOGINTOKENTIMEOUT);
+	// the config validator's rule, so a value it refuses keeps the default cap rather than lifting it
+	const seconds =
+		typeof configured === 'number'
+			? configured
+			: CONFIG_DURATION_PATTERN.test(configured)
+				? convertToMS(configured) / 1000
+				: NaN;
+	return Number.isFinite(seconds) && seconds >= 1 ? Math.floor(seconds) : MAX_LOGIN_TOKEN_SECONDS;
 }
 
 const TOKEN_TYPE = {
@@ -212,7 +216,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 			throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_USER_TO_MINT_FOR, HTTP_STATUS_CODES.CONFLICT);
 	}
 
-	// a login token's binding is keyed by the signing key
+	// ahead of the user lookup only for a login mint, which binds the token to the record it validates
 	const loginKeys: JWTRSAKeys | undefined = authObj?.purpose === 'login' ? await getJWTRSAKeys() : undefined;
 	let user: any;
 	let loginBinding: string | undefined;
@@ -234,10 +238,14 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 			// the password would have been checked by authHandler before getting here
 			validatePassword = false;
 		}
-		// Read before the password check, so a password change landing between the two binds the token to the
-		// record it replaced, which never redeems.
-		if (loginKeys) loginBinding = credentialBinding(authObj.username, loginKeys.privateKey);
-		user = await findAndValidateUser(authObj.username, authObj.password, validatePassword);
+		if (loginKeys) {
+			({ user, binding: loginBinding } = await findAndBindUser(
+				authObj.username,
+				authObj.password,
+				validatePassword,
+				loginKeys.privateKey
+			));
+		} else user = await findAndValidateUser(authObj.username, authObj.password, validatePassword);
 	} catch (err) {
 		logger.error(err);
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
@@ -259,9 +267,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	const keys: JWTRSAKeys = loginKeys ?? (await getJWTRSAKeys());
 
 	if (authObj.purpose === 'login') {
-		// Login-scoped exchange token: no refresh token, no user record update — a short-lived ticket for the
-		// `login` operation to trade for a session cookie, not a standing credential. With no active record to bind
-		// it to (a dropped user's still-valid credential), there is nothing to mint.
+		// a ticket for the `login` operation, not a standing credential: no refresh token, no user record write
 		if (!loginBinding)
 			throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
 		return { operation_token: signLoginToken(authObj.username, loginBinding, authObj.expires_in, keys) };
@@ -317,8 +323,9 @@ function signLoginToken(
 			{ expiresIn: lifetime, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE.LOGIN } satisfies SignOptions
 		);
 	const maxSeconds = maxLoginTokenSeconds();
-	// The requested lifetime is measured on the signed token, so it is read exactly as jsonwebtoken reads expires_in.
-	const token = sign((expiresIn ?? LOGIN_TOKEN_TIMEOUT) as StringValue);
+	if (typeof expiresIn !== 'string') return sign(Math.min(expiresIn ?? LOGIN_TOKEN_SECONDS, maxSeconds));
+	// a string is measured on the signed token, so it is read exactly as jsonwebtoken reads it
+	const token = sign(expiresIn as StringValue);
 	const { iat, exp } = jwt.decode(token, { json: true });
 	return exp - iat > maxSeconds ? sign(maxSeconds) : token;
 }
