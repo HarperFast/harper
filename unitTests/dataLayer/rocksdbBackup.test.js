@@ -67,6 +67,7 @@ const {
 	checkRestoreState,
 	readRestoringMarkerSource,
 	restoreLockHeldExclusively,
+	restoreLockPath,
 	markRestoreDestructive,
 	releaseRestoreLock,
 	restoreMarkerPresent,
@@ -84,7 +85,12 @@ const { backups } = require('../rocksdbBindings.mts').rocksdbBindings();
 const { closeLoadedDatabases, resolveDatabasePath, table } = require('#src/resources/databases');
 const harperDatabase = require('./fixtures/harperDatabase.js');
 const { clearRestoreDebris, declareIndexWithoutFamily, readRecord, restoreDebris, writeBlobRecord } = harperDatabase;
-const { newRestoreReceipt, readRestoreReceipt, writeRestoreReceipt } = require('#src/dataLayer/restoreReceipt');
+const {
+	newRestoreReceipt,
+	readRestoreReceipt,
+	restoreReceiptPath,
+	writeRestoreReceipt,
+} = require('#src/dataLayer/restoreReceipt');
 const { finishOutstandingRestore } = require('#src/dataLayer/restorePublication');
 const restoreChildRunnerModule = require('#src/dataLayer/restoreChildRunner');
 const env = require('#src/utility/environment/environmentManager');
@@ -1607,6 +1613,25 @@ describe('rocksdbBackup', function () {
 	});
 
 	describe('assertTargetClaimable', function () {
+		for (const inPlace of [false, true]) {
+			for (const preexisting of [false, true]) {
+				it(`refuses an LMDB sibling before admission exemptions (inPlace=${inPlace}, preexisting=${preexisting})`, function () {
+					const target = join(storageDir, 'lmdb-claim');
+					writeFileSync(`${target}.mdb`, 'existing LMDB');
+					try {
+						assert.throws(
+							() =>
+								assertTargetClaimable({ databaseDir: target, databaseName: 'lmdb-claim', inPlace }, '', preexisting),
+							(error) => error.statusCode === 409 && /Cannot claim.*LMDB/.test(error.message)
+						);
+						assert.ok(!existsSync(target));
+					} finally {
+						rmSync(`${target}.mdb`, { force: true });
+					}
+				});
+			}
+		}
+
 		it('admits a target only when its restore record names this repository, whatever the marker says', function () {
 			const target = mkdtempSync(join(storageDir, 'claimable-'));
 			const [sourceA, sourceB, sourceC] = ['a', 'b', 'c'].map((name) => join(storageDir, `claim-source-${name}`));
@@ -1645,6 +1670,287 @@ describe('rocksdbBackup', function () {
 				rmSync(target, { recursive: true, force: true });
 			}
 		});
+	});
+
+	describe('LMDB restore targets', function () {
+		this.timeout(30000);
+		let sequence = 0;
+
+		async function fixture(run, { inPlace = false } = {}) {
+			const source = `${DB_NAME}-lmdb-${++sequence}`;
+			const target = inPlace ? source : `${source}-target`;
+			const targetDir = resolveDatabasePath(target);
+			const backupDir = backupDirForDatabase(source);
+			try {
+				await harperDatabase.writeRecords(source, [['backup', { value: 'restorable' }]]);
+				const { backup_id: backupId } = await createBackupOffline(source);
+				if (inPlace) rmSync(targetDir, { recursive: true, force: true });
+				await run({ source, target, targetDir, backupDir, backupId });
+			} finally {
+				await closeLoadedDatabases();
+				clearRestoreDebris(targetDir, backupDir);
+				for (const name of new Set([source, target])) {
+					const dir = resolveDatabasePath(name);
+					rmSync(dir, { recursive: true, force: true });
+					rmSync(`${dir}.mdb`, { force: true });
+					rmSync(`${dir}.mdb-lock`, { force: true });
+					for (const root of getBlobPathsForDatabaseName(name)) rmSync(root, { recursive: true, force: true });
+				}
+				rmSync(backupDir, { recursive: true, force: true });
+			}
+		}
+
+		async function lmdbFile(targetDir, populated) {
+			const root = require('lmdb').open({ path: `${targetDir}.mdb`, noSubdir: true });
+			if (populated) await root.openDB({ name: 'Records' }).put('kept', { value: 'LMDB data' });
+			await root.close();
+			return readFileSync(`${targetDir}.mdb`);
+		}
+
+		function resumeReceipt({ source, target, targetDir, backupDir, backupId }, fields = {}) {
+			const lock = acquireRestoreLock(targetDir);
+			try {
+				return writeRestoreReceipt(
+					lock,
+					newRestoreReceipt({
+						route: 'on_restart',
+						state: 'pending',
+						database: target,
+						database_path: targetDir,
+						source_database: source,
+						backup_dir: backupDir,
+						backup_id: backupId,
+						options: {},
+						...fields,
+					})
+				);
+			} finally {
+				releaseRestoreLock(lock);
+			}
+		}
+
+		async function assertResumeRefused({ target, targetDir, backupDir }, status) {
+			const lmdbBefore = readFileSync(`${targetDir}.mdb`);
+			const receiptBefore = existsSync(restoreReceiptPath(targetDir))
+				? readFileSync(restoreReceiptPath(targetDir))
+				: undefined;
+			const pinsBefore = readBackupPins(backupDir);
+			const lockBefore = existsSync(restoreLockPath(targetDir));
+			for (const resume of [validateRestoreBackup, restoreBackup]) {
+				await assert.rejects(resume({ ...SU, database: target, resume: true }), {
+					statusCode: status,
+					message:
+						status === 404
+							? /no pending restart restore to resume/
+							: /Cannot claim.*LMDB.*if one exists; after replacement has begun, the database stays blocked/,
+				});
+				assert.deepStrictEqual(readFileSync(`${targetDir}.mdb`), lmdbBefore);
+				assert.deepStrictEqual(
+					existsSync(restoreReceiptPath(targetDir)) ? readFileSync(restoreReceiptPath(targetDir)) : undefined,
+					receiptBefore
+				);
+				assert.deepStrictEqual(readBackupPins(backupDir), pinsBefore);
+				assert.strictEqual(existsSync(restoreLockPath(targetDir)), lockBefore);
+				assert.strictEqual(restoreMarkerPresent(targetDir), false);
+				assert.strictEqual(existsSync(targetDir), false);
+			}
+		}
+
+		for (const receiptState of ['absent', 'unreadable', 'online', 'committed', 'record_lost']) {
+			it(`resume returns 404 before LMDB admission for the ${receiptState} receipt state`, async function () {
+				await fixture(async (state) => {
+					await lmdbFile(state.targetDir, false);
+					if (receiptState === 'unreadable') {
+						mkdirSync(dirname(restoreReceiptPath(state.targetDir)), { recursive: true });
+						writeFileSync(restoreReceiptPath(state.targetDir), '{broken');
+					} else if (receiptState !== 'absent') {
+						resumeReceipt(
+							state,
+							receiptState === 'online'
+								? { route: 'online', state: 'applying' }
+								: receiptState === 'record_lost'
+									? { state: 'terminal', record_lost: true }
+									: { state: receiptState }
+						);
+					}
+					await assertResumeRefused(state, 404);
+				});
+			});
+		}
+
+		for (const receiptState of ['pending', 'terminal']) {
+			it(`resume refuses LMDB with 409 when the sibling precedes a ${receiptState} receipt`, async function () {
+				await fixture(async (state) => {
+					await lmdbFile(state.targetDir, false);
+					resumeReceipt(state, { state: receiptState, attempts: 2, job_id: 'unchanged-job' });
+					await assertResumeRefused(state, 409);
+				});
+			});
+		}
+
+		it('resume checks the receipt before admission for a loaded LMDB table', async function () {
+			await fixture(async (state) => {
+				const savedEngine = process.env.HARPER_STORAGE_ENGINE;
+				let Records;
+				try {
+					process.env.HARPER_STORAGE_ENGINE = 'lmdb';
+					Records = table({
+						database: state.target,
+						table: 'Loaded',
+						audit: false,
+						attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+					});
+					assert.ok(!(Records.primaryStore.rootStore instanceof RocksDatabase));
+					assert.strictEqual(Records.primaryStore.rootStore.path, `${state.targetDir}.mdb`);
+				} finally {
+					if (savedEngine === undefined) delete process.env.HARPER_STORAGE_ENGINE;
+					else process.env.HARPER_STORAGE_ENGINE = savedEngine;
+				}
+				await Records.put('kept', { value: 'LMDB data' });
+				assert.ok(existsSync(`${state.targetDir}.mdb`));
+				await assertResumeRefused(state, 404);
+				resumeReceipt(state);
+				await assertResumeRefused(state, 409);
+				assert.strictEqual((await Records.get('kept')).value, 'LMDB data');
+				const otherStorage = join(storageDir, 'loaded-lmdb-other-layout');
+				mkdirSync(otherStorage);
+				let computedDir;
+				try {
+					process.env.STORAGE_PATH = otherStorage;
+					computedDir = resolveDatabasePath(state.target);
+					resumeReceipt({ ...state, targetDir: computedDir });
+					assert.strictEqual(existsSync(`${computedDir}.mdb`), false);
+					for (const resume of [validateRestoreBackup, restoreBackup]) {
+						await assert.rejects(resume({ ...SU, database: state.target, resume: true }), {
+							statusCode: 400,
+							message: /requires a RocksDB database/,
+						});
+					}
+				} finally {
+					process.env.STORAGE_PATH = storageDir;
+					if (computedDir) clearRestoreDebris(computedDir, state.backupDir);
+					rmSync(otherStorage, { recursive: true, force: true });
+				}
+			});
+		});
+
+		for (const mode of ['online', 'offline', 'on_restart']) {
+			for (const { populated, inPlace } of [
+				{ populated: false, inPlace: true },
+				{ populated: true, inPlace: mode === 'on_restart' },
+				...(mode === 'on_restart' ? [] : [{ populated: false, inPlace: false }]),
+			]) {
+				it(`${mode}: refuses a ${populated ? 'populated' : 'table-less'} ${inPlace ? 'in-place' : 'named'} LMDB target`, async function () {
+					await fixture(
+						async ({ source, target, targetDir, backupDir, backupId }) => {
+							const before = await lmdbFile(targetDir, populated);
+							await assert.rejects(
+								validateRestoreBackup({ ...SU, database: source, backup_id: backupId, target_database: target }),
+								(error) => error.statusCode === 409 && /Cannot claim.*LMDB/.test(error.message)
+							);
+							await assert.rejects(
+								mode === 'offline'
+									? restoreBackupOffline(source, backupId, inPlace ? undefined : target)
+									: restoreBackup({
+											...SU,
+											database: source,
+											backup_id: backupId,
+											...(inPlace ? {} : { target_database: target }),
+											...(mode === 'on_restart' ? { on_restart: true } : {}),
+										}),
+								(error) => error.statusCode === 409 && /Cannot claim.*LMDB/.test(error.message)
+							);
+							assert.ok(!existsSync(targetDir), 'no RocksDB directory');
+							assert.deepStrictEqual(readFileSync(`${targetDir}.mdb`), before);
+							assertNoRestoreDebris(targetDir, backupDir);
+						},
+						{ inPlace }
+					);
+				});
+			}
+		}
+
+		it('refuses an LMDB target that appeared after queuing a restart restore', async function () {
+			await fixture(
+				async ({ source, targetDir, backupId }) => {
+					await restoreBackup({ ...SU, database: source, backup_id: backupId, on_restart: true });
+					const pending = readRestoreReceipt(targetDir).receipt;
+					const before = await lmdbFile(targetDir, false);
+					await assertResumeRefused({ target: source, targetDir, backupDir: pending.backup_dir }, 409);
+					const {
+						assertRestartRestoreActionable,
+						resumeRestartRestore,
+						runRestartAttempt,
+					} = require('#src/dataLayer/restoreIntent');
+					assert.strictEqual(await runRestartAttempt(pending), false);
+					const refused = readRestoreReceipt(targetDir).receipt;
+					assert.strictEqual(refused.state, 'terminal');
+					assert.match(refused.last_error, /Cannot claim.*LMDB/);
+					assert.ok(!existsSync(targetDir));
+					assert.deepStrictEqual(readFileSync(`${targetDir}.mdb`), before);
+					await assert.rejects(
+						validateRestoreBackup({ ...SU, database: source, resume: true }),
+						(error) => error.statusCode === 409 && /LMDB/.test(error.message)
+					);
+					assert.throws(
+						() => assertRestartRestoreActionable(source, targetDir, 'resume'),
+						(error) => error.statusCode === 409 && /LMDB/.test(error.message)
+					);
+					await assert.rejects(
+						resumeRestartRestore(source, targetDir),
+						(error) => error.statusCode === 409 && /LMDB/.test(error.message)
+					);
+					await assert.rejects(
+						restoreBackup({ ...SU, database: source, resume: true }),
+						(error) => error.statusCode === 409 && /LMDB/.test(error.message)
+					);
+					await validateRestoreBackup({ ...SU, database: source, cancel: true });
+					await restoreBackup({ ...SU, database: source, cancel: true });
+					assert.strictEqual(readRestoreReceipt(targetDir).kind, 'absent');
+					assert.deepStrictEqual(readFileSync(`${targetDir}.mdb`), before);
+				},
+				{ inPlace: true }
+			);
+		});
+
+		it('checks the loaded RocksDB directory rather than a different computed path', async function () {
+			await fixture(async ({ source, backupId, backupDir }) => {
+				const actualDir = harperDatabase.recordsTable(source).primaryStore.rootStore.path;
+				const otherStorage = join(storageDir, 'other-layout');
+				mkdirSync(otherStorage);
+				process.env.STORAGE_PATH = otherStorage;
+				try {
+					await lmdbFile(resolveDatabasePath(source), false);
+					for (const resume of [validateRestoreBackup, restoreBackup]) {
+						await assert.rejects(resume({ ...SU, database: source, resume: true }), {
+							statusCode: 404,
+							message: /no pending restart restore to resume/,
+						});
+					}
+					await validateRestoreBackup({ ...SU, database: source, backup_id: backupId });
+					await restoreBackup({ ...SU, database: source, backup_id: backupId, on_restart: true });
+					assert.strictEqual(readRestoreReceipt(actualDir).receipt.state, 'pending');
+					await validateRestoreBackup({ ...SU, database: source, resume: true });
+					await restoreBackup({ ...SU, database: source, resume: true });
+					assert.strictEqual(readRestoreReceipt(actualDir).receipt.state, 'pending');
+				} finally {
+					process.env.STORAGE_PATH = storageDir;
+					await closeLoadedDatabases();
+					clearRestoreDebris(actualDir, backupDir);
+					rmSync(otherStorage, { recursive: true, force: true });
+				}
+			});
+		});
+
+		for (const emptyDir of [false, true]) {
+			it(`still restores to an ${emptyDir ? 'empty-directory' : 'absent'} target`, async function () {
+				await fixture(async ({ source, target, targetDir, backupId }) => {
+					if (emptyDir) mkdirSync(targetDir);
+					await restoreBackupOffline(source, backupId, target);
+					assert.deepStrictEqual(await readRecord(target, 'backup'), { value: 'restorable' });
+				});
+			});
+		}
 	});
 
 	describe('backup pins', function () {

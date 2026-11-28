@@ -32,6 +32,7 @@ import {
 	readRestoreReceipt,
 	removeRestoreReceipt,
 	removeUnreadableRestoreReceipt,
+	resumableReceipt,
 	writeRestoreReceipt,
 	type RestoreReceipt,
 	type RestoreReceiptRead,
@@ -49,6 +50,7 @@ import {
 } from './restorePublication.ts';
 import {
 	acquireRestoreLockFor,
+	assertRestoreTargetNotLmdb,
 	isRocksDbLockError,
 	listBackupsInDir,
 	resolveCompleteBackup,
@@ -323,6 +325,7 @@ function cancelUnreadableRestore(lock: RestoreLock, databaseName: string): boole
 
 export async function requestRestartRestore(request: RestartRestoreRequest): Promise<DeferredJobCompletion> {
 	const { databaseName, databaseDir, backupDir } = request;
+	assertRestoreTargetNotLmdb(databaseDir, databaseName);
 	await finishOutstandingRestore(databaseDir);
 	const releaseMembership = await acquireMembershipFence();
 	let receipt!: RestoreReceipt;
@@ -356,6 +359,7 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 			});
 			const lock = claimTarget(databaseName, databaseDir);
 			try {
+				assertRestoreTargetNotLmdb(databaseDir, databaseName);
 				const existing = readRestoreReceipt(databaseDir);
 				if (existing.kind === 'unreadable') {
 					throw new ClientError(
@@ -429,18 +433,6 @@ export async function requestRestartRestore(request: RestartRestoreRequest): Pro
 	);
 }
 
-function resumableReceipt(databaseName: string, read: RestoreReceiptRead): RestoreReceipt {
-	if (
-		read.kind !== 'valid' ||
-		read.receipt.route !== 'on_restart' ||
-		read.receipt.state === 'committed' ||
-		read.receipt.record_lost
-	) {
-		throw new ClientError(`Database '${databaseName}' has no pending restart restore to resume`, 404);
-	}
-	return read.receipt;
-}
-
 /** A record that cannot be read is cancellable: removing it is what cancel is for. */
 function assertCancellable(databaseName: string, read: RestoreReceiptRead): void {
 	if (read.kind === 'absent') throw new ClientError(`Database '${databaseName}' has no restore to cancel`, 404);
@@ -463,8 +455,10 @@ export function assertRestartRestoreActionable(
 	action: 'resume' | 'cancel'
 ): void {
 	const read = readRestoreReceipt(databaseDir);
-	if (action === 'resume') resumableReceipt(databaseName, read);
-	else assertCancellable(databaseName, read);
+	if (action === 'resume') {
+		resumableReceipt(databaseName, read);
+		assertRestoreTargetNotLmdb(databaseDir, databaseName);
+	} else assertCancellable(databaseName, read);
 }
 
 export async function resumeRestartRestore(
@@ -477,6 +471,7 @@ export async function resumeRestartRestore(
 	let previous: RestoreReceipt;
 	try {
 		previous = resumableReceipt(databaseName, readRestoreReceipt(databaseDir));
+		assertRestoreTargetNotLmdb(databaseDir, databaseName);
 		receipt = writeReceiptReconciled(lock, {
 			...previous,
 			state: previous.state === 'terminal' ? (previous.pre_terminal_state ?? 'pending') : previous.state,
@@ -745,6 +740,7 @@ export async function runRestartAttempt(found: RestoreReceipt): Promise<boolean>
 	try {
 		releaseMembership = await acquireMembershipFence();
 		try {
+			assertRestoreTargetNotLmdb(receipt.database_path, receipt.database);
 			assertNoReplicationPeers(receipt.database);
 		} catch (error: any) {
 			await failAttempt(lock, receipt, error.message, true);
