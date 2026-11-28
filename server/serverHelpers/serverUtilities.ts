@@ -415,6 +415,8 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false, 
 		} else if (
 			!bypassAuth &&
 			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
+			// Authenticates the refresh token itself and preserves its own operations scope claim in tokenAuthentication.ts.
+			json.operation !== terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&
 			json.operation !== terms.OPERATIONS_ENUM.LOGOUT &&
 			// Same rationale: the OIDC exchange authenticates its own caller (#2171), so there is no

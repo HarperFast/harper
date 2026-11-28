@@ -377,4 +377,109 @@ suite('Token authentication', (ctx) => {
 		// expiry must be exact even for a cached identity, and must reject — not act as anonymous
 		await search().expect(401);
 	});
+
+	for (const { label, roleName, username, operations, allowedOp, deniedOps } of [
+		{
+			label: 'deploy-only CI role',
+			roleName: 'ci_deploy_refresh_role',
+			username: 'ci_deploy_refresh_user',
+			operations: ['deploy_component', 'get_job', 'get_deployment', 'registration_info'],
+			allowedOp: 'registration_info',
+			deniedOps: ['get_configuration', 'describe_all'],
+		},
+		{
+			label: 'standard_user group role',
+			roleName: 'standard_user_refresh_role',
+			username: 'standard_user_refresh_user',
+			operations: ['standard_user'],
+			allowedOp: 'user_info',
+			deniedOps: ['get_configuration', 'registration_info'],
+		},
+	]) {
+		test(
+			`refresh_operation_token works for ${label} while preserving operations allowlist and rejecting bad tokens`,
+			{ skip: skipOnBun },
+			async () => {
+				const password = 'TestRefreshPassword123!';
+				await client
+					.req()
+					.send({
+						operation: 'add_role',
+						role: roleName,
+						permission: { super_user: false, operations },
+					})
+					.expect(200);
+				await client
+					.req()
+					.send({
+						operation: 'add_user',
+						role: roleName,
+						username,
+						password,
+						active: true,
+					})
+					.expect(200);
+
+				const loginResp = await request(client.operationsURL)
+					.post('')
+					.set('Content-Type', 'application/json')
+					.send({ operation: 'create_authentication_tokens', username, password })
+					.expect(200);
+				assert.ok(loginResp.body.operation_token, loginResp.text);
+				assert.ok(loginResp.body.refresh_token, loginResp.text);
+
+				const refreshResp = await request(client.operationsURL)
+					.post('')
+					.set('Content-Type', 'application/json')
+					.set('Authorization', `Bearer ${loginResp.body.refresh_token}`)
+					.send({ operation: 'refresh_operation_token' })
+					.expect(200);
+				const refreshedOpToken = refreshResp.body.operation_token;
+				assert.ok(refreshedOpToken, refreshResp.text);
+
+				await request(client.operationsURL)
+					.post('')
+					.set('Content-Type', 'application/json')
+					.set('Authorization', `Bearer ${refreshedOpToken}`)
+					.send({ operation: allowedOp })
+					.expect(200);
+				for (const deniedOp of deniedOps) {
+					await request(client.operationsURL)
+						.post('')
+						.set('Content-Type', 'application/json')
+						.set('Authorization', `Bearer ${refreshedOpToken}`)
+						.send({ operation: deniedOp })
+						.expect(403);
+				}
+
+				await request(client.operationsURL)
+					.post('')
+					.set('Content-Type', 'application/json')
+					.set('Authorization', `Bearer ${refreshedOpToken}`)
+					.send({ operation: 'refresh_operation_token' })
+					.expect(400);
+
+				await request(client.operationsURL)
+					.post('')
+					.set('Content-Type', 'application/json')
+					.set('Authorization', `Bearer ${refreshedOpToken}`)
+					.send({ operation: 'refresh_operation_token', refresh_token: refreshedOpToken })
+					.expect(401);
+
+				await request(client.operationsURL)
+					.post('')
+					.set('Content-Type', 'application/json')
+					.set('Authorization', 'Bearer not-a-valid-refresh-token')
+					.send({ operation: 'refresh_operation_token' })
+					.expect(401);
+
+				await request(client.operationsURL)
+					.post('')
+					.set('Content-Type', 'application/json')
+					.set('Authorization', `Bearer ${refreshedOpToken}`)
+					.send({ operation: 'refresh_operation_token', refresh_token: 'not-a-valid-refresh-token' })
+					.expect(401);
+			}
+		);
+	}
 });

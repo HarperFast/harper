@@ -194,6 +194,47 @@ describe('Test serverUtilities.js module ', () => {
 			);
 			assert.strictEqual(request.search_operation.sql, 'SELECT * FROM data.dog');
 		});
+
+		it('bypasses verifyPerms for refresh_operation_token on roles with an operations allowlist', function () {
+			const roles = [
+				{
+					name: 'ci_deploy_only',
+					permission: {
+						super_user: false,
+						operations: ['deploy_component', 'get_job', 'get_deployment', 'registration_info'],
+					},
+				},
+				{ name: 'read_only_group', permission: { super_user: false, operations: ['read_only'] } },
+				{ name: 'admin_read_group', permission: { super_user: false, operations: ['admin_read'] } },
+				{ name: 'standard_user_group', permission: { super_user: false, operations: ['standard_user'] } },
+				{ name: 'agent_group', permission: { super_user: false, operations: ['agent'] } },
+			];
+
+			for (const { name, permission } of roles) {
+				const hdb_user = { active: true, username: `${name}_user`, role: { role: name, permission } };
+				const refreshFn = serverUtilities.chooseOperation({
+					operation: 'refresh_operation_token',
+					refresh_token: 'placeholder',
+					hdb_user,
+				});
+				assert.strictEqual(refreshFn.name, 'refreshOperationToken');
+			}
+
+			// Dispatch-time tokenScopeDenial is also bypassed; refreshOperationToken carries the
+			// refresh token's own operations claim rather than reading hdb_user.tokenOperations.
+			const scopedUser = {
+				active: true,
+				username: 'scoped_ci_user',
+				tokenOperations: ['deploy_component'],
+				role: { role: 'ci_deploy_only', permission: { super_user: false, operations: ['deploy_component'] } },
+			};
+			const scopedRefreshFn = serverUtilities.chooseOperation({
+				operation: 'refresh_operation_token',
+				refresh_token: 'placeholder',
+				hdb_user: scopedUser,
+			});
+			assert.strictEqual(scopedRefreshFn.name, 'refreshOperationToken');
+		});
 	});
 
 	describe('registered operation authorization envelope', function () {
